@@ -1,3 +1,4 @@
+import type { ChatGPTModelSource } from './modelSource';
 /**
  * Analysis-related type definitions.
  * Aligned with the API schema.
@@ -13,6 +14,7 @@ export type AnalysisPhase = 'auto' | 'premarket' | 'intraday' | 'postmarket';
 export type MarketReviewRegion = 'cn' | 'hk' | 'us' | 'jp' | 'kr' | 'tw';
 
 export interface AnalysisRequest {
+  modelSource?: ChatGPTModelSource;
   stockCode?: string;
   stockCodes?: string[];
   reportType?: StockReportType;

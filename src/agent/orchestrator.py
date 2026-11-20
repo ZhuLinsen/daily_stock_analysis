@@ -144,6 +144,7 @@ class OrchestratorResult:
     stats: Optional[AgentRunStats] = None
     runtime_facts: Optional[AgentRuntimeFacts] = None
     stage_trajectories: List[Dict[str, Any]] = field(default_factory=list)
+    answer_backend: str = ""
 
 
 @dataclass(frozen=True)
@@ -245,8 +246,9 @@ class AgentOrchestrator:
 
         dashboard = None
         content = ""
+        answer_backend = ""
         if ctx is not None:
-            dashboard, content = self._resolve_final_output(ctx, parse_dashboard=parse_dashboard)
+            dashboard, content, answer_backend = self._resolve_final_output(ctx, parse_dashboard=parse_dashboard)
             if parse_dashboard and dashboard is not None:
                 dashboard = self._mark_partial_dashboard(
                     dashboard,
@@ -257,6 +259,7 @@ class AgentOrchestrator:
 
         return OrchestratorResult(
             success=bool(content) if (not parse_dashboard or dashboard is not None) else False,
+            answer_backend=answer_backend,
             content=content,
             dashboard=dashboard,
             error=error,
@@ -289,8 +292,9 @@ class AgentOrchestrator:
         stats.models_used = list(dict.fromkeys(models_used))
         dashboard = None
         content = ""
+        answer_backend = ""
         if ctx is not None:
-            dashboard, content = self._resolve_final_output(ctx, parse_dashboard=parse_dashboard)
+            dashboard, content, answer_backend = self._resolve_final_output(ctx, parse_dashboard=parse_dashboard)
             if parse_dashboard and dashboard is not None:
                 dashboard = self._mark_partial_dashboard(
                     dashboard,
@@ -301,6 +305,7 @@ class AgentOrchestrator:
 
         return OrchestratorResult(
             success=bool(content) if (not parse_dashboard or dashboard is not None) else False,
+            answer_backend=answer_backend,
             content=content,
             dashboard=dashboard,
             error=(
@@ -538,10 +543,12 @@ class AgentOrchestrator:
             content = orch_result.content if orch_result.success else f"[分析失败] {orch_result.error or '未知错误'}"
             conversation_manager.add_message(
                 turn.session_id, "assistant", content, accepted_turn=turn.accepted_snapshot,
-                db_manager=turn.db_manager,
+                db_manager=turn.db_manager, backend=orch_result.answer_backend or None,
             )
         elif orch_result.success:
-            conversation_manager.add_message(turn.session_id, "assistant", orch_result.content)
+            conversation_manager.add_message(
+                turn.session_id, "assistant", orch_result.content, backend=orch_result.answer_backend or None,
+            )
         else:
             conversation_manager.add_message(
                 turn.session_id, "assistant",
@@ -550,6 +557,7 @@ class AgentOrchestrator:
 
         return AgentResult(
             success=orch_result.success,
+            backend=orch_result.answer_backend,
             content=orch_result.content,
             dashboard=orch_result.dashboard,
             tool_calls_log=orch_result.tool_calls_log,
@@ -910,7 +918,7 @@ class AgentOrchestrator:
         stats.total_duration_s = total_duration
         stats.models_used = list(dict.fromkeys(models_used))
 
-        dashboard, content = self._resolve_final_output(ctx, parse_dashboard=parse_dashboard)
+        dashboard, content, answer_backend = self._resolve_final_output(ctx, parse_dashboard=parse_dashboard)
 
         model_str = ", ".join(dict.fromkeys(m for m in models_used if m))
         provider = stats.models_used[0] if stats.models_used else ""
@@ -933,6 +941,7 @@ class AgentOrchestrator:
 
         return OrchestratorResult(
             success=bool(content),
+            answer_backend=answer_backend,
             content=content,
             dashboard=dashboard,
             tool_calls_log=all_tool_calls,
@@ -1492,8 +1501,8 @@ class AgentOrchestrator:
         ctx: AgentContext,
         *,
         parse_dashboard: bool,
-    ) -> tuple[Optional[Dict[str, Any]], str]:
-        """Resolve the best available final output from context.
+    ) -> tuple[Optional[Dict[str, Any]], str, str]:
+        """Select the final dashboard/body and the backend responsible for verbatim chat text.
 
         For dashboard mode, prefer:
         1. Parsed/normalized decision dashboard
@@ -1509,22 +1518,22 @@ class AgentOrchestrator:
         if parse_dashboard:
             dashboard = self._resolve_dashboard_payload(ctx, final_dashboard, final_raw)
             if dashboard is not None:
-                return dashboard, json.dumps(dashboard, ensure_ascii=False, indent=2)
+                return dashboard, json.dumps(dashboard, ensure_ascii=False, indent=2), ""
             if ctx.opinions:
-                return None, self._fallback_summary(ctx)
-            return None, ""
+                return None, self._fallback_summary(ctx), ""
+            return None, "", ""
 
         if chat_mode and isinstance(final_text, str) and final_text.strip():
-            return None, final_text.strip()
+            return None, final_text.strip(), "litellm"
         if isinstance(final_raw, str) and final_raw.strip():
-            return None, final_raw
+            return None, final_raw, "litellm"
         if isinstance(final_dashboard, dict):
             dashboard = self._finalize_dashboard_payload(final_dashboard, ctx)
             if dashboard is not None:
-                return dashboard, json.dumps(dashboard, ensure_ascii=False, indent=2)
+                return dashboard, json.dumps(dashboard, ensure_ascii=False, indent=2), ""
         if ctx.opinions:
-            return None, self._fallback_summary(ctx)
-        return None, ""
+            return None, self._fallback_summary(ctx), ""
+        return None, "", ""
 
     def _resolve_dashboard_payload(
         self,

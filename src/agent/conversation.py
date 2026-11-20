@@ -23,10 +23,10 @@ class ConversationSession:
     created_at: datetime = field(default_factory=datetime.now)
     last_active: datetime = field(default_factory=datetime.now)
 
-    def add_message(self, role: str, content: str, *, accepted_turn=None, db_manager=None) -> Optional[int]:
+    def add_message(self, role: str, content: str, *, accepted_turn=None, db_manager=None, backend=None) -> Optional[int]:
         """Add a message to the session history."""
         db = db_manager if db_manager is not None else get_db()
-        message_id = db.save_conversation_message(self.session_id, role, content, accepted_turn=accepted_turn)
+        message_id = db.save_conversation_message(self.session_id, role, content, accepted_turn=accepted_turn, backend=backend)
         self.last_active = datetime.now()
         return message_id
 
@@ -76,10 +76,10 @@ class ConversationManager:
 
             return self._sessions[session_id]
 
-    def add_message(self, session_id: str, role: str, content: str, *, accepted_turn=None, db_manager=None) -> Optional[int]:
+    def add_message(self, session_id: str, role: str, content: str, *, accepted_turn=None, db_manager=None, backend=None) -> Optional[int]:
         """Add a message to a session."""
         session = self.get_or_create(session_id)
-        return session.add_message(role, content, accepted_turn=accepted_turn, db_manager=db_manager)
+        return session.add_message(role, content, accepted_turn=accepted_turn, db_manager=db_manager, backend=backend)
 
     def prepare_turn(self, session_id: str):
         """Bind the database instance before history preparation/model work."""

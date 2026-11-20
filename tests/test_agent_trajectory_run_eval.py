@@ -322,7 +322,7 @@ class TestRunFailure:
             patch.object(
                 orchestrator,
                 "_resolve_final_output",
-                return_value=({"ok": True}, "final report"),
+                return_value=({"ok": True}, "final report", ""),
             ),
         ):
             result = orchestrator.run("analyze one stock")

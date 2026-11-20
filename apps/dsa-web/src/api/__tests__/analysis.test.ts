@@ -56,3 +56,16 @@ describe('analysisApi.triggerMarketReview', () => {
     );
   });
 });
+
+it('serializes the selected ChatGPT model in both analysis entry points', async () => {
+  const modelSource = { provider: 'chatgpt_siwc', connection_id: 'local', model: 'selected' } as const;
+  post.mockReset();
+  post.mockResolvedValue({ status: 202, data: { status: 'accepted', task_id: 'task' } });
+  const request = { stockCode: '600519', notify: false, modelSource };
+  await analysisApi.analyze(request);
+  await analysisApi.analyzeAsync(request);
+  expect(post.mock.calls.map((call) => call[1])).toEqual([
+    expect.objectContaining({ model_source: modelSource, notify: false, async_mode: false }),
+    expect.objectContaining({ model_source: modelSource, notify: false, async_mode: true }),
+  ]);
+});

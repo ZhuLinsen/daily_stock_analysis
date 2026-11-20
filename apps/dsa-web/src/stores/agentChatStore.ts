@@ -55,7 +55,7 @@ export interface StreamMeta {
 
 export interface StreamAcceptedEvent extends ChatStateFields {
   type: 'accepted';
-  backend: 'litellm';
+  backend: 'litellm' | 'chatgpt_siwc';
   request_id: string;
   session_id: string;
   session_state?: { selected_skill_ids: string[] | null };
@@ -64,6 +64,7 @@ export interface StreamAcceptedEvent extends ChatStateFields {
 type StreamTerminalStatus = 'timeout' | null;
 
 type StreamFailureEvent = {
+  answer_backend?: string | null;
   type: string;
   success?: boolean;
   content?: string;
@@ -220,7 +221,7 @@ export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set,
         && current.sessionGeneration !== decoded.sessionGeneration;
       if (replacedInstance) current.abortController?.abort();
       set({ ...patch, ...(replacedInstance ? emptyStreamState : {}),
-        messages: detail.messages.map((m) => ({ id: m.id, role: m.role, content: m.content })), chatError: null });
+        messages: detail.messages.map((m) => ({ id: m.id, role: m.role, content: m.content, backend: m.backend })), chatError: null });
     } catch (error) {
       if (ownsRead()) set({ chatError: getParsedApiError(error) });
     }
@@ -331,6 +332,7 @@ export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set,
     });
 
     const streamSessionId = payload.session_id || storeSessionId;
+    const expectedBackend = payload.model_source?.provider ?? 'litellm';
     const ownsStream = () => {
       const state = get();
       return state.abortController === ac
@@ -391,7 +393,7 @@ export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set,
             throw protocolError('Agent stream emitted accepted more than once.');
           }
           if (
-            event.backend !== 'litellm'
+            event.backend !== expectedBackend
             || event.request_id !== requestId
             || event.session_id !== streamSessionId
           ) {
@@ -405,7 +407,6 @@ export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set,
             return;
           }
           acceptedEvent = event as StreamAcceptedEvent;
-          finalBackend = acceptedEvent.backend;
           set((s) => ({
             ...statePatch,
             messages: [...s.messages, { ...userMessage, backend: acceptedEvent!.backend }],
@@ -448,6 +449,7 @@ export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set,
               '大模型调用出错，请检查 API Key 配置',
             );
           }
+          finalBackend = doneEvent.answer_backend ?? undefined;
           finalContent = doneEvent.content ?? '';
           return;
         }

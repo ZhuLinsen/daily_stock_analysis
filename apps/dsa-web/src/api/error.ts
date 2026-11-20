@@ -156,7 +156,7 @@ function extractValidationDetail(detail: unknown): string | null {
   return parts.length > 0 ? parts.join('; ') : null;
 }
 
-function extractErrorCode(data: unknown): string | null {
+export function extractErrorCode(data: unknown): string | null {
   if (!isRecord(data)) {
     return null;
   }

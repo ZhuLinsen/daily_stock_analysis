@@ -46,6 +46,7 @@ class AgentChatExecutor:
         use_legacy_default_prompt: bool = False,
         max_steps: int = 10,
         timeout_seconds: Optional[float] = None,
+        include_provider_trace: bool = True,
     ) -> None:
         self.backend = backend
         self.config = config
@@ -55,6 +56,7 @@ class AgentChatExecutor:
         self.use_legacy_default_prompt = use_legacy_default_prompt
         self.max_steps = max_steps
         self.timeout_seconds = timeout_seconds
+        self.include_provider_trace = include_provider_trace
 
     def chat(
         self,
@@ -112,7 +114,7 @@ class AgentChatExecutor:
             skill_instructions=self.skill_instructions,
             default_skill_policy=self.default_skill_policy,
             use_legacy_default_prompt=self.use_legacy_default_prompt,
-            include_provider_trace=True,
+            include_provider_trace=self.include_provider_trace,
             strict_initial_stock_scope=False,
             **resolved_kwargs,
         )
@@ -177,12 +179,12 @@ class AgentChatExecutor:
         if result.success:
             if turn.accepted_snapshot is not None:
                 assistant_message_id = conversation_manager.add_message(
-                    turn.session_id, "assistant", result.content, accepted_turn=turn.accepted_snapshot,
+                    turn.session_id, "assistant", result.content, backend=result.backend or None, accepted_turn=turn.accepted_snapshot,
                     db_manager=turn.db_manager,
                 )
             else:
-                assistant_message_id = conversation_manager.add_message(turn.session_id, "assistant", result.content)
-            if assistant_message_id is not None:
+                assistant_message_id = conversation_manager.add_message(turn.session_id, "assistant", result.content, backend=result.backend or None)
+            if assistant_message_id is not None and self.include_provider_trace:
                 persist_provider_trace_turns(
                     session_id=turn.session_id,
                     run_id=turn.run_id,

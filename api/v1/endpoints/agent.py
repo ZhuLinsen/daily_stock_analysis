@@ -9,13 +9,14 @@ import logging
 import uuid
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, ValidationError
 
-from api.deps import get_agent_chat_session_service
+from api.deps import get_agent_chat_session_service, require_chatgpt_access
 from api.v1.schemas.system_config import AgentBackendStatusResponse
 from src.config import get_config
+from src.llm.model_source import ChatGPTModelSource, ChatGPTModelSourceInput
 from src.services.agent_chat_session_service import AgentChatSessionService
 from src.services.agent_model_service import list_agent_model_deployments
 from src.storage import ChatSessionStateConflict
@@ -49,6 +50,7 @@ router = APIRouter()
 class ChatRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
+    model_source: ChatGPTModelSourceInput
     message: str
     session_id: Optional[str] = None
     session_generation: Optional[str] = Field(default=None, min_length=1, max_length=36)
@@ -90,6 +92,7 @@ class SessionStateResponse(BaseModel):
 
 
 class ChatResponse(BaseModel):
+    answer_backend: Optional[str] = None
     success: bool
     content: str
     session_id: str
@@ -123,7 +126,10 @@ def _prepare_chat_request(request, config, session_id, session_service):
     if resolved.clarification is not None:
         accepted = session_service.commit_user_turn(resolved)
         return None, None, accepted, resolved.clarification
-    executor = _build_executor(config, resolved.skill_selection.effective_skill_ids)
+    executor = _build_executor(
+        config, resolved.skill_selection.effective_skill_ids,
+        model_source=request.model_source,
+    )
     turn = executor.prepare_turn(
         message=request.message, session_id=session_id, context=resolved.effective_context,
         selected_skill_ids=resolved.skill_selection.selected_skill_ids_update,
@@ -196,9 +202,19 @@ async def get_agent_models():
 
 
 @router.get("/status", response_model=AgentBackendStatusResponse)
-async def get_agent_status():
-    """Return the current effective Chat backend status for the Chat page."""
-    payload = await asyncio.to_thread(_get_agent_chat_status, get_config())
+async def get_agent_status(
+    request: Request = None, provider: Optional[str] = None,
+    connection_id: Optional[str] = None, model: Optional[str] = None,
+):
+    """Return status for the same source the user can submit to Chat."""
+    model_source = None
+    if any(value is not None for value in (provider, connection_id, model)):
+        try:
+            model_source = ChatGPTModelSource(provider=provider, connection_id=connection_id, model=model)
+        except ValidationError:
+            raise HTTPException(422, detail={"error": "invalid_model_source", "message": "完整指定 ChatGPT 连接和模型"}) from None
+        require_chatgpt_access(request)
+    payload = await asyncio.to_thread(_get_agent_chat_status, get_config(), model_source=model_source)
     return _agent_status_response(payload)
 
 
@@ -261,10 +277,15 @@ async def get_strategies():
 async def agent_chat(
     request: ChatRequest,
     session_service: AgentChatSessionService = Depends(get_agent_chat_session_service),
+    http_request: Request = None,
 ):
     """Chat with the AI Agent without progress events."""
     config = get_config()
-    backend_id = _select_agent_chat_backend(config)
+    if request.model_source is None:
+        backend_id = _select_agent_chat_backend(config)
+    else:
+        require_chatgpt_access(http_request)
+        backend_id = await asyncio.to_thread(_select_agent_chat_backend, config, model_source=request.model_source)
 
     session_id = request.session_id or str(uuid.uuid4())
     
@@ -280,6 +301,7 @@ async def agent_chat(
         return ChatResponse(
             success=result.success,
             content=result.content,
+            answer_backend=(getattr(result, "backend", None) or None) if result.success and clarification is None else None,
             session_id=session_id,
             error=result.error,
             **_accepted_state_payload(accepted),
@@ -395,24 +417,24 @@ async def send_chat_to_notification(request: SendChatRequest):
     return {"success": True}
 
 
-def _build_executor(config, skills: Optional[List[str]] = None):
+def _build_executor(config, skills: Optional[List[str]] = None, *, model_source=None):
     """Build and return the backend-neutral Chat executor (sync helper)."""
     from src.agent.factory import build_agent_chat_executor
 
-    return build_agent_chat_executor(config, skills=skills)
+    return build_agent_chat_executor(config, skills=skills, model_source=model_source)
 
 
-def _get_agent_chat_status(config) -> Dict[str, Any]:
+def _get_agent_chat_status(config, *, model_source=None) -> Dict[str, Any]:
     from src.services.agent_backend_status_service import AgentBackendStatusService
 
-    return AgentBackendStatusService(config=config).get_status()
+    return AgentBackendStatusService(config=config, model_source=model_source).get_status()
 
 
-def _select_agent_chat_backend(config) -> str:
+def _select_agent_chat_backend(config, *, model_source=None) -> str:
     """Select the runtime backend without repeating the compatibility probe."""
     from src.services.agent_backend_status_service import evaluate_agent_backend_config
 
-    evaluation = evaluate_agent_backend_config(config)
+    evaluation = evaluate_agent_backend_config(config, model_source=model_source)
     if not evaluation["available"]:
         raise HTTPException(
             status_code=400,
@@ -522,6 +544,7 @@ async def agent_research(request: ResearchRequest):
 async def agent_chat_stream(
     request: ChatRequest,
     session_service: AgentChatSessionService = Depends(get_agent_chat_session_service),
+    http_request: Request = None,
 ):
     """
     Chat with the AI Agent, streaming progress via SSE.
@@ -539,7 +562,11 @@ async def agent_chat_stream(
       - error: error occurred, contains 'message'
     """
     config = get_config()
-    backend_id = _select_agent_chat_backend(config)
+    if request.model_source is None:
+        backend_id = _select_agent_chat_backend(config)
+    else:
+        require_chatgpt_access(http_request)
+        backend_id = await asyncio.to_thread(_select_agent_chat_backend, config, model_source=request.model_source)
 
     session_id = request.session_id or str(uuid.uuid4())
     loop = asyncio.get_running_loop()
@@ -566,6 +593,7 @@ async def agent_chat_stream(
             }
             event.update({
                 "backend": getattr(result, "backend", "") or backend_id,
+                "answer_backend": (getattr(result, "backend", None) or None) if result.success else None,
                 "error_code": getattr(result, "error_code", None),
                 "request_id": request_id,
             })

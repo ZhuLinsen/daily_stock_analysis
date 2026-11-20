@@ -400,7 +400,7 @@ class AgentSkillsEndpointTestCase(unittest.TestCase):
             finally:
                 db._engine.dispose()
 
-        mock_build_executor.assert_called_once_with(config, [])
+        mock_build_executor.assert_called_once_with(config, [], model_source=None)
         self.assertEqual(len(run_requests), 1)
         self.assertIn(resolve_skill_prompt_state(config, skills=[]).skill_instructions,
                       run_requests[0].system_prompt)

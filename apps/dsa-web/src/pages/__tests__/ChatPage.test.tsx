@@ -5,6 +5,8 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createParsedApiError } from '../../api/error';
 import { UiLanguageProvider } from '../../contexts/UiLanguageContext';
 import { historyApi } from '../../api/history';
+import { chatgptApi } from '../../api/chatgpt';
+import { useChatGPTStore } from '../../stores/chatgptStore';
 import type { ActiveStockContext } from '../../api/agent';
 import type { Message, ProgressStep } from '../../stores/agentChatStore';
 import type { StockIndexItem } from '../../types/stockIndex';
@@ -1127,6 +1129,55 @@ describe('ChatPage', () => {
       );
     });
     expect(mockStartStream.mock.calls.at(-1)?.[0]?.context).toEqual({ stock_code: '600519', stock_name: '贵州茅台' });
+  });
+
+  it('guards text and shortcut sends with the confirmed ChatGPT connection', async () => {
+    const account = { available: true, connected: true, connection_id: 'A', account_label: 'Account A' };
+    const status = vi.spyOn(chatgptApi, 'status').mockResolvedValue(account);
+    const catalog = [{ slug: 'model', display_name: 'Model' }];
+    const models = vi.spyOn(chatgptApi, 'models').mockResolvedValue(catalog);
+    try {
+      useChatGPTStore.setState({ status: account, models: catalog, model: 'model' });
+      mockGetSkills.mockResolvedValue({
+        skills: [{ id: 'chan_theory', name: '缠论', description: '结构分析' }],
+        default_skill_id: 'chan_theory',
+      });
+      render(<MemoryRouter><ChatPage /></MemoryRouter>);
+      await act(async () => {
+        fireEvent.change(screen.getByRole('combobox', { name: '模型来源' }), { target: { value: 'chatgpt' } });
+      });
+      fireEvent.click(await screen.findByRole('button', { name: /使用 Account A 并发送/ }));
+      await act(async () => {
+        useChatGPTStore.setState({ status: { ...account, connection_id: 'B', account_label: 'Account B' }, model: 'model' });
+      });
+      const confirmation = await screen.findByRole('button', { name: /使用 Account B 并发送/ });
+      const input = screen.getByPlaceholderText(/分析 600519/);
+      const quickQuestion = screen.getByRole('button', { name: '用缠论分析茅台' });
+      await waitFor(() => expect(quickQuestion).toBeEnabled());
+      fireEvent.change(input, { target: { value: '怎么看' } });
+      fireEvent.keyDown(input, { key: 'Enter' });
+      fireEvent.click(quickQuestion);
+      expect(mockStartStream).not.toHaveBeenCalled();
+      fireEvent.click(confirmation);
+      fireEvent.keyDown(input, { key: 'Enter' });
+      await waitFor(() => expect(mockStartStream).toHaveBeenCalledWith(expect.objectContaining({
+        session_id: 'session-1',
+        model_source: { provider: 'chatgpt_siwc', connection_id: 'B', model: 'model' },
+      }), expect.anything()));
+    } finally {
+      status.mockRestore();
+      models.mockRestore();
+      useChatGPTStore.setState({ status: null, model: '', models: [] });
+    }
+  });
+
+  it('labels a ChatGPT assistant answer by its recorded source', async () => {
+    mockStoreState.messages = [{ id: 'fixture', role: 'assistant', content: '已保存回答', backend: 'chatgpt_siwc' }];
+    render(<MemoryRouter><ChatPage /></MemoryRouter>);
+    const answer = await screen.findByText('已保存回答');
+    const bubble = answer.closest('.group\\/message');
+    expect(bubble).toHaveTextContent('ChatGPT 授权');
+    expect(bubble).not.toHaveTextContent('默认模型');
   });
 
   it('keeps a quick question in the input until the server accepts it', async () => {

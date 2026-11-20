@@ -848,6 +848,44 @@ class PipelineMarketPhaseContextTestCase(unittest.TestCase):
         # No index target -> no market override.
         self.assertIsNone(kwargs["market_override"])
 
+    def test_accepted_chatgpt_report_keeps_ordinary_mode_and_saves_provider(self):
+        import json
+        from tempfile import TemporaryDirectory
+
+        from api.v1.endpoints.history import get_history_detail
+        from src.llm.model_source import ChatGPTModelSource
+        from src.storage import DatabaseManager
+
+        pipeline = _make_pipeline(agent_mode=True, save_context_snapshot=True)
+        pipeline.config.agent_skills = ["changed-after-acceptance"]
+        pipeline.model_source = ChatGPTModelSource(
+            provider="chatgpt_siwc", connection_id="test-only", model="selected-model",
+        )
+        result = _analysis_result()
+        result.name = "贵州茅台"
+        result.model_used = "actual-model"
+        result.llm_provider = pipeline.model_source.provider
+        pipeline.analyzer.analyze.return_value = result
+        phase = SimpleNamespace(to_dict=MagicMock(return_value=_phase_payload()))
+        with TemporaryDirectory() as directory:
+            db = DatabaseManager(f"sqlite:///{directory}/report.db")
+            pipeline.db.save_analysis_history.side_effect = db.save_analysis_history
+            with (
+                patch("src.core.pipeline.build_market_phase_context", return_value=phase),
+                patch("src.core.pipeline.extract_and_persist_from_analysis_result") as signal,
+                patch.object(pipeline, "_analyze_with_agent", side_effect=AssertionError("changed mode")),
+            ):
+                pipeline.analyze_stock("600519", ReportType.SIMPLE, "siwc-report",
+                                       current_time=datetime(2026, 3, 27, 10, 0))
+            pipeline.analyzer.analyze.assert_called_once()
+            signal.assert_called_once()
+            report_id = signal.call_args.kwargs["source_report_id"]
+            report = get_history_detail(str(report_id), db)
+            self.assertEqual(report.meta.model_used, "actual-model")
+            raw = json.loads(db.get_analysis_history_by_id(report_id).raw_result)
+            self.assertEqual(raw["llm_provider"], "chatgpt_siwc")
+            self.assertNotIn("connection_id", raw)
+
     def test_legacy_pipeline_passes_market_override_cn_for_index_target(self):
         """V8 — index targets must reach extract_and_persist_from_analysis_result
         with market_override="cn" via the real wiring (not a mocked helper)."""

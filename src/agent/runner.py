@@ -43,6 +43,7 @@ from src.agent.tools.execution import (
     serialize_tool_result,
 )
 from src.agent.stock_scope import StockScope
+from src.llm.model_source import CHATGPT_SIWC
 from src.llm.usage import should_persist_usage_telemetry
 from src.utils.data_processing import normalize_report_signal_attribution
 from src.storage import persist_llm_usage as _persist_usage
@@ -467,7 +468,7 @@ def run_agent_loop(
         if m and m != "error":
             models_used.append(m)
         model_for_usage = m or response.provider
-        if model_for_usage and model_for_usage != "error" and should_persist_usage_telemetry(response.usage):
+        if response.provider != CHATGPT_SIWC and model_for_usage and model_for_usage != "error" and should_persist_usage_telemetry(response.usage):
             _persist_usage(response.usage, model_for_usage, call_type="agent")
 
         remaining_timeout = _remaining_timeout_seconds(start_time, max_wall_clock_seconds)

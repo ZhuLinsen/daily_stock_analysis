@@ -1,3 +1,4 @@
+import { ChatGPTConnectionCard } from '../components/chatgpt/ChatGPTConnectionCard';
 import type React from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CheckCircle2, ChevronDown, CircleAlert, CircleDashed, Clock, Play, Plus, RefreshCw, Trash2 } from 'lucide-react';
@@ -1629,6 +1630,7 @@ const SettingsPage: React.FC = () => {
                   }}
                   disabled={isSaving || isLoading || isImportingEnv}
                 />
+                {activeCategory === 'ai_model' && <ChatGPTConnectionCard />}
               </SettingsSectionCard>
               </div>
             ) : null}

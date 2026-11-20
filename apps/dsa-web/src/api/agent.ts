@@ -1,3 +1,4 @@
+import type { ChatGPTModelSource } from '../types/modelSource';
 import apiClient from './index';
 import { API_BASE_URL } from '../utils/constants';
 import { createApiError, createParsedApiError, isApiRequestError, parseApiError } from './error';
@@ -16,6 +17,7 @@ export function isAbortError(error: unknown): boolean {
 }
 
 export interface ChatRequest {
+  model_source?: ChatGPTModelSource;
   message: string;
   skills?: string[];
 }
@@ -97,6 +99,7 @@ export function decodeChatState(payload: unknown, source: 'detail' | 'accepted' 
 }
 
 export interface ChatResponse extends ChatStateFields {
+  answer_backend?: string | null;
   success: boolean;
   content: string;
   session_id: string;
@@ -126,6 +129,7 @@ export interface ChatSessionItem {
 }
 
 export interface ChatSessionMessage {
+  backend?: string;
   id: string;
   role: 'user' | 'assistant';
   content: string;
@@ -152,8 +156,10 @@ export const agentApi = {
     const response = await apiClient.get<SkillsResponse>('/api/v1/agent/skills');
     return response.data;
   },
-  async getStatus(): Promise<AgentStatusResponse> {
-    const response = await apiClient.get<Record<string, unknown>>('/api/v1/agent/status');
+  async getStatus(source?: ChatGPTModelSource): Promise<AgentStatusResponse> {
+    const response = source
+      ? await apiClient.get<Record<string, unknown>>('/api/v1/agent/status', { params: source })
+      : await apiClient.get<Record<string, unknown>>('/api/v1/agent/status');
     return toCamelCase<AgentStatusResponse>(response.data);
   },
   async getChatSessions(limit = 50): Promise<ChatSessionItem[]> {

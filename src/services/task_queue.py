@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from asyncio import Queue as AsyncQueue
 
 from data_provider.base import canonical_stock_code, normalize_stock_code
+from src.llm.model_source import ChatGPTModelSource
 from src.services.run_diagnostics import (
     activate_run_diagnostic_context,
     get_current_diagnostic_context,
@@ -125,6 +126,7 @@ class TaskInfo:
     query_source: str = "api"
     portfolio_context: Optional[Dict[str, Any]] = None
     skills: Optional[List[str]] = None
+    model_source: Optional[ChatGPTModelSource] = None
     report_language: Optional[str] = None
     trace_id: Optional[str] = None
     region: Optional[str] = None
@@ -184,6 +186,7 @@ class TaskInfo:
             query_source=self.query_source,
             portfolio_context=dict(self.portfolio_context) if isinstance(self.portfolio_context, dict) else None,
             skills=list(self.skills) if self.skills is not None else None,
+            model_source=self.model_source,
             report_language=self.report_language,
             trace_id=self.trace_id or self.task_id,
             region=self.region,
@@ -449,6 +452,7 @@ class AnalysisTaskQueue:
         skills: Optional[List[str]] = None,
         report_language: Optional[str] = None,
         analysis_targets: Optional[List[Any]] = None,
+        model_source: Optional[ChatGPTModelSource] = None,
     ) -> Tuple[List[TaskInfo], List[DuplicateTaskError]]:
         """
         Submit analysis tasks in batch.
@@ -514,6 +518,7 @@ class AnalysisTaskQueue:
                     query_source=query_source or "api",
                     portfolio_context=dict(portfolio_context) if isinstance(portfolio_context, dict) else None,
                     skills=task_skills,
+                    model_source=model_source,
                     report_language=report_language,
                     dedupe_key=dedupe_key,
                     analysis_target=analysis_target,
@@ -786,6 +791,7 @@ class AnalysisTaskQueue:
                 return None
             trace_id = task.trace_id or task_id
             analysis_phase = task.analysis_phase
+            model_source = task.model_source
             query_source = task.query_source or "api"
             portfolio_context = dict(task.portfolio_context) if isinstance(task.portfolio_context, dict) else None
             task.status = TaskStatus.PROCESSING
@@ -829,6 +835,7 @@ class AnalysisTaskQueue:
                 portfolio_context=portfolio_context,
                 report_language=report_language,
                 analysis_target=analysis_target,
+                model_source=model_source,
             )
             reset_run_diagnostic_context(diag_token)
             diag_token = None

@@ -27,10 +27,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, Union, Dict, Any
 
-from fastapi import APIRouter, HTTPException, Depends, Query, Body
+from fastapi import APIRouter, HTTPException, Depends, Query, Body, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from api.deps import get_config_dep
+from api.deps import get_config_dep, validate_chatgpt_source
 from api.v1.errors import api_error
 from api.v1.schemas.analysis import (
     AnalyzeRequest,
@@ -344,7 +344,8 @@ def _resolve_analysis_input(raw_value: str):
 )
 def trigger_analysis(
         request: AnalyzeRequest,
-        config: Config = Depends(get_config_dep)
+        config: Config = Depends(get_config_dep),
+        http_request: Request = None,
 ) -> Union[AnalysisResultResponse, JSONResponse]:
     """
     触发股票分析
@@ -430,6 +431,22 @@ def trigger_analysis(
         reason = target.unsupported_reason or f"不支持的目标: {code}"
         raise api_error(400, "validation_error", reason)
 
+    model_source = request.model_source
+    if model_source is not None:
+        from src.core.pipeline import uses_agent_report
+
+        if len(non_empty_raw_tokens) != 1 or len(stock_codes) != 1 or rejected_entries or any(
+            target is not None and target.asset_type != ParseStatus.STOCK for target in unique_targets
+        ):
+            raise api_error(400, "chatgpt_single_stock_required", "ChatGPT 仅支持普通单股分析")
+        if request.notify:
+            raise api_error(400, "chatgpt_notifications_unsupported", "ChatGPT 单股分析须关闭外发通知")
+        if uses_agent_report(config, request.skills):
+            raise api_error(400, "chatgpt_agent_report_unsupported", "当前 Agent 或 Skill 设置会启用 Agent 报告")
+        validate_chatgpt_source(http_request, model_source)
+        skills = request.skills if request.skills is not None else config.agent_skills
+        request = request.model_copy(update={"skills": list(skills or [])})
+
     # Sync mode only supports single-stock analysis.
     if not request.async_mode:
         if len(stock_codes) > 1:
@@ -496,6 +513,7 @@ def _handle_async_analysis_batch(
         analysis_phase=analysis_phase,
         force_refresh=request.force_refresh,
         notify=notify,
+        model_source=request.model_source,
     )
     if report_language:
         submit_kwargs["report_language"] = report_language
@@ -609,6 +627,7 @@ def _handle_sync_analysis(
             analysis_phase=request.analysis_phase,
             report_language=getattr(request, "report_language", None),
             analysis_target=analysis_target,
+            model_source=request.model_source,
         )
 
         if result is None:

@@ -25,6 +25,7 @@ from typing import List, Dict, Any, Optional, Tuple, Callable
 
 import pandas as pd
 
+from src.llm.model_source import ChatGPTModelSource
 from src.config import FUNDAMENTAL_STAGE_TIMEOUT_SECONDS_DEFAULT, get_config, Config
 from src.storage import get_db
 from data_provider import DataFetcherManager
@@ -223,6 +224,11 @@ def _symbol_scope_lookup_values(code: str, market: str) -> List[str]:
     return values
 
 
+def uses_agent_report(config, skills):
+    configured = getattr(config, "agent_skills", [])
+    return bool(getattr(config, "agent_mode", False) or skills or (configured and configured != ["all"]))
+
+
 class StockAnalysisPipeline:
     """
     股票分析主流程调度器
@@ -248,6 +254,7 @@ class StockAnalysisPipeline:
         portfolio_context: Optional[Dict[str, Any]] = None,
         daily_market_context_enabled: Optional[bool] = None,
         daily_market_context_allow_generate: bool = True,
+        model_source: Optional[ChatGPTModelSource] = None,
     ):
         """
         初始化调度器
@@ -274,14 +281,23 @@ class StockAnalysisPipeline:
             if daily_market_context_enabled is None
             else bool(daily_market_context_enabled)
         )
-        self.daily_market_context_allow_generate = daily_market_context_allow_generate
+        self.model_source = model_source
+        self.daily_market_context_allow_generate = daily_market_context_allow_generate and model_source is None
         
         # 初始化各模块
         self.db = get_db()
         self.fetcher_manager = DataFetcherManager()
         # 不再单独创建 akshare_fetcher，统一使用 fetcher_manager 获取增强数据
         self.trend_analyzer = StockTrendAnalyzer()  # 技术分析器
-        self.analyzer = GeminiAnalyzer(config=self.config, skills=self.analysis_skills)
+        analyzer_kwargs = {}
+        if model_source is not None:
+            from src.llm.chatgpt_generation_backend import SiwcGenerationBackend
+
+            analyzer_kwargs = {
+                "generation_backend": SiwcGenerationBackend(model_source, self.config.generation_backend_timeout_seconds),
+                "generation_source": model_source,
+            }
+        self.analyzer = GeminiAnalyzer(config=self.config, skills=self.analysis_skills, **analyzer_kwargs)
         self.notifier = NotificationService(source_message=source_message)
         self.market_structure_service = MarketStructureService(fetcher_manager=self.fetcher_manager)
         self.market_hotspot_service: Optional[MarketHotspotService] = None
@@ -553,22 +569,8 @@ class StockAnalysisPipeline:
                 except Exception as e:
                     logger.warning(f"{stock_name}({code}) 获取筹码分布失败: {e}")
 
-            # If agent mode is explicitly enabled, or specific agent skills are configured, use the Agent analysis pipeline.
-            # NOTE: use config.agent_mode (explicit opt-in) instead of
-            # config.is_agent_available() so that users who only configured an
-            # API Key for the traditional analysis path are not silently
-            # switched to Agent mode (which is slower and more expensive).
-            use_agent = getattr(self.config, 'agent_mode', False)
-            if not use_agent:
-                if self.analysis_skills:
-                    use_agent = True
-                    logger.info(f"{stock_name}({code}) Auto-enabled agent mode due to request skills: {self.analysis_skills}")
-            if not use_agent:
-                # Auto-enable agent mode when specific skills are configured (e.g., scheduled task with strategy)
-                configured_skills = getattr(self.config, 'agent_skills', [])
-                if configured_skills and configured_skills != ['all']:
-                    use_agent = True
-                    logger.info(f"{stock_name}({code}) Auto-enabled agent mode due to configured skills: {configured_skills}")
+            model_source = getattr(self, "model_source", None)
+            use_agent = model_source is None and uses_agent_report(self.config, self.analysis_skills)
 
             self._emit_progress(32, f"{stock_name}：正在聚合基本面与趋势数据")
 
@@ -836,9 +838,12 @@ class StockAnalysisPipeline:
 
             self._emit_progress(64, f"{stock_name}：正在请求 LLM 生成报告")
             llm_started_at = time.monotonic()
+            llm_model = model_source.model if model_source else getattr(self.config, "litellm_model", None)
+            llm_provider = {"provider": model_source.provider} if model_source else {}
             try:
                 record_llm_run_started(
-                    model=getattr(self.config, "litellm_model", None),
+                    model=llm_model,
+                    **llm_provider,
                     call_type="analysis",
                 )
                 result = self.analyzer.analyze(
@@ -863,7 +868,8 @@ class StockAnalysisPipeline:
                     )
                 record_llm_run(
                     success=bool(result and getattr(result, "success", True)),
-                    model=getattr(result, "model_used", None) if result else None,
+                    model=(getattr(result, "model_used", None) if result else None) or (llm_model if model_source else None),
+                    **llm_provider,
                     call_type="analysis",
                     duration_ms=llm_duration_ms,
                     error_type=(
@@ -880,7 +886,8 @@ class StockAnalysisPipeline:
             except Exception as exc:
                 record_llm_run(
                     success=False,
-                    model=getattr(self.config, "litellm_model", None),
+                    model=llm_model,
+                    **llm_provider,
                     call_type="analysis",
                     duration_ms=int((time.monotonic() - llm_started_at) * 1000),
                     error_type=type(exc).__name__,

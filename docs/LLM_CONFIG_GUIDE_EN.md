@@ -20,6 +20,22 @@ If you are choosing a concrete provider, setting up GitHub Actions Secrets / Var
 
 ---
 
+## Sign in with ChatGPT
+
+On a personal Mac, start DSA from source with `python main.py --serve-only --host 127.0.0.1`. Open the port shown in the log at `127.0.0.1`. Enable administrator authentication, sign in to DSA, then connect ChatGPT and choose a model under **Settings → AI Model → ChatGPT**. Use a single backend process and keep the Web service local to the Mac.
+
+Choose ChatGPT as the model source for a single-stock report or a single-Agent chat. The existing report rules apply. `AGENT_MODE=true`, a request Skill or a specific global Skill enables Agent reports. Leaving `AGENT_MODE` unset allows both ordinary reports and single-Agent chat in the default configuration. Explicitly setting it to `false` disables chat. Usage records include completed report retries and completed calls whose output fails local validation. New chat answers retain their model source in history. ChatGPT reports have external notifications disabled and can be reopened from history. Disconnecting stops new requests on that connection. Saved reports and chats remain available. [Manage ChatGPT usage](https://chatgpt.com/settings/usage)
+
+After disconnecting, add another account or sign in again with a saved registration. If that registration was missing plan access, DSA requests consent again when you select it. One connection is active at a time. A stale tab reloads the connection status. The settings API uses the selected `registration_id` to sign in again, and the displayed `connection_id` or `attempt_id` to disconnect or cancel. Reload any open tabs after upgrading. If cancellation overlaps the token exchange, DSA attempts to revoke the newly issued refresh token. If the connection is busy, try disconnecting again shortly. If DSA reports a local disconnection with unconfirmed remote revocation, check the authorization in ChatGPT settings. If DSA cannot confirm the outcome, reload the page to see the current connection status.
+
+If the first code exchange fails, choose **Continue previous authorization** to reuse the issued registration in the current DSA process. After restarting, start authorization again. When local disconnection and its revocation record are saved, DSA can show the last result after restart. A refresh that loses plan permission disables the old connection. Check ChatGPT settings if DSA cannot determine the latest credential or confirm remote revocation.
+
+If a disconnect reports a local credential storage error, fix storage and choose **Retry disconnect**. DSA keeps the original target and pauses new authorization until the local disconnect is saved. If the first write during session retirement fails, a restart may show the old connection. A new token that could not be saved is not automatically revoked after restart. Check authorization in ChatGPT settings before disconnecting or authorizing again based on DSA's current status. To retry through the settings API, read `disconnect_retry_connection_id` from the status and use it as `connection_id`. The settings API returns `409 chatgpt_target_changed` for an already disconnected `connection_id`. Read the current status again after this response.
+
+In Web chat, confirm the target account and that the visible conversation history will be sent. Confirm again after switching accounts or conversations, or reloading the page.
+
+The single-stock analysis and Chat APIs accept a `model_source` object with `provider: "chatgpt_siwc"`, `connection_id` and `model`. Single-stock analysis also requires `notify: false`. The backend stores credentials in the current macOS user's Application Support directory.
+
 ## Generation Backend (Phase 4)
 
 The generation backend is the outer runtime selector for regular stock analysis, market review, and `generate_text()`. The default remains `litellm` with zero regression. `codex_cli` / `claude_code_cli` / `opencode_cli` are explicit opt-in local CLI backends and are currently **experimental/limited**.
