@@ -441,6 +441,9 @@ For the notification baseline, diagnostics, and deployment notes, see [Notificat
 | `DAILY_MARKET_CONTEXT_ENABLED` | Inject the daily market context into stock-analysis prompts and soften aggressive buy advice in high-risk/risk-off markets; enabled by default, and market review can still run when this is set to `false` | `true` |
 | `MARKET_REVIEW_REGION` | Market review region: cn (A-shares), hk (HK stocks), us (US stocks), jp (JP stocks), kr (KR stocks), tw (Taiwan), both (all six markets) | `cn` |
 | `MARKET_REVIEW_COLOR_SCHEME` | Index change color style in market reviews: `green_up` = green gains/red losses (default), `red_up` = red gains/green losses | `green_up` |
+| `HOT_TOP10_ENABLED` | Optional daily hot-themes Top-N light analysis (Issue #1936, off by default): when enabled, the `--schedule` mode fetches the market theme hot list after each A-share trading day close, generates one light LLM report (overview plus per-theme driver/strength/entry-advice/risk) and pushes it through the existing report notification channel; each data date is delivered at most once (dedup marker `data/hot_top10/state_<YYYY-MM-DD>.json`, written only after the report actually lands; a failed marker write is NOT treated as delivered and never re-pushes the same day). LLM/notification failures degrade gracefully and retry on the next day or via the manual `python main.py --hot-top10` entry | `false` |
+| `HOT_TOP10_SCHEDULE_TIME` | Hot-top10 daily run time (HH:MM); the default sits after the 15:30 ranking data cut so the list covers the current day | `15:35` |
+| `HOT_TOP10_COUNT` | Number of hot-list entries (1-30) | `10` |
 | `SCHEDULE_ENABLED` | Enable scheduled tasks | `false` |
 | `SCHEDULE_TIME` | Scheduled execution time | `18:00` |
 | `SCHEDULE_TIMES` | Multiple scheduled execution times, comma-separated; falls back to `SCHEDULE_TIME` when empty | empty |

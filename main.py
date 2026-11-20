@@ -476,6 +476,9 @@ def parse_arguments() -> argparse.Namespace:
         help='运行 ETF 轮动：输出最新调仓信号与规则回测报告（不调用 LLM，配置见 ETF_ROTATION_*）'
     )
 
+    parser.add_argument('--hot-top10', action='store_true',
+                        help='抓取市场热榜 Top N 并生成轻量分析报告（默认关闭，配置见 HOT_TOP10_*）')
+
     return parser.parse_args()
 
 
@@ -1600,7 +1603,7 @@ def _skips_stock_entry(args: argparse.Namespace, config: Config) -> bool:
     before the mode dispatch, otherwise an unsupported index token would
     wrongly block a run that never consumes it. Covered modes:
     ``--backtest``, ``--market-review``, ``--etf-rotation``, ``--serve-only``/``--webui-only``,
-    ``--portfolio`` (any value) and ``--schedule``/``config.schedule_enabled``.
+    ``--portfolio`` (any value), ``--hot-top10`` and ``--schedule``/``config.schedule_enabled``.
     ``--serve`` (not serve-only) and plain one-shot runs still consume the
     stock list and stay outside the guard. The webui-only flag is read
     directly here because the webui -> serve mapping happens only later in
@@ -1614,8 +1617,54 @@ def _skips_stock_entry(args: argparse.Namespace, config: Config) -> bool:
         or getattr(args, "webui_only", False)
         or bool(getattr(args, "portfolio", None))
         or getattr(args, "schedule", False)
+        or getattr(args, "hot_top10", False)
         or getattr(config, "schedule_enabled", False)
     )
+
+
+def _hot_top10_exit_code(result) -> int:
+    """Map a hot-top10 service outcome to the CLI exit code (OR-COR-fa50e861).
+
+    The report markdown is rendered BEFORE save/push, so its presence alone
+    must not signal success: only a run whose report actually landed (saved
+    or pushed, marker written) exits 0. Delivery failures, marker-write
+    failures and skips all exit 1 so calling scripts can detect them.
+    """
+    return 0 if bool(getattr(result, "delivered", False)) else 1
+
+
+def _hot_top10_dry_run_probe(config) -> int:
+    """``--hot-top10 --dry-run``: fetch the hot list only (OR-COR-hot-top10-
+    dry-run). Honors the CLI dry-run contract (仅获取数据，不进行 AI 分析):
+    no LLM call, no report file, no push, no dedup marker. Exit 0 when the
+    data is usable, 1 otherwise.
+    """
+    from src.services.hot_top10.datasource import collect_hot_list_items, format_change_pct
+    from src.services.hot_top10.service import DEFAULT_HOT_TOP10_COUNT, MAX_HOT_TOP10_COUNT
+
+    try:
+        count = max(1, min(MAX_HOT_TOP10_COUNT, int(getattr(config, "hot_top10_count", DEFAULT_HOT_TOP10_COUNT))))
+    except (TypeError, ValueError):
+        count = DEFAULT_HOT_TOP10_COUNT
+    try:
+        items = collect_hot_list_items(count)
+    except Exception as exc:
+        logger.error("[HotTop10] dry-run 数据获取异常: %s", exc)
+        return 1
+    if not items:
+        logger.error("[HotTop10] dry-run 数据获取失败（无可用热榜条目）")
+        return 1
+    logger.info("[HotTop10] dry-run 获取到 %d 条热榜（仅获取数据：无 AI 分析、无落盘、无推送、无当日标记）:", len(items))
+    for item in items:
+        logger.info(
+            "[HotTop10] dry-run #%02d %s (%s/%s) %s",
+            item.get("rank", 0),
+            item.get("name", ""),
+            item.get("kind", ""),
+            item.get("phase", ""),
+            format_change_pct(item.get("change_pct")),
+        )
+    return 0
 
 
 def _reload_runtime_config() -> Config:
@@ -1918,6 +1967,24 @@ def main() -> int:
             )
             return 0
 
+        # 模式0.6: 热榜 Top N 轻量分析（Issue #1936，手动一次性入口）
+        if getattr(args, 'hot_top10', False):
+            from src.services.hot_top10 import run_hot_top10_analysis
+
+            # OR-COR-hot-top10-dry-run: honor --dry-run (仅获取数据) before
+            # entering generation/delivery — no LLM, no report file, no push,
+            # no dedup marker.
+            if getattr(args, 'dry_run', False):
+                return _hot_top10_dry_run_probe(config)
+
+            result = run_hot_top10_analysis(
+                config, send_notification=not args.no_notify, respect_dedup=False,
+                force_run=getattr(args, 'force_run', False),
+            )
+            logger.info("热榜分析完成: delivered=%s reason=%s notification=%s",
+                        result.delivered, result.reason, result.notification_status)
+            return _hot_top10_exit_code(result)
+
         # 模式1: 仅大盘复盘
         if args.market_review:
             from src.core.market_review import run_market_review
@@ -2079,6 +2146,57 @@ def main() -> int:
                     "interval_seconds": interval_minutes * 60,
                     "run_immediately": True,
                     "name": "agent_event_monitor",
+                })
+
+            # Hot Top10 daily tick (Issue #1936, default OFF): rides the
+            # existing background-task threads; the service's per-day marker
+            # + in-process mutex make it at-most-once per trading day. Honors
+            # --no-notify like the one-shot --hot-top10 entry. OR-COR-hot-top10-
+            # dry-run: a --dry-run schedule session must not deliver nor
+            # consume today's dedup marker, so the tick is not registered.
+            if getattr(config, 'hot_top10_enabled', False) and getattr(args, 'dry_run', False):
+                logger.info("[HotTop10] dry-run 模式：不注册热榜定时任务（不推送、不写当日标记）")
+            elif getattr(config, 'hot_top10_enabled', False):
+                from src.services.hot_top10.datasource import shanghai_now
+
+                _hot_top10_state = {"last_attempt": ""}
+
+                def hot_top10_daily_tick():
+                    runtime_cfg = _reload_runtime_config()
+                    if not getattr(runtime_cfg, 'hot_top10_enabled', False):
+                        return
+                    # OR-COR-3e7f490e: gate on the CN market clock. A host in
+                    # another timezone firing at its local 15:35 would run
+                    # before the 15:30 Shanghai data cut-off, receive the
+                    # previous trading day's list, and book it as today's
+                    # delivery — the tick must key on Asia/Shanghai, the same
+                    # clock the datasource's date selection uses.
+                    now = shanghai_now()
+                    if now.strftime('%H:%M') < getattr(runtime_cfg, 'hot_top10_schedule_time', '15:35'):
+                        return
+                    if _hot_top10_state["last_attempt"] == now.strftime('%Y-%m-%d'):
+                        return  # one deciding attempt per day; retry next day / manually
+                    from src.services.hot_top10 import run_hot_top10_analysis
+
+                    hot_result = run_hot_top10_analysis(
+                        runtime_cfg, send_notification=not getattr(args, 'no_notify', False)
+                    )
+                    logger.info(
+                        "[HotTop10] 定时任务完成: delivered=%s skipped=%s reason=%s "
+                        "llm_completed=%s notification=%s",
+                        hot_result.delivered, hot_result.skipped, hot_result.reason,
+                        hot_result.llm_completed, hot_result.notification_status,
+                    )
+                    # In-flight runs (already_running) re-check next tick; any
+                    # terminal outcome stops today's ticks.
+                    if not (hot_result.skipped and hot_result.reason == "already_running"):
+                        _hot_top10_state["last_attempt"] = now.strftime('%Y-%m-%d')
+
+                background_tasks.append({
+                    "task": hot_top10_daily_tick,
+                    "interval_seconds": 60,
+                    "run_immediately": True,
+                    "name": "hot_top10_daily_tick",
                 })
 
             schedule_kwargs = {

@@ -2588,6 +2588,7 @@ class NotificationService(
         email_stock_codes: Optional[List[str]],
         email_send_to_all: bool,
         route_type: Optional[str] = None,
+        report_filename: Optional[str] = None,
     ) -> bool:
         use_image = self._should_use_image_for_channel(channel, image_bytes)
         sanitized_content = strip_hidden_markdown_metadata(content).strip()
@@ -2597,9 +2598,14 @@ class NotificationService(
             return self.send_to_wechat(content)
         if channel == NotificationChannel.FEISHU:
             if getattr(self, "_feishu_send_as_file", False) and route_type == "report":
+                # OR-COR-hot-top10-feishu-report-overwrite: honor the caller's
+                # report_filename (e.g. hot-top10's own report file) so this
+                # branch never rewrites the shared report_YYYYMMDD.md path
+                # persisted by the stock summary daily report.
                 date_str = datetime.now().strftime('%Y%m%d')
                 filepath = self.save_report_to_file(
-                    sanitized_content, filename=f"report_{date_str}.md"
+                    sanitized_content,
+                    filename=report_filename or f"report_{date_str}.md",
                 )
                 return self.send_feishu_file(filepath)
             return self.send_to_feishu(sanitized_content)
@@ -2656,6 +2662,7 @@ class NotificationService(
         dedup_key: Optional[str] = None,
         cooldown_key: Optional[str] = None,
         structured_payload: Optional[Dict[str, Any]] = None,
+        report_filename: Optional[str] = None,
     ) -> NotificationDispatchResult:
         """
         Send a notification and return per-channel diagnostics.
@@ -2677,6 +2684,8 @@ class NotificationService(
             dedup_key: 可选稳定去重 key；未设置时使用内容 hash
             cooldown_key: 可选冷却 key；未设置时使用路由/级别默认 key
             structured_payload: 可选的个股或市场结构化结果，仅用于图片模板精确填充
+            report_filename: 可选报告文件名；飞书文件模式下按该文件名落盘上传，
+                避免覆写共享的 report_YYYYMMDD.md 日报路径（OR-COR-hot-top10-feishu-report-overwrite）
 
         Returns:
             Structured dispatch diagnostics.
@@ -2812,6 +2821,7 @@ class NotificationService(
                     email_stock_codes=email_stock_codes,
                     email_send_to_all=email_send_to_all,
                     route_type=route_type,
+                    report_filename=report_filename,
                 )
                 latency_ms = int((time.monotonic() - started_at) * 1000)
 
@@ -2874,9 +2884,14 @@ class NotificationService(
         dedup_key: Optional[str] = None,
         cooldown_key: Optional[str] = None,
         structured_payload: Optional[Dict[str, Any]] = None,
+        report_filename: Optional[str] = None,
     ) -> bool:
         """
         统一发送接口 - 向所有已配置的渠道发送。
+
+        Args:
+            report_filename: 可选报告文件名；飞书文件模式下按该文件名落盘上传，
+                避免覆写共享的 report_YYYYMMDD.md 日报路径。
 
         Returns:
             是否至少有一个渠道发送成功
@@ -2890,6 +2905,7 @@ class NotificationService(
             dedup_key=dedup_key,
             cooldown_key=cooldown_key,
             structured_payload=structured_payload,
+            report_filename=report_filename,
         )
         return bool(result.success)
 
