@@ -47,10 +47,10 @@ class PortfolioTradeCreateRequest(BaseModel):
     symbol: str = Field(..., min_length=1, max_length=16)
     trade_date: date
     side: Literal["buy", "sell"]
-    quantity: float = Field(..., gt=0)
-    price: float = Field(..., gt=0)
-    fee: float = Field(0.0, ge=0)
-    tax: float = Field(0.0, ge=0)
+    quantity: float = Field(..., gt=0, allow_inf_nan=False)
+    price: float = Field(..., gt=0, allow_inf_nan=False)
+    fee: float = Field(0.0, ge=0, allow_inf_nan=False)
+    tax: float = Field(0.0, ge=0, allow_inf_nan=False)
     market: Optional[Literal["cn", "hk", "us", "jp", "kr", "tw"]] = None
     currency: Optional[str] = Field(None, min_length=3, max_length=8)
     trade_uid: Optional[str] = Field(None, max_length=128)
@@ -61,7 +61,7 @@ class PortfolioCashLedgerCreateRequest(BaseModel):
     account_id: int
     event_date: date
     direction: Literal["in", "out"]
-    amount: float = Field(..., gt=0)
+    amount: float = Field(..., gt=0, allow_inf_nan=False)
     currency: Optional[str] = Field(None, min_length=3, max_length=8)
     note: Optional[str] = Field(None, max_length=255)
 
@@ -73,8 +73,8 @@ class PortfolioCorporateActionCreateRequest(BaseModel):
     action_type: Literal["cash_dividend", "split_adjustment"]
     market: Optional[Literal["cn", "hk", "us", "jp", "kr", "tw"]] = None
     currency: Optional[str] = Field(None, min_length=3, max_length=8)
-    cash_dividend_per_share: Optional[float] = Field(None, ge=0)
-    split_ratio: Optional[float] = Field(None, gt=0)
+    cash_dividend_per_share: Optional[float] = Field(None, ge=0, allow_inf_nan=False)
+    split_ratio: Optional[float] = Field(None, gt=0, allow_inf_nan=False)
     note: Optional[str] = Field(None, max_length=255)
 
 

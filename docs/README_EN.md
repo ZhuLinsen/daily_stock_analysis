@@ -11,7 +11,14 @@
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker&logoColor=white)](https://hub.docker.com/r/zhulinsen/daily_stock_analysis)
 
 <p align="center">
-  <a href="https://trendshift.io/repositories/18527?utm_source=repository-badge&amp;utm_medium=badge&amp;utm_campaign=badge-repository-18527" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/repositories/18527" alt="ZhuLinsen%2Fdaily_stock_analysis | Trendshift" width="250" height="55"/></a>&nbsp;<a href="https://hellogithub.com/repository/ZhuLinsen/daily_stock_analysis" target="_blank"><img src="https://api.hellogithub.com/v1/widgets/recommend.svg?rid=6daa16e405ce46ed97b4a57706aeb29f&claim_uid=pfiJMqhR9uvDGlT&theme=neutral" alt="Featured｜HelloGitHub" width="230" /></a>
+  <a href="https://trendshift.io/repositories/18527?utm_source=repository-badge&amp;utm_medium=badge&amp;utm_campaign=badge-repository-18527" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/repositories/18527" alt="ZhuLinsen%2Fdaily_stock_analysis | Trendshift" width="250" height="55"/></a>&nbsp;
+  <a href="https://www.star-history.com/zhulinsen/daily_stock_analysis">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/badge?repo=ZhuLinsen/daily_stock_analysis&amp;type=rank&amp;theme=dark" />
+      <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/badge?repo=ZhuLinsen/daily_stock_analysis&amp;type=rank" />
+      <img alt="Star History Rank" src="https://api.star-history.com/badge?repo=ZhuLinsen/daily_stock_analysis&amp;type=rank" height="55" />
+    </picture>
+  </a>
 </p>
 
 **AI-powered stock analysis system for A-shares / Hong Kong / US / Japanese / Korean / Taiwan stocks**
@@ -39,6 +46,9 @@ English | [简体中文](../README.md) | [繁體中文](README_CHT.md)
   <a href="assets/readme_workspace_tour_20260510.gif"><img src="assets/readme_workspace_preview.gif" alt="DSA Web workspace demo" width="640"></a><br>
   <sub>Click the GIF to view the full demo</sub>
 </p>
+
+> [!TIP]
+> 🚀 **Ecosystem Projects**: [AlphaSift · Smart screening](https://github.com/ZhuLinsen/alphasift) | [AlphaEvo · Strategy backtesting & evolution](https://github.com/ZhuLinsen/alphaevo)
 
 ## ✨ Key Features
 
@@ -248,15 +258,6 @@ After configuring any available AI API key, the Web `/chat` page can use strateg
 - Supports custom strategy files and experimental multi-agent orchestration
 
 > Agent parameters, `skill` naming compatibility, multi-agent mode, and budget guards are covered in the [Full Guide](./full-guide_EN.md#local-webui-management-interface) and [LLM Config Guide](./LLM_CONFIG_GUIDE_EN.md).
-
-## 🧩 Related Projects
-
-> DSA focuses on daily analysis reports. Its screening implementation references AlphaSift, while AlphaEvo covers strategy validation and evolution.
-
-| Project | Focus |
-|---------|-------|
-| [AlphaSift](https://github.com/ZhuLinsen/alphasift) | Reference project for DSA's screening implementation |
-| [AlphaEvo](https://github.com/ZhuLinsen/alphaevo) | Strategy backtesting and self-evolution experiments for validating rules and iteratively exploring strategy parameters and combinations |
 
 ## 📞 Contact
 
