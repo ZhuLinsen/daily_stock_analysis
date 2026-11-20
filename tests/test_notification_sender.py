@@ -592,14 +592,15 @@ class TestFeishuSender(unittest.TestCase):
 
     @mock.patch.object(FeishuSender, "_app_send_raw", return_value=True)
     def test_app_bot_request_shape_interactive(self, mock_raw):
-        """_app_send_once constructs interactive card payload with lark_md."""
+        """App Bot sends an interactive card payload with lark_md."""
         cfg = _config(
             feishu_app_id="cli_app",
             feishu_app_secret="secret",
             feishu_chat_id="oc_chat",
         )
         sender = FeishuSender(cfg)
-        result = sender._app_send_once(object(), "**bold** text")
+        with mock.patch.object(sender, "_ensure_app_client", return_value=object()):
+            result = sender.send_to_feishu("**bold** text")
 
         self.assertTrue(result)
         call = mock_raw.call_args
@@ -611,7 +612,7 @@ class TestFeishuSender(unittest.TestCase):
 
     @mock.patch.object(FeishuSender, "_app_send_raw")
     def test_app_bot_request_shape_text_fallback(self, mock_raw):
-        """_app_send_once falls back to text payload when card fails."""
+        """App Bot falls back to text payload when a card fails."""
         mock_raw.side_effect = [False, True]
         cfg = _config(
             feishu_app_id="cli_app",
@@ -619,7 +620,8 @@ class TestFeishuSender(unittest.TestCase):
             feishu_chat_id="oc_chat",
         )
         sender = FeishuSender(cfg)
-        result = sender._app_send_once(object(), "plain text")
+        with mock.patch.object(sender, "_ensure_app_client", return_value=object()):
+            result = sender.send_to_feishu("plain text")
 
         self.assertTrue(result)
         self.assertEqual(mock_raw.call_count, 2)
@@ -2436,6 +2438,49 @@ class TestFeishuStructuredCard(unittest.TestCase):
                             card = self._send_card(report, mode)
                             self.assertEqual(card["header"]["template"], color)
                             self.assertTrue(all(element["tag"] != "action" for element in card["elements"]))
+
+    @mock.patch("src.notification_sender.feishu_sender.time.sleep")
+    def test_app_bot_near_limit_keeps_cards_and_buttons_with_wire_size_budget(self, _sleep):
+        from lark_oapi import JSON
+
+        report = "A" * 29602
+        web_url = "https://dsa.example.com/chat?query=" + "x" * 1350
+        client, create = _fake_feishu_client()
+
+        def send_with_feishu_limit(request):
+            within_limit = len(JSON.marshal(request.request_body).encode("utf-8")) <= 30000
+            return _sdk_response(within_limit, code=0 if within_limit else 230025)
+
+        create.side_effect = send_with_feishu_limit
+        with mock.patch.dict("os.environ", {"FEISHU_CARD_WEB_URL": web_url}):
+            sender = FeishuSender(_config(
+                feishu_app_id="cli_app", feishu_app_secret="secret", feishu_chat_id="oc_chat", feishu_max_bytes=30000,
+            ))
+        with mock.patch.object(sender, "_ensure_app_client", return_value=client):
+            self.assertTrue(sender.send_to_feishu(report))
+
+        self.assertGreater(create.call_count, 1)
+        recovered = []
+        for page, call in enumerate(create.call_args_list, start=1):
+            body = call.args[0].request_body
+            self.assertEqual(body.msg_type, "interactive")
+            self.assertLessEqual(len(JSON.marshal(body).encode("utf-8")), 30000)
+            elements = json.loads(body.content)["elements"]
+            self.assertEqual(elements[-1]["actions"][0]["url"], web_url)
+            content, marker = elements[0]["text"]["content"].rsplit("\n\n", 1)
+            self.assertEqual(marker, f"📄 {page}/{create.call_count}")
+            recovered.append(content.removesuffix(TRUNCATION_SUFFIX))
+        self.assertEqual("".join(recovered), report)
+
+    def test_app_bot_omits_a_button_that_cannot_fit_on_a_card(self):
+        report = "# 🟢 个股报告\n\n正文"
+        web_url = "https://dsa.example.com/chat?query=" + "x" * 30000
+
+        card = self._send_card(report, "app", web_url)
+
+        self.assertEqual(card["header"]["title"]["content"], "🟢 个股报告")
+        self.assertEqual([element["tag"] for element in card["elements"]], ["div"])
+        self.assertIn("正文", card["elements"][0]["text"]["content"])
 
     @mock.patch("src.notification_sender.feishu_sender.time.sleep")
     def test_webhook_near_limit_keeps_cards_and_buttons_with_wire_size_budget(self, _sleep):

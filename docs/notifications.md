@@ -45,7 +45,7 @@ Telegram 文本消息遇到 HTTP 429 时，优先按 [Bot API 的 `parameters.re
 
 当前默认推送报告的入口、内容来源和整体版式保持不变。本阶段只收敛通知渲染的技术路线：沉淀渠道能力画像、发送前消息结构和结构感知分片能力，避免后续按渠道扩展时继续在各 sender 中堆叠平行逻辑。
 
-默认发送路径沿用既有 Markdown 兼容转换，企业微信、Slack 继续使用原有分片逻辑。飞书 Webhook 和 App Bot 从报告提取卡片标题、信号配色和独立风险警报面板。Webhook 按完整 JSON 请求体字节数分页，工作台按钮的配置见[飞书完整指南](full-guide.md#飞书)。渠道能力画像、PreparedMessage、renderer preset 和结构感知分片可用于后续接入渠道专用 renderer。
+默认发送路径沿用既有 Markdown 兼容转换，企业微信、Slack 继续使用原有分片逻辑。飞书 Webhook 和 App Bot 从报告提取卡片标题、信号配色和独立风险警报面板，并按完整 JSON 请求体字节数分页。工作台按钮的配置见[飞书完整指南](full-guide.md#飞书)。渠道能力画像、PreparedMessage、renderer preset 和结构感知分片可用于后续接入渠道专用 renderer。
 
 兼容性排除说明：
 - `send_feishu_file()` 通过 App Bot 上传文件，Webhook 模式回退为发送文件内容文本。

@@ -1055,7 +1055,7 @@ Multi-Agent 结果进入 `StockAnalysisPipeline` 后，会继续完成结构与�
 
 ##### AGENT_DEBATE_ENABLED
 
-`AGENT_DEBATE_ENABLED` 默认 `false`，设为 `true` 后仅在 `AGENT_ARCH=multi` 时生效。前序策略意见出现多空分歧，或买入/强烈买入意见置信度达到 0.75 时，决策 Agent 会收到带来源引用的多空证据对照。风控意见单独列出。触发后，`quick` 和 `standard` 会在决策前运行风险 Agent，`full` 和 `specialist` 使用已有风险阶段。启用此设置后，`specialist` 在策略评估之后运行风险阶段，以纳入策略意见。运行结果记录触发原因和风控完成状态。审查失败、结果不完整或因运行预算跳过时会暂缓买入。审查完成后的风控否决由 `AGENT_RISK_OVERRIDE` 控制。
+`AGENT_DEBATE_ENABLED` 默认 `false`，设为 `true` 后仅在 `AGENT_ARCH=multi` 时生效。前序策略意见出现多空分歧，或买入/强烈买入意见置信度达到 0.75 时，决策 Agent 会收到带来源引用的多空证据对照。风控意见单独列出。触发后，`quick` 和 `standard` 会在决策前运行风险 Agent，`full` 和 `specialist` 使用已有风险阶段。启用此设置后，`specialist` 在策略评估之后运行风险阶段，以纳入策略意见。运行结果记录触发原因和风控完成状态。必审结果必须明确给出 `veto_buy` 和 `signal_adjustment`。审查失败、结果不完整或因运行预算跳过时会暂缓买入，报告中的持仓建议和盘中观察条件也会相应更新。审查完成后的风控否决由 `AGENT_RISK_OVERRIDE` 控制，同时适用于报告、问股回复和会话历史。
 
 #### AnalysisContextPack 低敏可见性（Issue #1389 P4）
 
@@ -1173,7 +1173,7 @@ crontab -e
 
 ### 飞书
 
-Webhook 和 App Bot 交互卡片可附带 Web 工作台按钮。优先读取 `FEISHU_CARD_WEB_URL`，留空时读取 `DSA_WEB_URL`。填写收件人可访问的 `http://` 或 `https://` 地址，两项均清空即可停用按钮。`FEISHU_MAX_BYTES` 控制每页正文预算，Webhook 另外确保完整 JSON 请求体在 20,000 字节以内。若工作台 URL 过长导致卡片无法分页，Webhook 会省略按钮并继续发送报告。[飞书自定义机器人指南](https://open.feishu.cn/document/client-docs/bot-v3/add-custom-bot)
+Webhook 和 App Bot 交互卡片可附带 Web 工作台按钮。优先读取 `FEISHU_CARD_WEB_URL`，留空时读取 `DSA_WEB_URL`。填写收件人可访问的 `http://` 或 `https://` 地址，两项均清空即可停用按钮。`FEISHU_MAX_BYTES` 控制每页正文预算。分页还会检查完整 JSON 请求体，Webhook 限为 20,000 字节，App Bot 限为 30,000 字节。若工作台 URL 过长导致卡片无法分页，发送时会省略按钮。[飞书自定义机器人指南](https://open.feishu.cn/document/client-docs/bot-v3/add-custom-bot) · [飞书消息 API](https://open.feishu.cn/document/server-docs/im-v1/message/create)
 
 > ⚠️ **关键区分**：`FEISHU_WEBHOOK_SECRET`（Webhook 签名密钥）和 `FEISHU_APP_SECRET`（飞书应用 Secret）是两个完全不同的配置，不能互换。
 

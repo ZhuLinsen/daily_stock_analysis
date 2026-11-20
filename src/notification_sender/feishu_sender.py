@@ -18,7 +18,7 @@ import threading
 import time
 import uuid as uuid_mod
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple, TypeVar
 from urllib.parse import urlsplit
 
 import requests
@@ -79,8 +79,10 @@ except ImportError:
 
 _APP_SEND_RETRIES = 3
 _APP_SEND_BACKOFF_SECONDS = (1.0, 2.0, 4.0)
+_APP_MAX_REQUEST_BYTES = 30_000
 _WEBHOOK_SEND_TIMEOUT_SECONDS = 30
 _WEBHOOK_MAX_REQUEST_BYTES = 20_000
+_CardPayload = TypeVar("_CardPayload")
 _CARD_HEADING = re.compile(r"^#{1,6}\s+(.+)")
 _CARD_COUNTS = re.compile(r"([🟢🟡🔴])\s*(?:[^:：🟢🟡🔴]+[:：]\s*)?(\d+)(?=\s|$)")
 _SIGNAL_MARKERS = {"🔴": "red", "🟢": "green", "💚": "green", "🟡": "orange", "⚪": "orange", "🟠": "orange"}
@@ -379,38 +381,41 @@ class FeishuSender:
 
         header = self._infer_card_header(content)
         formatted = format_feishu_markdown(content)
-        content_bytes = len(formatted.encode("utf-8"))
+        web_url = self._web_url
 
-        if content_bytes > self._feishu_max_bytes:
-            logger.info(
-                "App Bot 消息超长 (%d 字节)，将分批发送", content_bytes
+        def build_card(chunk: str) -> str:
+            return json.dumps(self._build_card_body(chunk, web_url=web_url, header=header), ensure_ascii=False)
+
+        def build_pages() -> list[tuple[str, str]]:
+            return self._build_card_pages(
+                formatted, build_card, self._feishu_max_bytes, self._app_card_request_bytes, _APP_MAX_REQUEST_BYTES,
             )
-            return self._app_send_chunked(client, formatted, header)
 
-        return self._app_send_once(client, formatted, header=header)
-
-    def _app_send_chunked(self, client: Any, content: str, header: Tuple[str, str]) -> bool:
-        """Chunk and send long content through App Bot."""
         try:
-            chunks = chunk_content_by_max_bytes(
-                content, self._feishu_max_bytes, add_page_marker=True
-            )
-        except (ValueError, TypeError, Exception) as e:
+            try:
+                pages = build_pages()
+            except ValueError:
+                if not web_url:
+                    raise
+                logger.warning("App Bot 卡片分页预算不足，省略工作台按钮后重试")
+                web_url = ""
+                pages = build_pages()
+        except ValueError as e:
             logger.error("App Bot 分片失败: %s", e)
             return False
 
         success = True
-        for i, chunk in enumerate(chunks):
-            ok = self._app_send_once(client, chunk, header=header)
+        for i, (chunk, card_payload) in enumerate(pages):
+            ok = self._app_send_once(client, chunk, card_payload=card_payload)
             if not ok:
-                logger.error("App Bot 第 %d/%d 批发送失败", i + 1, len(chunks))
+                logger.error("App Bot 第 %d/%d 批发送失败", i + 1, len(pages))
                 success = False
-            if i < len(chunks) - 1:
+            if i < len(pages) - 1:
                 time.sleep(1)
         return success
 
     def _app_send_once(
-        self, client: Any, content: str, *, header: Optional[Tuple[str, str]] = None
+        self, client: Any, content: str, *, card_payload: str
     ) -> bool:
         """Single-shot send via App Bot with card-first / text-fallback.
 
@@ -418,14 +423,27 @@ class FeishuSender:
         which converts all Markdown constructs to ``lark_md``-compatible format.
         The interactive card uses ``tag: lark_md`` for rendering.
         """
-        card_payload = json.dumps(self._build_card_body(content, header=header), ensure_ascii=False)
-
         if self._app_send_raw(client, "interactive", card_payload):
             return True
 
         # Fallback to plain text.
         text_payload = json.dumps({"text": content}, ensure_ascii=False)
         return self._app_send_raw(client, "text", text_payload)
+
+    def _build_app_message_body(self, msg_type: str, content_json: str, send_uuid: str) -> "CreateMessageRequestBody":
+        return (
+            CreateMessageRequestBody.builder()
+            .receive_id(self._feishu_chat_id)
+            .content(content_json)
+            .msg_type(msg_type)
+            .uuid(send_uuid)
+            .build()
+        )
+
+    def _app_card_request_bytes(self, card_payload: str) -> int:
+        # The SDK escapes the card JSON again as the request body's content string.
+        body = self._build_app_message_body("interactive", card_payload, "0" * 36)
+        return len(_lark.JSON.marshal(body).encode("utf-8"))
 
     def _app_send_raw(self, client: Any, msg_type: str, content_json: str) -> bool:
         """Low-level send via lark-oapi SDK with retry and idempotency UUID.
@@ -442,14 +460,7 @@ class FeishuSender:
             req = (
                 CreateMessageRequest.builder()
                 .receive_id_type(self._feishu_receive_id_type)
-                .request_body(
-                    CreateMessageRequestBody.builder()
-                    .receive_id(self._feishu_chat_id)
-                    .content(content_json)
-                    .msg_type(msg_type)
-                    .uuid(send_uuid)
-                    .build()
-                )
+                .request_body(self._build_app_message_body(msg_type, content_json, send_uuid))
                 .build()
             )
         except Exception as e:
@@ -704,13 +715,17 @@ class FeishuSender:
 
         try:
             try:
-                pages = self._build_webhook_pages(formatted_content, build_payload, content_budget)
+                pages = self._build_card_pages(
+                    formatted_content, build_payload, content_budget, self._webhook_payload_bytes, _WEBHOOK_MAX_REQUEST_BYTES,
+                )
             except ValueError:
                 if not web_url:
                     raise
                 logger.warning("飞书 Webhook 卡片分页预算不足，省略工作台按钮后重试")
                 web_url = ""
-                pages = self._build_webhook_pages(formatted_content, build_payload, content_budget)
+                pages = self._build_card_pages(
+                    formatted_content, build_payload, content_budget, self._webhook_payload_bytes, _WEBHOOK_MAX_REQUEST_BYTES,
+                )
         except ValueError as e:
             # A long keyword can fit in a text request but leave no room for a card.
             text_payload = self._build_webhook_text_payload(formatted_content, sample_security_fields)
@@ -749,30 +764,36 @@ class FeishuSender:
             **security_fields,
         }
 
-    def _build_webhook_pages(
-        self,
+    @staticmethod
+    def _build_card_pages(
         content: str,
-        build_card: Callable[[str], Dict[str, Any]],
+        build_card: Callable[[str], _CardPayload],
         content_budget: int,
-    ) -> list[Tuple[str, Dict[str, Any]]]:
+        request_bytes: Callable[[_CardPayload], int],
+        request_limit: int,
+    ) -> list[Tuple[str, _CardPayload]]:
         card = build_card(content)
-        if len(content.encode("utf-8")) <= content_budget and self._webhook_payload_bytes(card) <= _WEBHOOK_MAX_REQUEST_BYTES:
+        if len(content.encode("utf-8")) <= content_budget and request_bytes(card) <= request_limit:
             return [(content, card)]
 
-        fixed_bytes = self._webhook_payload_bytes(build_card(""))
-        wire_budget = _WEBHOOK_MAX_REQUEST_BYTES - fixed_bytes
+        fixed_bytes = request_bytes(build_card(""))
+        wire_budget = request_limit - fixed_bytes
         budget = min(content_budget, wire_budget)
         min_budget = MIN_MAX_BYTES + PAGE_MARKER_SAFE_BYTES
         while budget >= min_budget:
             chunks = chunk_content_by_max_bytes(content, budget, add_page_marker=True)
             pages = [(chunk, build_card(chunk)) for chunk in chunks]
-            largest = max(self._webhook_payload_bytes(card) for _, card in pages)
-            if largest <= _WEBHOOK_MAX_REQUEST_BYTES:
+            largest_chunk, largest = max(
+                ((chunk, request_bytes(card)) for chunk, card in pages),
+                key=lambda page: page[1],
+            )
+            if largest <= request_limit:
                 return pages
             if budget == min_budget:
                 break
-            # Escaped Unicode, line breaks, and risk panels can vary by page.
-            budget = max(min_budget, budget * wire_budget // (largest - fixed_bytes))
+            # JSON escaping and risk panels can vary by page.
+            chunk_bytes = min(budget, len(largest_chunk.encode("utf-8")))
+            budget = max(min_budget, chunk_bytes * wire_budget // (largest - fixed_bytes))
         raise ValueError("单条请求的可用字节数不足以分页发送卡片")
 
     def _send_feishu_message(

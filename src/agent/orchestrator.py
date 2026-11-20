@@ -96,6 +96,11 @@ _APPLIED_RISK_REVIEW_NOTE = {
     "en": "Risk review downgraded the recommendation.",
     "ko": "위험 검토 결과에 따라 투자 의견을 하향했습니다.",
 }
+_BUY_BLOCKED_BY_RISK_REVIEW_NOTE = {
+    "zh": "风控审查要求暂缓买入。",
+    "en": "Defer buying per the risk review.",
+    "ko": "위험 검토 결과에 따라 매수를 보류하세요.",
+}
 
 
 def _risk_review_status(stage: Optional[StageResult]) -> StageStatus:
@@ -116,12 +121,19 @@ def _risk_review_incomplete(ctx: AgentContext) -> bool:
 
 def _dashboard_recommends_buy(payload: Dict[str, Any]) -> bool:
     phase = payload.get("phase_decision")
+    phase = phase if isinstance(phase, dict) else {}
+    watch_conditions = phase.get("watch_conditions")
+    core = payload.get("core_conclusion")
+    position = core.get("position_advice") if isinstance(core, dict) else None
     advice = payload.get("operation_advice")
     return any(normalize_decision_action(value) in {"buy", "add"} for value in (
+        payload.get("decision_type"),
         payload.get("action"),
         payload.get("action_label"),
         *(advice.values() if isinstance(advice, dict) else (advice,)),
-        phase.get("immediate_action") if isinstance(phase, dict) else None,
+        *(position.values() if isinstance(position, dict) else ()),
+        phase.get("immediate_action"),
+        *(watch_conditions if isinstance(watch_conditions, list) else ()),
     ))
 
 
@@ -1608,6 +1620,11 @@ class AgentOrchestrator:
         if _risk_review_incomplete(ctx):
             language = normalize_report_language(ctx.meta.get("report_language"))
             return None, _INCOMPLETE_RISK_REVIEW_NOTE[language]
+        if ctx.meta.get("risk_review_required") and self._risk_blocks_buy(ctx):
+            # Free-form Chat replies can mix signals. Use the authoritative
+            # review result before the reply is returned or saved to history.
+            language = normalize_report_language(ctx.meta.get("report_language"))
+            return None, _BUY_BLOCKED_BY_RISK_REVIEW_NOTE[language]
         if chat_mode and isinstance(final_text, str) and final_text.strip():
             return None, final_text.strip()
         if isinstance(final_raw, str) and final_raw.strip():
@@ -1663,12 +1680,15 @@ class AgentOrchestrator:
         if _risk_review_incomplete(ctx):
             if signal == "buy" or has_buy_advice:
                 payload["decision_type"] = "hold"
-        elif signal != "buy" and has_buy_advice and build_risk_override_plan(
-            ctx, current_signal="buy", override_enabled=getattr(self.config, "agent_risk_override", True),
-        ).will_apply:
+        elif signal != "buy" and has_buy_advice and self._risk_blocks_buy(ctx):
             # The veto must see the buy recommendation even when the model's
             # three-state statistics field disagrees with the actionable advice.
             payload["decision_type"] = "buy"
+
+    def _risk_blocks_buy(self, ctx: AgentContext) -> bool:
+        return bool(build_risk_override_plan(
+            ctx, current_signal="buy", override_enabled=getattr(self.config, "agent_risk_override", True),
+        ).will_apply)
 
     def _prepare_dashboard_payload(
         self,
@@ -1731,9 +1751,10 @@ class AgentOrchestrator:
             )
         )
         review_incomplete = _risk_review_incomplete(ctx)
-        review_deferred = review_incomplete and decision_type == "hold"
-        risk_adjusted = risk_applied or review_deferred
-        review_adjusted = risk_adjusted and ctx.meta.get("risk_review_required")
+        review_blocks_buy = review_incomplete or (
+            ctx.meta.get("risk_review_required") and (risk_applied or self._risk_blocks_buy(ctx))
+        )
+        risk_adjusted = risk_applied or review_blocks_buy
         confidence = float(base_opinion.confidence if base_opinion is not None else 0.5)
         sentiment_score = payload.get("sentiment_score")
         try:
@@ -1771,8 +1792,11 @@ class AgentOrchestrator:
 
         report_language = normalize_report_language(ctx.meta.get("report_language"))
         review_note = _INCOMPLETE_RISK_REVIEW_NOTE[report_language]
-        if review_adjusted:
-            analysis_summary = review_note if review_deferred else _APPLIED_RISK_REVIEW_NOTE[report_language]
+        if review_incomplete:
+            analysis_summary = review_note
+        elif review_blocks_buy:
+            notes = _APPLIED_RISK_REVIEW_NOTE if risk_applied else _BUY_BLOCKED_BY_RISK_REVIEW_NOTE
+            analysis_summary = notes[report_language]
         else:
             analysis_summary = _first_non_empty_text(
                 payload.get("analysis_summary"),
@@ -1806,8 +1830,12 @@ class AgentOrchestrator:
                 trend_prediction = "待结合更多阶段结果确认"
 
         operation_advice_raw = payload.get("operation_advice")
-        if review_deferred:
-            operation_advice = localize_action_label("watch", report_language)
+        if review_blocks_buy:
+            action = "watch"
+            if decision_type == "sell":
+                model_action = normalize_decision_action(payload.get("action") or operation_advice_raw)
+                action = "reduce" if model_action == "reduce" else "sell"
+            operation_advice = localize_action_label(action, report_language)
         elif risk_applied:
             pre_risk_advice = _normalize_operation_advice_value(
                 operation_advice_raw,
@@ -1901,7 +1929,7 @@ class AgentOrchestrator:
         if latest_news and not intelligence.get("latest_news"):
             intelligence["latest_news"] = latest_news
 
-        one_sentence = analysis_summary if review_adjusted else _first_non_empty_text(
+        one_sentence = analysis_summary if review_blocks_buy else _first_non_empty_text(
             core.get("one_sentence"),
             analysis_summary,
         )
@@ -1915,19 +1943,21 @@ class AgentOrchestrator:
         core["position_advice"] = position_advice
 
         battle["sniper_points"] = sniper
-        if review_adjusted:
-            action = "watch" if decision_type == "hold" else "sell"
-            action_label = localize_action_label(action, report_language)
+        if review_blocks_buy:
             for block in (payload, dashboard_block):
-                block.update(action=action, action_label=action_label)
+                block.update(action=action, action_label=operation_advice)
                 phase_decision = block.get("phase_decision")
                 if isinstance(phase_decision, dict):
-                    block["phase_decision"] = {**phase_decision, "immediate_action": action_label}
+                    block["phase_decision"] = {
+                        **phase_decision,
+                        "action_window": None,
+                        "immediate_action": operation_advice,
+                        "watch_conditions": [analysis_summary],
+                    }
             if "decision_type" in dashboard_block:
                 dashboard_block["decision_type"] = decision_type
             if "operation_advice" in dashboard_block:
                 dashboard_block["operation_advice"] = operation_advice
-        if review_adjusted:
             battle["action_checklist"] = [analysis_summary]
         elif "action_checklist" not in battle:
             battle["action_checklist"] = []
@@ -1940,10 +1970,8 @@ class AgentOrchestrator:
             )
             position_strategy["suggested_position"] = _default_position_size(decision_type)
             position_strategy["entry_plan"] = position_advice["no_position"]
-            position_strategy.setdefault(
-                "risk_control",
-                f"止损参考：{sniper.get('stop_loss', '待补充')}",
-            )
+            if review_blocks_buy or "risk_control" not in position_strategy:
+                position_strategy["risk_control"] = f"止损参考：{sniper.get('stop_loss', '待补充')}"
             battle["position_strategy"] = position_strategy
         elif not isinstance(position_strategy, dict) or not position_strategy:
             battle["position_strategy"] = {
@@ -1970,13 +1998,13 @@ class AgentOrchestrator:
         dashboard_block["intelligence"] = intelligence
         dashboard_block["battle_plan"] = battle
 
-        key_points = None if review_adjusted else payload.get("key_points")
+        key_points = None if review_blocks_buy else payload.get("key_points")
         if not isinstance(key_points, list) or not key_points:
             key_points = [
                 _truncate_text(op.reasoning, 120)
                 for op in ctx.opinions
                 if isinstance(op.reasoning, str) and op.reasoning.strip()
-                and not (review_adjusted and op.agent_name == "decision")
+                and not (review_blocks_buy and op.agent_name == "decision")
             ][:5]
 
         risk_warning = _first_non_empty_text(

@@ -154,8 +154,8 @@ def is_complete_risk_review(assessment: object) -> bool:
         or type(score) not in (int, float) or not 0 <= score <= 100
         or not isinstance(reasoning, str) or not reasoning.strip()
         or not isinstance(flags, list)
-        or not isinstance(assessment.get("veto_buy", False), bool)
-        or assessment.get("signal_adjustment", "none") not in ("none", "downgrade_one", "downgrade_two", "veto")
+        or not isinstance(assessment.get("veto_buy"), bool)
+        or assessment.get("signal_adjustment") not in ("none", "downgrade_one", "downgrade_two", "veto")
     ):
         return False
     return all(
