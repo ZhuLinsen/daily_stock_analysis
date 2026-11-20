@@ -18,6 +18,7 @@ vi.mock('recharts', () => ({
   CartesianGrid: () => null,
   XAxis: () => null,
   YAxis: () => null,
+  Legend: () => null,
   Tooltip: () => null,
   Area: () => null,
   Line: () => null,
@@ -26,7 +27,7 @@ vi.mock('recharts', () => ({
 
 describe('ReportStrategy Levels Chart', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    mockGetStockHistory.mockReset();
   });
 
   it('hides chart toggle when recordId is missing or non-positive', () => {
@@ -61,6 +62,13 @@ describe('ReportStrategy Levels Chart', () => {
     fireEvent.click(screen.getByRole('button', { name: '价格点位图' }));
     await waitFor(() => expect(mockGetStockHistory).toHaveBeenCalledWith('TSLA', 60, 'daily'));
     expect(await screen.findByTestId('composed-chart')).toBeInTheDocument();
+
+    const toggle = screen.getByRole('button', { name: '价格点位图' });
+    fireEvent.click(toggle);
+    expect(screen.queryByTestId('composed-chart')).not.toBeInTheDocument();
+    fireEvent.click(toggle);
+    expect(screen.getByTestId('composed-chart')).toBeInTheDocument();
+    expect(mockGetStockHistory).toHaveBeenCalledTimes(1);
   });
 
   it('isolates chart state and discards stale responses when switching reports', async () => {
@@ -116,6 +124,74 @@ describe('ReportStrategy Levels Chart', () => {
     fireEvent.click(screen.getByRole('button', { name: '价格点位图' }));
     await waitFor(() => expect(mockGetStockHistory).toHaveBeenCalledWith('AAPL', 60, 'daily'));
     expect(await screen.findByText('192.00')).toBeInTheDocument();
+  });
+
+  it.each(['resolves', 'rejects'])('can fetch again when a stale request later %s', async (outcome) => {
+    let settleStale!: () => void;
+    mockGetStockHistory
+      .mockImplementationOnce(() => new Promise((resolve, reject) => {
+        settleStale = outcome === 'resolves'
+          ? () => resolve({ data: [{ date: '2026-11-20', open: 995, high: 1000, low: 990, close: 999 }] })
+          : () => reject(new Error('Stale request failed'));
+      }))
+      .mockResolvedValueOnce({
+        data: [{ date: '2026-11-20', open: 220, high: 230, low: 215, close: 225 }],
+      });
+
+    const tsla = <ReportStrategy recordId={101} stockCode="TSLA" strategy={{ idealBuy: '220' }} />;
+    const { rerender } = render(tsla);
+    fireEvent.click(screen.getByRole('button', { name: '价格点位图' }));
+    expect(screen.getByRole('button', { name: '加载行情...' })).toBeDisabled();
+
+    rerender(<ReportStrategy recordId={102} stockCode="AAPL" strategy={{ idealBuy: '185' }} />);
+    expect(screen.getByRole('button', { name: '价格点位图' })).toBeEnabled();
+    rerender(tsla);
+    expect(mockGetStockHistory).toHaveBeenCalledTimes(1);
+
+    const toggle = screen.getByRole('button', { name: '价格点位图' });
+    expect(toggle).toBeEnabled();
+    fireEvent.click(toggle);
+    expect(await screen.findByText('225.00')).toBeInTheDocument();
+    expect(mockGetStockHistory).toHaveBeenNthCalledWith(2, 'TSLA', 60, 'daily');
+
+    await act(async () => settleStale());
+    expect(screen.getByText('225.00')).toBeInTheDocument();
+    expect(screen.queryByText('999.00')).not.toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('localizes the Korean chart toggle, loading state, and empty retry', async () => {
+    mockGetStockHistory
+      .mockResolvedValueOnce({ data: [] })
+      .mockResolvedValueOnce({
+        data: [{ date: '2026-11-20', open: 220, high: 230, low: 215, close: 225 }],
+      });
+
+    render(<ReportStrategy recordId={103} stockCode="TSLA" language="ko" strategy={{ idealBuy: '220' }} />);
+    fireEvent.click(screen.getByRole('button', { name: '가격대 차트' }));
+    expect(screen.getByRole('button', { name: '시세 불러오는 중...' })).toBeDisabled();
+    expect(await screen.findByText('사용할 수 있는 일봉 시세가 없습니다.')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '다시 시도' }));
+    expect(await screen.findByText('225.00')).toBeInTheDocument();
+    expect(mockGetStockHistory).toHaveBeenCalledTimes(2);
+  });
+
+  it('offers a localized retry after an HTTP error and renders recovered prices', async () => {
+    mockGetStockHistory
+      .mockRejectedValueOnce({ response: { status: 500, data: { detail: '获取历史行情失败' } } })
+      .mockResolvedValueOnce({
+        data: [{ date: '2026-11-20', open: 220, high: 230, low: 215, close: 225 }],
+      });
+
+    render(<ReportStrategy recordId={103} stockCode="TSLA" language="ko" strategy={{ idealBuy: '220' }} />);
+    fireEvent.click(screen.getByRole('button', { name: '가격대 차트' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('일봉 시세를 불러오지 못했습니다.');
+
+    fireEvent.click(screen.getByRole('button', { name: '다시 시도' }));
+    expect(await screen.findByText('225.00')).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(mockGetStockHistory).toHaveBeenCalledTimes(2);
   });
 
   it('retries fetching when re-expanding after empty history array', async () => {

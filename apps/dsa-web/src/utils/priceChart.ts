@@ -10,26 +10,19 @@ export interface PriceChartDatum {
   ma20: number | null;
 }
 
-const CURRENCY_MARKERS = ['元', '¥', '￥', '$', 'NT$', 'HK$', 'US$', '₩', '円'];
-const INDICATOR_PREFIX_RE = /(?:MA|EMA|SMA|WMA|BOLL|RSI|KDJ|MACD|WR|BIAS|T\+)$/i;
-const PERIOD_UNIT_RE = /^(?:%|％|日|周|月|年|天|个交易日)/;
+const INDICATOR_PREFIX_RE = /(?:MA|BOLL|RSI|KDJ|MACD|WR|BIAS|T\+)\s*(?:\d+\s*\/\s*)*$/i;
+const NON_PRICE_UNIT_RE = /^(?:%|日|周|週|月|年|天|个交易日|倍|거래일|일|주|개월|년|배|(?:[-‐‑–]\s*)?(?:(?:trading\s+)?(?:days?|sessions?)|weeks?|months?|years?|times?|x)\b)/i;
 
 function extractFirstPriceToken(segment: string): number | null {
-  const numRe = /\d+(?:\.\d+)?/g;
-  let match: RegExpExecArray | null;
-  while ((match = numRe.exec(segment)) !== null) {
-    const startIdx = match.index;
-    const prefix = segment.slice(Math.max(0, startIdx - 6), startIdx);
-    if (INDICATOR_PREFIX_RE.test(prefix)) {
+  for (const match of segment.matchAll(/[-−]?\d+(?:\.\d+)?/g)) {
+    const prefix = segment.slice(0, match.index);
+    const suffix = segment.slice(match.index + match[0].length).trimStart();
+    if (INDICATOR_PREFIX_RE.test(prefix) || NON_PRICE_UNIT_RE.test(suffix)) {
       continue;
     }
-    const suffix = segment.slice(startIdx + match[0].length).trimStart();
-    if (PERIOD_UNIT_RE.test(suffix) && !CURRENCY_MARKERS.some((m) => suffix.startsWith(m))) {
-      continue;
-    }
-    const val = Number(match[0]);
-    if (Number.isFinite(val) && val > 0) {
-      return val;
+    const value = Number(match[0]);
+    if (Number.isFinite(value) && value > 0) {
+      return value;
     }
   }
   return null;
@@ -40,39 +33,19 @@ function extractFirstPriceToken(segment: string): number | null {
  * while skipping technical-indicator period numbers like MA5/MA10 or pure percentage targets.
  */
 export function parseStrategyPriceLevel(raw?: string | null): number | null {
-  if (!raw || typeof raw !== 'string') {
+  if (typeof raw !== 'string') {
     return null;
   }
-  const cleaned = raw.replace(/[,，]/g, '').trim();
-  if (!cleaned || cleaned === '-' || cleaned === '--' || cleaned === '—' || /^n\/?a$/i.test(cleaned)) {
-    return null;
+  const cleaned = raw.normalize('NFKC').replace(/(?<=\d),(?=\d{3}(?:\D|$))/g, '').trim();
+  const parenthesizedPrice = /^\(\s*(?:[¥$₩]\s*)?(\d+(?:\.\d+)?)(?:\s*[元円원])?\s*\)$/.exec(cleaned);
+  // Report templates put indicator values and supporting conditions in parentheses.
+  // Strip those annotations before looking for a level, including one stated later in the text.
+  const priceText = parenthesizedPrice?.[1] ?? cleaned.replace(/\([^()]*(?:\([^()]*\)[^()]*)*\)/g, ' ').split('(', 1)[0];
+  const afterLabel = priceText.slice(priceText.lastIndexOf(':') + 1);
+  if (afterLabel.includes('元')) {
+    return extractFirstPriceToken(afterLabel) ?? extractFirstPriceToken(priceText);
   }
-
-  if (/^\d+(?:\.\d+)?$/.test(cleaned)) {
-    const direct = Number(cleaned);
-    return Number.isFinite(direct) && direct > 0 ? direct : null;
-  }
-
-  const parenPositions = [cleaned.indexOf('('), cleaned.indexOf('（')].filter((idx) => idx !== -1);
-  const parenPos = parenPositions.length > 0 ? Math.min(...parenPositions) : cleaned.length;
-  const beforeParen = cleaned.slice(0, parenPos).trim() || cleaned;
-
-  const hasCurrency = CURRENCY_MARKERS.some((marker) => cleaned.includes(marker));
-  if ((beforeParen.includes('%') || beforeParen.includes('％')) && !hasCurrency) {
-    return null;
-  }
-
-  const colonPos = Math.max(cleaned.lastIndexOf('：'), cleaned.lastIndexOf(':'));
-  const yuanPos = cleaned.indexOf('元', colonPos !== -1 ? colonPos + 1 : 0);
-  if (yuanPos !== -1) {
-    const segStart = colonPos !== -1 ? colonPos + 1 : 0;
-    const yuanVal = extractFirstPriceToken(cleaned.slice(segStart, yuanPos));
-    if (yuanVal !== null) {
-      return yuanVal;
-    }
-  }
-
-  return extractFirstPriceToken(beforeParen);
+  return extractFirstPriceToken(priceText);
 }
 
 /**

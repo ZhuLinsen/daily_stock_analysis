@@ -1,12 +1,15 @@
-import React, { useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useState } from 'react';
+import type React from 'react';
 import { LineChart } from 'lucide-react';
-import { getParsedApiError } from '../../api/error';
 import { stocksApi, type StockKLineItem } from '../../api/stocks';
 import type { ReportLanguage, ReportStrategy as ReportStrategyType } from '../../types/analysis';
 import { Card } from '../common';
 import { DashboardPanelHeader } from '../dashboard';
-import { ReportPriceLevelsChart } from './ReportPriceLevelsChart';
 import { getReportText, normalizeReportLanguage } from '../../utils/reportLanguage';
+
+const ReportPriceLevelsChart = lazy(() => import('./ReportPriceLevelsChart').then(
+  ({ ReportPriceLevelsChart }) => ({ default: ReportPriceLevelsChart }),
+));
 
 interface ReportStrategyProps {
   strategy?: ReportStrategyType;
@@ -20,7 +23,7 @@ interface ChartState {
   open: boolean;
   loading: boolean;
   bars: StockKLineItem[] | null;
-  error: string | null;
+  failed: boolean;
 }
 
 interface StrategyItemProps {
@@ -57,21 +60,23 @@ export const ReportStrategy: React.FC<ReportStrategyProps> = ({
   recordId,
   stockCode,
 }) => {
-  const reportKey = `${recordId ?? 0}:${(stockCode ?? '').trim().toUpperCase()}`;
+  const symbol = stockCode?.trim();
+  const reportKey = `${recordId ?? 0}:${symbol?.toUpperCase() ?? ''}`;
+  const [previousReportKey, setPreviousReportKey] = useState(reportKey);
   const [chartState, setChartState] = useState<ChartState>({
     key: '',
     open: false,
     loading: false,
     bars: null,
-    error: null,
+    failed: false,
   });
-  const activeKeyRef = useRef(reportKey);
-  const requestSeqRef = useRef(0);
-
-  useEffect(() => {
-    activeKeyRef.current = reportKey;
-    requestSeqRef.current += 1;
-  }, [reportKey]);
+  if (previousReportKey !== reportKey) {
+    setPreviousReportKey(reportKey);
+    if (chartState.loading) {
+      // Returning to this report must never restore an invalidated loading state.
+      setChartState({ ...chartState, open: false, loading: false });
+    }
+  }
 
   if (!strategy) {
     return null;
@@ -79,72 +84,45 @@ export const ReportStrategy: React.FC<ReportStrategyProps> = ({
 
   const reportLanguage = normalizeReportLanguage(language);
   const text = getReportText(reportLanguage);
-  const isEnglish = reportLanguage === 'en';
-  const canShowChart = Boolean(
-    recordId && recordId > 0 && stockCode && typeof stocksApi?.getHistory === 'function',
-  );
+  const canShowChart = Boolean(recordId && recordId > 0 && symbol);
 
   const isSameReport = chartState.key === reportKey;
   const showChart = isSameReport ? chartState.open : false;
   const isLoadingChart = isSameReport ? chartState.loading : false;
   const chartBars = isSameReport ? chartState.bars : null;
-  const chartError = isSameReport ? chartState.error : null;
+  const chartFailed = isSameReport && chartState.failed;
 
-  const fetchChartBars = async (forceRefresh = false) => {
-    if (!stockCode || !canShowChart || isLoadingChart) {
+  const fetchChartBars = async () => {
+    if (!symbol || !canShowChart || isLoadingChart) {
       return;
     }
-    if (!forceRefresh && chartBars !== null && chartBars.length > 0) {
-      return;
-    }
-    const targetKey = reportKey;
-    const reqId = ++requestSeqRef.current;
-    setChartState({
-      key: targetKey,
+    const pendingState: ChartState = {
+      key: reportKey,
       open: true,
       loading: true,
-      bars: chartBars,
-      error: null,
-    });
+      bars: null,
+      failed: false,
+    };
+    setChartState(pendingState);
     try {
-      const res = await stocksApi.getHistory(stockCode, 60, 'daily');
-      if (activeKeyRef.current !== targetKey || requestSeqRef.current !== reqId) {
-        return;
-      }
-      setChartState({
-        key: targetKey,
-        open: true,
-        loading: false,
-        bars: res.data || [],
-        error: null,
-      });
-    } catch (err) {
-      if (activeKeyRef.current !== targetKey || requestSeqRef.current !== reqId) {
-        return;
-      }
-      setChartState({
-        key: targetKey,
-        open: true,
-        loading: false,
-        bars: chartBars,
-        error: getParsedApiError(err).message,
-      });
+      const res = await stocksApi.getHistory(symbol, 60, 'daily');
+      // Only the state installed by this request may receive its result.
+      setChartState(current => current === pendingState
+        ? { ...pendingState, loading: false, bars: res.data }
+        : current);
+    } catch {
+      setChartState(current => current === pendingState
+        ? { ...pendingState, loading: false, failed: true }
+        : current);
     }
   };
 
-  const handleToggleChart = async () => {
-    const nextOpen = !showChart;
-    setChartState({
-      key: reportKey,
-      open: nextOpen,
-      loading: false,
-      bars: chartBars,
-      error: nextOpen ? null : chartError,
-    });
-    if (!nextOpen) {
+  const handleToggleChart = () => {
+    if (showChart || chartBars?.length) {
+      setChartState({ ...chartState, open: !showChart });
       return;
     }
-    await fetchChartBars(false);
+    void fetchChartBars();
   };
 
   const strategyItems = [
@@ -178,28 +156,31 @@ export const ReportStrategy: React.FC<ReportStrategyProps> = ({
         actions={canShowChart ? (
           <button
             type="button"
-            onClick={() => void handleToggleChart()}
+            onClick={handleToggleChart}
+            aria-expanded={showChart}
             disabled={isLoadingChart}
             className="inline-flex items-center gap-1.5 rounded-lg border border-border/70 bg-card/70 px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:border-[hsl(var(--primary))/0.5] hover:bg-hover disabled:opacity-60"
           >
             <LineChart className="h-3.5 w-3.5 text-[hsl(var(--primary))]" />
             <span>
               {isLoadingChart
-                ? (isEnglish ? 'Loading Chart...' : '加载行情...')
-                : (isEnglish ? 'Levels Chart' : '价格点位图')}
+                ? text.priceLevelsChart.loading
+                : text.priceLevelsChart.toggle}
             </span>
           </button>
         ) : undefined}
         className="mb-3"
       />
-      {chartError ? <p className="mb-3 text-xs text-rose-500">{chartError}</p> : null}
-      {showChart && chartBars ? (
-        <ReportPriceLevelsChart
-          bars={chartBars}
-          strategy={strategy}
-          language={reportLanguage}
-          onRetry={() => void fetchChartBars(true)}
-        />
+      {showChart && (chartBars || chartFailed) ? (
+        <Suspense fallback={<p role="status" className="mb-3 text-xs text-muted-text">{text.priceLevelsChart.loading}</p>}>
+          <ReportPriceLevelsChart
+            bars={chartBars ?? []}
+            failed={chartFailed}
+            strategy={strategy}
+            language={reportLanguage}
+            onRetry={() => void fetchChartBars()}
+          />
+        </Suspense>
       ) : null}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         {strategyItems.map((item) => (

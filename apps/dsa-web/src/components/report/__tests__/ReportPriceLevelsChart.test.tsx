@@ -1,5 +1,5 @@
 import { render, screen } from '@testing-library/react';
-import type React from 'react';
+import React from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import {
   enrichBarsWithMovingAverages,
@@ -13,10 +13,20 @@ vi.mock('recharts', () => ({
   CartesianGrid: () => null,
   XAxis: () => null,
   YAxis: () => null,
-  Tooltip: () => null,
+  Legend: () => null,
+  Tooltip: ({ content }: { content: React.ReactElement<{ active?: boolean; payload?: unknown }> }) => (
+    <div data-testid="levels-tooltip">
+      {React.cloneElement(content, {
+        active: true,
+        payload: [{ payload: { date: '2026-11-20', close: 225 } }],
+      })}
+    </div>
+  ),
   Area: () => null,
   Line: () => null,
-  ReferenceLine: ({ y }: { y?: number }) => <div data-testid={`ref-line-${y}`} />,
+  ReferenceLine: ({ y, label }: { y?: number; label?: { value: string } }) => (
+    <div data-testid={`ref-line-${y}`}>{label?.value}</div>
+  ),
 }));
 
 describe('ReportPriceLevelsChart helpers & component', () => {
@@ -26,24 +36,24 @@ describe('ReportPriceLevelsChart helpers & component', () => {
     expect(parseStrategyPriceLevel('1,480 - 1,500')).toBe(1480);
     expect(parseStrategyPriceLevel('次优买入点：1680元')).toBe(1680);
     expect(parseStrategyPriceLevel('--')).toBeNull();
-    // Counterexample OR-COR-cf3ffd9f / b51586cb: MA period numbers are not entry prices
     expect(parseStrategyPriceLevel('暂无理想买点：需先收复并站稳MA5（52.68）且放量')).toBeNull();
     expect(parseStrategyPriceLevel('放量收复MA10（55.13）确认趋势反转后介入')).toBeNull();
     expect(parseStrategyPriceLevel('+12%')).toBeNull();
+    expect(parseStrategyPriceLevel('-2.5')).toBeNull();
+  });
 
-    // Counterexample OR-COR-5fddb93d: compute rolling averages then cap display to 60 trading sessions
-    const bars87 = Array.from({ length: 87 }, (_, i) => ({
-      date: `2026-08-${String(i + 1).padStart(2, '0')}`,
+  it('computes MA5 and MA20 using earlier sessions before capping the plot to 60 bars', () => {
+    const bars = Array.from({ length: 87 }, (_, i) => ({
+      date: new Date(Date.UTC(2026, 6, 6 + Math.floor(i / 5) * 7 + i % 5)).toISOString().slice(0, 10),
       open: 100 + i,
       high: 101 + i,
       low: 99 + i,
       close: 100 + i,
     }));
-    const capped = enrichBarsWithMovingAverages(bars87, 60);
+    const capped = enrichBarsWithMovingAverages([...bars].reverse());
     expect(capped).toHaveLength(60);
-    expect(capped[0].date).toBe('2026-08-28');
-    expect(capped[0].ma20).not.toBeNull();
-    expect(capped[59].date).toBe('2026-08-87');
+    expect(capped[0]).toMatchObject({ date: bars[27].date, ma5: 125, ma20: 117.5 });
+    expect(capped[59].date).toBe(bars[86].date);
   });
 
   it('renders close, secondaryBuy, and sniper reference lines or empty retry button gracefully', () => {
@@ -52,7 +62,6 @@ describe('ReportPriceLevelsChart helpers & component', () => {
     expect(screen.getByText('暂无可用的日线历史行情数据。')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '重新加载' })).toBeInTheDocument();
 
-    // Counterexample OR-COR-85f33008 / 3380828d: secondaryBuy must appear in summary & ReferenceLine
     rerender(
       <ReportPriceLevelsChart
         bars={[
@@ -70,5 +79,53 @@ describe('ReportPriceLevelsChart helpers & component', () => {
     expect(screen.getByTestId('ref-line-1400')).toBeInTheDocument();
     expect(screen.getByTestId('ref-line-1700')).toBeInTheDocument();
     expect(screen.getByText('次优买点:')).toBeInTheDocument();
+  });
+
+  it.each([
+    '暂无理想买点：需先收复并站稳MA 5（52.68）且放量',
+    '放量站稳 MA 5/10（52.68元）之后再评估',
+    'Wait for a reclaim of the 20-day moving average',
+    'Wait for MA 5 (52.68) and 1.5x average volume',
+    'Wait for MA 5 (52.68',
+    '20일 이동평균선 회복 대기',
+  ])('omits the period-only buy level in "%s"', (idealBuy) => {
+    render(
+      <ReportPriceLevelsChart
+        bars={[{ date: '2026-11-20', open: 52, high: 55, low: 51, close: 54 }]}
+        strategy={{ idealBuy }}
+      />,
+    );
+
+    expect(screen.getByTestId('composed-chart')).toBeInTheDocument();
+    expect(screen.queryByTestId(/^ref-line-/)).not.toBeInTheDocument();
+    expect(screen.queryByText('理想买点:')).not.toBeInTheDocument();
+  });
+
+  it('finds the trading price after moving-average periods', () => {
+    expect(parseStrategyPriceLevel('站稳 MA   20 后在 52.68 元买入')).toBe(52.68);
+    expect(parseStrategyPriceLevel('Reclaim the 20-day moving average, then buy at $52.68')).toBe(52.68);
+    expect(parseStrategyPriceLevel('Reclaim MA 5 (52.68), then buy at $54')).toBe(54);
+    expect(parseStrategyPriceLevel('Target 52.68 with 10% upside')).toBe(52.68);
+  });
+
+  it('localizes Korean chart summaries and reference lines', () => {
+    render(
+      <ReportPriceLevelsChart
+        bars={[{ date: '2026-11-20', open: 220, high: 230, low: 215, close: 225 }]}
+        strategy={{ idealBuy: '220', secondaryBuy: '215', stopLoss: '200', takeProfit: '260' }}
+        language="ko"
+      />,
+    );
+
+    expect(screen.getByText('최근 종가:')).toBeInTheDocument();
+    expect(screen.getByText('종가:')).toBeInTheDocument();
+    expect(screen.getByText('이상적 매수가:')).toBeInTheDocument();
+    expect(screen.getByText('추가 매수가:')).toBeInTheDocument();
+    expect(screen.getByText('손절가:')).toBeInTheDocument();
+    expect(screen.getByText('목표가:')).toBeInTheDocument();
+    expect(screen.getByTestId('ref-line-220')).toHaveTextContent('매수 220');
+    expect(screen.getByTestId('ref-line-215')).toHaveTextContent('추가 매수 215');
+    expect(screen.getByTestId('ref-line-200')).toHaveTextContent('손절 200');
+    expect(screen.getByTestId('ref-line-260')).toHaveTextContent('목표 260');
   });
 });

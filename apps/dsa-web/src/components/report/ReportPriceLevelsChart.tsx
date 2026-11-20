@@ -4,6 +4,7 @@ import {
   CartesianGrid,
   ComposedChart,
   Line,
+  Legend,
   ReferenceLine,
   ResponsiveContainer,
   Tooltip,
@@ -17,10 +18,11 @@ import {
   parseStrategyPriceLevel,
   type PriceChartDatum,
 } from '../../utils/priceChart';
-import { normalizeReportLanguage } from '../../utils/reportLanguage';
+import { getReportText } from '../../utils/reportLanguage';
 
 interface ReportPriceLevelsChartProps {
   bars: StockKLineItem[];
+  failed?: boolean;
   strategy?: ReportStrategy;
   language?: ReportLanguage;
   onRetry?: () => void;
@@ -29,8 +31,8 @@ interface ReportPriceLevelsChartProps {
 const LevelsTooltip: React.FC<{
   active?: boolean;
   payload?: Array<{ payload?: PriceChartDatum }>;
-  isEnglish: boolean;
-}> = ({ active, payload, isEnglish }) => {
+  closeLabel: string;
+}> = ({ active, payload, closeLabel }) => {
   if (!active || !payload?.[0]?.payload) {
     return null;
   }
@@ -39,7 +41,7 @@ const LevelsTooltip: React.FC<{
     <div className="rounded-lg border border-border/70 bg-card/95 px-2.5 py-1.5 text-[11px] shadow-card">
       <div className="font-mono font-semibold text-foreground">{d.date}</div>
       <div className="mt-1 space-y-0.5 text-secondary-text">
-        <div>{isEnglish ? 'Close' : '收盘'}: <span className="font-mono text-foreground">{d.close.toFixed(2)}</span></div>
+        <div>{closeLabel}: <span className="font-mono text-foreground">{d.close.toFixed(2)}</span></div>
         {d.ma5 != null ? <div>MA5: <span className="font-mono text-amber-500">{d.ma5.toFixed(2)}</span></div> : null}
         {d.ma20 != null ? <div>MA20: <span className="font-mono text-violet-400">{d.ma20.toFixed(2)}</span></div> : null}
       </div>
@@ -49,11 +51,12 @@ const LevelsTooltip: React.FC<{
 
 export const ReportPriceLevelsChart: React.FC<ReportPriceLevelsChartProps> = ({
   bars,
+  failed = false,
   strategy,
   language = 'zh',
   onRetry,
 }) => {
-  const isEnglish = normalizeReportLanguage(language) === 'en';
+  const text = getReportText(language).priceLevelsChart;
   const data = useMemo(() => enrichBarsWithMovingAverages(bars, 60), [bars]);
 
   const idealBuy = parseStrategyPriceLevel(strategy?.idealBuy);
@@ -65,6 +68,8 @@ export const ReportPriceLevelsChart: React.FC<ReportPriceLevelsChartProps> = ({
     const vals: number[] = [];
     for (const d of data) {
       vals.push(d.low, d.high, d.close);
+      if (d.ma5 != null) vals.push(d.ma5);
+      if (d.ma20 != null) vals.push(d.ma20);
     }
     for (const lvl of [idealBuy, secondaryBuy, stopLoss, takeProfit]) {
       if (lvl != null) vals.push(lvl);
@@ -76,17 +81,17 @@ export const ReportPriceLevelsChart: React.FC<ReportPriceLevelsChartProps> = ({
     return [Number((minVal - pad).toFixed(2)), Number((maxVal + pad).toFixed(2))];
   }, [data, idealBuy, secondaryBuy, stopLoss, takeProfit]);
 
-  if (data.length === 0) {
+  if (failed || data.length === 0) {
     return (
       <div className="mb-3 flex flex-wrap items-center justify-center gap-2 rounded-xl border border-border/60 bg-background/40 px-3 py-4 text-center text-xs text-muted-text">
-        <span>{isEnglish ? 'No daily K-line history available for price overlay.' : '暂无可用的日线历史行情数据。'}</span>
+        <span role={failed ? 'alert' : 'status'}>{failed ? text.failed : text.empty}</span>
         {onRetry ? (
           <button
             type="button"
             onClick={onRetry}
             className="rounded border border-border/70 px-2 py-0.5 text-[11px] font-medium text-foreground hover:bg-hover"
           >
-            {isEnglish ? 'Retry' : '重新加载'}
+            {text.retry}
           </button>
         ) : null}
       </div>
@@ -100,26 +105,26 @@ export const ReportPriceLevelsChart: React.FC<ReportPriceLevelsChartProps> = ({
       <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-[11px]">
         <div className="flex flex-wrap items-center gap-3 text-secondary-text">
           <span>
-            {isEnglish ? 'Close' : '最新收盘'}: <strong className="font-mono text-foreground">{latest.close.toFixed(2)}</strong>
+            {text.latestClose}: <strong className="font-mono text-foreground">{latest.close.toFixed(2)}</strong>
           </span>
           {idealBuy != null ? (
             <span className="text-sky-500">
-              {isEnglish ? 'Ideal Buy' : '理想买点'}: <strong className="font-mono">{idealBuy}</strong>
+              {text.idealBuy}: <strong className="font-mono">{idealBuy}</strong>
             </span>
           ) : null}
           {secondaryBuy != null ? (
             <span className="text-amber-500">
-              {isEnglish ? 'Secondary Buy' : '次优买点'}: <strong className="font-mono">{secondaryBuy}</strong>
+              {text.secondaryBuy}: <strong className="font-mono">{secondaryBuy}</strong>
             </span>
           ) : null}
           {stopLoss != null ? (
             <span className="text-rose-500">
-              {isEnglish ? 'Stop Loss' : '止损位'}: <strong className="font-mono">{stopLoss}</strong>
+              {text.stopLoss}: <strong className="font-mono">{stopLoss}</strong>
             </span>
           ) : null}
           {takeProfit != null ? (
             <span className="text-emerald-500">
-              {isEnglish ? 'Target' : '止盈目标'}: <strong className="font-mono">{takeProfit}</strong>
+              {text.takeProfit}: <strong className="font-mono">{takeProfit}</strong>
             </span>
           ) : null}
         </div>
@@ -134,10 +139,12 @@ export const ReportPriceLevelsChart: React.FC<ReportPriceLevelsChartProps> = ({
             <CartesianGrid strokeDasharray="3 3" opacity={0.18} />
             <XAxis dataKey="shortDate" tick={{ fontSize: 10 }} minTickGap={18} />
             <YAxis domain={yDomain} tick={{ fontSize: 10 }} width={52} />
-            <Tooltip content={<LevelsTooltip isEnglish={isEnglish} />} />
+            <Tooltip content={<LevelsTooltip closeLabel={text.close} />} />
+            <Legend iconSize={10} wrapperStyle={{ fontSize: 11 }} />
             <Area
               type="monotone"
               dataKey="close"
+              name={text.close}
               stroke="#38bdf8"
               strokeWidth={2}
               fill="#38bdf8"
@@ -147,6 +154,7 @@ export const ReportPriceLevelsChart: React.FC<ReportPriceLevelsChartProps> = ({
             <Line
               type="monotone"
               dataKey="ma5"
+              name="MA5"
               stroke="#f59e0b"
               strokeWidth={1.3}
               dot={false}
@@ -156,6 +164,7 @@ export const ReportPriceLevelsChart: React.FC<ReportPriceLevelsChartProps> = ({
             <Line
               type="monotone"
               dataKey="ma20"
+              name="MA20"
               stroke="#a78bfa"
               strokeWidth={1.3}
               dot={false}
@@ -167,7 +176,7 @@ export const ReportPriceLevelsChart: React.FC<ReportPriceLevelsChartProps> = ({
                 y={takeProfit}
                 stroke="#10b981"
                 strokeDasharray="4 4"
-                label={{ value: `${isEnglish ? 'TP' : '盈'} ${takeProfit}`, position: 'insideTopRight', fill: '#10b981', fontSize: 10 }}
+                label={{ value: `${text.takeProfitLine} ${takeProfit}`, position: 'insideTopRight', fill: '#10b981', fontSize: 10 }}
               />
             ) : null}
             {idealBuy != null ? (
@@ -175,7 +184,7 @@ export const ReportPriceLevelsChart: React.FC<ReportPriceLevelsChartProps> = ({
                 y={idealBuy}
                 stroke="#0ea5e9"
                 strokeDasharray="4 4"
-                label={{ value: `${isEnglish ? 'Buy' : '买'} ${idealBuy}`, position: 'insideBottomRight', fill: '#0ea5e9', fontSize: 10 }}
+                label={{ value: `${text.idealBuyLine} ${idealBuy}`, position: 'insideBottomRight', fill: '#0ea5e9', fontSize: 10 }}
               />
             ) : null}
             {secondaryBuy != null ? (
@@ -183,7 +192,7 @@ export const ReportPriceLevelsChart: React.FC<ReportPriceLevelsChartProps> = ({
                 y={secondaryBuy}
                 stroke="#f59e0b"
                 strokeDasharray="3 3"
-                label={{ value: `${isEnglish ? '2nd' : '次'} ${secondaryBuy}`, position: 'insideTopLeft', fill: '#f59e0b', fontSize: 10 }}
+                label={{ value: `${text.secondaryBuyLine} ${secondaryBuy}`, position: 'insideTopLeft', fill: '#f59e0b', fontSize: 10 }}
               />
             ) : null}
             {stopLoss != null ? (
@@ -191,7 +200,7 @@ export const ReportPriceLevelsChart: React.FC<ReportPriceLevelsChartProps> = ({
                 y={stopLoss}
                 stroke="#f43f5e"
                 strokeDasharray="5 3"
-                label={{ value: `${isEnglish ? 'SL' : '损'} ${stopLoss}`, position: 'insideBottomRight', fill: '#f43f5e', fontSize: 10 }}
+                label={{ value: `${text.stopLossLine} ${stopLoss}`, position: 'insideBottomRight', fill: '#f43f5e', fontSize: 10 }}
               />
             ) : null}
           </ComposedChart>
