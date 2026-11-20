@@ -158,16 +158,18 @@ describe('asset-aware identity keys (PR #2312)', () => {
     expect(toAssetAwareCodeKey('sh600519', undefined)).toBe('600519');
   });
 
-  it('resolves raw codes only through exact registry hits', () => {
+  it('resolves registered aliases and legacy Shanghai suffixes', () => {
     expect(resolveRegisteredIndexCanonical(indexRows, 'sh000016')).toBe('sh000016');
     expect(resolveRegisteredIndexCanonical(indexRows, 'SH000016')).toBe('sh000016');
     expect(resolveRegisteredIndexCanonical(indexRows, '000016.SH')).toBe('sh000016');
+    expect(resolveRegisteredIndexCanonical(indexRows, '000016.ss')).toBe('sh000016');
     expect(resolveRegisteredIndexCanonical(indexRows, 'sz399300')).toBe('sh000300');
     expect(resolveRegisteredIndexCanonical(indexRows, '000300.CSI')).toBe('sh000300');
     expect(resolveRegisteredIndexCanonical(indexRows, '000300.SH')).toBe('sh000300');
     expect(resolveRegisteredIndexCanonical(indexRows, 'csi000300')).toBeNull();
     expect(resolveRegisteredIndexCanonical(indexRows, '000016')).toBeNull();
     expect(resolveRegisteredIndexCanonical(indexRows, '600519')).toBeNull();
+    expect(resolveRegisteredIndexCanonical(indexRows, '600519.SS')).toBeNull();
     expect(resolveRegisteredIndexCanonical(indexRows, 'sh600519')).toBeNull();
     expect(resolveRegisteredIndexCanonical([], 'sh000016')).toBeNull();
   });

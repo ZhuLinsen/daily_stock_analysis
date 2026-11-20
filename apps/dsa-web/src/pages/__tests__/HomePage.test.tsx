@@ -2242,6 +2242,49 @@ describe('HomePage', () => {
     expect(vi.mocked(analysisApi.getTasks).mock.calls.length).toBeGreaterThan(taskRefreshCallsBeforeSubmit);
   });
 
+  it('analyzes a watchlist with a legacy class share and removes a Yahoo preferred share', async () => {
+    configureWatchlistBatch(0);
+    vi.mocked(systemConfigApi.getWatchlist).mockResolvedValue(['BRK-B', 'AAPL', 'BAC-PL']);
+    vi.mocked(analysisApi.analyzeAsync).mockImplementation(async () => {
+      const accepted = ['BRK.B', 'AAPL', 'BAC-PL'].map((stockCode) => ({
+        taskId: `task-${stockCode}`,
+        stockCode,
+        status: 'pending' as const,
+        progress: 0,
+        reportType: 'detailed',
+        createdAt: '2026-03-19T08:00:00Z',
+      }));
+      vi.mocked(analysisApi.getTasks).mockResolvedValue({
+        total: accepted.length,
+        pending: accepted.length,
+        processing: 0,
+        tasks: accepted,
+      });
+      return { accepted, duplicates: [], message: 'accepted' };
+    });
+    vi.mocked(systemConfigApi.removeFromWatchlist).mockResolvedValue(['BRK-B', 'AAPL']);
+
+    render(
+      <MemoryRouter>
+        <HomePage />
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: '自选' }));
+    fireEvent.click(await screen.findByRole('button', { name: '分析全部' }));
+    expect(await screen.findByText('已提交 3 个任务，0 个正在运行')).toBeInTheDocument();
+    expect(screen.getByTestId('watchlist-row-BRK-B')).toHaveTextContent('任务等待中');
+    expect(analysisApi.analyzeAsync).toHaveBeenCalledWith(expect.objectContaining({
+      stockCodes: ['BRK-B', 'AAPL', 'BAC-PL'],
+    }));
+
+    fireEvent.click(screen.getByRole('button', { name: '从自选股移除 BAC-PL' }));
+    await waitFor(() => expect(screen.queryByTestId('watchlist-row-BAC-PL')).not.toBeInTheDocument());
+    expect(systemConfigApi.removeFromWatchlist).toHaveBeenCalledWith('BAC-PL');
+    expect(screen.getByTestId('watchlist-row-BRK-B')).toBeInTheDocument();
+    expect(screen.getByTestId('watchlist-row-AAPL')).toBeInTheDocument();
+  });
+
   it('deduplicates index aliases while keeping the same-code stock in analyze-all (PR #2312)', async () => {
     stockIndexItems = [
       { canonicalCode: 'sh000016', displayCode: 'sh000016', aliases: ['000016.SH'], assetType: 'index' },

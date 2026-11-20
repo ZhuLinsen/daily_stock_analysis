@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { systemConfigApi } from '../api/systemConfig';
-import { includesStockCode, watchlistStockCodeKey } from '../utils/stockCode';
+import { includesStockCode, toAssetAwareCodeKey } from '../utils/stockCode';
 
 export interface UseWatchlistReturn {
   watchlistCodes: string[];
@@ -14,7 +14,7 @@ export interface UseWatchlistReturn {
   refresh: () => Promise<void>;
 }
 
-export function useWatchlist(getCodeKey = watchlistStockCodeKey): UseWatchlistReturn {
+export function useWatchlist(getCodeKey: (code: string) => string = toAssetAwareCodeKey): UseWatchlistReturn {
   const [codes, setCodes] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isActioning, setIsActioning] = useState(false);

@@ -10,7 +10,6 @@ import os
 import re
 import shutil
 import time
-from contextlib import nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
@@ -2107,15 +2106,8 @@ class SystemConfigService:
 
         warnings: List[str] = []
         reload_triggered = False
-        # Watchlist mutations share a process-wide write lock. Acquire it only
-        # after validation so a paused/slow validation cannot block another
-        # writer from completing its own optimistic update.
-        watchlist_lock = nullcontext()
-        if "STOCK_LIST" in submitted_keys:
-            from src.services.watchlist_service import _WATCHLIST_UPDATE_LOCK
 
-            watchlist_lock = _WATCHLIST_UPDATE_LOCK
-        with watchlist_lock, self._manager.locked():
+        def check_current() -> None:
             if expected_watchlist is None:
                 current_version = self._manager.get_config_version()
             else:
@@ -2125,18 +2117,20 @@ class SystemConfigService:
                     raise ConfigConflictError(current_version=current_version)
             if current_version != config_version:
                 raise ConfigConflictError(current_version=current_version)
+
+        with self._manager.locked():
             updated_keys, skipped_masked_keys, new_version = self._manager.apply_updates(
                 updates=updates,
                 sensitive_keys=sensitive_keys,
                 mask_token=mask_token,
+                check_current=check_current,
             )
 
             if reload_now:
                 try:
                     if submitted_keys == {"STOCK_LIST"}:
-                        # Mirror the saved list, including a clear, before the runtime
-                        # refresh can fall back to the process environment.
-                        os.environ["STOCK_LIST"] = self._manager.read_config_map().get("STOCK_LIST", "")
+                        saved_list = self._manager.read_config_map().get("STOCK_LIST", "")
+                        os.environ["STOCK_LIST"] = saved_list if split_stock_list(saved_list) else ""
                         config = Config.get_instance()
                         config.refresh_stock_list()
                     else:

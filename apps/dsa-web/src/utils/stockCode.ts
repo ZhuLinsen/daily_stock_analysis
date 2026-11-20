@@ -95,11 +95,7 @@ export function normalizeStockCode(stockCode: string): string {
 }
 
 function stockCodeMatchKey(stockCode: string): string {
-  return normalizeStockCode(stockCode).toUpperCase();
-}
-
-export function watchlistStockCodeKey(stockCode: string): string {
-  const key = stockCodeMatchKey(stockCode);
+  const key = normalizeStockCode(stockCode).toUpperCase();
   return /^[A-Z]{1,5}-[A-Z]$/.test(key) ? key.replace('-', '.') : key;
 }
 
@@ -183,15 +179,13 @@ export function toAssetAwareCodeKey(
   if (assetType === 'index') {
     return foldIndexKey(trimmed);
   }
-  return normalizeStockCode(trimmed).toUpperCase();
+  return stockCodeMatchKey(trimmed);
 }
 
 /**
- * Exact registry hit used only for raw codes WITHOUT an asset type (e.g. raw
- * watchlist strings). Only an `assetType=index` row whose canonical/display/
- * explicit alias matches the code *exactly* (case-insensitive, no
- * normalization, no prefix guessing) buckets it as an index. Returns the
- * matched row's canonical (in lowercase canonical form) or null.
+ * Registry lookup for raw codes without an asset type. Legacy Shanghai .SS
+ * suffixes use the same registered identity as .SH. Returns the matched index
+ * canonical in lowercase or null.
  */
 export function resolveRegisteredIndexCanonical(
   index: ReadonlyArray<RegisteredIndexIdentity>,
@@ -200,11 +194,15 @@ export function resolveRegisteredIndexCanonical(
   const trimmed = (code ?? '').trim();
   if (!trimmed) return null;
   const folded = trimmed.toLowerCase();
+  const shanghaiCode = /^(\d{6})\.ss$/.exec(folded)?.[1];
+  const keys = shanghaiCode
+    ? new Set([folded, `${shanghaiCode}.sh`, `sh${shanghaiCode}`])
+    : new Set([folded]);
   for (const item of index) {
     if (!item || item.assetType !== 'index') continue;
     const candidates = [item.canonicalCode, item.displayCode, ...(item.aliases ?? [])];
     for (const candidate of candidates) {
-      if (candidate && candidate.trim().toLowerCase() === folded) {
+      if (candidate && keys.has(candidate.trim().toLowerCase())) {
         const canonical = (item.canonicalCode ?? '').trim();
         return canonical ? canonical.toLowerCase() : null;
       }

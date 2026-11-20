@@ -29,7 +29,7 @@ import { getReportText } from '../utils/reportLanguage';
 import {
   includesStockCode,
   resolveRegisteredIndexCanonical,
-  watchlistStockCodeKey,
+  toAssetAwareCodeKey,
 } from '../utils/stockCode';
 import { useStockIndex } from '../hooks/useStockIndex';
 import { useUiLanguage } from '../contexts/UiLanguageContext';
@@ -176,7 +176,7 @@ const ChatPage: React.FC = () => {
     (stockCode: string) => includesStockCode(
       watchlistCodes,
       stockCode,
-      (code) => resolveRegisteredIndexCanonical(stockIndex, code) ?? watchlistStockCodeKey(code),
+      (code) => resolveRegisteredIndexCanonical(stockIndex, code) ?? toAssetAwareCodeKey(code, 'stock'),
     ),
     [stockIndex, watchlistCodes],
   );

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
+from src.services.stock_code_utils import is_code_like
 from src.services.stock_list_parser import ParseStatus, parse_analysis_target, split_stock_list
 from src.services.system_config_service import SystemConfigService
 from src.services.watchlist_service import canonicalize_watchlist_code, edit_watchlist, watchlist_match_key
@@ -52,7 +53,7 @@ def extract_screening_candidates(
             continue
         norm_code = canonicalize_watchlist_code(raw_code)
         identity = watchlist_match_key(norm_code)
-        if identity in seen_codes:
+        if identity in seen_codes or (identity.startswith("stock:") and not is_code_like(norm_code)):
             continue
         seen_codes.add(identity)
         score = next((row[key] for key in ("score", "rank_score", "composite_score") if row.get(key) is not None), None)

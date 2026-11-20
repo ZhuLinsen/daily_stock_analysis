@@ -2092,10 +2092,13 @@ describe('watchlist button with code variants', () => {
     expect(mockAddToWatchlist).not.toHaveBeenCalled();
   });
 
-  it('adds the active stock when the watchlist only contains a same-code index', async () => {
-    mockStoreState.activeStockContext = { stock_code: '000016', canonical_id: 'sz000016', stock_name: null, asset_type: 'stock' };
-    mockGetWatchlist.mockResolvedValue(['000016.SH']);
-    mockAddToWatchlist.mockResolvedValue(['000016.SH', '000016']);
+  it.each([
+    ['000016', '000016.SH'],
+    ['000001', '000001.SS'],
+  ])('adds stock %s when the watchlist only contains index %s', async (stock, index) => {
+    mockStoreState.activeStockContext = { stock_code: stock, canonical_id: `sz${stock}`, stock_name: null, asset_type: 'stock' };
+    mockGetWatchlist.mockResolvedValue([index]);
+    mockAddToWatchlist.mockResolvedValue([index, stock]);
 
     await act(async () => {
       render(
@@ -2107,7 +2110,9 @@ describe('watchlist button with code variants', () => {
 
     expect(mockGetWatchlist).toHaveBeenCalled();
     fireEvent.click(screen.getByText('加入自选'));
-    await waitFor(() => expect(mockAddToWatchlist).toHaveBeenCalledWith('000016'));
+    await waitFor(() => expect(mockAddToWatchlist).toHaveBeenCalledWith(stock));
+    expect(await screen.findByText(`已加入自选 ${stock}`)).toBeInTheDocument();
+    expect(screen.getByText('从自选删除')).toBeInTheDocument();
     expect(mockRemoveFromWatchlist).not.toHaveBeenCalled();
   });
 });

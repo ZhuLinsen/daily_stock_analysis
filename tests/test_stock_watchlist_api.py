@@ -52,8 +52,8 @@ def test_watchlist_remove_deletes_raw_hk_code_from_prefixed_variant_request() ->
     )
 
     assert response.stock_codes == []
-    assert service.stock_list == ""
-    assert service.update_calls == [""]
+    assert service.stock_list == ","
+    assert service.update_calls == [","]
 
 
 def test_watchlist_matching_is_case_insensitive_for_us_tickers() -> None:
@@ -70,7 +70,7 @@ def test_watchlist_matching_is_case_insensitive_for_us_tickers() -> None:
 
     assert add_response.stock_codes == ["aapl"]
     assert remove_response.stock_codes == []
-    assert service.update_calls == [""]
+    assert service.update_calls == [","]
 
 
 def test_watchlist_reads_common_copy_paste_separators() -> None:
@@ -164,7 +164,7 @@ def test_watchlist_writes_with_existing_llm_errors_preserve_runtime_overrides(
             assert os.environ["WEBUI_HOST"] == "0.0.0.0"
             assert os.environ["STRATEGIES_DIR"] == "/container/strategies"
             saved_after = manager.read_config_map()
-            assert saved_after.pop("STOCK_LIST") == ""
+            assert saved_after.pop("STOCK_LIST") == ","
             saved_before.pop("STOCK_LIST")
             assert saved_after == saved_before
             assert service.validate(items=[])["issues"]
@@ -220,9 +220,8 @@ def test_watchlist_add_keeps_container_override_when_env_file_lacks_the_key(tmp_
 def test_watchlist_clear_takes_effect_despite_container_override(tmp_path):
     """Clearing must win over a container override.
 
-    refresh_stock_list() falls back to os.environ only when the file value is
-    empty, so the fast path has to mirror the emptied value or the old list
-    would be resurrected.
+    The persisted list stays empty even when a worker retains an older
+    STOCK_LIST in its process environment.
     """
     env_path = tmp_path / ".env"
     env_path.write_text(

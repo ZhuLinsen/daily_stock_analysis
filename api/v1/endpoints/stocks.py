@@ -30,6 +30,7 @@ from api.v1.schemas.stocks import (
 )
 from api.v1.schemas.history import WatchlistRequest, WatchlistResponse
 from api.v1.schemas.common import ErrorResponse
+from data_provider.us_index_mapping import normalize_us_hyphen_symbol
 from src.services.image_stock_extractor import (
     ALLOWED_MIME,
     MAX_SIZE_BYTES,
@@ -83,6 +84,9 @@ def _validate_stock_code(code: str, *, allow_watchlist_aliases: bool = False) ->
         )
     if _STOCK_CODE_RE.fullmatch(stripped):
         return stripped
+    us_symbol = normalize_us_hyphen_symbol(stripped)
+    if us_symbol:
+        return us_symbol
     if allow_watchlist_aliases:
         if parse_analysis_target(stripped).asset_type == ParseStatus.INDEX:
             return stripped
