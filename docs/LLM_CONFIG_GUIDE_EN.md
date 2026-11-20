@@ -22,17 +22,23 @@ If you are choosing a concrete provider, setting up GitHub Actions Secrets / Var
 
 ## First-run initialization wizard
 
-Run `python main.py --init` to generate a minimal `.env`. For non-TTY or scripted use, run
-`python main.py --init --non-interactive`; it creates a configuration with a blank API key to fill in later.
+Run `python main.py --init` to generate a minimal `.env`. Without a TTY, the wizard automatically skips prompts.
+Scripts can explicitly use `python main.py --init --non-interactive`. Non-interactive runs leave the API key blank to fill in later.
 The default output is the repository-root `.env`, unless `ENV_FILE` is already set; use `--init-output <path>` for
 an alternate file.
 
-Initialization never overwrites an existing file unless `--init-force` is supplied, so back up an existing config first.
-An alternate output is not automatically active: set `ENV_FILE` as shown in the command output before starting the app.
-The OpenAI-compatible provider requires both `--init-base-url` and `--init-model`; Telegram requires both the bot token
-and chat ID. With `--json`, prompts go to stderr and the result stays parseable on stdout.
+Back up an existing config before replacing it with `--init-force`. To roll back, restore that backup. On Windows, choose a volume that supports file ACLs, such as NTFS. The wizard grants file access to the current Windows account.
+For alternate output, run the printed launch command from the repository root in PowerShell on Windows or a POSIX shell on Linux and macOS. The command sets `ENV_FILE`. With `--json`, the command is in `next_steps` and prompts go to stderr.
 
-After generation, use `python main.py --dry-run --no-market-review` to check data access without invoking the market-review model.
+For an OpenAI-compatible provider, enter the HTTP(S) gateway URL and its raw model ID (for example, `deepseek-ai/DeepSeek-V4-Flash`). You can also pass `--init-base-url` and `--init-model` and press Enter to keep each value. Non-interactive mode requires both options. The URL, `LLM_COMPATIBLE_API_KEY`, and model are stored in the same channel. Telegram requires both the bot token and chat ID.
+
+At the watchlist prompt, paste or enter one or more lines, then enter an empty line to finish. Press Enter on the first line to keep the default or the value passed via `--stocks`. Scripts can pass a single `--stocks` argument with tickers separated by commas or line breaks.
+
+The DeepSeek wizard and minimal template use the official `deepseek-flash` model and standard API endpoint. To configure the template by hand, enable the whole DeepSeek block and fill in `LLM_DEEPSEEK_API_KEY`. [DeepSeek API documentation](https://api-docs.deepseek.com/api/create-chat-completion/)
+
+For Ollama, run `ollama pull qwen2.5:14b` to install the default model. To use an installed model such as `qwen3:8b`, set `OLLAMA_MODEL=qwen3:8b` and `LITELLM_MODEL=ollama/qwen3:8b`.
+
+To check market data first, replace `--serve-only` in the launch command with `--dry-run --no-market-review`. Keep the `ENV_FILE` setting in the command when using alternate output.
 
 ## Generation Backend (Phase 4)
 
@@ -133,8 +139,7 @@ LITELLM_MODEL=openai/deepseek-ai/DeepSeek-V3
 # Fill in the API Key requested from the official DeepSeek platform
 DEEPSEEK_API_KEY=sk-xxxxxxxxxxxxxxxx
 ```
-*With only this line, the system defaults to `deepseek/deepseek-v4-flash`.*
-DeepSeek announced the shutdown of `deepseek-chat` / `deepseek-reasoner` on 2026/07/24; please migrate old configs. New configs should migrate through the Web quick channel or explicitly set `LITELLM_MODEL=deepseek/deepseek-v4-flash` for `deepseek-v4-flash` / `deepseek-v4-pro`.
+This single-key configuration retains the legacy default `deepseek/deepseek-v4-flash`. For first-time setup, use the wizard or the DeepSeek block in the minimal template to select the officially recommended `deepseek-flash`. [DeepSeek changelog](https://api-docs.deepseek.com/updates/)
 
 ### Example 3: Using the Free Gemini API
 ```env

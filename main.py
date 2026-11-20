@@ -495,7 +495,7 @@ def parse_arguments(argv: Optional[List[str]] = None) -> argparse.Namespace:
         '--init-output',
         type=str,
         default=None,
-        help='配合 --init 指定输出配置路径（默认 .env）'
+        help='配合 --init 指定输出配置路径（默认遵循 ENV_FILE 或仓库根目录的 .env）'
     )
 
     parser.add_argument(
@@ -515,7 +515,7 @@ def parse_arguments(argv: Optional[List[str]] = None) -> argparse.Namespace:
         '--init-model',
         type=str,
         default='',
-        help='配合 --init-provider openai-compatible 指定模型名',
+        help='配合 --init-provider openai-compatible 指定网关返回的原始模型 ID',
     )
 
     parser.add_argument(
@@ -1772,6 +1772,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                 base_url=getattr(args, "init_base_url", "") or "",
                 model=getattr(args, "init_model", "") or "",
             )
+        except (EOFError, KeyboardInterrupt):
+            print("Initialization interrupted.", file=sys.stderr)
+            return 130
         except (OSError, ValueError) as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
             return 2
@@ -1780,7 +1783,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             print(json.dumps(res, ensure_ascii=False, indent=2))
         else:
             print(f"Generated minimal config: {res['path']} (provider={res['provider']}, stocks={res['stocks']})")
-            print(f"Next: fill {res['env_key']} in {res['path']} if blank, then run `python main.py --serve-only` (or `--stocks 600519`).")
+            for step in res["next_steps"]:
+                print(step)
         return 0
     if getattr(args, "json", False):
         print("ERROR: --json 目前仅支持与 --init 配合使用", file=sys.stderr)

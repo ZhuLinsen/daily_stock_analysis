@@ -2843,6 +2843,7 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
             except TypeError:
                 logger.debug("Analyzer LLM: Router constructor signature not compatible; fallback to direct mode")
                 self._router = None
+                return
             else:
                 unique_models = list(dict.fromkeys(
                     e['litellm_params']['model'] for e in model_list
@@ -3121,8 +3122,20 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
         wire_models = resolve_fallback_litellm_wire_models(model, config.llm_model_list)
         register_fallback_model_pricing(wire_models)
         effective_kwargs = dict(call_kwargs)
-        if use_channel_router and self._router and model in router_model_names:
-            return self._router.completion(**effective_kwargs)
+        if use_channel_router and model in router_model_names:
+            if self._router:
+                return self._router.completion(**effective_kwargs)
+            # A configured route owns its endpoint and credentials even when
+            # the Router cannot be constructed.
+            for entry in config.llm_model_list:
+                params = entry.get("litellm_params") or {}
+                route_name = str(entry.get("model_name") or "").strip() or str(params.get("model") or "").strip()
+                if route_name == model:
+                    effective_kwargs.update({
+                        key: params[key] for key in ("model", "api_key", "api_base", "extra_headers") if key in params
+                    })
+                    return litellm.completion(**effective_kwargs)
+            raise ValueError(f"No deployment found for configured model {model!r}")
         if self._router and model == config.litellm_model and not use_channel_router:
             return self._router.completion(**effective_kwargs)
 
@@ -3689,6 +3702,10 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
         router_model_names = set(get_configured_llm_models(config.llm_model_list))
         for model in models_to_try:
             last_model = model
+            has_configured_route = use_channel_router and model in router_model_names
+            uses_router = bool(self._router) and (
+                has_configured_route or (not use_channel_router and model == config.litellm_model)
+            )
             origins = route_deployment_origins(config.llm_model_list, model)
             model_stream = bool(stream and not origins.has_hermes)
             recovery_model_list = config.llm_model_list
@@ -3739,11 +3756,7 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                     call_kwargs["timeout"] = requested_timeout
                 if extra:
                     call_kwargs["extra_body"] = extra
-                uses_router = (
-                    (use_channel_router and self._router and model in router_model_names)
-                    or (self._router and model == config.litellm_model and not use_channel_router)
-                )
-                if not uses_router:
+                if not (has_configured_route or uses_router):
                     try:
                         keys = get_api_keys_for_model(model, config)
                     except AttributeError:

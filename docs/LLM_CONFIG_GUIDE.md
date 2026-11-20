@@ -29,15 +29,22 @@
 
 ## 首次初始化向导
 
-新用户可以直接运行 `python main.py --init` 生成极简 `.env`。无 TTY 或脚本场景使用
-`python main.py --init --non-interactive`；该模式会生成留空 API Key 的待填写配置。默认写入仓库根目录的
+新用户可以直接运行 `python main.py --init` 生成极简 `.env`。无 TTY 时自动跳过交互，脚本可显式使用
+`python main.py --init --non-interactive`。非交互模式生成留空 API Key 的待填写配置。默认写入仓库根目录的
 `.env`，如已设置 `ENV_FILE` 则写入该路径，也可用 `--init-output <path>` 指定备用文件。
 
-初始化不会覆盖已有文件；确认已备份后才使用 `--init-force`。备用路径不会自动成为运行时配置，需按命令输出设置
-`ENV_FILE` 后再启动。OpenAI-compatible 渠道必须同时提供 `--init-base-url` 与 `--init-model`；Telegram 必须同时填写
-Bot Token 和 Chat ID。`--json` 的结果只写 stdout，交互提示写 stderr，便于脚本解析。
+确认已备份后才使用 `--init-force` 替换已有配置，需要回滚时从备份恢复。Windows 上请将目标放在支持文件 ACL 的卷上（如 NTFS），向导把文件访问权限授予当前 Windows 账号。
+指定备用路径后，从仓库根目录运行成功输出中的启动命令（Windows 用 PowerShell，Linux 和 macOS 用 POSIX shell）。该命令设置 `ENV_FILE`。使用 `--json` 时，启动命令位于 `next_steps`，交互提示写入 stderr。
 
-生成配置后，首次只验证行情可运行时使用 `python main.py --dry-run --no-market-review`，避免大盘复盘调用模型。
+选择 OpenAI-compatible 时，交互填写 HTTP(S) 网关地址和网关返回的原始模型 ID（例如 `deepseek-ai/DeepSeek-V4-Flash`）。也可通过 `--init-base-url` 与 `--init-model` 传入两项值，交互时按回车保留。非交互模式必须同时传入这两个参数。地址、`LLM_COMPATIBLE_API_KEY` 和模型保存在同一渠道中。Telegram 需要同时填写 Bot Token 和 Chat ID。
+
+交互时可逐行粘贴自选股，输入空行结束。在第一行直接回车会保留默认列表或 `--stocks` 指定的值。脚本可用 `--stocks` 传入一个字符串，股票代码以逗号或换行符分隔。
+
+DeepSeek 向导和极简模板使用官方 `deepseek-flash` 和标准 API 地址。手动使用极简模板时，启用整个 DeepSeek 区块并填写 `LLM_DEEPSEEK_API_KEY`。 [DeepSeek API 文档](https://api-docs.deepseek.com/api/create-chat-completion/)
+
+选择 Ollama 后，先运行 `ollama pull qwen2.5:14b` 安装默认模型。若本机已有其他模型，例如 `qwen3:8b`，可改为 `OLLAMA_MODEL=qwen3:8b` 和 `LITELLM_MODEL=ollama/qwen3:8b`。
+
+首次只验证行情时，把启动命令中的 `--serve-only` 换成 `--dry-run --no-market-review`，备用路径仍沿用命令中的 `ENV_FILE` 设置。
 
 ## Generation Backend（Phase 4）
 
@@ -138,8 +145,7 @@ LITELLM_MODEL=openai/deepseek-ai/DeepSeek-V3
 # 填入你在 DeepSeek 官方平台申请的 API Key
 DEEPSEEK_API_KEY=sk-xxxxxxxxxxxxxxxx
 ```
-*仅填这一行时，系统默认使用 `deepseek/deepseek-v4-flash`。*
-`deepseek-chat` / `deepseek-reasoner` 已被 DeepSeek 官方公告于 2026/07/24 停用，旧配置请迁移；新配置建议通过 Web 快速渠道或显式 `LITELLM_MODEL=deepseek/deepseek-v4-flash` 迁移到 `deepseek-v4-flash` / `deepseek-v4-pro`。
+此单行配置沿用旧版默认模型 `deepseek/deepseek-v4-flash`。首次配置时，使用初始化向导或极简模板的 DeepSeek 区块即可选用官方推荐的 `deepseek-flash`。 [DeepSeek 更新记录](https://api-docs.deepseek.com/updates/)
 
 ### 示例 3：使用 Gemini 免费 API
 ```env

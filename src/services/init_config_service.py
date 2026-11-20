@@ -7,9 +7,13 @@ import getpass
 import os
 from pathlib import Path
 import shlex
+import stat
 import sys
 import tempfile
+import warnings
 from typing import Any, Callable, Dict, List, Optional
+from urllib.parse import urlsplit
+from uuid import uuid4
 
 
 PROVIDER_SPECS: Dict[str, Dict[str, str]] = {
@@ -24,7 +28,7 @@ PROVIDER_SPECS: Dict[str, Dict[str, str]] = {
         "note": "Recommended starter with free quota at aistudio.google.com.",
     },
     "deepseek": {
-        "env_key": "DEEPSEEK_API_KEY",
+        "env_key": "LLM_DEEPSEEK_API_KEY",
         "label": "DeepSeek API (Cost-effective Chinese/English reasoning)",
         "note": "Configure key from platform.deepseek.com.",
     },
@@ -39,7 +43,7 @@ PROVIDER_SPECS: Dict[str, Dict[str, str]] = {
         "note": "Uses the official OpenAI endpoint by default.",
     },
     "openai-compatible": {
-        "env_key": "OPENAI_API_KEY",
+        "env_key": "LLM_COMPATIBLE_API_KEY",
         "label": "OpenAI-compatible endpoint",
         "note": "Requires an explicit base URL and model.",
     },
@@ -92,6 +96,8 @@ PROVIDER_ORDER: List[str] = [
 NOTIFY_ORDER: List[str] = ["none", "wechat", "feishu", "telegram", "discord"]
 
 
+_OLLAMA_DEFAULT_BASE = "http://127.0.0.1:11434"
+_OLLAMA_DEFAULT_MODEL = "qwen2.5:14b"
 _LINE_SEPARATORS = "\r\n\v\f\x1c\x1d\x1e\x85\u2028\u2029"
 
 
@@ -113,12 +119,86 @@ def _normalize_stocks(value: Optional[str]) -> str:
     return ",".join(safe_tokens) or "600519,hk00700,AAPL"
 
 
-def _set_private_permissions(fd: int, path: Path) -> None:
-    """Restrict generated config files on both POSIX and Windows runtimes."""
+def _open_private_windows_file(path: Path) -> int:
+    """Create a new file with a protected DACL for the current Windows user."""
+    import ctypes as c
+    from ctypes import wintypes as w
+    import msvcrt
+
+    kernel = c.WinDLL("kernel32", use_last_error=True)
+    security = c.WinDLL("advapi32", use_last_error=True)
+
+    class SecurityAttributes(c.Structure):
+        _fields_ = [("length", w.DWORD), ("descriptor", w.LPVOID), ("inherit_handle", w.BOOL)]
+
+    kernel.GetCurrentProcess.restype = w.HANDLE
+    kernel.CloseHandle.argtypes = [w.HANDLE]
+    kernel.LocalFree.argtypes = [w.HLOCAL]
+    kernel.LocalFree.restype = w.HLOCAL
+    security.OpenProcessToken.argtypes = [w.HANDLE, w.DWORD, c.POINTER(w.HANDLE)]
+    security.GetTokenInformation.argtypes = [w.HANDLE, c.c_int, w.LPVOID, w.DWORD, c.POINTER(w.DWORD)]
+    security.ConvertSidToStringSidW.argtypes = [w.LPVOID, c.POINTER(w.LPWSTR)]
+    security.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [
+        w.LPCWSTR, w.DWORD, c.POINTER(w.LPVOID), c.POINTER(w.DWORD),
+    ]
+    kernel.CreateFileW.argtypes = [
+        w.LPCWSTR, w.DWORD, w.DWORD, c.POINTER(SecurityAttributes), w.DWORD, w.DWORD, w.HANDLE,
+    ]
+    kernel.CreateFileW.restype = w.HANDLE
+    kernel.GetVolumeInformationByHandleW.argtypes = [
+        w.HANDLE, w.LPWSTR, w.DWORD, c.POINTER(w.DWORD), c.POINTER(w.DWORD),
+        c.POINTER(w.DWORD), w.LPWSTR, w.DWORD,
+    ]
+
+    token = w.HANDLE()
+    if not security.OpenProcessToken(kernel.GetCurrentProcess(), 0x0008, c.byref(token)):  # TOKEN_QUERY
+        raise c.WinError(c.get_last_error())
     try:
-        os.fchmod(fd, 0o600)
-    except AttributeError:  # pragma: no cover - Windows Python builds
-        os.chmod(path, 0o600)
+        size = w.DWORD()
+        token_user = 1  # TokenUser
+        security.GetTokenInformation(token, token_user, None, 0, c.byref(size))
+        user = c.create_string_buffer(size.value)
+        if not security.GetTokenInformation(token, token_user, user, size, c.byref(size)):
+            raise c.WinError(c.get_last_error())
+        # TOKEN_USER starts with the SID pointer of its SID_AND_ATTRIBUTES member.
+        user_sid = c.cast(user, c.POINTER(w.LPVOID))[0]
+        sid_string = w.LPWSTR()
+        if not security.ConvertSidToStringSidW(user_sid, c.byref(sid_string)):
+            raise c.WinError(c.get_last_error())
+        try:
+            sid = sid_string.value
+        finally:
+            kernel.LocalFree(c.cast(sid_string, w.LPVOID))
+    finally:
+        kernel.CloseHandle(token)
+
+    # Set the owner explicitly because an elevated token may default to a group.
+    # D:P prevents inheritance. FA grants full file access only to this SID.
+    descriptor = w.LPVOID()
+    sddl = f"O:{sid}D:P(A;;FA;;;{sid})"
+    if not security.ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl, 1, c.byref(descriptor), None):
+        raise c.WinError(c.get_last_error())
+    try:
+        attrs = SecurityAttributes(c.sizeof(SecurityAttributes), descriptor, False)
+        generic_read_write = 0x80000000 | 0x40000000  # GENERIC_READ | GENERIC_WRITE
+        create_new, normal_attributes = 1, 0x80
+        handle = kernel.CreateFileW(str(path), generic_read_write, 0, c.byref(attrs), create_new, normal_attributes, None)
+        if handle == w.HANDLE(-1).value:  # INVALID_HANDLE_VALUE
+            raise c.WinError(c.get_last_error())
+    finally:
+        kernel.LocalFree(descriptor)
+
+    try:
+        flags = w.DWORD()
+        if not kernel.GetVolumeInformationByHandleW(handle, None, 0, None, None, c.byref(flags), None, 0):
+            raise c.WinError(c.get_last_error())
+        if not flags.value & 0x00000008:  # FILE_PERSISTENT_ACLS
+            raise OSError(f"The output filesystem does not support Windows file ACLs: {path.parent}")
+        return msvcrt.open_osfhandle(handle, os.O_WRONLY | os.O_BINARY)
+    except BaseException:
+        kernel.CloseHandle(handle)
+        path.unlink(missing_ok=True)
+        raise
 
 
 def normalize_provider(provider: Optional[str]) -> str:
@@ -158,8 +238,20 @@ def generate_minimal_env_content(
     clean_base_url = _sanitize_single_line(base_url)
     clean_model = _sanitize_single_line(model)
 
-    if norm_provider == "openai-compatible" and (not clean_base_url or not clean_model):
-        raise ValueError("OpenAI-compatible provider requires OPENAI_BASE_URL and OPENAI_MODEL")
+    if norm_provider == "openai-compatible":
+        if not clean_model or "," in clean_model:
+            raise ValueError("OpenAI-compatible provider requires one model ID")
+        try:
+            url = urlsplit(clean_base_url)
+            valid_url = (
+                url.scheme in {"http", "https"} and url.hostname and url.username is None
+                and not url.fragment and not any(ch.isspace() for ch in clean_base_url)
+                and url.port != 0
+            )
+        except ValueError:
+            valid_url = False
+        if not valid_url:
+            raise ValueError("OpenAI-compatible provider requires a valid HTTP(S) base URL without embedded credentials or a fragment")
     if norm_notify == "telegram" and (not clean_notify_target or not clean_extra_id):
         raise ValueError("Telegram requires both TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID")
 
@@ -178,17 +270,27 @@ def generate_minimal_env_content(
     ]
 
     if norm_provider == "ollama":
-        base_val = clean_key or "http://127.0.0.1:11434"
-        lines.append(f"OLLAMA_API_BASE={base_val}")
-        lines.append("OLLAMA_MODEL=qwen2.5:14b")
-        lines.append("LITELLM_MODEL=ollama/qwen2.5:14b")
+        lines.append(f"OLLAMA_API_BASE={clean_key or _OLLAMA_DEFAULT_BASE}")
+        lines.append(f"OLLAMA_MODEL={_OLLAMA_DEFAULT_MODEL}")
+        lines.append(f"LITELLM_MODEL=ollama/{_OLLAMA_DEFAULT_MODEL}")
     elif norm_provider == "deepseek":
-        lines.append(f"{provider_spec['env_key']}={clean_key}")
-        lines.append("LITELLM_MODEL=deepseek/deepseek-v4-flash")
+        lines.extend([
+            "LLM_CHANNELS=deepseek",
+            "LLM_DEEPSEEK_PROTOCOL=deepseek",
+            "LLM_DEEPSEEK_BASE_URL=https://api.deepseek.com",
+            f"{provider_spec['env_key']}={clean_key}",
+            "LLM_DEEPSEEK_MODELS=deepseek-flash",
+        ])
     elif norm_provider == "openai-compatible":
-        lines.append(f"{provider_spec['env_key']}={clean_key}")
-        lines.append(f"OPENAI_BASE_URL={clean_base_url}")
-        lines.append(f"OPENAI_MODEL={clean_model}")
+        # Bind the gateway key, endpoint and model in one channel. The first
+        # prefix is LiteLLM's protocol and the remainder is the raw gateway ID.
+        lines.extend([
+            "LLM_CHANNELS=compatible",
+            "LLM_COMPATIBLE_PROTOCOL=openai",
+            f"LLM_COMPATIBLE_BASE_URL={clean_base_url}",
+            f"{provider_spec['env_key']}={clean_key}",
+            f"LLM_COMPATIBLE_MODELS=openai/{clean_model}",
+        ])
     else:
         lines.append(f"{provider_spec['env_key']}={clean_key}")
 
@@ -204,9 +306,7 @@ def generate_minimal_env_content(
 
     lines.extend([
         "",
-        "# Next commands:",
-        "#   python main.py --serve-only   # Start WebUI at http://127.0.0.1:8000",
-        "#   python main.py --stocks 600519 --dry-run --no-market-review",
+        "# Start with the command printed by the initialization wizard.",
         "",
     ])
     return "\n".join(lines)
@@ -228,50 +328,62 @@ def write_minimal_env(
             f"Config file already exists: {target}. Use --init-force to overwrite, or pick --init-output <path>."
         )
     target.parent.mkdir(parents=True, exist_ok=True)
-    if not force:
-        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    temp_prefix = ".env.dsa-init-"  # Covered by the repository's .env.* ignore rule.
+    if os.name == "nt":
+        if force and existed:
+            # Directory delete rights can allow replacement of a file the
+            # current user could not read. Keep that ACL boundary in place.
+            with target.open("rb"):
+                pass
+        temp_path = target.parent / f"{temp_prefix}{uuid4().hex}.tmp"
+        fd = _open_private_windows_file(temp_path)
+    else:
+        fd, temp_name = tempfile.mkstemp(prefix=temp_prefix, dir=target.parent)
+        temp_path = Path(temp_name)
+    try:
         try:
-            fd = os.open(target, flags, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8", newline="\n", closefd=False) as stream:
+                if os.name != "nt":
+                    os.fchmod(fd, 0o600)
+                    if stat.S_IMODE(os.fstat(fd).st_mode) != 0o600:
+                        raise OSError(f"The output filesystem did not apply private file permissions: {target.parent}")
+                stream.write(content)
+                stream.flush()
+                os.fsync(fd)
+        finally:
+            os.close(fd)
+        try:
+            if force:
+                os.replace(temp_path, target)
+            elif os.name == "nt":
+                os.rename(temp_path, target)  # Windows rename fails if the destination exists.
+            else:
+                os.link(temp_path, target)  # POSIX rename would overwrite a racing writer.
         except FileExistsError:
+            if force:
+                raise
             raise FileExistsError(
                 f"Config file already exists: {target}. Use --init-force to overwrite, or pick --init-output <path>."
             ) from None
-        try:
-            _set_private_permissions(fd, target)
-            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
-                stream.write(content)
-                stream.flush()
-                os.fsync(stream.fileno())
-        except Exception:
-            try:
-                target.unlink()
-            except FileNotFoundError:
-                pass
-            raise
-    else:
-        fd, temp_name = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
-        try:
-            _set_private_permissions(fd, Path(temp_name))
-            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
-                stream.write(content)
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(temp_name, target)
-        finally:
-            try:
-                Path(temp_name).unlink()
-            except FileNotFoundError:
-                pass
+    finally:
+        temp_path.unlink(missing_ok=True)
     return {
         "ok": True,
         "path": str(target),
         "overwritten": existed,
         "bytes": len(content.encode("utf-8")),
-        "next_steps": [
-            "Edit the AI API key in the generated file if left blank",
-            "python main.py --serve-only",
-        ],
     }
+
+
+def _init_launch_command(alternate_path: Optional[Path], *, windows: bool) -> str:
+    command = "python main.py --serve-only"
+    if alternate_path is None:
+        return command
+    if windows:
+        single_quotes = "'\u2018\u2019\u201a\u201b"
+        value = str(alternate_path).translate({ord(quote): quote * 2 for quote in single_quotes})
+        return f"$env:ENV_FILE = '{value}'; {command}"
+    return f"ENV_FILE={shlex.quote(str(alternate_path))} {command}"
 
 
 def run_init_wizard(
@@ -283,7 +395,7 @@ def run_init_wizard(
     non_interactive: bool = False,
     base_url: str = "",
     model: str = "",
-    input_fn: Callable[[str], str] = input,
+    input_fn: Optional[Callable[[str], str]] = None,
 ) -> Dict[str, Any]:
     """Run minimal .env initialization wizard (interactive when TTY + allowed)."""
     provider = normalize_provider(default_provider)
@@ -296,14 +408,23 @@ def run_init_wizard(
     model = _sanitize_single_line(model)
 
     def read_prompt(prompt: str, *, secret: bool = False) -> str:
-        if input_fn is input:
-            if secret:
-                return getpass.getpass(prompt, stream=sys.stderr)
+        if input_fn is not None:
+            return input_fn(prompt)
+        if not secret:
             print(prompt, end="", file=sys.stderr, flush=True)
             return input()
-        return input_fn(prompt)
+        # Windows getpass uses the console for its prompt, ignoring stream.
+        if os.name == "nt":
+            print(prompt, end="", file=sys.stderr, flush=True)
+            prompt = ""
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", getpass.GetPassWarning)
+            try:
+                return getpass.getpass(prompt, stream=sys.stderr)
+            except getpass.GetPassWarning as exc:
+                raise ValueError("Cannot hide credential input. Use --non-interactive and edit the file.") from exc
 
-    interactive = not non_interactive and (input_fn is not input or sys.stdin.isatty())
+    interactive = not non_interactive and (input_fn is not None or sys.stdin.isatty())
     if interactive:
         provider_choices = ", ".join(PROVIDER_ORDER)
         chosen_provider = _sanitize_single_line(read_prompt(
@@ -316,18 +437,22 @@ def run_init_wizard(
         prompt_label = (
             f"    Enter {env_key} (press Enter to leave blank and fill later): "
             if provider != "ollama"
-            else "    Enter OLLAMA_API_BASE (default http://127.0.0.1:11434): "
+            else f"    Enter OLLAMA_API_BASE (default {_OLLAMA_DEFAULT_BASE}): "
         )
         api_key = _sanitize_single_line(read_prompt(prompt_label, secret=provider != "ollama"))
         if provider == "openai-compatible":
-            base_url = _sanitize_single_line(read_prompt("    OPENAI_BASE_URL (required): "))
-            model = _sanitize_single_line(read_prompt("    OPENAI_MODEL (required): "))
-            if not base_url or not model:
-                raise ValueError("OpenAI-compatible provider requires OPENAI_BASE_URL and OPENAI_MODEL")
+            url_hint = "Enter keeps --init-base-url" if base_url else "required"
+            model_hint = "Enter keeps --init-model" if model else "required"
+            base_url = _sanitize_single_line(read_prompt(f"    Gateway base URL ({url_hint}): ")) or base_url
+            model = _sanitize_single_line(read_prompt(f"    Gateway model ID ({model_hint}): ")) or model
 
-        chosen_stocks = read_prompt(f"2/3 Watchlist STOCK_LIST (default: {stocks}): ")
-        if chosen_stocks:
-            stocks = _normalize_stocks(chosen_stocks)
+        stock_lines = []
+        line = read_prompt(f"2/3 Watchlist STOCK_LIST (blank line to finish, default: {stocks}): ")
+        while line.strip():
+            stock_lines.append(line)
+            line = read_prompt("")
+        if stock_lines:
+            stocks = _normalize_stocks("\n".join(stock_lines))
 
         notify_choices = ", ".join(NOTIFY_ORDER)
         chosen_notify = _sanitize_single_line(read_prompt(
@@ -347,11 +472,9 @@ def run_init_wizard(
 
     if provider == "openai-compatible" and (not base_url or not model):
         raise ValueError("OpenAI-compatible provider requires --init-base-url and --init-model")
-    if notify == "telegram" and (not notify_target or not extra_notify_id):
-        raise ValueError("Telegram requires both TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID")
-
+    active_path = Path(os.getenv("ENV_FILE") or Path(__file__).resolve().parents[2] / ".env")
     if output_path is None:
-        output_path = os.getenv("ENV_FILE") or Path(__file__).resolve().parents[2] / ".env"
+        output_path = active_path
     content = generate_minimal_env_content(
         provider=provider,
         api_key=api_key,
@@ -363,15 +486,15 @@ def run_init_wizard(
         model=model,
     )
     result = write_minimal_env(output_path, content, force=force)
-    active_path = Path(os.getenv("ENV_FILE") or Path(__file__).resolve().parents[2] / ".env").resolve()
     written_path = Path(result["path"]).resolve()
-    if written_path != active_path:
-        result["next_steps"].insert(
-            0,
-            f"ENV_FILE={shlex.quote(str(written_path))} python main.py --serve-only",
-        )
+    alternate_path = written_path if written_path != active_path.resolve() else None
     result["provider"] = provider
     result["env_key"] = PROVIDER_SPECS[provider]["env_key"]
+    result["next_steps"] = [
+        f"Run ollama pull {_OLLAMA_DEFAULT_MODEL} if the default model is missing"
+        if provider == "ollama" else f"Fill {result['env_key']} in the generated file if left blank",
+        _init_launch_command(alternate_path, windows=os.name == "nt"),
+    ]
     result["stocks"] = stocks
     result["notify"] = notify
     result["interactive"] = interactive
