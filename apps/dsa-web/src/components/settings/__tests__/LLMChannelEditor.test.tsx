@@ -658,7 +658,7 @@ describe('LLMChannelEditor', () => {
     expect(update.mock.calls[0][0].items).toEqual([{ key: 'MODELFLARE_KEY', value: 'sk-new' }]);
   });
 
-  it('preserves a local channel draft when a generic shorthand key changes', async () => {
+  it('preserves a local channel draft when a generic shorthand key is cleared and re-entered', async () => {
     const initialItems = [
       { key: 'LLM_CHANNELS', value: 'modelflare' },
       { key: 'MODELFLARE_KEY', value: 'sk-existing', rawValueExists: true },
@@ -679,7 +679,17 @@ describe('LLMChannelEditor', () => {
     rerender(
       <LLMChannelEditor
         items={[
-          { key: 'LLM_CHANNELS', value: 'modelflare' },
+          { key: 'MODELFLARE_KEY', value: '', rawValueExists: true },
+        ]}
+        configVersion="v1"
+        maskToken="******"
+        onSaved={() => {}}
+      />,
+    );
+
+    rerender(
+      <LLMChannelEditor
+        items={[
           { key: 'MODELFLARE_KEY', value: 'sk-new', rawValueExists: true },
         ]}
         configVersion="v1"
@@ -691,6 +701,46 @@ describe('LLMChannelEditor', () => {
     fireEvent.click(await screen.findByRole('button', { name: /Modelflare（聚合平台）/i }));
     await waitFor(() => expect(screen.getByLabelText('Base URL')).toHaveValue('https://draft.example/v1'));
     expect(screen.getByLabelText('API Key')).toHaveValue('sk-new');
+  });
+
+  it('keeps a locally removed channel deleted when another channel draft changes', async () => {
+    const initialItems = [
+      { key: 'LLM_CHANNELS', value: 'modelflare,secondary' },
+      { key: 'MODELFLARE_KEY', value: 'sk-modelflare', rawValueExists: true },
+      { key: 'LLM_MODELFLARE_BASE_URL', value: 'https://modelflare.example/v1' },
+      { key: 'LLM_MODELFLARE_MODELS', value: 'openai/model' },
+      { key: 'LLM_SECONDARY_BASE_URL', value: 'https://secondary.example/v1' },
+      { key: 'LLM_SECONDARY_API_KEY', value: 'sk-secondary', rawValueExists: true },
+      { key: 'LLM_SECONDARY_MODELS', value: 'secondary/model' },
+    ];
+    const { rerender } = render(
+      <LLMChannelEditor
+        items={initialItems}
+        configVersion="v1"
+        maskToken="******"
+        onSaved={() => {}}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: /secondary/i }));
+    const removeButtons = screen.getAllByRole('button', { name: '✕' });
+    fireEvent.click(removeButtons[removeButtons.length - 1]);
+    expect(screen.queryByRole('button', { name: /secondary/i })).not.toBeInTheDocument();
+
+    rerender(
+      <LLMChannelEditor
+        items={initialItems.map((item) => item.key === 'MODELFLARE_KEY'
+          ? { ...item, value: 'sk-new' }
+          : item)}
+        configVersion="v1"
+        maskToken="******"
+        onSaved={() => {}}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.queryByRole('button', { name: /secondary/i })).not.toBeInTheDocument();
+    });
   });
 
   it('does not append Modelflare to explicitly declared channels when its shorthand key exists', () => {

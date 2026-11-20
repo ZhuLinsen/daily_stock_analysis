@@ -240,6 +240,12 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({ isOpen, onClose,
   useEffect(() => {
     const handleGlobalKeyDown = (event: KeyboardEvent) => {
       if (!event.isComposing && (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+        // A portal-based modal (for example settings help) owns focus and
+        // keyboard commands until it closes. Do not open a lower-layer palette
+        // behind it; an already-open palette may still be toggled closed.
+        if (!isOpen && document.querySelector('[role="dialog"][aria-modal="true"]')) {
+          return;
+        }
         event.preventDefault();
         onToggle();
       } else if (isOpen && event.key === 'Escape' && !event.isComposing) {

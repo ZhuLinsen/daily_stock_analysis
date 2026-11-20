@@ -24,6 +24,21 @@ const PaletteHarness = () => {
   );
 };
 
+const PaletteWithBlockingModalHarness = () => {
+  const [open, setOpen] = useState(false);
+  return (
+    <MemoryRouter initialEntries={['/']}>
+      <button type="button" onClick={() => setOpen(true)}>Open blocking modal</button>
+      {open ? <div role="dialog" aria-modal="true" aria-label="Blocking modal">Blocking modal</div> : null}
+      <CommandPalette
+        isOpen={false}
+        onClose={() => {}}
+        onToggle={() => { throw new Error('palette should not open behind a modal'); }}
+      />
+    </MemoryRouter>
+  );
+};
+
 describe('CommandPalette', () => {
   it('opens on Ctrl/Cmd+K, filters commands, jumps to route on Enter, and offers direct ticker shortcut', () => {
     render(<PaletteHarness />);
@@ -92,5 +107,14 @@ describe('CommandPalette', () => {
     expect(dialog).toContainElement(document.activeElement as HTMLElement);
     fireEvent.keyDown(window, { key: 'Escape' });
     expect(document.activeElement).toBe(backgroundAction);
+  });
+
+  it('does not open behind another modal dialog', () => {
+    render(<PaletteWithBlockingModalHarness />);
+    fireEvent.click(screen.getByRole('button', { name: 'Open blocking modal' }));
+
+    fireEvent.keyDown(window, { key: 'k', ctrlKey: true });
+
+    expect(screen.getByRole('dialog', { name: 'Blocking modal' })).toBeInTheDocument();
   });
 });

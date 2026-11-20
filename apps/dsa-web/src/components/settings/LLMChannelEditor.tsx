@@ -1748,6 +1748,7 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
   const prevRuntimeRef = useRef(runtimeFingerprint);
   const previousInitialChannelsRef = useRef(initialChannels);
   const previousInitialRuntimeConfigRef = useRef(initialRuntimeConfig);
+  const removedInitialChannelNamesRef = useRef<Set<string>>(new Set());
   const pendingSaveFeedbackFingerprintRef = useRef<{ channels: string; runtime: string } | null>(null);
   const discoveryNonceRef = useRef<Record<string, number>>({});
   const discoveryRequestIdRef = useRef(0);
@@ -1765,19 +1766,40 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
     prevDraftResetTokenRef.current = draftResetToken;
     prevChannelsRef.current = channelsFingerprint;
     prevRuntimeRef.current = runtimeFingerprint;
-    previousInitialChannelsRef.current = initialChannels;
+    // Keep snapshots for channels that temporarily disappear from `items`.
+    // The shorthand MODELFLARE_KEY path can do exactly that while its draft
+    // value is cleared and then entered again.
+    const nextInitialChannelNames = new Set(initialChannels.map((channel) => channel.name.toLowerCase()));
+    previousInitialChannelsRef.current = [
+      ...initialChannels,
+      ...previousInitialChannels.filter((channel) => !nextInitialChannelNames.has(channel.name.toLowerCase())),
+    ];
     previousInitialRuntimeConfigRef.current = initialRuntimeConfig;
     const pendingSaveFeedbackFingerprint = pendingSaveFeedbackFingerprintRef.current;
     const preserveSaveFeedback = pendingSaveFeedbackFingerprint?.channels === channelsFingerprint
       && pendingSaveFeedbackFingerprint.runtime === runtimeFingerprint;
     pendingSaveFeedbackFingerprintRef.current = null;
     if (isExplicitReset) {
+      removedInitialChannelNamesRef.current = new Set();
       setChannels(initialChannels);
       setRuntimeConfig(initialRuntimeConfig);
     } else {
       setChannels((currentChannels) => {
+        const removedInitialChannelNames = removedInitialChannelNamesRef.current;
+        const currentChannelNames = new Set(currentChannels.map((channel) => channel.name.toLowerCase()));
+        previousInitialChannels.forEach((channel) => {
+          const name = channel.name.toLowerCase();
+          if (!currentChannelNames.has(name)) {
+            removedInitialChannelNames.add(name);
+          }
+        });
+        currentChannelNames.forEach((name) => removedInitialChannelNames.delete(name));
         const nextChannelNames = new Set(initialChannels.map((channel) => channel.name.toLowerCase()));
-        const mergedChannels = initialChannels.map((nextInitial) => {
+        const mergedChannels = initialChannels.flatMap((nextInitial) => {
+          if (removedInitialChannelNames.has(nextInitial.name.toLowerCase())
+            && !currentChannelNames.has(nextInitial.name.toLowerCase())) {
+            return [];
+          }
           const currentChannel = currentChannels.find(
             (channel) => channel.id === nextInitial.id
               || channel.name.toLowerCase() === nextInitial.name.toLowerCase(),
@@ -1787,7 +1809,7 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
               || channel.name.toLowerCase() === nextInitial.name.toLowerCase(),
           );
           if (!currentChannel || !previousInitial) {
-            return nextInitial;
+            return [nextInitial];
           }
           const merged = { ...nextInitial };
           (['name', 'protocol', 'apiSurface', 'baseUrl', 'apiKey', 'models', 'enabled'] as const).forEach((field) => {
@@ -1795,7 +1817,7 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
               Object.assign(merged, { [field]: currentChannel[field] });
             }
           });
-          return merged;
+          return [merged];
         });
 
         // A locally added channel has no previous initial snapshot. Keep it

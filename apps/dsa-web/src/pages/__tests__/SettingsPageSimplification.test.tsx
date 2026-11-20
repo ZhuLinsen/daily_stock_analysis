@@ -222,6 +222,53 @@ describe('SettingsPage search and essential mode', () => {
     expect(screen.queryByTestId('field-VISION_MODEL')).not.toBeInTheDocument();
   });
 
+  it('keeps runtime model fields editable when a YAML config is present alongside fallback channels', () => {
+    useSystemConfigMock.mockReturnValue({
+      categories: [
+        { category: 'ai_model', title: 'AI Model', description: '模型配置', displayOrder: 1, fields: [] },
+      ],
+      itemsByCategory: {
+        ai_model: [
+          { ...makeItem('LLM_CHANNELS', 'ai_model'), value: 'fallback', rawValueExists: true },
+          { ...makeItem('LITELLM_CONFIG', 'ai_model'), value: '/etc/dsa/litellm.yaml', rawValueExists: true },
+          { ...makeItem('VISION_MODEL', 'ai_model'), value: 'openai/vision', rawValueExists: true },
+          { ...makeItem('LITELLM_MODEL', 'ai_model'), value: 'openai/chat', rawValueExists: true },
+        ],
+      },
+      issueByKey: {},
+      activeCategory: 'ai_model',
+      setActiveCategory,
+      hasDirty: false,
+      dirtyCount: 0,
+      toast: null,
+      clearToast: vi.fn(),
+      isLoading: false,
+      isSaving: false,
+      loadError: null,
+      saveError: null,
+      retryAction: null,
+      load: vi.fn().mockResolvedValue(true),
+      retry: vi.fn(),
+      save: vi.fn(),
+      resetDraft: vi.fn(),
+      setDraftValue: vi.fn(),
+      getChangedItems: () => [],
+      refreshAfterExternalSave: vi.fn(),
+      configVersion: 'v1',
+      maskToken: '***',
+      llmModelProviders: [],
+    });
+
+    const router = createMemoryRouter([{ path: '/settings', element: <SettingsPage /> }], {
+      initialEntries: ['/settings'],
+    });
+    render(<RouterProvider router={router} />);
+
+    expect(screen.getByTestId('field-VISION_MODEL')).toBeInTheDocument();
+    expect(screen.getByTestId('field-LITELLM_MODEL')).toBeInTheDocument();
+    expect(screen.queryByTestId('field-LLM_CHANNELS')).not.toBeInTheDocument();
+  });
+
   it('keeps stateful LLMChannelEditor and SchedulerSettingsCard mounted across search and applies ?category= deep link only once per navigation', () => {
     let currentCategory = 'base';
     let stockListValue = '600519';
