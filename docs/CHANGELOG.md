@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-> For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
+> Release notes are generated from merged PRs and archived here by version. For the published notes, see [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases).
 
 ## [Unreleased]
 
@@ -15,9 +15,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 <!-- 新条目格式：- [类型] 描述（类型取值：新功能/改进/修复/文档/测试/chore）-->
 
 - 新功能: 可选每日热榜 Top N 轻量分析（`HOT_TOP10_*`，默认关闭，Issue #1936）：A 股交易日收盘后抓取市场主题热榜前 N 名，一次 LLM 生成"热点总览 + 逐项动因/强度/介入建议/风险"轻量报告并经既有报告通知渠道推送；同数据日期只投递一次（按日去重标记，标记写入失败不视为交付、当日不重复推送）；服务按数据源适配/榜单计算/幂等标记/门面四层拆分（`src/services/hot_top10/`）。
+- [修复] 盘中回测与 Skill 观点评估从当日收盘起算，避免计入分析时已发生的日内涨跌；回测排除相对评估入场价失效的止盈止损方案的模拟收益及命中率，方向评估继续保留。
+- [修复] 钉钉和飞书凭据在 `.env.example` 中默认留空，避免首次配置时误报；模型缺失提示补充 `MODELFLARE_KEY`。
+- [修复] Agent 缺少真实历史置信度数据时保持中性校准，不再使用固定的估计值。
 - [文档] 将简体、英文和繁体 README 首页的 HelloGitHub 徽章替换为 Star History 全球排名徽章，与 Trendshift 徽章等高并排展示。
 - [改进] 历史个股栏批量统计展示股票的历史分析次数，减少刷新时的数据库查询。
 - [修复] 持仓交易、现金流水和公司行动拒绝 NaN / Infinity 等非有限数值；CSV 预览、预演和提交在写入前拒绝包含非有限数值或费税合计溢出的交易行，并返回行号和字段，避免污染账本和快照；API 校验错误中的非有限数值可安全返回 JSON。
+- [改进] Web 股票输入框的联想搜索为每只股票只规范化一次代码、名称、拼音和别名，后续搜索直接复用，不再每次都对约 3.2 万条索引重新做 Unicode 规范化。
 
 ## [3.35.0] - 2026-11-16
 
