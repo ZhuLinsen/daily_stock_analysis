@@ -27,6 +27,18 @@
 
 ---
 
+## 首次初始化向导
+
+新用户可以直接运行 `python main.py --init` 生成极简 `.env`。无 TTY 或脚本场景使用
+`python main.py --init --non-interactive`；该模式会生成留空 API Key 的待填写配置。默认写入仓库根目录的
+`.env`，如已设置 `ENV_FILE` 则写入该路径，也可用 `--init-output <path>` 指定备用文件。
+
+初始化不会覆盖已有文件；确认已备份后才使用 `--init-force`。备用路径不会自动成为运行时配置，需按命令输出设置
+`ENV_FILE` 后再启动。OpenAI-compatible 渠道必须同时提供 `--init-base-url` 与 `--init-model`；Telegram 必须同时填写
+Bot Token 和 Chat ID。`--json` 的结果只写 stdout，交互提示写 stderr，便于脚本解析。
+
+生成配置后，首次只验证行情可运行时使用 `python main.py --dry-run --no-market-review`，避免大盘复盘调用模型。
+
 ## Generation Backend（Phase 4）
 
 Generation backend 是普通分析、大盘复盘和 `generate_text()` 的外层运行时选择。默认仍是 `litellm`，零配置路径与历史行为保持一致；`codex_cli` / `claude_code_cli` / `opencode_cli` 是显式 opt-in 的本地 CLI backend，当前标记为 **experimental/limited**。

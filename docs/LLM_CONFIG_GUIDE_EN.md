@@ -20,6 +20,20 @@ If you are choosing a concrete provider, setting up GitHub Actions Secrets / Var
 
 ---
 
+## First-run initialization wizard
+
+Run `python main.py --init` to generate a minimal `.env`. For non-TTY or scripted use, run
+`python main.py --init --non-interactive`; it creates a configuration with a blank API key to fill in later.
+The default output is the repository-root `.env`, unless `ENV_FILE` is already set; use `--init-output <path>` for
+an alternate file.
+
+Initialization never overwrites an existing file unless `--init-force` is supplied, so back up an existing config first.
+An alternate output is not automatically active: set `ENV_FILE` as shown in the command output before starting the app.
+The OpenAI-compatible provider requires both `--init-base-url` and `--init-model`; Telegram requires both the bot token
+and chat ID. With `--json`, prompts go to stderr and the result stays parseable on stdout.
+
+After generation, use `python main.py --dry-run --no-market-review` to check data access without invoking the market-review model.
+
 ## Generation Backend (Phase 4)
 
 The generation backend is the outer runtime selector for regular stock analysis, market review, and `generate_text()`. The default remains `litellm` with zero regression. `codex_cli` / `claude_code_cli` / `opencode_cli` are explicit opt-in local CLI backends and are currently **experimental/limited**.

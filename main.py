@@ -487,14 +487,14 @@ def parse_arguments(argv: Optional[List[str]] = None) -> argparse.Namespace:
         '--init-provider',
         type=str,
         default='gemini',
-        choices=['modelflare', 'gemini', 'deepseek', 'aihubmix', 'openai', 'anthropic', 'ollama'],
+        choices=['modelflare', 'gemini', 'deepseek', 'aihubmix', 'openai', 'openai-compatible', 'anthropic', 'ollama'],
         help='配合 --init 指定默认 AI 模型渠道（默认 gemini）'
     )
 
     parser.add_argument(
         '--init-output',
         type=str,
-        default='.env',
+        default=None,
         help='配合 --init 指定输出配置路径（默认 .env）'
     )
 
@@ -502,6 +502,20 @@ def parse_arguments(argv: Optional[List[str]] = None) -> argparse.Namespace:
         '--init-force',
         action='store_true',
         help='配合 --init 允许覆盖已存在的配置文件'
+    )
+
+    parser.add_argument(
+        '--init-base-url',
+        type=str,
+        default='',
+        help='配合 --init-provider openai-compatible 指定兼容端点 URL',
+    )
+
+    parser.add_argument(
+        '--init-model',
+        type=str,
+        default='',
+        help='配合 --init-provider openai-compatible 指定模型名',
     )
 
     parser.add_argument(
@@ -1092,6 +1106,7 @@ def run_full_analysis(
         should_run_market_review = (
             config.market_review_enabled
             and not args.no_market_review
+            and not getattr(args, "dry_run", False)
             and (market_review_region or '') != ''
         )
         if (
@@ -1752,11 +1767,13 @@ def main(argv: Optional[List[str]] = None) -> int:
             res = run_init_wizard(
                 default_provider=getattr(args, "init_provider", "gemini") or "gemini",
                 default_stocks=getattr(args, "stocks", None) or "600519,hk00700,AAPL",
-                output_path=getattr(args, "init_output", ".env") or ".env",
+                output_path=getattr(args, "init_output", None),
                 force=bool(getattr(args, "init_force", False)),
                 non_interactive=bool(getattr(args, "non_interactive", False)),
+                base_url=getattr(args, "init_base_url", "") or "",
+                model=getattr(args, "init_model", "") or "",
             )
-        except (FileExistsError, IsADirectoryError, ValueError) as exc:
+        except (OSError, ValueError) as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
             return 2
 
