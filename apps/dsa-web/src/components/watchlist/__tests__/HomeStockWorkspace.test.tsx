@@ -54,7 +54,6 @@ function renderWorkspace({
         isLoadingTodayItems={false}
         todayLoadError={false}
         watchlistAnalyzedTodayCount={rows.filter((row) => row.analyzedToday).length}
-        historyRefreshKey={0}
         selectedStockCode={selectedStockCode}
         selectedAssetType={selectedAssetType ?? null}
         selectedRecordId={selectedRecordId}
