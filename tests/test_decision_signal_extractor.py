@@ -10,6 +10,7 @@ import pytest
 from src.analyzer import AnalysisResult
 from src.config import Config
 from src.services.decision_signal_extractor import (
+    _risk_summary,
     build_decision_signal_payload_from_report,
     extract_and_persist_from_analysis_result,
 )
@@ -18,6 +19,20 @@ from src.storage import DatabaseManager
 
 
 BUILD_PROFILE_SOURCE = "legacy_unknown"
+
+
+def test_risk_summary_preserves_negated_substring_alerts() -> None:
+    result = AnalysisResult(
+        code="600519",
+        name="贵州茅台",
+        sentiment_score=50,
+        trend_prediction="未知",
+        operation_advice="观望",
+        risk_warning="无退市风险",
+    )
+    dashboard = {"intelligence": {"risk_alerts": ["退市风险"]}}
+
+    assert _risk_summary(result, dashboard) == ["无退市风险", "退市风险"]
 
 
 @pytest.fixture()

@@ -474,11 +474,35 @@ def _risk_summary(result: AnalysisResult, dashboard: Mapping[str, Any]) -> Optio
             text = str(item or "").strip()
             if not text:
                 continue
-            if any(text == prev or text in prev for prev in seen):
+            if any(_risk_items_duplicate(text, prev) for prev in seen):
                 continue
             risks.append(text)
             seen.append(text)
     return risks[:5] or None
+
+
+def _risk_items_duplicate(current: str, previous: str) -> bool:
+    """Deduplicate expanded copies while preserving opposite risk polarity."""
+    if current == previous:
+        return True
+    shorter, longer = sorted((current, previous), key=len)
+    if len(shorter) < 4 or shorter not in longer:
+        return False
+
+    # A negated warning and the positive alert are distinct evidence.  Keep
+    # both when the shared phrase is immediately qualified by a negation.
+    start = longer.find(shorter)
+    prefix = longer[max(0, start - 8):start]
+    negations = (
+        "无", "没有", "不存在", "未见", "未发现", "暂无", "不构成", "不具备",
+        "no ", "not ", "without ", "none",
+    )
+    qualifiers = ("若", "如", "如果", "一旦", "若有", "如有", "若出现", "如出现")
+    if any(negation in prefix for negation in negations) or any(
+        prefix.endswith(qualifier) for qualifier in qualifiers
+    ):
+        return False
+    return True
 
 
 def _catalyst_summary(dashboard: Mapping[str, Any]) -> Optional[Any]:

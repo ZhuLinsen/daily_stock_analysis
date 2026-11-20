@@ -633,8 +633,8 @@ class TestSniperPriceSanityChecks(unittest.TestCase):
             current_price=100.0,
         )
         warnings = validate_sniper_price_sanity(breakout, emit_log=False)
-        self.assertEqual(warnings, [])
-        self.assertFalse(breakout.dashboard["data_perspective"]["price_sanity"]["inverted"])
+        self.assertIn("stop_loss_above_secondary_buy", warnings)
+        self.assertTrue(breakout.dashboard["data_perspective"]["price_sanity"]["inverted"])
 
         pct_text = self._make_buy_result(
             ideal_buy="回踩确认",
@@ -756,4 +756,4 @@ class TestSniperPriceSanityChecks(unittest.TestCase):
             current_price=100.0,
         )
         no_ideal_warnings = validate_sniper_price_sanity(no_ideal_result, emit_log=False)
-        self.assertIn("stop_loss_above_current_price", no_ideal_warnings)
+        self.assertIn("stop_loss_above_secondary_buy", no_ideal_warnings)

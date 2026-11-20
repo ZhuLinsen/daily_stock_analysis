@@ -14,12 +14,13 @@ A股自选股智能分析系统 - 核心分析流水线
 import logging
 import inspect
 import math
+import multiprocessing
 import threading
 import time
 from pathlib import Path
 import uuid
 from collections import defaultdict
-from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import List, Dict, Any, Optional, Tuple, Callable
@@ -113,6 +114,110 @@ from bot.models import BotMessage
 
 
 logger = logging.getLogger(__name__)
+
+
+def _run_stock_process_worker(connection, pipeline, code, kwargs) -> None:
+    """Run one stock analysis in a killable child process."""
+    try:
+        connection.send((True, pipeline.process_single_stock(code, **kwargs)))
+    except BaseException as exc:  # pragma: no cover - exercised through parent process
+        try:
+            connection.send((False, f"{type(exc).__name__}: {exc}"))
+        except BaseException:
+            pass
+    finally:
+        connection.close()
+
+
+class _IsolatedStockExecutor:
+    """Small process-backed executor used only when stock deadlines are enabled."""
+
+    def __init__(self, timeout_seconds: float, pipeline=None, max_workers: int = 1):
+        self._ctx = multiprocessing.get_context("fork")
+        self._timeout_seconds = timeout_seconds
+        self._pipeline = pipeline
+        self._max_workers = max(1, int(max_workers or 1))
+        self._queue = []
+        self._active = {}
+        self._closed = False
+        self._idle = threading.Event()
+        self._idle.set()
+
+    def submit(self, function, code, **kwargs):
+        if self._closed:
+            raise RuntimeError("isolated stock executor has been shut down")
+        future = Future()
+        self._queue.append((function, code, kwargs, future))
+        self._start_next()
+        return future
+
+    def _start_next(self) -> None:
+        if self._closed:
+            return
+        while self._queue and len(self._active) < self._max_workers:
+            function, code, kwargs, future = self._queue.pop(0)
+            self._start_process(function, code, kwargs, future)
+
+    def _start_process(self, function, code, kwargs, future) -> None:
+        parent_conn, child_conn = self._ctx.Pipe(duplex=False)
+        process = self._ctx.Process(
+            target=_run_stock_process_worker,
+            args=(child_conn, getattr(function, "__self__", None) or self._pipeline, code, kwargs),
+            name=f"stock-analysis-{code}",
+            daemon=True,
+        )
+        process.start()
+        child_conn.close()
+        self._active[future] = (process, parent_conn)
+        self._idle.clear()
+
+        def watch() -> None:
+            try:
+                if parent_conn.poll(self._timeout_seconds):
+                    ok, payload = parent_conn.recv()
+                    if not future.done():
+                        future.set_result(payload if ok else None)
+                else:
+                    if process.is_alive():
+                        process.terminate()
+                        process.join(timeout=0.5)
+                        if process.is_alive() and hasattr(process, "kill"):
+                            process.kill()
+                            process.join(timeout=0.5)
+                    if not future.done():
+                        future.set_result(None)
+            except (EOFError, OSError):
+                if not future.done():
+                    future.set_result(None)
+            finally:
+                try:
+                    parent_conn.close()
+                except OSError:
+                    pass
+                process.join(timeout=0.1)
+                self._active.pop(future, None)
+                self._start_next()
+                if not self._active and not self._queue:
+                    self._idle.set()
+
+        threading.Thread(target=watch, name=f"stock-timeout-watch-{code}", daemon=True).start()
+
+    def shutdown(self, wait: bool = True, cancel_futures: bool = False) -> None:
+        self._closed = True
+        if cancel_futures:
+            for process, connection in list(self._active.values()):
+                if process.is_alive():
+                    process.terminate()
+                    process.join(timeout=0.5)
+                    if process.is_alive() and hasattr(process, "kill"):
+                        process.kill()
+                        process.join(timeout=0.5)
+            for _, _, _, future in self._queue:
+                if not future.done():
+                    future.set_result(None)
+            self._queue.clear()
+        if wait:
+            self._idle.wait()
 
 
 # ---------------------------------------------------------------------------
@@ -939,6 +1044,7 @@ class StockAnalysisPipeline:
                     report_type=report_type.value,
                     previous_operation_advice=action_source_advice,
                 )
+                validate_sniper_price_sanity(result, enhanced_context)
 
             if result:
                 self._append_daily_data_source(result, context, analysis_target)
@@ -3597,7 +3703,11 @@ class StockAnalysisPipeline:
 
         # 使用线程池并发处理，并为单只股票卡死提供有界超时隔离
         # 注意：max_workers 设置较低（默认3）以避免触发反爬
-        executor = ThreadPoolExecutor(max_workers=self.max_workers)
+        executor = (
+            _IsolatedStockExecutor(per_stock_timeout, self, self.max_workers)
+            if per_stock_timeout > 0 and "fork" in multiprocessing.get_all_start_methods()
+            else ThreadPoolExecutor(max_workers=self.max_workers)
+        )
         timed_out_any = False
         try:
             future_to_code = {}
@@ -3629,10 +3739,9 @@ class StockAnalysisPipeline:
                 wait_timeout: Optional[float] = None
                 if batch_deadline is not None:
                     remaining = batch_deadline - time.monotonic()
-                    if remaining <= 0:
-                        timed_out_any = True
-                        break
-                    wait_timeout = remaining
+                    # Use a final non-blocking drain at the deadline. A future
+                    # may have completed while notification/analysis delay ran.
+                    wait_timeout = max(0.0, remaining)
 
                 done, pending = wait(
                     pending,

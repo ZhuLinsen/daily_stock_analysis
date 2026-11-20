@@ -2538,5 +2538,38 @@ class SearchNewsFreshnessTestCase(unittest.TestCase):
         self.assertIn(f"[{two_days_ago} · 2天前]", formatted)
         self.assertIn("[日期未知·勿作短期催化]", formatted)
 
+    def test_title_dedup_keeps_direction_and_later_official_copy(self) -> None:
+        """Dedup must not merge signed figures or hide a later official page."""
+        service, _ = self._create_service_with_mock_provider()
+        self.assertNotEqual(
+            service._dedup_title_key("贵州茅台 Q3净利同比+5%"),
+            service._dedup_title_key("贵州茅台 Q3净利同比-5%"),
+        )
+
+        today = datetime.now().date().isoformat()
+        response = service._filter_news_response(
+            _response([
+                _result(
+                    "贵州茅台关于回购股份的公告",
+                    today,
+                    snippet="官方版 安卓版 立即下载 52MB",
+                    url="https://example.com/download/app",
+                ),
+                _result(
+                    "贵州茅台关于回购股份的公告！",
+                    today,
+                    snippet="上交所正式公告",
+                    url="https://www.sse.com.cn/disclosure/announcement",
+                ),
+            ]),
+            search_days=7,
+            max_results=1,
+            log_scope="official_copy_after_duplicate",
+        )
+        self.assertEqual(
+            response.results[0].url,
+            "https://www.sse.com.cn/disclosure/announcement",
+        )
+
 if __name__ == "__main__":
     unittest.main()

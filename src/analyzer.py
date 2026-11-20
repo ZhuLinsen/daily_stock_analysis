@@ -95,7 +95,7 @@ from src.report_language import (
     localize_trend_prediction,
     normalize_report_language,
 )
-from src.schemas.decision_action import build_action_fields
+from src.schemas.decision_action import build_action_fields, normalize_decision_action
 from src.schemas.decision_scale import (
     CANONICAL_DECISION_SCALE_PROMPT_EN,
     CANONICAL_DECISION_SCALE_PROMPT_ZH,
@@ -1160,32 +1160,33 @@ def validate_sniper_price_sanity(
 
     raw_points = _extract_raw_sniper_points(result)
     ideal_buy = _extract_sniper_price_only(raw_points.get("ideal_buy"))
+    secondary_buy = _extract_sniper_price_only(raw_points.get("secondary_buy"))
     stop_loss = _extract_sniper_price_only(raw_points.get("stop_loss"))
     take_profit = _extract_sniper_price_only(raw_points.get("take_profit"))
 
     decision_type = str(getattr(result, "decision_type", None) or "").strip().lower()
-    final_action = str(getattr(result, "action", None) or "").strip().lower()
-    is_buy = (decision_type == "buy") or (not decision_type and final_action == "buy")
+    final_action = normalize_decision_action(getattr(result, "action", None))
+    is_buy = final_action in {"buy", "add"} or (
+        final_action is None and decision_type == "buy"
+    )
 
     warnings: List[str] = []
     inverted = False
     if is_buy:
-        if ideal_buy is not None:
-            if stop_loss is not None and stop_loss >= ideal_buy:
-                warnings.append("stop_loss_above_ideal_buy")
+        entries = [("ideal_buy", ideal_buy), ("secondary_buy", secondary_buy)]
+        if not any(entry is not None for _, entry in entries):
+            entries = [("current_price", current_price)]
+        for entry_name, entry in entries:
+            if entry is None:
+                continue
+            if stop_loss is not None and stop_loss >= entry:
+                warnings.append(f"stop_loss_above_{entry_name}")
                 inverted = True
-            if take_profit is not None and take_profit <= ideal_buy:
-                warnings.append("take_profit_below_ideal_buy")
-                inverted = True
-        elif current_price is not None:
-            if stop_loss is not None and stop_loss >= current_price:
-                warnings.append("stop_loss_above_current_price")
-                inverted = True
-            if take_profit is not None and take_profit <= current_price:
-                warnings.append("take_profit_below_current_price")
+            if take_profit is not None and take_profit <= entry:
+                warnings.append(f"take_profit_below_{entry_name}")
                 inverted = True
 
-        ref_entry = ideal_buy if (ideal_buy is not None and ideal_buy > 0) else current_price
+        ref_entry = ideal_buy or secondary_buy or current_price
         if (
             ref_entry is not None
             and stop_loss is not None
@@ -1212,6 +1213,7 @@ def validate_sniper_price_sanity(
                 "inverted": inverted,
                 "current_price": current_price,
                 "ideal_buy": ideal_buy,
+                "secondary_buy": secondary_buy,
                 "stop_loss": stop_loss,
                 "take_profit": take_profit,
             }
