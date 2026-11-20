@@ -27,30 +27,51 @@
 
 [**Product Preview**](#-product-preview) · [**Key Features**](#-key-features) · [**Quick Start**](#-quick-start) · [**Sample Output**](#-sample-output) · [**Docs Index**](./INDEX_EN.md)
 
-**[3-minute quickstart (Chinese)](./QUICKSTART.md) · [GitHub Actions](#option-1-github-actions-recommended) · [Docker / Local WebUI](#option-2-local--docker-deployment) · [Download Desktop App](https://github.com/ZhuLinsen/daily_stock_analysis/releases)**
-
 English | [简体中文](../README.md) | [繁體中文](README_CHT.md)
 
 </div>
 
-<details open>
-<summary><strong>💖 Sponsors</strong></summary>
-<table>
-  <tr><td align="center"><a href="https://modelflare.dev/sign-up?utm_source=github&amp;utm_campaign=daily_stock_analysis"><img src="assets/modelflare_banner_en.png" alt="Modelflare" width="720"></a><br>Thanks to <strong>Modelflare</strong> for sponsoring this project! Operated by US-based Havenbyte LLC, it offers full-strength, stable GPT, Claude, Gemini, Grok and 40+ image/video models at lower cost. Selected OpenAI groups offer <strong>65% / 75% / 85% daily cache-hit guarantees</strong>; a single <strong>US$20 top-up unlocks GPT at 0.015x</strong>, and <strong>US$50 unlocks Claude at 0.03x</strong>. <a href="https://modelflare.dev/sign-up?utm_source=github&amp;utm_campaign=daily_stock_analysis">Register via this exclusive link</a></td></tr>
-  <tr><td align="center"><a href="https://console.x6pro.io/register?code=zJ2qSdns"><img src="./assets/x6ai_banner.png" alt="x6.ai" width="720" height="187"></a><br>100+ models from $5/month. Claude 81% off, GPT 91% off, DeepSeek 42% off, plus 20% off your first top-up. <a href="https://console.x6pro.io/register?code=zJ2qSdns">Register</a></td></tr>
-  <tr><td align="center"><a href="https://serpapi.com/github-daily-stock-analysis" target="_blank"><img src="assets/serpapi_banner_en.png" alt="Easily scrape real-time financial news data from search engines - SerpApi" width="300" height="141" style="width: 300px; height: 141px; object-fit: contain;"></a></td></tr>
-</table>
-</details>
+## 🚀 Quick Start
 
-## 🖥️ Product Preview
+<a name="-configuration"></a>
 
-<p align="center">
-  <a href="assets/readme_workspace_tour_20260510.gif"><img src="assets/readme_workspace_preview.gif" alt="DSA Web workspace demo" width="640"></a><br>
-  <sub>Click the GIF to view the full demo (analysis, screening, decision signals, portfolio risk, backtest &amp; Agent chat)</sub>
-</p>
+[Full setup guide](./full-guide_EN.md) · [Notification setup](./notifications.md)
 
-> [!TIP]
-> 🚀 **Ecosystem Projects**: [AlphaSift · Smart screening](https://github.com/ZhuLinsen/alphasift) | [AlphaEvo · Strategy backtesting & evolution](https://github.com/ZhuLinsen/alphaevo)
+| Entry | Best For | Prerequisite | Link |
+|-------|----------|--------------|------|
+| **GitHub Actions** | Zero-server daily scheduled analysis (Recommended) | **Only 1 AI Model Secret** | [4-Step Setup Below](#option-1-github-actions-recommended) |
+| **Local CLI** | Generate a first report or check market data | Git, Python | [3-minute quickstart (Chinese)](./QUICKSTART.md#本地-3-步快速起步) |
+| **Docker / Local WebUI** | Self-hosting, portfolio risk & interactive Agent chat | Docker or Git / Python / Node.js | [Commands Below](#option-2-local--docker-deployment) · [Deploy Guide](./DEPLOY_EN.md) |
+| **Desktop App** | Personal investors preferring a native GUI | 1 AI API Key | [Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) · [Setup Guide](./beginner-client-setup.md) |
+
+### Option 1: GitHub Actions (Recommended)
+
+> GitHub Actions runs the analysis on a hosted runner, and your model provider bills for API usage. Configure **one AI model Secret** to start. `STOCK_LIST` defaults to `600519`, and notifications are optional.
+
+1. <a name="1-fork-this-repository"></a>**Fork this repository**: Click `Fork` in the upper-right corner.
+2. <a name="2-configure-secrets"></a>Add one AI key under `Settings` → `Secrets and variables` → `Actions` → `New repository secret`. Choose `MODELFLARE_KEY`, `AIHUBMIX_KEY`, `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, or official `OPENAI_API_KEY`. See the [model setup table](./full-guide_EN.md#ai-model-configuration-configure-at-least-one) for x6.ai and other compatible endpoints.
+3. <a name="3-enable-actions"></a>**Enable Workflows**: Open `Actions` -> click `I understand my workflows, go ahead and enable them`.
+4. <a name="done"></a><a name="4-manual-test"></a>**Manual Test & Read Report**: `Actions` -> `每日股票分析` (Daily Stock Analysis workflow) -> `Run workflow`. Check pushed notifications or download the `analysis-reports-*` artifact after completion. Runs every weekday at **18:00 Beijing Time** (skip/resume rules in [Scheduled Task Configuration](./full-guide_EN.md#scheduled-task-configuration)). Enable the manual force-run option if you are testing on a non-trading day.
+
+See the [full guide](./full-guide_EN.md#github-actions-configuration) for watchlist, news, market data, and notification settings.
+
+### Option 2: Local / Docker Deployment
+
+<a name="-web-ui"></a>
+
+Local WebUI requires Git, Python 3.10+, Node.js `^20.19.0 || ^22.12.0 || >=24.0.0 <27`, and npm 10+.
+
+The official OpenAI preset (`OpenAI 官方`) defaults to `gpt-6.1-sol` over Chat Completions. Use Python 3.11+ and replace the dependency install command below with `python -m pip install -r requirements.txt "litellm>=1.98.1"`. On Python 3.10, use `gpt-5` in the preset's model list if your account has access, then test the connection.
+
+```bash
+git clone --depth 1 https://github.com/ZhuLinsen/daily_stock_analysis.git
+cd daily_stock_analysis
+python -m pip install -r requirements.txt
+(cd apps/dsa-web && npm ci && npm run build)
+python main.py --serve-only
+```
+
+Open `http://127.0.0.1:8000` and enter your AI key and watchlist in Settings to start an analysis. For Docker, follow the [deployment guide](./DEPLOY_EN.md).
 
 ## ✨ Key Features
 
@@ -66,54 +87,17 @@ English | [简体中文](../README.md) | [繁體中文](README_CHT.md)
 
 Use [Agent strategy chat](./full-guide_EN.md#local-webui-management-interface) in the Web or desktop workspace.
 
-### Tech Stack & Data Sources
+### 🖥️ Product Preview
 
-| Type | Supported |
-|------|-----------|
-| **AI Models** | [Modelflare](https://modelflare.dev/sign-up?utm_source=github&utm_campaign=daily_stock_analysis), [x6.ai](https://console.x6pro.io/register?code=zJ2qSdns), AIHubMix, Gemini, OpenAI-compatible providers, DeepSeek, Qwen, Claude, Ollama |
-| **Market Data** | YFinance, Longbridge, AkShare, Tushare, [TickPlus](http://www.tickplus.org/register?reg=5433cf922395), Pytdx, Baostock (works out-of-the-box with free sources across US/HK/JP/KR/TW/CN, with optional token-based sources) |
-| **News & Sentiment** | [SerpAPI](https://serpapi.com/github-daily-stock-analysis), Tavily, Brave, Anspire, Bocha, MiniMax, SearXNG. Optional Stock Sentiment API (Reddit / X / Polymarket for US tickers) |
+<p align="center">
+  <a href="assets/readme_workspace_tour_20260510.gif"><img src="assets/readme_workspace_preview.gif" alt="DSA Web workspace demo" width="640"></a><br>
+  <sub>Click the GIF to view the full demo (analysis, screening, decision signals, portfolio risk, backtest &amp; Agent chat)</sub>
+</p>
 
-## 🚀 Quick Start
+> [!TIP]
+> 🚀 **Ecosystem Projects**: [AlphaSift · Smart screening](https://github.com/ZhuLinsen/alphasift) | [AlphaEvo · Strategy backtesting & evolution](https://github.com/ZhuLinsen/alphaevo)
 
-<a name="-configuration"></a>
-
-[Full setup guide](./full-guide_EN.md) · [Notification setup](./notifications.md)
-
-| Entry | Best For | Prerequisite | Link |
-|-------|----------|--------------|------|
-| **GitHub Actions** | Zero-server daily scheduled analysis (Recommended) | **Only 1 AI Model Secret** | [4-Step Setup Below](#option-1-github-actions-recommended) |
-| **Docker / Local WebUI** | Self-hosting, portfolio risk & interactive Agent chat | Docker or Git / Python / Node.js | [Commands Below](#option-2-local--docker-deployment) · [Deploy Guide](./DEPLOY_EN.md) |
-| **Desktop App** | Personal investors preferring a native GUI | 1 AI API Key | [Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) · [Setup Guide](./beginner-client-setup.md) |
-
-### Option 1: GitHub Actions (Recommended)
-
-> Deploy in ~5 minutes with **zero server cost** (LLM API usage is billed by your provider). Only **1 AI model Secret** is needed. `STOCK_LIST` defaults to `600519` (override with e.g. `AAPL,NVDA,hk00700,7203.T,005930.KS,2330.TW`), and notification webhooks are optional.
-
-1. <a name="1-fork-this-repository"></a>**Fork this repository**: Click `Fork` in the upper-right corner.
-2. <a name="2-configure-secrets"></a>Add one AI key under `Settings` → `Secrets and variables` → `Actions` → `New repository secret`. Choose `MODELFLARE_KEY`, `AIHUBMIX_KEY`, `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, or official `OPENAI_API_KEY`. See the [model setup table](./full-guide_EN.md#ai-model-configuration-configure-at-least-one) for x6.ai and other compatible endpoints.
-3. <a name="3-enable-actions"></a>**Enable Workflows**: Open `Actions` -> click `I understand my workflows, go ahead and enable them`.
-4. <a name="done"></a><a name="4-manual-test"></a>**Manual Test & Read Report**: `Actions` -> `每日股票分析` (Daily Stock Analysis workflow) -> `Run workflow`. Check pushed notifications or download the `analysis-reports-*` artifact after completion. Runs every weekday at **18:00 Beijing Time** (skip/resume rules in [Scheduled Task Configuration](./full-guide_EN.md#scheduled-task-configuration)). Enable the manual force-run option if you are testing on a non-trading day.
-
-See the [full guide](./full-guide_EN.md#github-actions-configuration) for watchlist, news, market data, and notification settings.
-
-### Option 2: Local / Docker Deployment
-
-<a name="-web-ui"></a>
-
-Local WebUI requires Git, Python 3.10+, Node.js `^20.19.0 || ^22.12.0 || >=24.0.0 <27`, and npm 10+.
-
-```bash
-git clone --depth 1 https://github.com/ZhuLinsen/daily_stock_analysis.git
-cd daily_stock_analysis
-python -m pip install -r requirements.txt
-(cd apps/dsa-web && npm ci && npm run build)
-python main.py --serve-only
-```
-
-Open `http://127.0.0.1:8000` and enter your AI key and watchlist in Settings to start an analysis. For Docker, follow the [deployment guide](./DEPLOY_EN.md).
-
-## 📱 Sample Output
+### 📱 Sample Output
 
 <a name="decision-dashboard"></a>
 <a name="market-review"></a>
@@ -135,6 +119,26 @@ Analyzed 3 stocks | 🟢 Buy:0 🟡 Watch:2 🔴 Sell:1
 📈 Market Breadth: Up 3920 | Down 1349 | Limit up 155 | Limit down 3
 ```
 
+</details>
+
+### Tech Stack & Data Sources
+
+| Type | Supported |
+|------|-----------|
+| **Application** | Python / FastAPI, React / Vite, Electron |
+| **AI Models** | [Modelflare](https://modelflare.dev/sign-up?utm_source=github&utm_campaign=daily_stock_analysis), [x6.ai](https://console.x6pro.io/register?code=zJ2qSdns), AIHubMix, Gemini, OpenAI-compatible providers, DeepSeek, Qwen, Claude, Ollama |
+| **Market Data** | YFinance, Longbridge, AkShare, Tushare, [TickPlus](http://www.tickplus.org/register?reg=5433cf922395), Pytdx, Baostock (works out-of-the-box with free sources across US/HK/JP/KR/TW/CN, with optional token-based sources) |
+| **News & Sentiment** | [SerpAPI](https://serpapi.com/github-daily-stock-analysis), Tavily, Brave, Anspire, Bocha, MiniMax, SearXNG. Optional Stock Sentiment API (Reddit / X / Polymarket for US tickers) |
+
+**[3-minute quickstart (Chinese)](./QUICKSTART.md) · [GitHub Actions](#option-1-github-actions-recommended) · [Docker / Local WebUI](#option-2-local--docker-deployment) · [Download Desktop App](https://github.com/ZhuLinsen/daily_stock_analysis/releases)**
+
+<details open>
+<summary><strong>💖 Sponsors</strong></summary>
+<table>
+  <tr><td align="center"><a href="https://modelflare.dev/sign-up?utm_source=github&amp;utm_campaign=daily_stock_analysis"><img src="assets/modelflare_banner_en.png" alt="Modelflare" width="720"></a><br>Thanks to <strong>Modelflare</strong> for sponsoring this project! Operated by US-based Havenbyte LLC, it offers full-strength, stable GPT, Claude, Gemini, Grok and 40+ image/video models at lower cost. Selected OpenAI groups offer <strong>65% / 75% / 85% daily cache-hit guarantees</strong>; a single <strong>US$20 top-up unlocks GPT at 0.015x</strong>, and <strong>US$50 unlocks Claude at 0.03x</strong>. <a href="https://modelflare.dev/sign-up?utm_source=github&amp;utm_campaign=daily_stock_analysis">Register via this exclusive link</a></td></tr>
+  <tr><td align="center"><a href="https://console.x6pro.io/register?code=zJ2qSdns"><img src="./assets/x6ai_banner.png" alt="x6.ai" width="720" height="187"></a><br>100+ models from $5/month. Claude 81% off, GPT 91% off, DeepSeek 42% off, plus 20% off your first top-up. <a href="https://console.x6pro.io/register?code=zJ2qSdns">Register</a></td></tr>
+  <tr><td align="center"><a href="https://serpapi.com/github-daily-stock-analysis" target="_blank"><img src="assets/serpapi_banner_en.png" alt="Easily scrape real-time financial news data from search engines - SerpApi" width="300" height="141" style="width: 300px; height: 141px; object-fit: contain;"></a></td></tr>
+</table>
 </details>
 
 ## 📞 Contact

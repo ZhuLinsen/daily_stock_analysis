@@ -8,7 +8,7 @@
 <a name="按场景选择"></a>
 <a name="快速开始"></a>
 
-## 🚀 第一步：3 分钟快速上手
+## 新手入门
 
 | 目标 | 推荐入口 | 说明 |
 | --- | --- | --- |
@@ -20,15 +20,14 @@
 ---
 
 <a name="配置"></a>
-<a name="部署与打包"></a>
 
-## ⚙️ 第二步：常用配置与部署
+## 日常运行与推送
 
 | 我想要 | 先看 | 延伸阅读 |
 | --- | --- | --- |
 | 配置大模型和备用渠道 | [LLM 配置指南](LLM_CONFIG_GUIDE.md) | [服务商配置](llm-providers.md) · [LiteLLM YAML 示例](examples/litellm_config.example.yaml) |
 | 配置推送通知 | [通知渠道配置](notifications.md) | [完整配置与部署指南](full-guide.md) |
-| 部署到云服务器 / Docker / Zeabur | [部署指南](DEPLOY.md) | [云端 WebUI 部署](deploy-webui-cloud.md) · [Zeabur 部署](docker/zeabur-deployment.md) |
+| 定时运行分析 | [GitHub Actions 配置](full-guide.md#github-actions-详细配置) | [定时任务配置](full-guide.md#定时任务配置) |
 | 处理数据源失败 / 确认市场支持边界 | [市场支持与边界](market-support.md) | [数据源稳定性图示](data-source-stability.md) · [数据中心](data-center-diagnostics.md) |
 | 查询特定数据源 / 宏观工具配置 | [TickPlus 接入](tickplus.md) · [FXMacroData 说明](FXMACRODATA.md) | [Tushare 股票列表](TUSHARE_STOCK_LIST_GUIDE.md) |
 
@@ -36,21 +35,33 @@
 
 <a name="使用专题"></a>
 
-## 📈 第三步：进阶投研与 Agent
+## 进阶投研能力
 
 | 功能专题 | 文档 | 内容 |
 | --- | --- | --- |
 | **持仓风险与自选状态** | [组合风险与暴露看板](portfolio-risk-exposure-dashboard.md) · [自选股状态与下一步](watchlist-next-action.md) | 持仓风险、市场与币种暴露、首页自选股信号 |
 | **智能选股与 ETF 轮动** | [智能选股引擎](screening-engine.md) · [ETF 轮动](etf-rotation.md) | 多因子/自然语言选股与 `--etf-rotation` 双动量策略 |
 | **决策信号与实时告警** | [DecisionSignal 决策信号专题](decision-signals.md) · [实时告警中心](alerts.md) | AI 建议池、止损/观点盯盘规则与推送尝试 |
-| **Bot / 外部 Agent 集成** | [Bot 命令与接入](bot-command.md) · [Bot 平台配置](bot/) | 企业微信/飞书/TG/Discord/Slack 命令 · [Grok Bot](grok-bot-integration.md) · [OpenClaw](openclaw-skill-integration.md) · [Grok Skill](examples/grok_bot/README.md) |
-| **完整指南与专项功能** | [完整配置与部署指南](full-guide.md) | [分享长图](share-images.md) · [资讯情报源](intelligence-sources.md) · [桌面端打包](desktop-package.md) |
+| **资讯与报告分享** | [资讯情报源](intelligence-sources.md) · [分享长图](share-images.md) | 资讯源配置、报告与分享图 |
+
+---
+
+<a name="部署与打包"></a>
+
+## 部署与运维
+
+- [完整配置与部署指南](full-guide.md)
+- [部署指南](DEPLOY.md) · [云端 WebUI 部署](deploy-webui-cloud.md) · [Zeabur 部署](docker/zeabur-deployment.md)
+- [桌面端打包](desktop-package.md)
 
 ---
 
 <a name="参考与开发"></a>
 
-## 🛠️ 开发者参考与内部契约
+## 集成与参考
+
+- [Bot 命令与接入](bot-command.md) · [Bot 平台配置](bot/)
+- [Grok Bot 集成](grok-bot-integration.md) · [Grok Bot Skill 示例](examples/grok_bot/README.md) · [OpenClaw 集成](openclaw-skill-integration.md)
 
 <details>
 <summary>展开查看 P0–P7 内部架构契约、API 规格与贡献指南</summary>

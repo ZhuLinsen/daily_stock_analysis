@@ -173,7 +173,9 @@ MiaoXiang chip/flow methods share a network-admission lock across instances in o
 
 MiaoXiang capital flow uses explicit main net-inflow amount metrics only; closing prices, ratios, and missing amounts are never substituted as currency values. A missing latest-day amount stays unknown, and a 5/10-day window with missing amounts emits no total rather than backfilling earlier dates.
 
-> **GitHub Actions:** The bundled `00-daily-analysis.yml` maps `TUSHARE_TOKEN`, `TICKFLOW_API_KEY` / `TICKFLOW_*`, and the documented `LONGBRIDGE_*` variables into the job environment. Store `TICKFLOW_API_KEY` in **Secrets**; non-sensitive TickFlow priority, adjustment, and batch switches can live in **Variables** or **Secrets**. Longbridge OAuth still requires a client id plus `LONGBRIDGE_OAUTH_TOKEN_CACHE_B64` for headless Actions runs, while the legacy `LONGBRIDGE_APP_KEY` / `LONGBRIDGE_APP_SECRET` / `LONGBRIDGE_ACCESS_TOKEN` triplet remains supported.
+> **GitHub Actions** maps `TUSHARE_TOKEN`, `TICKFLOW_API_KEY`, the supported `TICKFLOW_*` options, and Longbridge credentials into the job. Store the TickFlow API key in **Secrets**. Priority, adjustment, and batch settings can live in **Variables** or **Secrets**.
+>
+> The bundled `00-daily-analysis.yml` uses Python 3.11 on Linux, so the dependency rules install Longbridge 0.2.74, which lacks OAuth support. Use the legacy `LONGBRIDGE_APP_KEY`, `LONGBRIDGE_APP_SECRET`, and `LONGBRIDGE_ACCESS_TOKEN` in the default workflow. For a custom environment with OAuth support, configure the client ID and set `LONGBRIDGE_OAUTH_TOKEN_CACHE_B64` from the local token cache. See [Longbridge setup](#longbridge).
 
 > **`TUSHARE_HTTP_URL` mapping in the daily workflow:** `00-daily-analysis.yml` maps `TUSHARE_HTTP_URL` with `vars.TUSHARE_HTTP_URL || secrets.TUSHARE_HTTP_URL` — the same vars-first precedence used for `TICKFLOW_PRIORITY` and other non-sensitive knobs. The endpoint is an "address" rather than a credential, so **Variables** is preferred for team review and audit visibility. Note that the real precedence is "vars wins when non-empty": a **Secrets** entry with the same name is **not** a tamper fallback that overrides a non-empty Variable — Secrets is only selected when the Variable is empty. Build your threat model on that actual semantics. GitHub exposes Variables and Secrets as two independent write-permission models: anyone (human or automation) with write access to repository Variables can set a non-empty Variable and silently reroute the runtime endpoint — including `TUSHARE_TOKEN` and the full request body to an attacker-controlled URL — without reading or modifying any Secret. Secrets only protect value confidentiality; they do **not** provide "endpoint integrity" or "priority override" guarantees. If you need stronger access control over the endpoint, use GitHub Environment protection rules, CODEOWNERS, branch protection, or a dedicated deployment approval flow — **do not treat "put it in Secrets and leave Variables empty" as a tamper guard**. Leaving it unset or empty preserves the default `http://api.tushare.pro` endpoint — the fetcher does not error when this variable is missing.
 
@@ -660,14 +662,16 @@ docker run -d \
 ### Install Dependencies
 
 ```bash
-# Python 3.10+ recommended
-pip install -r requirements.txt
+# Use Python 3.10 or later
+python -m pip install -r requirements.txt
 
 # Or use conda
 conda create -n stock python=3.10
 conda activate stock
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 ```
+
+To use the official OpenAI Chat Completions default model `gpt-6.1-sol`, run `python -m pip install -r requirements.txt "litellm>=1.98.1"` with Python 3.11+. On Python 3.10, use `gpt-5` if your account has access. Set it in the WebUI channel's model list or as `OPENAI_MODEL=gpt-5` when configuring OpenAI with `OPENAI_API_KEY`. For an OpenAI-compatible provider, set its key, `OPENAI_BASE_URL`, and `OPENAI_MODEL` together.
 
 On Windows PowerShell, if Python or pip still uses the system default code page, enable UTF-8 before the first dependency install or environment check. This keeps terminal output and third-party tooling from failing on non-ASCII text:
 
@@ -688,7 +692,7 @@ python main.py --etf-rotation         # ETF rotation signal + rule backtest (no 
 python main.py --no-market-review     # Stock analysis only
 python main.py --stocks 600519,300750 # Specify stocks
 python main.py --portfolio futu       # Use real Futu LONG stock holdings (overrides --stocks/STOCK_LIST)
-python main.py --dry-run              # Fetch data only, no AI analysis
+python main.py --dry-run --no-market-review --force-run  # Fetch market data only
 python main.py --no-notify            # Don't send notifications
 python main.py --schedule             # Scheduled task mode
 python main.py --debug                # Debug mode (verbose logging)
@@ -1305,8 +1309,8 @@ System defaults to AkShare (free), also supports other data sources:
 ### Longbridge
 - Optional fallback for US/HK stocks, mainly used to supplement fields that YFinance may miss
 - New integrations should use Longbridge OAuth 2.0: the client id is read from `LONGBRIDGE_OAUTH_CLIENT_ID`, or from `LONGBRIDGE_APP_KEY` when no Legacy Access Token is configured; run `python scripts/generate_longbridge_oauth_token.py --client-id <client_id>` once on an interactive machine to generate the SDK token cache
-- For GitHub Actions / Docker headless runs, base64 the local `~/.longbridge/openapi/tokens/<client_id>` file and store it as `LONGBRIDGE_OAUTH_TOKEN_CACHE_B64`
-- OAuth runtime support requires SDK APIs `OAuthBuilder` and `Config.from_oauth`; if a Linux/Docker environment can only install the older SDK, the app logs a clear warning and skips Longbridge while keeping YFinance / AkShare fallback available
+- In an OAuth-capable headless environment, base64-encode the local `~/.longbridge/openapi/tokens/<client_id>` file and set `LONGBRIDGE_OAUTH_TOKEN_CACHE_B64` so the analysis job can reuse the authorized cache.
+- OAuth requires the SDK's `OAuthBuilder` and `Config.from_oauth` APIs. Source installs use Longbridge 0.2.74 on Linux with Python 3.10 or 3.11 and 4.x in other supported environments. If an OAuth-capable SDK cannot be installed, the app logs a warning and market data can still fall back to sources such as YFinance or AkShare.
 - Legacy API Key remains supported with `LONGBRIDGE_APP_KEY`, `LONGBRIDGE_APP_SECRET`, and `LONGBRIDGE_ACCESS_TOKEN`; this Access Token is the legacy API-key credential, not an OAuth access token
 - Optional knobs: `LONGBRIDGE_STATIC_INFO_TTL_SECONDS` (default `86400`) and `LONGBRIDGE_CONNECTION_COOLDOWN_SECONDS` (default `15`)
 - If credentials are absent, the optional Longbridge fetcher is not instantiated

@@ -195,7 +195,9 @@ daily_stock_analysis/
 
 妙想资金流仅使用明确的主力净流入金额指标；收盘价、占比及缺失金额不会作为资金流回退值。最新交易日金额缺失时保持未知，5/10 日窗口包含缺失金额时不输出合计，不使用更早日期补位。
 
-> **GitHub Actions：** 仓库自带 `00-daily-analysis.yml` 已把 `TUSHARE_TOKEN`、`TICKFLOW_API_KEY` / `TICKFLOW_*` 和上表中的 `LONGBRIDGE_*` 映射到任务环境。TickFlow 的 API Key 建议放在 **Secrets**，优先级、复权和批量开关可放在 **Variables** 或 **Secrets**。Longbridge OAuth 方式需要一个 client_id（优先 `LONGBRIDGE_OAUTH_CLIENT_ID`；留空且无 Legacy Access Token 时使用 `LONGBRIDGE_APP_KEY` 兼容），并把本机 `~/.longbridge/openapi/tokens/<client_id>` 文件 base64 后保存为 Secret `LONGBRIDGE_OAUTH_TOKEN_CACHE_B64`；Legacy 方式仍可配置 `LONGBRIDGE_APP_KEY`、`LONGBRIDGE_APP_SECRET`、`LONGBRIDGE_ACCESS_TOKEN`。可选接入点变量（如 `LONGBRIDGE_REGION`）可放在 **Variables** 或 **Secrets**。
+> **GitHub Actions** 将 `TUSHARE_TOKEN`、`TICKFLOW_API_KEY`、已支持的 `TICKFLOW_*` 选项和 Longbridge 凭据传入任务。TickFlow API Key 放在 **Secrets**，优先级、复权和批量选项可放在 **Variables** 或 **Secrets**。
+>
+> 默认工作流 `00-daily-analysis.yml` 在 Linux 上使用 Python 3.11，按依赖约束会安装不支持 OAuth 的 Longbridge 0.2.74。可使用 `LONGBRIDGE_APP_KEY`、`LONGBRIDGE_APP_SECRET` 和 `LONGBRIDGE_ACCESS_TOKEN` 三项旧版凭据。使用支持 OAuth 的自定义运行环境时，需要配置 client ID 并将本机 token 缓存编码为 `LONGBRIDGE_OAUTH_TOKEN_CACHE_B64`，具体见 [Longbridge 配置](#longbridge长桥)。
 
 > **TUSHARE_HTTP_URL 在每日 workflow 中的映射：** `00-daily-analysis.yml` 已显式映射 `TUSHARE_HTTP_URL`（采用 `vars.TUSHARE_HTTP_URL || secrets.TUSHARE_HTTP_URL` 优先级，与仓库现有 `TICKFLOW_PRIORITY` 等非敏感配置取值策略一致）。该地址属"接入地址"配置而非凭据，建议放 **Variables** 便于团队 review 与版本可审计。注意：真实的优先级是 `vars` 非空即胜出，**Secrets 中的同名变量无法覆盖非空 Variables**，两者中只有 vars 为空时 secrets 才被采用，请按这个真实语义做安全建模。GitHub 把 Variables 与 Secrets 设计为两套独立的写权限模型：任何对 repository Variables 有写权限的人或自动化，都可以在不读取、不修改 Secrets 的情况下，通过设置一个非空 Variable 来改写运行时端点（包括将 `TUSHARE_TOKEN` 和完整请求体指向攻击者控制的地址）；Secrets 仅保护值的机密性，并不自动提供"端点完整性"或"优先级覆盖"保障。如确需对端点施加更强的访问控制，请使用 GitHub Environment protection rules、CODEOWNERS、branch protection 或独立的部署审批流程，**不要把"只放 Secrets 而 Variables 留空"当作防改护栏**。未设置或留空时 fetcher 仍走官方 `http://api.tushare.pro` 端点，不会因为本变量缺失而报错。
 
@@ -717,14 +719,16 @@ docker run -d \
 ### 安装依赖
 
 ```bash
-# Python 3.10+ 推荐
-pip install -r requirements.txt
+# 使用 Python 3.10 或以上版本
+python -m pip install -r requirements.txt
 
 # 或使用 conda
 conda create -n stock python=3.10
 conda activate stock
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 ```
+
+使用 OpenAI 官方 Chat Completions 的默认模型 `gpt-6.1-sol` 时，请在 Python 3.11+ 环境运行 `python -m pip install -r requirements.txt "litellm>=1.98.1"`。使用 Python 3.10 时，可将 WebUI 渠道的模型列表改为账户有权使用的 `gpt-5`，或在仅使用 `OPENAI_API_KEY` 的配置中设置 `OPENAI_MODEL=gpt-5`。使用 OpenAI 兼容服务时，请同时填写该服务的密钥、`OPENAI_BASE_URL` 和 `OPENAI_MODEL`。
 
 Windows PowerShell 若仍使用系统默认代码页，首次安装依赖或运行环境检查前建议先启用 UTF-8，避免第三方工具或终端输出在中文字符上失败：
 
@@ -746,7 +750,7 @@ python main.py --no-market-review     # 仅个股分析
 python main.py --etf-rotation         # ETF 轮动信号 + 规则回测（不调用 LLM，见 docs/etf-rotation.md）
 python main.py --stocks 600519,300750 # 指定股票
 python main.py --portfolio futu       # 使用 Futu 真实 LONG 正股持仓（覆盖 --stocks/STOCK_LIST）
-python main.py --dry-run              # 仅获取数据，不 AI 分析
+python main.py --dry-run --no-market-review --force-run  # 仅拉取行情
 python main.py --no-notify            # 不发送推送
 python main.py --schedule             # 定时任务模式
 python main.py --force-run            # 非交易日也强制执行（Issue #373）
@@ -1439,8 +1443,8 @@ PUSHOVER_API_TOKEN=your_api_token
 ### Longbridge（长桥）
 - 美股/港股数据兜底，补充 YFinance 缺失的量比、换手率、PE 等字段
 - 新接入推荐使用 Longbridge 官方 OAuth 2.0：client_id 优先使用 `LONGBRIDGE_OAUTH_CLIENT_ID`，留空且没有 Legacy Access Token 时兼容使用 `LONGBRIDGE_APP_KEY`；先在可交互环境执行 `python scripts/generate_longbridge_oauth_token.py --client-id <client_id>` 生成 SDK token 缓存
-- GitHub Actions / Docker 等 headless 环境不能在分析任务里等待浏览器授权；可将本机 `~/.longbridge/openapi/tokens/<client_id>` 文件 base64 后配置为 `LONGBRIDGE_OAUTH_TOKEN_CACHE_B64`
-- OAuth 运行时依赖 SDK 提供 `OAuthBuilder` / `Config.from_oauth`；若当前 Linux/Docker 环境只能安装旧版 SDK，日志会明确提示并自动跳过 Longbridge，不影响 YFinance / AkShare 兜底
+- 支持 OAuth 的无界面环境可将本机 `~/.longbridge/openapi/tokens/<client_id>` 文件编码为 base64，设置为 `LONGBRIDGE_OAUTH_TOKEN_CACHE_B64`，以便分析任务复用已授权的缓存。
+- OAuth 需要 SDK 提供 `OAuthBuilder` 和 `Config.from_oauth`。源码安装在 Linux 的 Python 3.10/3.11 环境使用 Longbridge 0.2.74，在其他支持的环境中使用 4.x。若环境无法安装支持 OAuth 的 SDK，Longbridge 会在日志中提示，行情仍可通过 YFinance / AkShare 等源兜底。
 - Legacy API Key 仍兼容：设置 `LONGBRIDGE_APP_KEY`、`LONGBRIDGE_APP_SECRET`、`LONGBRIDGE_ACCESS_TOKEN`；其中 Access Token 是旧版 API Key 凭证，不是 OAuth access token
 - 可选设置 `LONGBRIDGE_CONNECTION_COOLDOWN_SECONDS` 控制连接关闭类异常后的冷却秒数（默认 15）
 - 接入点可配 `LONGBRIDGE_HTTP_URL`、`LONGBRIDGE_QUOTE_WS_URL`、`LONGBRIDGE_TRADE_WS_URL`、`LONGBRIDGE_REGION`

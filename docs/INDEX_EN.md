@@ -8,9 +8,8 @@
 ---
 
 <a name="choose-by-goal"></a>
-<a name="getting-started"></a>
 
-## 🚀 Step 1: Quickstart
+## Getting Started
 
 | Goal | Start with | Notes |
 | --- | --- | --- |
@@ -22,15 +21,14 @@
 ---
 
 <a name="configuration"></a>
-<a name="deployment-and-packaging"></a>
 
-## ⚙️ Step 2: Configuration & Deployment
+## Daily Runs and Notifications
 
 | Goal | Start with | Then read |
 | --- | --- | --- |
 | Configure AI model providers | [LLM Config Guide (EN)](LLM_CONFIG_GUIDE_EN.md) | [Provider Configuration Guide (Chinese)](llm-providers.md) · [LiteLLM YAML Example](examples/litellm_config.example.yaml) |
 | Configure push notifications | [Notification Baseline](notifications.md) (Chinese-only) | [Full Guide (EN)](full-guide_EN.md) |
-| Deploy to server / Docker / cloud | [Deploy Guide (EN)](DEPLOY_EN.md) | [Cloud WebUI](deploy-webui-cloud.md) · [Zeabur](docker/zeabur-deployment.md) (Chinese-only) |
+| Schedule analyses | [GitHub Actions Configuration](full-guide_EN.md#github-actions-configuration) | [Scheduled Tasks](full-guide_EN.md#scheduled-task-configuration) |
 | Market support & data sources | [Market Support And Boundaries](market-support.md) (Chinese-only) | [Data-source stability diagrams](data-source-stability.md) · [Data Center](data-center-diagnostics.md) |
 | Specific data / macro adapters | [FXMacroData Integration](FXMACRODATA_EN.md) | [TickPlus Integration](tickplus.md) · [Tushare Stock List Guide](TUSHARE_STOCK_LIST_GUIDE.md) |
 
@@ -38,21 +36,33 @@
 
 <a name="usage-topics"></a>
 
-## 📈 Step 3: Advanced Research & Agents
+## Advanced Research
 
 | Topic | Document | Contents |
 | --- | --- | --- |
 | **Portfolio & Watchlist Signals** | [Portfolio Risk & Exposure](portfolio-risk-exposure-dashboard.md) · [Watchlist Next Action](watchlist-next-action.md) (Chinese-only) | Portfolio risk, market and currency exposure, and watchlist signals |
 | **Screening & ETF Rotation** | [Screening Engine](screening-engine.md) · [ETF Rotation](etf-rotation.md) (Chinese-only) | Multi-factor/NL screening & rule-based `--etf-rotation` |
 | **AI Signals & Real-Time Alerts** | [DecisionSignal Topic](decision-signals.md) · [Real-Time Alert Center](alerts.md) (Chinese-only) | AI recommendations, price/thesis watch triggers, notification attempts |
-| **Bot / IM Integrations** | [Bot Commands (EN)](bot-command_EN.md) | [Bot Platform Docs](bot/) · [Grok Bot Integration](grok-bot-integration.md) · [OpenClaw Integration](openclaw-skill-integration.md) · [Grok Bot Skill](examples/grok_bot/README.md) |
-| **Full Reference & Packaging** | [Full Guide (EN)](full-guide_EN.md) | [Share Images](share-images.md) · [Intelligence Sources](intelligence-sources.md) · [Desktop Packaging](desktop-package.md) |
+| **News & Report Sharing** | [Intelligence Sources](intelligence-sources.md) · [Share Images](share-images.md) (Chinese-only) | News feeds, reports, and share images |
+
+---
+
+<a name="deployment-and-packaging"></a>
+
+## Deployment and Operations
+
+- [Full Guide (EN)](full-guide_EN.md)
+- [Deploy Guide (EN)](DEPLOY_EN.md) · [Cloud WebUI](deploy-webui-cloud.md) (Chinese) · [Zeabur](docker/zeabur-deployment.md) (Chinese)
+- [Desktop Packaging](desktop-package.md) (Chinese)
 
 ---
 
 <a name="reference-and-development"></a>
 
-## 🛠️ Developer Reference & Internal Contracts
+## Integrations and Reference
+
+- [Bot Commands (EN)](bot-command_EN.md) · [Bot Platform Docs](bot/) (Chinese)
+- [Grok Bot Integration](grok-bot-integration.md) · [Grok Bot Skill](examples/grok_bot/README.md) · [OpenClaw Integration](openclaw-skill-integration.md) (Chinese)
 
 <details>
 <summary>Expand P0–P7 internal contracts, the API spec, and the contributing guide</summary>

@@ -25,30 +25,51 @@
 
 [**产品预览**](#-产品预览) · [**功能特性**](#-功能特性) · [**快速开始**](#-快速开始) · [**推送效果**](#-推送效果) · [**文档中心**](docs/INDEX.md) · [**完整指南**](docs/full-guide.md)
 
-**[3 分钟快速上手](docs/QUICKSTART.md) · [下载桌面客户端](https://github.com/ZhuLinsen/daily_stock_analysis/releases) · [GitHub Actions](#方式一github-actions推荐) · [Docker / 本地 WebUI](#方式二客户端配置教程--本地运行--docker-部署)**
-
 简体中文 | [English](docs/README_EN.md) | [繁體中文](docs/README_CHT.md)
 
 </div>
 
-<details open>
-<summary><strong>💖 赞助商 (Sponsors)</strong></summary>
-<table>
-  <tr><td align="center"><a href="https://modelflare.dev/sign-up?utm_source=github&amp;utm_campaign=daily_stock_analysis"><img src="./docs/assets/modelflare_banner_zh.png" alt="Modelflare" width="720"></a><br>感谢 <strong>Modelflare</strong> 赞助本项目！由美国 Havenbyte LLC 运营，满血稳定不掺水，低成本接入 GPT、Claude、Gemini、Grok 及 40+ 图片/视频模型，支持大陆正规商务合作。指定 OpenAI 分组提供 <strong>65% / 75% / 85% 每日缓存命中率保障</strong>；单笔充值 <strong>US$20 解锁 GPT 0.015x</strong>，<strong>US$50 解锁 Claude 0.03x</strong>。<a href="https://modelflare.dev/sign-up?utm_source=github&amp;utm_campaign=daily_stock_analysis">专属链接注册</a></td></tr>
-  <tr><td align="center"><a href="https://console.x6pro.io/register?code=zJ2qSdns"><img src="./docs/assets/x6ai_banner.png" alt="x6.ai" width="720" height="187"></a><br>100+ 模型 $5 包月，Claude 1.9 折、GPT 0.9 折、DeepSeek 5.8 折，首充立减 20%。<a href="https://console.x6pro.io/register?code=zJ2qSdns">专属链接注册</a></td></tr>
-  <tr><td align="center"><a href="https://serpapi.com/github-daily-stock-analysis" target="_blank"><img src="./docs/assets/serpapi_banner_zh.png" alt="轻松抓取搜索引擎上的实时金融新闻数据 - SerpApi" width="300" height="141" style="width: 300px; height: 141px; object-fit: contain;"></a></td></tr>
-</table>
-</details>
+## 🚀 快速开始
 
-## 🖥️ 产品预览
+<a name="-配置说明"></a>
 
-<p align="center">
-  <a href="docs/assets/readme_workspace_tour_20260510.gif"><img src="docs/assets/readme_workspace_preview.gif" alt="DSA Web 工作台演示" width="640"></a><br>
-  <sub>点击动图查看完整工作台演示（涵盖个股分析、智能选股、决策信号、持仓风控、回测与 Agent 问股）</sub>
-</p>
+[通知配置](docs/notifications.md) · [完整配置与部署指南](docs/full-guide.md)
 
-> [!TIP]
-> 🚀 **作者配套开源项目**：[AlphaSift · 智能选股](https://github.com/ZhuLinsen/alphasift) ｜ [AlphaEvo · 策略回测与进化](https://github.com/ZhuLinsen/alphaevo)
+| 上手方式 | 适合人群 | 所需前置 | 入口 |
+|------|------|------|------|
+| **桌面客户端** | 不想折腾命令行的个人投资者 | 1 个 AI API Key | [Releases 下载](https://github.com/ZhuLinsen/daily_stock_analysis/releases) · [小白教程](docs/beginner-client-setup.md) |
+| **GitHub Actions** | 零服务器每日自动分析（推荐） | **仅 1 个 AI 模型 Secret** | [下方 4 步配置](#方式一github-actions推荐) |
+| **本地命令行** | 跑通首份报告或检查行情拉取 | Git、Python | [3 分钟快速上手](docs/QUICKSTART.md#本地-3-步快速起步) |
+| **Docker / 本地 WebUI** | 私有部署、持仓管理与 Agent 问股 | Docker 或 Git / Python / Node.js | [下方部署命令](#方式二客户端配置教程--本地运行--docker-部署) · [部署指南](docs/DEPLOY.md) |
+
+### 方式一：[GitHub Actions（推荐）](https://www.bilibili.com/video/BV11FEb66EXG/)
+
+> 无需自备服务器，AI 模型调用按所选渠道计费。首次跑通**只需配置 1 个 AI 模型 Secret**，`STOCK_LIST` 默认兜底 `600519`，通知渠道可选。
+
+1. <a name="1-fork-本仓库"></a>**Fork 本仓库**：点击右上角 `Fork`。
+2. <a name="2-配置-secrets"></a>前往 `Settings` → `Secrets and variables` → `Actions` → `New repository secret`，任选一个模型 Key（`MODELFLARE_KEY`、`AIHUBMIX_KEY`、`GEMINI_API_KEY`、`ANTHROPIC_API_KEY` 或官方 `OPENAI_API_KEY`）。x6.ai 和其他兼容服务请参阅 [模型配置表](docs/full-guide.md#ai-模型配置至少配置一个)。
+3. <a name="3-启用-actions"></a>**启用 Actions**：进入 Fork 仓库的 `Actions` 标签 → 点击 `I understand my workflows, go ahead and enable them`。
+4. <a name="完成"></a><a name="4-手动测试"></a>**手动测试与查看结果**：`Actions` → `每日股票分析` → `Run workflow`，运行结束后可在推送通知渠道查看结果或下载 `analysis-reports-*` 产物。之后每个工作日 **18:00（北京时间）** 自动执行（非交易日跳过及断点续传规则见 [定时任务配置](docs/full-guide.md#定时任务配置)）。非交易日试跑时，可在手动触发界面勾选强制运行。
+
+按需配置自选股、资讯来源、行情源和通知渠道，参见 [完整指南](docs/full-guide.md#github-actions-详细配置)。
+
+### 方式二：[客户端配置教程](https://www.bilibili.com/video/BV11FEb66Eyr/) / 本地运行 / Docker 部署
+
+<a name="-web-界面"></a>
+
+本地 WebUI 需要 Git、Python 3.10+、Node.js `^20.19.0 || ^22.12.0 || >=24.0.0 <27` 及 npm 10+。
+
+「OpenAI 官方」预设通过 Chat Completions 使用 `gpt-6.1-sol`。请用 Python 3.11+，并将下方的依赖安装命令换成 `python -m pip install -r requirements.txt "litellm>=1.98.1"`。使用 Python 3.10 时，在「设置」中将该预设的模型列表换成账户有权使用的 `gpt-5`，再测试连接。
+
+```bash
+git clone --depth 1 https://github.com/ZhuLinsen/daily_stock_analysis.git
+cd daily_stock_analysis
+python -m pip install -r requirements.txt
+(cd apps/dsa-web && npm ci && npm run build)
+python main.py --serve-only
+```
+
+在浏览器访问 `http://127.0.0.1:8000`，在「设置」填写 AI Key 和自选股后开始分析。Docker 用户请参阅 [部署指南](docs/DEPLOY.md)。
 
 ## ✨ 功能特性
 
@@ -64,54 +85,17 @@
 
 在 Web 或桌面工作台使用 [策略问股](docs/full-guide.md#本地-webui-管理界面)。
 
-### 技术栈与数据来源
+### 🖥️ 产品预览
 
-| 类型 | 支持 |
-|------|------|
-| **AI 模型** | [Modelflare](https://modelflare.dev/sign-up?utm_source=github&utm_campaign=daily_stock_analysis)、[x6.ai](https://console.x6pro.io/register?code=zJ2qSdns)、AIHubMix、Gemini、OpenAI 兼容、DeepSeek、通义千问、Claude、Ollama 本地模型等 |
-| **行情数据** | [TickPlus（推荐）](http://www.tickplus.org/register?reg=5433cf922395)、AkShare、Tushare、Pytdx、Baostock、YFinance、Longbridge（内置免费源零配置可跑，批量/稳定建议配合 Token 源） |
-| **新闻与舆情** | [SerpAPI](https://serpapi.com/github-daily-stock-analysis)、Anspire、Tavily、Bocha、Brave、MiniMax、SearXNG。美股可选 Stock Sentiment API（Reddit / X / Polymarket） |
+<p align="center">
+  <a href="docs/assets/readme_workspace_tour_20260510.gif"><img src="docs/assets/readme_workspace_preview.gif" alt="DSA Web 工作台演示" width="640"></a><br>
+  <sub>点击动图查看完整工作台演示（涵盖个股分析、智能选股、决策信号、持仓风控、回测与 Agent 问股）</sub>
+</p>
 
-## 🚀 快速开始
+> [!TIP]
+> 🚀 **作者配套开源项目**：[AlphaSift · 智能选股](https://github.com/ZhuLinsen/alphasift) ｜ [AlphaEvo · 策略回测与进化](https://github.com/ZhuLinsen/alphaevo)
 
-<a name="-配置说明"></a>
-
-[通知配置](docs/notifications.md) · [完整配置与部署指南](docs/full-guide.md)
-
-| 上手方式 | 适合人群 | 所需前置 | 入口 |
-|------|------|------|------|
-| **桌面客户端** | 不想折腾命令行的个人投资者 | 1 个 AI API Key | [Releases 下载](https://github.com/ZhuLinsen/daily_stock_analysis/releases) · [小白教程](docs/beginner-client-setup.md) |
-| **GitHub Actions** | 零服务器每日自动分析（推荐） | **仅 1 个 AI 模型 Secret** | [下方 4 步配置](#方式一github-actions推荐) |
-| **Docker / 本地 WebUI** | 私有部署、持仓管理与 Agent 问股 | Docker 或 Git / Python / Node.js | [下方部署命令](#方式二客户端配置教程--本地运行--docker-部署) · [部署指南](docs/DEPLOY.md) |
-
-### 方式一：[GitHub Actions（推荐）](https://www.bilibili.com/video/BV11FEb66EXG/)
-
-> 5 分钟部署，无需自备服务器（AI 模型调用费用由你选择的 API 渠道计费）。首次跑通**只需配置 1 个 AI 模型 Secret**，`STOCK_LIST` 默认兜底 `600519`，通知渠道可选。
-
-1. <a name="1-fork-本仓库"></a>**Fork 本仓库**：点击右上角 `Fork`。
-2. <a name="2-配置-secrets"></a>前往 `Settings` → `Secrets and variables` → `Actions` → `New repository secret`，任选一个模型 Key（`MODELFLARE_KEY`、`AIHUBMIX_KEY`、`GEMINI_API_KEY`、`ANTHROPIC_API_KEY` 或官方 `OPENAI_API_KEY`）。x6.ai 和其他兼容服务请参阅 [模型配置表](docs/full-guide.md#ai-模型配置至少配置一个)。
-3. <a name="3-启用-actions"></a>**启用 Actions**：进入 Fork 仓库的 `Actions` 标签 → 点击 `I understand my workflows, go ahead and enable them`。
-4. <a name="完成"></a><a name="4-手动测试"></a>**手动测试与查看结果**：`Actions` → `每日股票分析` → `Run workflow`，运行结束后可在推送通知渠道查看结果或下载 `analysis-reports-*` 产物。之后每个工作日 **18:00（北京时间）** 自动执行（非交易日跳过及断点续传规则见 [定时任务配置](docs/full-guide.md#定时任务配置)）。非交易日试跑时，可在手动触发界面勾选强制运行。
-
-按需配置自选股、资讯来源、行情源和通知渠道，参见 [完整指南](docs/full-guide.md#github-actions-详细配置)。
-
-### 方式二：[客户端配置教程](https://www.bilibili.com/video/BV11FEb66Eyr/) / 本地运行 / Docker 部署
-
-<a name="-web-界面"></a>
-
-本地 WebUI 需要 Git、Python 3.10+、Node.js `^20.19.0 || ^22.12.0 || >=24.0.0 <27` 及 npm 10+。
-
-```bash
-git clone --depth 1 https://github.com/ZhuLinsen/daily_stock_analysis.git
-cd daily_stock_analysis
-python -m pip install -r requirements.txt
-(cd apps/dsa-web && npm ci && npm run build)
-python main.py --serve-only
-```
-
-在浏览器访问 `http://127.0.0.1:8000`，在「设置」填写 AI Key 和自选股后开始分析。Docker 用户请参阅 [部署指南](docs/DEPLOY.md)。
-
-## 📱 推送效果
+### 📱 推送效果
 
 <a name="决策仪表盘"></a>
 <a name="大盘复盘"></a>
@@ -138,6 +122,26 @@ python main.py --serve-only
 📈 市场概况: 上涨 3920 | 下跌 1349 | 涨停 155 | 跌停 3
 ```
 
+</details>
+
+### 技术栈与数据来源
+
+| 类型 | 支持 |
+|------|------|
+| **应用** | Python / FastAPI, React / Vite, Electron |
+| **AI 模型** | [Modelflare](https://modelflare.dev/sign-up?utm_source=github&utm_campaign=daily_stock_analysis)、[x6.ai](https://console.x6pro.io/register?code=zJ2qSdns)、AIHubMix、Gemini、OpenAI 兼容、DeepSeek、通义千问、Claude、Ollama 本地模型等 |
+| **行情数据** | [TickPlus（推荐）](http://www.tickplus.org/register?reg=5433cf922395)、AkShare、Tushare、Pytdx、Baostock、YFinance、Longbridge（内置免费源零配置可跑，批量/稳定建议配合 Token 源） |
+| **新闻与舆情** | [SerpAPI](https://serpapi.com/github-daily-stock-analysis)、Anspire、Tavily、Bocha、Brave、MiniMax、SearXNG。美股可选 Stock Sentiment API（Reddit / X / Polymarket） |
+
+**[3 分钟快速上手](docs/QUICKSTART.md) · [下载桌面客户端](https://github.com/ZhuLinsen/daily_stock_analysis/releases) · [GitHub Actions](#方式一github-actions推荐) · [Docker / 本地 WebUI](#方式二客户端配置教程--本地运行--docker-部署)**
+
+<details open>
+<summary><strong>💖 赞助商 (Sponsors)</strong></summary>
+<table>
+  <tr><td align="center"><a href="https://modelflare.dev/sign-up?utm_source=github&amp;utm_campaign=daily_stock_analysis"><img src="./docs/assets/modelflare_banner_zh.png" alt="Modelflare" width="720"></a><br>感谢 <strong>Modelflare</strong> 赞助本项目！由美国 Havenbyte LLC 运营，满血稳定不掺水，低成本接入 GPT、Claude、Gemini、Grok 及 40+ 图片/视频模型，支持大陆正规商务合作。指定 OpenAI 分组提供 <strong>65% / 75% / 85% 每日缓存命中率保障</strong>；单笔充值 <strong>US$20 解锁 GPT 0.015x</strong>，<strong>US$50 解锁 Claude 0.03x</strong>。<a href="https://modelflare.dev/sign-up?utm_source=github&amp;utm_campaign=daily_stock_analysis">专属链接注册</a></td></tr>
+  <tr><td align="center"><a href="https://console.x6pro.io/register?code=zJ2qSdns"><img src="./docs/assets/x6ai_banner.png" alt="x6.ai" width="720" height="187"></a><br>100+ 模型 $5 包月，Claude 1.9 折、GPT 0.9 折、DeepSeek 5.8 折，首充立减 20%。<a href="https://console.x6pro.io/register?code=zJ2qSdns">专属链接注册</a></td></tr>
+  <tr><td align="center"><a href="https://serpapi.com/github-daily-stock-analysis" target="_blank"><img src="./docs/assets/serpapi_banner_zh.png" alt="轻松抓取搜索引擎上的实时金融新闻数据 - SerpApi" width="300" height="141" style="width: 300px; height: 141px; object-fit: contain;"></a></td></tr>
+</table>
 </details>
 
 ## 📬 联系与合作
