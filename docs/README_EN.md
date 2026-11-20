@@ -59,7 +59,7 @@ English | [简体中文](../README.md) | [繁體中文](README_CHT.md)
 | **Discover** | Multi-factor & natural-language stock screening (`/screening`), market hotspots, rule-based dual-momentum ETF rotation (`--etf-rotation`) | [Screening Engine](./screening-engine.md) · [ETF Rotation](./etf-rotation.md) |
 | **Analyze** | 6-market Decision Dashboard (`/`), market review, multi-turn Agent strategy chat with 15 built-in strategies (`/chat`) | [Full Guide](./full-guide_EN.md) · [Market Boundaries](./market-support.md) |
 | **Verify** | Decision signal pool (`/decision-signals`), win-rate backtest (`/backtest`), data-source diagnostics & run observability | [Decision Signals](./decision-signals.md) · [Data Center](./data-center-diagnostics.md) |
-| **Track** | Portfolio ledger & risk exposure (`/portfolio`, Futu sync), real-time alerts (`/alerts`), token usage (`/usage`) | [Portfolio Risk](./portfolio-risk-exposure-dashboard.md) · [Alerts](./alerts.md) |
+| **Track** | Portfolio ledger & risk exposure (`/portfolio` with CSV import; read-only Futu holdings selection via CLI `--portfolio futu`), real-time alerts (`/alerts`), token usage (`/usage`) | [Portfolio Risk](./portfolio-risk-exposure-dashboard.md) · [Alerts](./alerts.md) |
 | **Deliver** | Zero-server GitHub Actions schedule, Electron desktop app, Telegram / Discord / Slack / Email / ntfy / Gotify / WeChat / Feishu notifications | [Notifications](./notifications.md) · [Bot Commands](./bot-command_EN.md) |
 
 <a name="-agent-strategy-chat"></a>
@@ -101,7 +101,7 @@ See the [full guide](./full-guide_EN.md#github-actions-configuration) for watchl
 
 <a name="-web-ui"></a>
 
-Local WebUI requires Git, Python 3.10+, Node.js 20.19 or later (below 27), and npm 10+.
+Local WebUI requires Git, Python 3.10+, Node.js `^20.19.0 || >=22.12.0` (below 27), and npm 10+.
 
 ```bash
 git clone --depth 1 https://github.com/ZhuLinsen/daily_stock_analysis.git

@@ -57,7 +57,7 @@
 | **发现** | 多因子与自然语言智能选股（`/screening`）、市场热点雷达、规则化 ETF 双动量轮动（`--etf-rotation`） | [选股引擎](docs/screening-engine.md) · [ETF 轮动](docs/etf-rotation.md) |
 | **分析** | 6 市场「决策仪表盘」报告（`/`）、大盘复盘、15 种内置策略的多轮 Agent 策略问股（`/chat`） | [完整指南](docs/full-guide.md) · [市场边界](docs/market-support.md) |
 | **验证** | 决策信号池（`/decision-signals`）、历史胜率与方向回测（`/backtest`）、运行诊断可观测与数据源健康体检 | [决策信号](docs/decision-signals.md) · [数据中心](docs/data-center-diagnostics.md) |
-| **跟踪** | 持仓账本与风险暴露看板（`/portfolio`、富途同步）、实时异动告警（`/alerts`）、Token 统计（`/usage`） | [组合风控](docs/portfolio-risk-exposure-dashboard.md) · [告警中心](docs/alerts.md) |
+| **跟踪** | 持仓账本与风险暴露看板（`/portfolio`，支持 CSV 导入；CLI 支持只读富途持仓选股 `--portfolio futu`）、实时异动告警（`/alerts`）、Token 统计（`/usage`） | [组合风控](docs/portfolio-risk-exposure-dashboard.md) · [告警中心](docs/alerts.md) |
 | **触达** | GitHub Actions 零服务器定时任务、Electron 桌面端、企业微信 / 飞书 / Telegram / Discord / Slack / 邮件推送 | [通知配置](docs/notifications.md) · [Bot 接入](docs/bot-command.md) |
 
 <a name="-agent-策略问股"></a>
@@ -99,7 +99,7 @@
 
 <a name="-web-界面"></a>
 
-本地 WebUI 需要 Git、Python 3.10+、Node.js 20.19 或更新版本（低于 27）及 npm 10+。
+本地 WebUI 需要 Git、Python 3.10+、Node.js `^20.19.0 || >=22.12.0`（低于 27）及 npm 10+。
 
 ```bash
 git clone --depth 1 https://github.com/ZhuLinsen/daily_stock_analysis.git

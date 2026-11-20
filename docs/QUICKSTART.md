@@ -38,7 +38,7 @@
    python main.py --no-market-review --no-notify --force-run
    ```
 
-   成功后在 `reports/` 查看报告。只想先检查行情拉取时，可运行 `python main.py --dry-run --force-run`。
+   成功后在 `reports/` 查看报告。只想先检查行情拉取（不触发大盘复盘与 LLM 调用）时，可运行 `python main.py --dry-run --no-market-review --force-run`。
 
 ---
 
