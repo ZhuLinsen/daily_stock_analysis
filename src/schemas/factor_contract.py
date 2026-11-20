@@ -139,6 +139,15 @@ class CandidateFactorScore(_FactorContractModel):
     drift; unknown ids are carried with a warning by the mapper.
     """
 
+    # Frozen: a snapshot's ``scores`` dict is keyed by ``factor_id``,
+    # and the field validator only runs on construction or whole
+    # replacement — a nested ``score.factor_id = ...`` assignment
+    # would silently desync the key from the id and the dumped
+    # snapshot would fail its own JSON round-trip (OR-COR-2f8b65a1).
+    # Freezing makes the assignment raise instead; scores are built
+    # once by the mapper and never mutated afterwards.
+    model_config = ConfigDict(frozen=True)
+
     factor_id: str = Field(min_length=1)
     value: float = Field(ge=0, le=100)
     weight: float | None = None

@@ -125,7 +125,7 @@
 - 非有限值（NaN/±Inf）在映射层以 `ValueError` 大声失败，不进入契约；契约内所有浮点字段亦由 `allow_inf_nan=False` 统一拒绝非有限值。
 - 输入（`Pick`、`ScreenResult`）绝不修改；输出为全新的 Pydantic 模型。
 - 覆盖率诚实约束：`Pick` 层只能知道某因子存在与否，无法知道其输入列覆盖率，因此单个 `CandidateFactorScore.quality` 的 `coverage` / `missing_rate` 恒为 `None`；只有快照聚合的 存在数/9 是诚实的分数。
-- 时间戳语义：`ScreenResult.created_at` 是无时区的本地 ISO 字符串（`datetime.now()` 在部署进程时钟上产生，部署默认 `TZ=Asia/Shanghai`）；映射时无时区值按本地时间读取并换算为 UTC，换算按输入日期的本地时区规则确定偏移（夏令时感知，跨夏令时日期不套用执行当天的固定偏移），绝不直接贴 `Z`，带偏移的值转为 UTC，仅日期字符串按当日本地午夜换算为 UTC，无法解析时回退到映射执行时间（UTC）并在 `CandidatePoolRun.degradation` 中记录一条降级条目，绝不静默回退。契约内一律使用带时区的 `datetime`，不混用 naive/aware（schema 层对三个时间戳字段做归一化兜底）。P1 应推动 `models.py` 改为发出带时区的 UTC 时间戳，消除对本地时钟的依赖。
+- 时间戳语义：`ScreenResult.created_at` 自 86cd500 起为带本地偏移的 ISO 字符串（`datetime.now().astimezone()` 在部署进程时钟上产生，部署默认 `TZ=Asia/Shanghai`）；旧的无偏移值在回拨期间按第一次出现映射，并在 `CandidatePoolRun.degradation` 与快照 `quality.warnings` 中记录歧义。映射时无时区值按本地时间读取并换算为 UTC，换算按输入日期的本地时区规则确定偏移（夏令时感知，跨夏令时日期不套用执行当天的固定偏移），绝不直接贴 `Z`，带偏移的值转为 UTC，仅日期字符串按当日本地午夜换算为 UTC，无法解析时回退到映射执行时间（UTC）并在 `CandidatePoolRun.degradation` 中记录一条降级条目，绝不静默回退。契约内一律使用带时区的 `datetime`，不混用 naive/aware（schema 层对三个时间戳字段做归一化兜底）。P1 可进一步推动 `models.py` 直接发出 UTC 时间戳，消除对本地时钟的依赖。
 
 ## P1 接入示意
 

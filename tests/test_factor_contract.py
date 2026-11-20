@@ -787,6 +787,25 @@ def test_snapshot_scores_assignment_rejection_keeps_original() -> None:
 
 
 @pytest.mark.unit
+def test_snapshot_nested_factor_id_assignment_is_rejected() -> None:
+    """Regression for OR-COR-2f8b65a1: mutating a nested score's
+    factor_id must fail — the scores dict is keyed by factor_id and
+    the field validator only runs on construction or whole
+    replacement, so a silent nested reassignment desynced the key
+    from the id and the dumped snapshot failed its own JSON
+    round-trip."""
+    snapshot = FactorSnapshot(
+        candidate_pool_run_id="a1b2c3d4e5f6",
+        code="600519",
+        scores={"value": CandidateFactorScore(factor_id="value", value=80.0)},
+    )
+    with pytest.raises(ValidationError):
+        snapshot.scores["value"].factor_id = "momentum"
+    assert snapshot.scores["value"].factor_id == "value"
+    FactorSnapshot.model_validate_json(snapshot.model_dump_json())
+
+
+@pytest.mark.unit
 def test_identifiers_must_be_non_empty_and_counts_non_negative() -> None:
     with pytest.raises(ValidationError):
         CandidatePoolRun(run_id="", strategy="balanced_alpha", market="cn")
