@@ -38,6 +38,18 @@ describe('ReportPriceLevelsChart helpers & component', () => {
     expect(parseStrategyPriceLevel('--')).toBeNull();
     expect(parseStrategyPriceLevel('暂无理想买点：需先收复并站稳MA5（52.68）且放量')).toBeNull();
     expect(parseStrategyPriceLevel('放量收复MA10（55.13）确认趋势反转后介入')).toBeNull();
+    expect(parseStrategyPriceLevel('Wait for the 5- and 20-day moving averages to turn higher')).toBeNull();
+    expect(parseStrategyPriceLevel('Wait for a reclaim of the 20-period moving average')).toBeNull();
+    expect(parseStrategyPriceLevel('Wait for the 5/20-day moving averages to turn higher')).toBeNull();
+    expect(parseStrategyPriceLevel('Wait for the 5, 10, and 20-day moving averages to turn higher')).toBeNull();
+    expect(parseStrategyPriceLevel('Wait for the 5 and 20 periods to align')).toBeNull();
+    expect(parseStrategyPriceLevel('Wait for the 5/20 MA crossover')).toBeNull();
+    expect(parseStrategyPriceLevel('Wait for the 20D moving average to turn higher')).toBeNull();
+    expect(parseStrategyPriceLevel('1st target: $60')).toBe(60);
+    expect(parseStrategyPriceLevel('1차 목표가 53,000원')).toBe(53000);
+    expect(parseStrategyPriceLevel('1차 목표가 53000')).toBe(53000);
+    expect(parseStrategyPriceLevel('第1个止盈目标：60')).toBe(60);
+    expect(parseStrategyPriceLevel('首个止盈目标：风险回报比 2:1，止盈 60 元')).toBe(60);
     expect(parseStrategyPriceLevel('+12%')).toBeNull();
     expect(parseStrategyPriceLevel('-2.5')).toBeNull();
   });

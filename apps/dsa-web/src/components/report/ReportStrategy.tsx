@@ -1,4 +1,4 @@
-import { lazy, Suspense, useState } from 'react';
+import { Component, lazy, Suspense, useState } from 'react';
 import type React from 'react';
 import { LineChart } from 'lucide-react';
 import { stocksApi, type StockKLineItem } from '../../api/stocks';
@@ -10,6 +10,27 @@ import { getReportText, normalizeReportLanguage } from '../../utils/reportLangua
 const ReportPriceLevelsChart = lazy(() => import('./ReportPriceLevelsChart').then(
   ({ ReportPriceLevelsChart }) => ({ default: ReportPriceLevelsChart }),
 ));
+
+interface ChartErrorBoundaryProps {
+  children: React.ReactNode;
+  fallback: React.ReactNode;
+}
+
+interface ChartErrorBoundaryState {
+  hasError: boolean;
+}
+
+class ChartErrorBoundary extends Component<ChartErrorBoundaryProps, ChartErrorBoundaryState> {
+  state: ChartErrorBoundaryState = { hasError: false };
+
+  static getDerivedStateFromError(): ChartErrorBoundaryState {
+    return { hasError: true };
+  }
+
+  render() {
+    return this.state.hasError ? this.props.fallback : this.props.children;
+  }
+}
 
 interface ReportStrategyProps {
   strategy?: ReportStrategyType;
@@ -172,15 +193,24 @@ export const ReportStrategy: React.FC<ReportStrategyProps> = ({
         className="mb-3"
       />
       {showChart && (chartBars || chartFailed) ? (
-        <Suspense fallback={<p role="status" className="mb-3 text-xs text-muted-text">{text.priceLevelsChart.loading}</p>}>
-          <ReportPriceLevelsChart
-            bars={chartBars ?? []}
-            failed={chartFailed}
-            strategy={strategy}
-            language={reportLanguage}
-            onRetry={() => void fetchChartBars()}
-          />
-        </Suspense>
+        <ChartErrorBoundary
+          key={reportKey}
+          fallback={(
+            <div role="alert" className="mb-3 rounded-xl border border-border/60 bg-background/40 px-3 py-4 text-center text-xs text-muted-text">
+              {text.priceLevelsChart.failed}
+            </div>
+          )}
+        >
+          <Suspense fallback={<p role="status" className="mb-3 text-xs text-muted-text">{text.priceLevelsChart.loading}</p>}>
+            <ReportPriceLevelsChart
+              bars={chartBars ?? []}
+              failed={chartFailed}
+              strategy={strategy}
+              language={reportLanguage}
+              onRetry={() => void fetchChartBars()}
+            />
+          </Suspense>
+        </ChartErrorBoundary>
       ) : null}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         {strategyItems.map((item) => (
