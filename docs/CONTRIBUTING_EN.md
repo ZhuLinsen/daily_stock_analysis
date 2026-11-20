@@ -44,6 +44,8 @@ cp .env.example .env
 4. Push the branch: `git push origin feature/your-feature`
 5. Open a Pull Request against `main`.
 
+Use the PR title to describe what changes when it lands. Explain who benefits, which entry points are affected and how you verified the result. Include screenshots for visible Web, desktop or report changes. GitHub generates release notes from merged PR titles and labels. Maintainers confirm the category and archive the release, so contributors can skip editing `docs/CHANGELOG.md`.
+
 ### Commit Message Convention
 
 This project follows [Conventional Commits](https://www.conventionalcommits.org/):
@@ -84,7 +86,7 @@ PRs that only change ordinary `docs/**`, non-governance Markdown, or `LICENSE` k
 |-------|-------------|:--------:|
 | `backend-gate` | `scripts/ci_gate.sh` — py_compile + flake8 critical errors + `./scripts/test.sh code` + `./scripts/test.sh yfinance` + offline pytest | ✅ |
 | `docker-build` | Docker image build and key module import smoke test | ✅ |
-| `web-gate` | `npm run lint` + `npm run build` (triggered when `apps/dsa-web/` changes) | ✅ (when triggered) |
+| `web-gate` | Path-based Web lint, build, tests and Playwright screenshots in the `web-ui-evidence-<head SHA>` artifact | ✅ (when triggered) |
 | `pr-review` | Automatic PR triggering is temporarily paused. Maintainers can still run it by PR number through `workflow_dispatch`; it reads PR metadata and diff through the GitHub API and never checks out or executes fork PR code. | ❌ (advisory) |
 
 Separately, the repository also has a non-blocking `network-smoke` workflow in `.github/workflows/network-smoke.yml`, but it is only triggered by `schedule` and `workflow_dispatch`, not by pull requests.
@@ -93,8 +95,7 @@ Separately, the repository also has a non-blocking `network-smoke` workflow in `
 
 ```bash
 # Backend gate (recommended)
-pip install -r requirements.txt
-pip install flake8 pytest
+python -m pip install -r .github/requirements-ci.txt
 ./scripts/ci_gate.sh
 
 # Frontend gate (only if you changed apps/dsa-web/)

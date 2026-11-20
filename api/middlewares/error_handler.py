@@ -11,10 +11,12 @@
 """
 
 import logging
+import math
 import traceback
 from typing import Callable
 
 from fastapi import Request, Response
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -106,7 +108,12 @@ def add_error_handlers(app) -> None:
             content={
                 "error": "validation_error",
                 "message": "请求参数验证失败",
-                "detail": exc.errors()
+                # Validation errors echo input values. Overflowing JSON numbers
+                # must not turn a rejected request into a serialization failure.
+                "detail": jsonable_encoder(
+                    exc.errors(),
+                    custom_encoder={float: lambda value: value if math.isfinite(value) else str(value)},
+                )
             }
         )
     
