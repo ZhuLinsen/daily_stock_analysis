@@ -23,6 +23,7 @@ from data_provider.tushare_fetcher import (
     _build_tushare_token_scope,
     is_tushare_permission_error,
 )
+from src.utils.rsi import wilder_rsi
 from src.core.trading_calendar import MarketPhase, build_market_phase_context, get_market_for_stock, is_market_open
 from src.services.screening.source_guard import call_with_timeout, parse_source_timeout_seconds
 
@@ -1334,12 +1335,11 @@ def _compute_macd_status(close: pd.Series) -> str:
 def _compute_rsi(close: pd.Series, period: int = 14) -> float | None:
     if len(close) <= period:
         return None
-    delta = close.diff()
-    gain = delta.clip(lower=0).rolling(period).mean()
-    loss = (-delta.clip(upper=0)).rolling(period).mean()
-    rs = gain / loss.replace(0, pd.NA)
-    rsi = 100 - (100 / (1 + rs))
-    value = rsi.iloc[-1]
+    # 使用 Wilder 平滑（与 TA-Lib 一致），与 stock_analyzer / alert_indicators 的 RSI 口径保持一致。
+    close = close.astype(float)
+    if not close.diff().iloc[1:].ne(0).any():
+        return None
+    value = wilder_rsi(close, period).iloc[-1]
     if pd.isna(value):
         return None
     return float(value)

@@ -61,6 +61,7 @@ class BacktestServiceTestCase(unittest.TestCase):
                 "ENV_FILE",
                 "DATABASE_PATH",
                 "BACKTEST_EVAL_WINDOW_DAYS",
+                "BACKTEST_ENGINE_VERSION",
             )
         }
         self._env_path = os.path.join(self._temp_dir.name, ".env")
@@ -70,6 +71,8 @@ class BacktestServiceTestCase(unittest.TestCase):
         os.environ["ENV_FILE"] = self._env_path
         os.environ["DATABASE_PATH"] = self._db_path
         os.environ["BACKTEST_EVAL_WINDOW_DAYS"] = "3"
+        # API modules can load the developer's .env during test collection.
+        os.environ.pop("BACKTEST_ENGINE_VERSION", None)
 
         Config._instance = None
         DatabaseManager.reset_instance()
@@ -239,7 +242,7 @@ class BacktestServiceTestCase(unittest.TestCase):
         analysis_history_id: int,
         analysis_date: date,
         eval_window_days: int = 1,
-        engine_version: str = "v1",
+        engine_version: str = "v1.1",
     ) -> BacktestResult:
         return BacktestResult(
             analysis_history_id=analysis_history_id,
@@ -276,7 +279,7 @@ class BacktestServiceTestCase(unittest.TestCase):
             min_age_days=0,
             limit=10,
             eval_window_days=1,
-            engine_version="v1",
+            engine_version="v1.1",
             force=True,
         )
 
@@ -301,7 +304,7 @@ class BacktestServiceTestCase(unittest.TestCase):
             min_age_days=0,
             limit=10,
             eval_window_days=1,
-            engine_version="v1",
+            engine_version="v1.1",
             force=True,
         )
 
@@ -437,7 +440,7 @@ class BacktestServiceTestCase(unittest.TestCase):
             min_age_days=0,
             limit=10,
             eval_window_days=1,
-            engine_version="v1",
+            engine_version="v1.1",
             force=True,
         )
         stats = BacktestService(self.db).run_backtest(
@@ -845,7 +848,7 @@ class BacktestServiceTestCase(unittest.TestCase):
             min_age_days=0,
             limit=10,
             eval_window_days=3,
-            engine_version="v1",
+            engine_version="v1.1",
             force=True,
         )
 
@@ -860,7 +863,7 @@ class BacktestServiceTestCase(unittest.TestCase):
                     min_age_days=0,
                     limit=10,
                     eval_window_days=3,
-                    engine_version="v1",
+                    engine_version="v1.1",
                     force=True,
                 )
                 self.assertEqual(matches, [])
@@ -1790,7 +1793,7 @@ class BacktestServiceTestCase(unittest.TestCase):
                         code="AAPL",
                         analysis_date=date(2024, 1, 10),
                         eval_window_days=1,
-                        engine_version="v1",
+                        engine_version="v1.1",
                         eval_status="completed",
                         evaluated_at=datetime(2024, 1, 20, 0, 0, 0),
                         operation_advice="买入",
@@ -1808,7 +1811,7 @@ class BacktestServiceTestCase(unittest.TestCase):
                         code="AAPL.US",
                         analysis_date=date(2024, 1, 11),
                         eval_window_days=1,
-                        engine_version="v1",
+                        engine_version="v1.1",
                         eval_status="completed",
                         evaluated_at=datetime(2024, 1, 21, 0, 0, 0),
                         operation_advice="买入",
@@ -2244,7 +2247,7 @@ class BacktestServiceTestCase(unittest.TestCase):
                     code="000005",
                     analysis_date=date(2024, 1, 5),
                     eval_window_days=1,
-                    engine_version="v1",
+                    engine_version="v1.1",
                     eval_status="completed",
                     evaluated_at=datetime(2024, 1, 8, 0, 0, 0),
                     operation_advice="买入",
@@ -2329,7 +2332,7 @@ class BacktestServiceTestCase(unittest.TestCase):
                     code="000006",
                     analysis_date=date(2024, 1, 5),
                     eval_window_days=1,
-                    engine_version="v1",
+                    engine_version="v1.1",
                     eval_status="completed",
                     evaluated_at=datetime(2024, 1, 8, 0, 0, 0),
                     operation_advice="买入",
@@ -2745,7 +2748,7 @@ class BacktestServiceTestCase(unittest.TestCase):
             base_result = session.query(BacktestResult).filter(
                 BacktestResult.code == "600519",
                 BacktestResult.eval_window_days == 3,
-                BacktestResult.engine_version == "v1",
+                BacktestResult.engine_version == "v1.1",
             ).one()
             session.add_all([
                 BacktestResult(
@@ -2753,7 +2756,7 @@ class BacktestServiceTestCase(unittest.TestCase):
                     code=base_result.code,
                     analysis_date=base_result.analysis_date,
                     eval_window_days=1,
-                    engine_version="v1",
+                    engine_version="v1.1",
                     eval_status="completed",
                     evaluated_at=datetime(2024, 1, 5, 0, 0, 0),
                     operation_advice="买入",
@@ -2790,7 +2793,7 @@ class BacktestServiceTestCase(unittest.TestCase):
         rows = service.repo.list_results(
             code="600519",
             eval_window_days=3,
-            engine_version="v1",
+            engine_version="v1.1",
             analysis_date_from=date(2024, 1, 1),
             analysis_date_to=date(2024, 1, 1),
         )
@@ -2806,7 +2809,7 @@ class BacktestServiceTestCase(unittest.TestCase):
         )
         self.assertEqual(evaluations["total"], 1)
         self.assertEqual(len(evaluations["items"]), 1)
-        self.assertEqual(evaluations["items"][0]["engine_version"], "v1")
+        self.assertEqual(evaluations["items"][0]["engine_version"], "v1.1")
         self.assertEqual(evaluations["items"][0]["operation_advice"], "买入")
         self.assertEqual(evaluations["items"][0]["action"], "buy")
         self.assertEqual(evaluations["items"][0]["action_label"], "买入")
@@ -2824,7 +2827,7 @@ class BacktestServiceTestCase(unittest.TestCase):
         self.assertIsNotNone(summary_inferred)
         assert summary_inferred is not None
         self.assertEqual(summary_inferred["eval_window_days"], 1)
-        self.assertEqual(summary_inferred["engine_version"], "v1")
+        self.assertEqual(summary_inferred["engine_version"], "v1.1")
         self.assertEqual(summary_inferred["total_evaluations"], 1)
         self.assertEqual(summary_inferred["completed_count"], 1)
         self.assertEqual(summary_inferred["win_count"], 0)
@@ -2842,7 +2845,7 @@ class BacktestServiceTestCase(unittest.TestCase):
         self.assertIsNotNone(summary_explicit)
         assert summary_explicit is not None
         self.assertEqual(summary_explicit["eval_window_days"], 3)
-        self.assertEqual(summary_explicit["engine_version"], "v1")
+        self.assertEqual(summary_explicit["engine_version"], "v1.1")
         self.assertEqual(summary_explicit["total_evaluations"], 1)
         self.assertEqual(summary_explicit["completed_count"], 1)
         self.assertEqual(summary_explicit["win_count"], 1)
@@ -2930,7 +2933,7 @@ class BacktestServiceTestCase(unittest.TestCase):
             base_result = session.query(BacktestResult).filter(
                 BacktestResult.code == "600519",
                 BacktestResult.eval_window_days == 3,
-                BacktestResult.engine_version == "v1",
+                BacktestResult.engine_version == "v1.1",
             ).one()
             session.add(
                 BacktestResult(
@@ -2938,7 +2941,7 @@ class BacktestServiceTestCase(unittest.TestCase):
                     code=base_result.code,
                     analysis_date=base_result.analysis_date,
                     eval_window_days=1,
-                    engine_version="v1",
+                    engine_version="v1.1",
                     eval_status="completed",
                     evaluated_at=datetime(2024, 1, 5, 0, 0, 0),
                     operation_advice="买入",
@@ -3234,6 +3237,224 @@ class BacktestServiceTestCase(unittest.TestCase):
                 session.query(BacktestResult).filter(BacktestResult.code == "000858").count(),
                 1,
             )
+
+    def test_intraday_snapshot_anchors_session_date_instead_of_previous_day(self) -> None:
+        """Intraday analyses must evaluate forward returns from session T, not T-1."""
+        for phase in ("intraday", "lunch_break", "closing_auction"):
+            with self.subTest(phase=phase):
+                res = resolve_stock_daily_start(
+                    stock_code="600519",
+                    context_snapshot=json.dumps({
+                        "market_phase_summary": {
+                            "market": "cn",
+                            "phase": phase,
+                            "session_date": "2024-01-05",
+                            "effective_daily_bar_date": "2024-01-04",
+                        }
+                    }),
+                    analysis_date=date(2024, 1, 5),
+                )
+                self.assertIsNone(res.failure_reason)
+                self.assertEqual(res.expected_start_date, date(2024, 1, 5))
+
+                res_no_eff = resolve_stock_daily_start(
+                    stock_code="600519",
+                    context_snapshot=json.dumps({
+                        "market_phase_summary": {
+                            "market": "cn",
+                            "phase": phase,
+                            "session_date": "2024-01-05",
+                        }
+                    }),
+                    analysis_date=date(2024, 1, 5),
+                )
+                self.assertIsNone(res_no_eff.failure_reason)
+                self.assertEqual(res_no_eff.expected_start_date, date(2024, 1, 5))
+
+        with self.db.get_session() as session:
+            session.add(
+                AnalysisHistory(
+                    query_id="q_intraday_no_lookahead",
+                    code="600522",
+                    name="测试盘中",
+                    report_type="simple",
+                    sentiment_score=80,
+                    operation_advice="买入",
+                    trend_prediction="看多",
+                    analysis_summary="intraday buy should not include T-1->T return",
+                    created_at=datetime(2024, 1, 5, 10, 30, 0),
+                    context_snapshot=json.dumps({
+                        "enhanced_context": {"date": "2024-01-05"},
+                        "market_phase_summary": {
+                            "market": "cn",
+                            "phase": "intraday",
+                            "session_date": "2024-01-05",
+                            "effective_daily_bar_date": "2024-01-04",
+                        },
+                    }),
+                )
+            )
+            session.add_all([
+                StockDaily(code="600522", date=date(2024, 1, 4), open=90.0, high=90.0, low=90.0, close=90.0),
+                StockDaily(code="600522", date=date(2024, 1, 5), open=100.0, high=101.0, low=99.0, close=100.0),
+                StockDaily(code="600522", date=date(2024, 1, 8), open=98.0, high=99.0, low=94.0, close=95.0),
+            ])
+            session.commit()
+
+        stats = BacktestService(self.db).run_backtest(
+            code="600522",
+            force=False,
+            eval_window_days=1,
+            min_age_days=0,
+            limit=10,
+        )
+        self.assertEqual(stats["completed"], 1)
+        with self.db.get_session() as session:
+            result = session.query(BacktestResult).filter(BacktestResult.code == "600522").one()
+            self.assertEqual(result.engine_version, "v1.1")
+            self.assertEqual(result.start_price, 100.0)
+            self.assertEqual(result.end_close, 95.0)
+            self.assertAlmostEqual(result.stock_return_pct, -5.0)
+            self.assertEqual(result.outcome, "loss")
+
+    def test_intraday_invalid_targets_are_excluded_from_simulation_and_summary(self) -> None:
+        for code, phase in zip(("600525", "600526", "600527"), ("intraday", "lunch_break", "closing_auction")):
+            with self.subTest(phase=phase):
+                with self.db.get_session() as session:
+                    session.add(AnalysisHistory(
+                        query_id=f"invalid_targets_{phase}", code=code, operation_advice="买入",
+                        stop_loss=95.0, take_profit=105.0, created_at=datetime(2024, 1, 5, 10, 30),
+                        context_snapshot=_phase_snapshot(
+                            date(2024, 1, 5), phase=phase, market="cn", effective_date=date(2024, 1, 4),
+                        ),
+                    ))
+                    session.add_all([
+                        StockDaily(code=code, date=date(2024, 1, 4), high=100, low=98, close=99),
+                        StockDaily(code=code, date=date(2024, 1, 5), high=111, low=99, close=110),
+                        StockDaily(code=code, date=date(2024, 1, 8), high=112, low=109, close=111),
+                    ])
+                    session.commit()
+
+                service = BacktestService(self.db)
+                stats = service.run_backtest(code=code, eval_window_days=1, min_age_days=0)
+                self.assertEqual(stats["completed"], 1)
+                item = service.get_recent_evaluations(code=code, eval_window_days=1)["items"][0]
+                self.assertEqual(item["start_price"], 110)
+                self.assertEqual(item["take_profit"], 105)  # Preserve the original plan for audit.
+                self.assertIsNone(item["hit_take_profit"])
+                self.assertIsNone(item["hit_stop_loss"])
+                self.assertIsNone(item["simulated_exit_price"])
+                self.assertIsNone(item["simulated_return_pct"])
+                self.assertEqual(item["simulated_exit_reason"], "invalid_targets")
+                summary = service.get_summary(scope="stock", code=code, eval_window_days=1)
+                self.assertEqual(summary["completed_count"], 1)
+                self.assertAlmostEqual(summary["avg_stock_return_pct"], 0.9091)
+                self.assertIsNone(summary["avg_simulated_return_pct"])
+                self.assertIsNone(summary["take_profit_trigger_rate"])
+                self.assertIsNone(summary["stop_loss_trigger_rate"])
+
+    def test_premarket_snapshot_keeps_previous_session_start(self) -> None:
+        res = resolve_stock_daily_start(
+            stock_code="600519",
+            context_snapshot=json.dumps({
+                "market_phase_summary": {
+                    "market": "cn",
+                    "phase": "premarket",
+                    "session_date": "2024-01-05",
+                    "effective_daily_bar_date": "2024-01-04",
+                }
+            }),
+            analysis_date=date(2024, 1, 5),
+        )
+        self.assertIsNone(res.failure_reason)
+        self.assertEqual(res.expected_start_date, date(2024, 1, 4))
+
+    def test_legacy_v1_results_are_isolated_from_default_v1_1_summary(self) -> None:
+        service = BacktestService(self.db)
+        with self.db.get_session() as session:
+            history = AnalysisHistory(
+                query_id="q_legacy_v1_isolation",
+                code="600523",
+                name="隔离测试",
+                report_type="simple",
+                sentiment_score=75,
+                operation_advice="买入",
+                trend_prediction="看多",
+                analysis_summary="legacy v1 row",
+                created_at=datetime(2024, 1, 5, 16, 0, 0),
+                context_snapshot='{"enhanced_context": {"date": "2024-01-05"}}',
+            )
+            session.add(history)
+            session.flush()
+            session.add(
+                BacktestResult(
+                    analysis_history_id=history.id,
+                    code="600523",
+                    analysis_date=date(2024, 1, 5),
+                    eval_window_days=3,
+                    engine_version="v1",
+                    eval_status="completed",
+                    evaluated_at=datetime(2024, 1, 10, 0, 0, 0),
+                    operation_advice="买入",
+                    position_recommendation="long",
+                    start_price=100.0,
+                    end_close=110.0,
+                    stock_return_pct=10.0,
+                    direction_expected="up",
+                    direction_correct=True,
+                    outcome="win",
+                    simulated_return_pct=10.0,
+                )
+            )
+            session.commit()
+
+        summary_default = service.get_summary(scope="stock", code="600523", eval_window_days=3)
+        self.assertIsNone(summary_default)
+        evals_default = service.get_recent_evaluations(code="600523", eval_window_days=3, limit=10, page=1)
+        self.assertEqual(evals_default["total"], 0)
+        legacy_rows = service.repo.list_results(code="600523", eval_window_days=3, engine_version="v1")
+        self.assertEqual(len(legacy_rows), 1)
+        self.assertEqual(legacy_rows[0].engine_version, "v1")
+        self.assertEqual(legacy_rows[0].outcome, "win")
+
+        # When a legacy user explicitly sets BACKTEST_ENGINE_VERSION=v1 in .env,
+        # intraday resolution must stay on legacy T-1 semantics instead of mixing v1.1 math into v1.
+        with self.db.get_session() as session:
+            session.add(
+                AnalysisHistory(
+                    query_id="q_explicit_v1_intraday",
+                    code="600524",
+                    name="显式旧版测试",
+                    report_type="simple",
+                    sentiment_score=80,
+                    operation_advice="买入",
+                    trend_prediction="看多",
+                    analysis_summary="explicit v1 stays legacy",
+                    created_at=datetime(2024, 1, 5, 10, 30, 0),
+                    context_snapshot=json.dumps({
+                        "enhanced_context": {"date": "2024-01-05"},
+                        "market_phase_summary": {
+                            "market": "cn",
+                            "phase": "intraday",
+                            "session_date": "2024-01-05",
+                            "effective_daily_bar_date": "2024-01-04",
+                        },
+                    }),
+                )
+            )
+            session.add_all([
+                StockDaily(code="600524", date=date(2024, 1, 4), open=90.0, high=90.0, low=90.0, close=90.0),
+                StockDaily(code="600524", date=date(2024, 1, 5), open=100.0, high=101.0, low=99.0, close=100.0),
+            ])
+            session.commit()
+
+        legacy_cfg = Config(backtest_engine_version="v1")
+        with patch("src.services.backtest_service.get_config", return_value=legacy_cfg):
+            legacy_stats = service.run_backtest(code="600524", force=False, eval_window_days=1, min_age_days=0, limit=10)
+        self.assertEqual(legacy_stats["completed"], 1)
+        legacy_row = service.repo.list_results(code="600524", eval_window_days=1, engine_version="v1")[0]
+        self.assertEqual(legacy_row.start_price, 90.0)
+        self.assertEqual(legacy_row.end_close, 100.0)
 
 
 if __name__ == "__main__":

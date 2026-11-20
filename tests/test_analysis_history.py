@@ -19,6 +19,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+from sqlalchemy import event
+
 # Keep this test runnable when optional LLM runtime deps are not installed.
 try:
     import litellm  # noqa: F401
@@ -1004,6 +1006,41 @@ class AnalysisHistoryTestCase(unittest.TestCase):
         records = self.db.get_distinct_stocks_from_history(limit=10)
 
         self.assertEqual([record.code for record in records], ["600519"])
+
+    def test_stock_bar_batches_lifetime_counts_for_visible_stocks(self) -> None:
+        if get_stock_bar is None:
+            self.skipTest("fastapi is not installed in this test environment")
+        with self.db.get_session() as session:
+            for code, day in (("MSFT", 1), ("AAPL", 2), ("IBM", 3), ("MSFT", 4)):
+                session.add(AnalysisHistory(code=code, created_at=datetime(2026, 1, day)))
+            session.commit()
+
+        queries = []
+
+        def track_history_reads(conn, cursor, statement, parameters, context, executemany):
+            if statement.lstrip().upper().startswith("SELECT") and "analysis_history" in statement:
+                queries.append(statement)
+
+        event.listen(self.db._engine, "before_cursor_execute", track_history_reads)
+        try:
+            result = get_stock_bar(start_date="2026-01-02", end_date=None, limit=2, db_manager=self.db)
+        finally:
+            event.remove(self.db._engine, "before_cursor_execute", track_history_reads)
+
+        self.assertEqual([(r.stock_code, r.analysis_count) for r in result.items], [("MSFT", 2), ("IBM", 1)])
+        self.assertLessEqual(len(queries), 2, "expected one stock list read and one count batch")
+
+    def test_grouped_history_counts_handle_large_and_unfiltered_alias_sets(self) -> None:
+        with self.db.get_session() as session:
+            session.add_all([AnalysisHistory(code=code) for code in ("AAPL", "MSFT", "MSFT", "")])
+            session.commit()
+        # More than one batch, with overlapping filters and a repeated alias.
+        aliases = [f"CODE{i:04}" for i in range(1000)] + ["AAPL", "MSFT", "MSFT"]
+        groups = {"combined": aliases, "microsoft": ["MSFT"], "missing": ["IBM"]}
+        expected = {"combined": 3, "microsoft": 2, "missing": 0}
+        self.assertEqual(self.db.get_analysis_history_counts(groups), expected)
+        # A legacy blank code supplies an empty (unfiltered) history lookup.
+        self.assertEqual(self.db.get_analysis_history_counts({**groups, "": []}), {**expected, "": 4})
 
     def test_stock_bar_item_derives_action_fields_from_legacy_advice(self) -> None:
         if get_stock_bar is None:

@@ -10,6 +10,8 @@ from typing import Any, Dict, Optional
 
 import pandas as pd
 
+from src.utils.rsi import wilder_rsi
+
 
 TECHNICAL_ALERT_TYPES = frozenset({
     "ma_price_cross",
@@ -92,7 +94,9 @@ def compute_required_bars(alert_type: str, params: Dict[str, Any]) -> int:
     if alert_type == "ma_price_cross":
         return int(params["window"]) + 1
     if alert_type == "rsi_threshold":
-        return int(params["period"]) + 1
+        # period changes give the first RSI; one more bar gives a second real
+        # value, so a crossing is never judged against a warm-up placeholder.
+        return int(params["period"]) + 2
     if alert_type == "macd_cross":
         return int(params["slow_period"]) + int(params["signal_period"]) + 1
     if alert_type == "kdj_cross":
@@ -241,7 +245,7 @@ def _evaluate_rsi(stock_code: str, params: Dict[str, Any], df: pd.DataFrame) -> 
     period = int(params["period"])
     threshold = float(params["threshold"])
     direction = str(params["direction"])
-    rsi = _calculate_rsi(df["close"], period)
+    rsi = wilder_rsi(df["close"], period, fill_warmup=False)
     latest = _latest_timestamp(df)
     prev_value, curr_value = float(rsi.iloc[-2]), float(rsi.iloc[-1])
     if not all(isfinite(value) for value in (prev_value, curr_value)):
@@ -409,14 +413,8 @@ def _float_in_range(
 
 
 def _calculate_rsi(close: pd.Series, period: int) -> pd.Series:
-    delta = close.diff()
-    gain = delta.where(delta > 0, 0)
-    loss = -delta.where(delta < 0, 0)
-    # 使用 Wilder's EMA / SMMA 口径，不使用 rolling SMA。
-    avg_gain = gain.ewm(alpha=1 / period, adjust=False).mean()
-    avg_loss = loss.ewm(alpha=1 / period, adjust=False).mean()
-    rs = avg_gain / avg_loss
-    return (100 - (100 / (1 + rs))).fillna(50)
+    # 与选股、个股分析报告共用同一 Wilder RSI（src/utils/rsi.py），口径一致。
+    return wilder_rsi(close, period)
 
 
 def _crossed_threshold(prev_value: float, curr_value: float, threshold: float, direction: str) -> bool:

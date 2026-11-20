@@ -11,7 +11,14 @@
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker&logoColor=white)](https://hub.docker.com/r/zhulinsen/daily_stock_analysis)
 
 <p align="center">
-  <a href="https://trendshift.io/repositories/18527?utm_source=repository-badge&amp;utm_medium=badge&amp;utm_campaign=badge-repository-18527" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/repositories/18527" alt="ZhuLinsen%2Fdaily_stock_analysis | Trendshift" width="250" height="55"/></a>&nbsp;<a href="https://hellogithub.com/repository/ZhuLinsen/daily_stock_analysis" target="_blank"><img src="https://api.hellogithub.com/v1/widgets/recommend.svg?rid=6daa16e405ce46ed97b4a57706aeb29f&claim_uid=pfiJMqhR9uvDGlT&theme=neutral" alt="Featured｜HelloGitHub" width="230" /></a>
+  <a href="https://trendshift.io/repositories/18527?utm_source=repository-badge&amp;utm_medium=badge&amp;utm_campaign=badge-repository-18527" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/repositories/18527" alt="ZhuLinsen%2Fdaily_stock_analysis | Trendshift" width="250" height="55"/></a>&nbsp;
+  <a href="https://www.star-history.com/zhulinsen/daily_stock_analysis">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/badge?repo=ZhuLinsen/daily_stock_analysis&amp;type=rank&amp;theme=dark" />
+      <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/badge?repo=ZhuLinsen/daily_stock_analysis&amp;type=rank" />
+      <img alt="Star History Rank" src="https://api.star-history.com/badge?repo=ZhuLinsen/daily_stock_analysis&amp;type=rank" height="55" />
+    </picture>
+  </a>
 </p>
 
 **基於 AI 大模型的 A股/港股/美股/日股/韓股/台股自選股智能分析系統**
@@ -39,6 +46,9 @@
   <a href="assets/readme_workspace_tour_20260510.gif"><img src="assets/readme_workspace_preview.gif" alt="DSA Web 工作台演示" width="640"></a><br>
   <sub>點擊動圖查看完整演示</sub>
 </p>
+
+> [!TIP]
+> 🚀 **作者配套開源專案**：[AlphaSift · 智能選股](https://github.com/ZhuLinsen/alphasift) ｜ [AlphaEvo · 策略回測與進化](https://github.com/ZhuLinsen/alphaevo)
 
 ## ✨ 功能特性
 
@@ -247,15 +257,6 @@ python main.py --webui-only
 - 支援自訂策略文件與多 Agent 編排（實驗性）
 
 > Agent 具體參數、`skill` 命名兼容、多 Agent 模式和預算護欄見 [完整指南](./full-guide.md#本地-webui-管理界面) 與 [LLM 配置指南](./LLM_CONFIG_GUIDE.md)。
-
-## 🧩 相關項目 (Related Projects)
-
-> DSA 聚焦日常分析報告；內建選股實作參考 AlphaSift，AlphaEvo 用於策略驗證與進化。
-
-| 項目 | 定位 |
-|------|------|
-| [AlphaSift](https://github.com/ZhuLinsen/alphasift) | DSA 內建選股引擎的參考專案 |
-| [AlphaEvo](https://github.com/ZhuLinsen/alphaevo) | 策略回測與自我進化，用於驗證策略規則，並透過迭代探索策略參數與組合 |
 
 ## 📬 聯繫與合作
 

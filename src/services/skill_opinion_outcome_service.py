@@ -30,7 +30,7 @@ from src.storage import (
 
 logger = logging.getLogger(__name__)
 
-SKILL_OPINION_OUTCOME_ENGINE_VERSION = "skill-opinion-outcome-v1"
+SKILL_OPINION_OUTCOME_ENGINE_VERSION = "skill-opinion-outcome-v1.1"
 
 
 class SkillOpinionOutcomeService:
@@ -164,6 +164,7 @@ class SkillOpinionOutcomeService:
             stock_code=candidate.sample.stock_code,
             context_snapshot=candidate.history.context_snapshot,
             analysis_date=analysis_date,
+            engine_version=SKILL_OPINION_OUTCOME_ENGINE_VERSION,
         )
         if start_resolution.failure_reason is not None:
             return SkillOpinionOutcomeEvaluation(

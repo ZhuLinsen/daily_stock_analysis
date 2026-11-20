@@ -203,7 +203,7 @@ AlphaSift 是参考来源，不是自动同步源。更新时应：
 2. 比较 `src/services/screening/` 的 DSA 特有修改，按模块选择性移植；
 3. 更新衍生文件头、`REFERENCE_REVISION` 和 `THIRD_PARTY_NOTICES.md`；
 4. 检查 pipeline、API/Web 字段、数据源降级、策略资源与冻结打包；
-5. 更新本文档和 `docs/CHANGELOG.md`，完成后端、Web、Docker/桌面验证。
+5. 更新本文档，在 PR 中说明选股行为的变化，完成后端、Web、Docker/桌面验证。
 
 ## 回滚
 
