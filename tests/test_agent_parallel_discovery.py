@@ -3,13 +3,13 @@
 
 from __future__ import annotations
 
-import sys
 import threading
 from datetime import date
 from unittest.mock import MagicMock
 
-sys.modules.setdefault("litellm", MagicMock())
-sys.modules.setdefault("fxmacrodata_public", MagicMock())
+from tests.litellm_stub import ensure_litellm_stub
+
+ensure_litellm_stub()
 
 from src.agent.agents.intel_agent import IntelAgent
 from src.agent.agents.technical_agent import TechnicalAgent
