@@ -1613,6 +1613,11 @@ function buildFilteredChannelUpdateItems({
     }
     return updates.filter((item) => item.key !== 'LLM_MODELFLARE_API_KEY' && item.key !== 'LLM_MODELFLARE_API_KEYS');
   }
+  const removedModelflare = initialNames.some((name) => name.toLowerCase() === 'modelflare')
+    && !channels.some((channel) => channel.name.toLowerCase() === 'modelflare');
+  if (removedModelflare && (savedItemMap.get('MODELFLARE_KEY') || '').trim()) {
+    updates.push({ key: 'MODELFLARE_KEY', value: '' });
+  }
   return updates;
 }
 
@@ -1709,7 +1714,9 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
     isHermesChannel(channel) && initialItemSourceByKey.get('LLM_HERMES_API_KEY') === true
   );
   const hasLitellmConfig = useMemo(
-    () => items.some((item) => item.key === 'LITELLM_CONFIG' && item.value.trim().length > 0),
+    () => items.some((item) => item.key === 'LITELLM_CONFIG'
+      && item.value.trim().length > 0
+      && item.rawValueExists !== false),
     [items],
   );
   const managesRuntimeConfig = !hasLitellmConfig;
@@ -1749,7 +1756,11 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
   const previousInitialChannelsRef = useRef(initialChannels);
   const previousInitialRuntimeConfigRef = useRef(initialRuntimeConfig);
   const removedInitialChannelNamesRef = useRef<Set<string>>(new Set());
-  const pendingSaveFeedbackFingerprintRef = useRef<{ channels: string; runtime: string } | null>(null);
+  const pendingSaveFeedbackFingerprintRef = useRef<{
+    channels: string;
+    runtime: string;
+    resetAfterSave?: boolean;
+  } | null>(null);
   const discoveryNonceRef = useRef<Record<string, number>>({});
   const discoveryRequestIdRef = useRef(0);
   const capabilityNonceRef = useRef<Record<string, number>>({});
@@ -1776,10 +1787,16 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
     ];
     previousInitialRuntimeConfigRef.current = initialRuntimeConfig;
     const pendingSaveFeedbackFingerprint = pendingSaveFeedbackFingerprintRef.current;
-    const preserveSaveFeedback = pendingSaveFeedbackFingerprint?.channels === channelsFingerprint
+    const resetAfterSave = pendingSaveFeedbackFingerprint?.resetAfterSave === true;
+    const preserveSaveFeedback = !resetAfterSave
+      && pendingSaveFeedbackFingerprint?.channels === channelsFingerprint
       && pendingSaveFeedbackFingerprint.runtime === runtimeFingerprint;
     pendingSaveFeedbackFingerprintRef.current = null;
     if (isExplicitReset) {
+      removedInitialChannelNamesRef.current = new Set();
+      setChannels(initialChannels);
+      setRuntimeConfig(initialRuntimeConfig);
+    } else if (resetAfterSave) {
       removedInitialChannelNamesRef.current = new Set();
       setChannels(initialChannels);
       setRuntimeConfig(initialRuntimeConfig);
@@ -2186,14 +2203,19 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
         items: updateItems,
       });
       const responseWarnings = response.warnings || [];
-      await onSaved(updateItems);
       pendingSaveFeedbackFingerprintRef.current = {
         channels: JSON.stringify(parseChannelsFromItems(updateItems)),
         runtime: JSON.stringify(parseRuntimeConfigFromItems(updateItems)),
+        resetAfterSave: updateItems.some((item) => (
+          item.key.toUpperCase() === 'LLM_HERMES_API_KEY'
+          || (item.key.toUpperCase() === 'MODELFLARE_KEY' && !item.value.trim())
+        )),
       };
+      await onSaved(updateItems);
       setSaveWarnings(responseWarnings);
       setSaveMessage({ type: 'success', text: managesRuntimeConfig ? 'AI 配置已保存' : '渠道配置已保存' });
     } catch (error: unknown) {
+      pendingSaveFeedbackFingerprintRef.current = null;
       setSaveWarnings([]);
       setSaveMessage({ type: 'error', error: getParsedApiError(error) });
     } finally {

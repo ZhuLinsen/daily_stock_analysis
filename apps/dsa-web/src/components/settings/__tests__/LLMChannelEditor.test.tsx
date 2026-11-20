@@ -546,6 +546,63 @@ describe('LLMChannelEditor', () => {
     expect(discoverLLMChannelModels).not.toHaveBeenCalled();
   });
 
+  it('resets a saved Hermes key draft after the server masks it during a Base URL refresh', async () => {
+    update.mockResolvedValue({
+      success: true,
+      configVersion: 'v2',
+      appliedCount: 2,
+      skippedMaskedCount: 0,
+      reloadTriggered: true,
+      updatedKeys: ['LLM_HERMES_API_KEY', 'LLM_HERMES_BASE_URL'],
+      warnings: [],
+    });
+    const initialItems = [
+      { key: 'LLM_CHANNELS', value: 'hermes' },
+      { key: 'LLM_HERMES_PROTOCOL', value: 'openai' },
+      { key: 'LLM_HERMES_BASE_URL', value: 'http://127.0.0.1:8642/v1' },
+      { key: 'LLM_HERMES_ENABLED', value: 'true' },
+      { key: 'LLM_HERMES_API_KEY', value: '******', rawValueExists: true },
+      { key: 'LLM_HERMES_MODELS', value: 'hermes-agent' },
+    ];
+    const refreshedItems = [
+      ...initialItems.map((item) => item.key === 'LLM_HERMES_BASE_URL'
+        ? { ...item, value: 'http://127.0.0.1:8643/v1' }
+        : item),
+    ];
+    const onSaved = vi.fn(async () => {
+      rerender(
+        <LLMChannelEditor
+          items={refreshedItems}
+          configVersion="v2"
+          maskToken="******"
+          onSaved={onSaved}
+        />,
+      );
+    });
+    const { rerender } = render(
+      <LLMChannelEditor
+        items={initialItems}
+        configVersion="v1"
+        maskToken="******"
+        onSaved={onSaved}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /Hermes/i }));
+    fireEvent.change(screen.getByLabelText('Base URL'), {
+      target: { value: 'http://127.0.0.1:8643/v1' },
+    });
+    fireEvent.change(screen.getByLabelText('API Key'), {
+      target: { value: 'sk-hermes-rotated' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '保存 AI 配置' }));
+
+    await waitFor(() => expect(screen.getByText('AI 配置已保存')).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: /Hermes/i }));
+    expect(screen.getByLabelText('API Key')).toHaveValue('******');
+    expect(screen.getByLabelText('Base URL')).toHaveValue('http://127.0.0.1:8643/v1');
+  });
+
   it('keeps pure non-Hermes route in Agent and Vision runtime selects', () => {
     render(
       <LLMChannelEditor
@@ -757,6 +814,54 @@ describe('LLMChannelEditor', () => {
     ]} configVersion="v1" maskToken="******" onSaved={() => {}} onDraftItemsChange={onDraftItemsChange} />);
     fireEvent.click(screen.getByRole('button', { name: '✕' }));
     await waitFor(() => expect(lastDraftCall(onDraftItemsChange)).toContainEqual({ key: 'MODELFLARE_KEY', value: '' }));
+  });
+
+  it('clears MODELFLARE_KEY when removing an explicitly declared Modelflare channel', async () => {
+    update.mockResolvedValue({
+      success: true,
+      configVersion: 'v2',
+      appliedCount: 1,
+      skippedMaskedCount: 0,
+      reloadTriggered: true,
+      updatedKeys: ['LLM_CHANNELS', 'MODELFLARE_KEY'],
+      warnings: [],
+    });
+    const initialItems = [
+      { key: 'LLM_CHANNELS', value: 'modelflare' },
+      { key: 'MODELFLARE_KEY', value: 'sk-existing', rawValueExists: true },
+      { key: 'LLM_MODELFLARE_BASE_URL', value: 'https://custom.modelflare.example/v1' },
+      { key: 'LLM_MODELFLARE_MODELS', value: 'openai/model' },
+    ];
+    const { rerender } = render(
+      <LLMChannelEditor
+        items={initialItems}
+        configVersion="v1"
+        maskToken="******"
+        onSaved={async () => {
+          rerender(
+            <LLMChannelEditor
+              items={[
+                { key: 'LLM_CHANNELS', value: '', rawValueExists: true },
+                { key: 'MODELFLARE_KEY', value: '', rawValueExists: true },
+              ]}
+              configVersion="v2"
+              maskToken="******"
+              onSaved={() => {}}
+            />,
+          );
+        }}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: /Modelflare（聚合平台）/i }));
+    fireEvent.click(screen.getByRole('button', { name: '✕' }));
+    fireEvent.click(screen.getByRole('button', { name: '保存 AI 配置' }));
+
+    await waitFor(() => {
+      expect(update).toHaveBeenCalled();
+      expect(update.mock.calls[0][0].items).toContainEqual({ key: 'MODELFLARE_KEY', value: '' });
+      expect(screen.queryByRole('button', { name: /Modelflare（聚合平台）/i })).not.toBeInTheDocument();
+    });
   });
 
   it('shows the selected sponsor registration link beside the provider selection', () => {

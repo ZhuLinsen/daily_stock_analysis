@@ -827,6 +827,37 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertNotIn("LLM_UNUSED_API_KEY", raw_items)
         self.assertNotIn("UNRELATED_API_KEY", raw_items)
 
+    def test_get_config_reports_active_process_env_litellm_yaml(self) -> None:
+        yaml_path = Path(self.temp_dir.name) / "litellm.yaml"
+        yaml_path.write_text(
+            json.dumps({
+                "model_list": [{
+                    "model_name": "openai/yaml-model",
+                    "litellm_params": {
+                        "model": "openai/yaml-model",
+                        "api_base": "https://yaml.example/v1",
+                    },
+                }],
+            }),
+            encoding="utf-8",
+        )
+        self._rewrite_env("STOCK_LIST=600519")
+
+        with patch.dict(
+            os.environ,
+            {
+                "LITELLM_CONFIG": str(yaml_path),
+                "LLM_CHANNELS": "fallback",
+            },
+            clear=False,
+        ):
+            payload = self.service.get_config(include_schema=True)
+
+        items = {item["key"]: item for item in payload["items"]}
+        self.assertTrue(payload["llm_yaml_active"])
+        self.assertEqual(items["LITELLM_CONFIG"]["value"], str(yaml_path))
+        self.assertFalse(items["LITELLM_CONFIG"]["raw_value_exists"])
+
     def test_get_config_runtime_env_fallback_does_not_persist_llm_fields_on_save(self) -> None:
         self._rewrite_env(
             "STOCK_LIST=600519",

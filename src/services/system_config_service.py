@@ -512,6 +512,10 @@ class SystemConfigService:
             "config_version": self._manager.get_config_version(),
             "mask_token": mask_token,
             "items": items,
+            # raw_value_exists only describes persistence in .env. The Web UI
+            # also needs to know whether a process-injected YAML path is the
+            # active LiteLLM source before hiding the generic runtime fields.
+            "llm_yaml_active": self._uses_litellm_yaml(config_map),
             "llm_model_providers": sorted(get_litellm_model_providers()),
             "updated_at": self._manager.get_updated_at(),
         }

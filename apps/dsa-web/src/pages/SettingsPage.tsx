@@ -856,6 +856,7 @@ const SettingsPage: React.FC = () => {
     refreshAfterExternalSave,
     configVersion,
     maskToken,
+    llmYamlActive,
     llmModelProviders,
   } = useSystemConfig();
 
@@ -971,7 +972,7 @@ const SettingsPage: React.FC = () => {
   const aiModelHasConfiguredChannels = Boolean((aiModelItemMap.get('LLM_CHANNELS') || '').trim()
     || (aiModelItemMap.get('MODELFLARE_KEY') || '').trim());
   const aiModelYamlItem = aiModelItems.find((item) => item.key === 'LITELLM_CONFIG');
-  const aiModelHasConfiguredYaml = Boolean((aiModelYamlItem?.value || '').trim()
+  const aiModelHasConfiguredYaml = llmYamlActive ?? Boolean((aiModelYamlItem?.value || '').trim()
     && aiModelYamlItem?.rawValueExists !== false);
   const hasRuntimeSchedulerMismatch =
     schedulerRuntimeEnabled !== null
