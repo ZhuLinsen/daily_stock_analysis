@@ -101,7 +101,7 @@
 
 <a name="-web-介面"></a>
 
-本地 WebUI 需要 Git、Python 3.10+、Node.js `^20.19.0 || >=22.12.0`（低於 27）及 npm 10+。
+本地 WebUI 需要 Git、Python 3.10+、Node.js `^20.19.0 || ^22.12.0 || >=24.0.0 <27` 及 npm 10+。
 
 ```bash
 git clone --depth 1 https://github.com/ZhuLinsen/daily_stock_analysis.git

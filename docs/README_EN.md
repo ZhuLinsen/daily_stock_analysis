@@ -101,7 +101,7 @@ See the [full guide](./full-guide_EN.md#github-actions-configuration) for watchl
 
 <a name="-web-ui"></a>
 
-Local WebUI requires Git, Python 3.10+, Node.js `^20.19.0 || >=22.12.0` (below 27), and npm 10+.
+Local WebUI requires Git, Python 3.10+, Node.js `^20.19.0 || ^22.12.0 || >=24.0.0 <27`, and npm 10+.
 
 ```bash
 git clone --depth 1 https://github.com/ZhuLinsen/daily_stock_analysis.git
