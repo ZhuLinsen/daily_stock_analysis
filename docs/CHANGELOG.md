@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [修复] DSA 内部因子契约（#1902 P0）不再把无时区的本地 `created_at` 直接贴上 UTC：映射与 schema 改为按部署进程本地时钟（`TZ=Asia/Shanghai`）读取并换算为 UTC，`pick_to_factor_snapshot` 的显式 `computed_at` 同样归一化；同期修正内置引擎来源守卫的作用域，原创的 `factor_mapping.py` 不再被误判为 AlphaSift 派生文件。
+
+- [新功能] 新增 DSA 内部因子契约（`FactorDefinition`/`FactorSnapshot`/`CandidatePoolRun`/`CandidateFactorScore`，契约版本 1.0）：将选股 `factor_scores` 映射为带字段版本、来源、数据质量与降级原因的内部结构（#1902 P0）；仅新增 schema 与纯映射函数，不改变现有选股、API、回测与 DecisionSignal 行为。
 - [修复] Agent 工具返回顶层错误或显式 `success: false` 时，进度事件与调用轨迹正确标记失败，并与非重试错误缓存命中保持一致；保留成功空结果、原始工具返回内容及最终回复语义。
 - [修复] 选股、告警与个股分析报告统一使用同一 Wilder RSI（`src/utils/rsi.py`，基于 `fin-primitives`，以前 period 个涨跌幅的简单均值起算，与 TA-Lib 一致）：选股不再使用简单滚动均值，告警与报告不再以首行零涨跌幅起算 ewm，短历史下三处的超买/超卖判断不再出现分歧。预热期与无波动时仍为中性值 50；RSI 告警不再用预热占位值判断穿越，最少历史改为 period+2 根。
 - [文档] 将 AlphaSift 与 AlphaEvo 的项目入口前移至 README 产品预览之后、功能特性之前，以 `[!TIP]` 提示框展示，同步简体、英文与繁体版本。
