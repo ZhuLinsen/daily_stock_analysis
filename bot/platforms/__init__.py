@@ -53,6 +53,22 @@ except ImportError:
     get_feishu_stream_client = lambda: None
     start_feishu_stream_background = lambda: False
 
+# 企微智能机器人长连接模式（可选，Issue #755 Phase 1）
+try:
+    from bot.platforms.wecom_aibot import (
+        WecomAibotClient,
+        WecomAibotHandler,
+        get_wecom_aibot_client,
+        start_wecom_aibot_background,
+        WECOM_AIBOT_SDK_AVAILABLE,
+    )
+except ImportError:
+    WECOM_AIBOT_SDK_AVAILABLE = False
+    WecomAibotClient = None
+    WecomAibotHandler = None
+    get_wecom_aibot_client = lambda: None
+    start_wecom_aibot_background = lambda: False
+
 __all__ = [
     'BotPlatform',
     'DingtalkPlatform',
@@ -70,4 +86,10 @@ __all__ = [
     'get_feishu_stream_client',
     'start_feishu_stream_background',
     'FEISHU_SDK_AVAILABLE',
+    # 企微智能机器人长连接模式
+    'WecomAibotClient',
+    'WecomAibotHandler',
+    'get_wecom_aibot_client',
+    'start_wecom_aibot_background',
+    'WECOM_AIBOT_SDK_AVAILABLE',
 ]

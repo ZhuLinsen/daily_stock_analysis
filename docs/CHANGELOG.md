@@ -9,6 +9,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [新功能] 企业微信智能机器人 Phase 1：WebSocket 长连接客户端基建与对话最小闭环（#755）。新增 `bot/platforms/wecom_aibot.py` 长连接适配器（`aibot_subscribe` 认证、30s 心跳、断线指数退避重连、单机器人单连接互斥、msgid 排重、会话级限流），收到文本消息复用 `bot/dispatcher` 命令分发与 `AnalyzeCommand`（一次性分析、不改自选股），分析完成后经 source-context 链路以 `aibot_send_msg` 回推企微来源会话，回复经 `aibot_respond_msg` 帧（透传回调 req_id；`reply_stream` 可选、默认关）；出站回复/推送执行双窗口会话配额（30 条/分钟 + 1000 条/小时）。引入可选依赖 `wecom-aibot-python-sdk>=1.0.2`，SDK 缺失时模块可导入、功能自动关闭。新增配置 `WECOM_AIBOT_ENABLED` / `WECOM_AIBOT_BOT_ID` / `WECOM_AIBOT_SECRET` / `WECOM_AIBOT_REPLY_STREAM`（全部默认关，不改变现有用户行为）；既有企业微信群 Webhook 推送通道行为零变化。
+- [修复] Bark（`api.day.app`）自定义 Webhook 最终 payload 的 `body` 字段改为按 APNs 4096 字节 payload 上限截断（含全局模板渲染结果，按主机名识别 Bark），修复中文完整报告超限导致 Bark 返回 HTTP 500、手机收不到推送而测试消息正常的问题（#2503）。
+- [修复] 每日 Actions 未设置实时行情顺序时保留空值，使仅配置 TickPlus Key 的任务正确启用自动首选及批量实时预取；保留显式顺序和无 Key 免费源回退。
+
+- [修复] TickPlus 正确区分裸 000001 等股票与显式同码指数；补齐行情指标、按接口冷却与分组批量缓存，ETF 轮动使用独立前复权实例，并统一首选推荐入口。
+- [新功能] 新增可选 TickPlus A 股 / ETF 日 K、实时行情与名称查询，支持配置管理、Actions Secret 和失败回退，在数据源条目中标注推荐并补充接入说明。
+
+- [修复] 基本面估值复用本轮已获取的实时行情（包括失败结果），避免重复请求挤占基本面和资金流预算；独立调用保留原有取数行为。
+- [文档] 三语 README 产品预览改用 640×320、4 帧/秒的宽屏裁剪动图，减少展示高度和文件体积，点击可查看完整原版演示。
+
+- [文档] 将中、英、繁体 README 的 Trendshift 日榜徽章替换为仓库徽章，并添加仓库详情页链接。
+
+- [文档] 恢复 README、部署指南及模型/搜索配置表中的 Anspire 可点击链接并保留推广码，继续作为 SerpAPI 后的可选搜索服务。
+
+- [改进] 下线 Anspire 合作宣传及专属额度说明，移除 README 推荐入口，调整配置示例和渠道展示顺序；新闻搜索顺序调整至 SerpAPI 之后，保留原推广码链接、已有 Key 和模型渠道兼容。
+
+- [修复] Agent 工具消息内容与工具调用参数序列化不再透传 NaN/±Infinity：`LLMToolAdapter._convert_messages` 序列化前将非有限浮点递归归一化为 `null`，并以 `allow_nan=False` 输出严格 RFC 8259 JSON，避免 LiteLLM 以 `"NaN" is not valid JSON` 拒绝请求（#2471）。
+
+- [修复] 启动日志不再对 `--stocks` / `--portfolio` / `--no-notify` 已覆盖的配置项告警；单一日线数据源失败（含 Eastmoney 股票与 ETF 请求）降为 WARNING，普通股票及 A 股指数全部日线数据源失败仍为 ERROR；LLM 返回与调试日志显示实际响应模型（含流式响应），依据实际调用路由标注回退，避免将别名、供应商前缀和日期版本差异误报为回退
+- [文档] 修正 DeepSeek 默认模型说明，明确 Gemini API 与 Vertex AI 的模型生命周期及验证边界。
+- [修复] 深度研究合成阶段预算增至受剩余整体预算限制的 120 秒；阶段/provider 超时保留阶段、实际耗时与原始原因，研究 API 不再误报整体预算耗尽或清零已知 token 用量（#2475）。
+
+- [改进] 更新默认模型：Gemini 主模型 `gemini-3.6-flash`、备用 `gemini-3.5-flash-lite`，选股默认同步；OpenAI 默认 `gpt-6.1-sol`（选股与 PR 审查兜底同步，不再回落到 `gpt-4o-mini`）；仅配置 `DEEPSEEK_API_KEY` 时默认 `deepseek-v4-flash`。未显式配置模型的用户将自动切换，显式配置不受影响
+- [修复] GPT-6 系列请求时省略 `temperature`，与 GPT-5 / o 系列一致，避免服务端拒绝非默认采样参数
+- [修复] Anthropic 已退役 `claude-3-5-sonnet-20241022` / `claude-3-7-sonnet-20250219`：GitHub Actions 默认 `ANTHROPIC_MODEL` 与 LiteLLM 配置示例改为 `claude-sonnet-4-6`。该模型默认不启用 thinking，仍接受 `temperature` 与指定 `tool_choice`，现有请求参数与 Agent 工具往返无需调整；已通过 `ANTHROPIC_MODEL` Variable / Secret 显式配置旧模型的用户需手动更新。
+- [修复] 依赖锁定 `akshare<1.20.0`，避免上游目录与 HTTP 层重构导致 CI 与桌面打包失败；Python 3.10 新装限制 `litellm<1.98.0`，修复 `NotRequired` 导入错误
+- [修复] 自选及其他无关配置保存不再被已有 LLM 渠道或模型错误阻断，模型相关修改仍校验完整依赖；仅更新自选时保留运行时单例与容器环境覆盖，并补齐增删、删空和校验回归。凡本次保存会启用 Agent 路径的，同样校验完整模型依赖：切到 LiteLLM Agent 后端（`AGENT_BACKEND` / `AGENT_GENERATION_BACKEND` 解析为 litellm）、开启 Agent 分析（`AGENT_MODE=true`）、或配置了非 `all` 的 `AGENT_SKILLS`——后两者走普通分析的 Agent 分支，自带 `LLMToolAdapter`，不受 `AGENT_BACKEND` 决定。仅关闭 `AGENT_MODE`、将 `AGENT_SKILLS` 设为 `all` 或空值、以及无关键保存仍不受 LLM 配置影响；显式保存或导入已退役的 `codex_app_server` 仍被拒绝。
+- [改进] 移除实验性 Codex App Server 问股后端及专属探针、取消与启动链；旧配置明确提示退役并可主动修正，保留默认 LiteLLM、会话接受事务及独立 Codex CLI 报告。
+- [修复] Agent 状态面板在缺少可用主模型时显示中英文配置指引，保留技术错误码；配置指南明确区分已移除后端与历史 Gate 记录。
+- [chore] Default new MiniMax channels to MiniMax-M3.1-Flash and MiniMax-M3, filter older text recommendations while retaining saved/custom models, and refresh fallback pricing.
 - [修复] 选股、告警与个股分析报告统一使用同一 Wilder RSI（`src/utils/rsi.py`，基于 `fin-primitives`，以前 period 个涨跌幅的简单均值起算，与 TA-Lib 一致）：选股不再使用简单滚动均值，告警与报告不再以首行零涨跌幅起算 ewm，短历史下三处的超买/超卖判断不再出现分歧。预热期与无波动时仍为中性值 50；RSI 告警不再用预热占位值判断穿越，最少历史改为 period+2 根。
 - [文档] 将 AlphaSift 与 AlphaEvo 的项目入口前移至 README 产品预览之后、功能特性之前，以 `[!TIP]` 提示框展示，同步简体、英文与繁体版本。
 
