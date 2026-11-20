@@ -296,7 +296,7 @@ def _reload_env_file_values_preserving_overrides() -> None:
     _RUNTIME_ENV_FILE_KEYS = managed_keys
 
 
-def parse_arguments() -> argparse.Namespace:
+def parse_arguments(argv: Optional[List[str]] = None) -> argparse.Namespace:
     """解析命令行参数"""
     parser = argparse.ArgumentParser(
         description='A股自选股智能分析系统',
@@ -476,7 +476,47 @@ def parse_arguments() -> argparse.Namespace:
         help='运行 ETF 轮动：输出最新调仓信号与规则回测报告（不调用 LLM，配置见 ETF_ROTATION_*）'
     )
 
-    return parser.parse_args()
+
+    parser.add_argument(
+        '--init',
+        action='store_true',
+        help='生成极简 .env 配置文件（默认交互模式，可配 --non-interactive / --init-provider / --stocks / --init-output / --init-force）'
+    )
+
+    parser.add_argument(
+        '--init-provider',
+        type=str,
+        default='gemini',
+        choices=['modelflare', 'gemini', 'deepseek', 'aihubmix', 'openai', 'anthropic', 'ollama'],
+        help='配合 --init 指定默认 AI 模型渠道（默认 gemini）'
+    )
+
+    parser.add_argument(
+        '--init-output',
+        type=str,
+        default='.env',
+        help='配合 --init 指定输出配置路径（默认 .env）'
+    )
+
+    parser.add_argument(
+        '--init-force',
+        action='store_true',
+        help='配合 --init 允许覆盖已存在的配置文件'
+    )
+
+    parser.add_argument(
+        '--non-interactive',
+        action='store_true',
+        help='配合 --init 跳过交互提示，按参数直接生成极简配置文件'
+    )
+
+    parser.add_argument(
+        '--json',
+        action='store_true',
+        help='以 JSON 格式输出结果（配合 --init 使用）'
+    )
+
+    return parser.parse_args(argv)
 
 
 def _startup_config_warnings(config: Config, args: argparse.Namespace) -> List[str]:
@@ -1696,15 +1736,39 @@ def _build_schedule_times_provider(default_schedule_time: str):
     return _provider
 
 
-def main() -> int:
+def main(argv: Optional[List[str]] = None) -> int:
     """
     主入口函数
 
     Returns:
         退出码（0 表示成功）
     """
-    # 解析命令行参数
-    args = parse_arguments()
+    # 解析命令行参数（兼容零参测试 mock `main.parse_arguments`）
+    args = parse_arguments() if argv is None else parse_arguments(argv)
+    if getattr(args, "init", False):
+        from src.services.init_config_service import run_init_wizard
+
+        try:
+            res = run_init_wizard(
+                default_provider=getattr(args, "init_provider", "gemini") or "gemini",
+                default_stocks=getattr(args, "stocks", None) or "600519,hk00700,AAPL",
+                output_path=getattr(args, "init_output", ".env") or ".env",
+                force=bool(getattr(args, "init_force", False)),
+                non_interactive=bool(getattr(args, "non_interactive", False)),
+            )
+        except (FileExistsError, IsADirectoryError, ValueError) as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 2
+
+        if getattr(args, "json", False):
+            print(json.dumps(res, ensure_ascii=False, indent=2))
+        else:
+            print(f"Generated minimal config: {res['path']} (provider={res['provider']}, stocks={res['stocks']})")
+            print(f"Next: fill {res['env_key']} in {res['path']} if blank, then run `python main.py --serve-only` (or `--stocks 600519`).")
+        return 0
+    if getattr(args, "json", False):
+        print("ERROR: --json 目前仅支持与 --init 配合使用", file=sys.stderr)
+        return 2
 
     # 在配置加载前先初始化 bootstrap 日志，确保早期失败也能落盘
     try:
