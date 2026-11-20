@@ -328,6 +328,13 @@ const ChatPage: React.FC = () => {
   }, []);
 
   const connectionId = chatgptStatus?.connected ? chatgptStatus.connection_id : undefined;
+  const consentTarget = useChatGPT && connectionId ? JSON.stringify([sessionId, connectionId]) : '';
+  const [confirmedTarget, setConfirmedTarget] = useState('');
+  if (confirmedTarget && confirmedTarget !== consentTarget) setConfirmedTarget('');
+  const chatgptHistoryConfirmed = !!consentTarget && confirmedTarget === consentTarget;
+  const chatgptLabel = chatgptStatus?.accounts && chatgptStatus.accounts.length > 1
+    ? `${chatgptStatus.account_label} (${chatgptStatus.registration_id})`
+    : chatgptStatus?.account_label || 'ChatGPT';
   const sourceKey = useChatGPT ? JSON.stringify([connectionId, chatgptModel]) : 'default';
   const [checkedSource, setCheckedSource] = useState('');
   const loadAgentStatus = useCallback(async () => {
@@ -585,7 +592,7 @@ const ChatPage: React.FC = () => {
       const msgText = (overrideMessage ?? input).trim();
       if (!msgText || loading || !agentAvailable || !agentStatus) return;
       const modelSource = useChatGPT ? currentChatGPTSource(chatgptStatus, chatgptModel) : undefined;
-      if (useChatGPT && !modelSource) return;
+      if (useChatGPT && (!modelSource || !chatgptHistoryConfirmed)) return;
       if (overrideMessage !== undefined) {
         setInput(msgText);
       }
@@ -620,7 +627,7 @@ const ChatPage: React.FC = () => {
         },
       });
     },
-    [agentAvailable, agentStatus, chatgptModel, chatgptStatus, getSkillNames, input, loading, normalizeSelectedSkillIds, requestScrollToBottom, selectedSkillIds, sessionId, sessionSelectedSkillIds, startStream, useChatGPT],
+    [agentAvailable, agentStatus, chatgptHistoryConfirmed, chatgptModel, chatgptStatus, getSkillNames, input, loading, normalizeSelectedSkillIds, requestScrollToBottom, selectedSkillIds, sessionId, sessionSelectedSkillIds, startStream, useChatGPT],
   );
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -1504,6 +1511,17 @@ const ChatPage: React.FC = () => {
             )}
 
               <ModelSourceSelect selected={useChatGPT} onChange={setUseChatGPT} />
+              {consentTarget && !chatgptHistoryConfirmed && (
+                <button type="button" className="self-start rounded-lg border border-subtle px-3 py-1.5 text-xs text-secondary-text"
+                  onClick={() => setConfirmedTarget(consentTarget)}>
+                  {t('chat.confirmChatGPTAccountHistory', {
+                    account: chatgptLabel,
+                  })}
+                </button>
+              )}
+              {chatgptHistoryConfirmed && (
+                <span className="text-xs text-secondary-text">{t('chat.chatGPTAccount', { account: chatgptLabel })}</span>
+              )}
               <div className="flex items-end gap-3">
                 <textarea
                   value={input}
@@ -1523,7 +1541,7 @@ const ChatPage: React.FC = () => {
                   <Button
                     variant="primary"
                     onClick={() => handleSend()}
-                    disabled={!input.trim() || loading || !agentAvailable}
+                    disabled={!input.trim() || loading || !agentAvailable || (useChatGPT && !chatgptHistoryConfirmed)}
                     isLoading={loading}
                     className="btn-primary flex-shrink-0"
                   >

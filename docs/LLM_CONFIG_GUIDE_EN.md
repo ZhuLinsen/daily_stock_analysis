@@ -28,6 +28,10 @@ Choose ChatGPT as the model source for a single-stock report or a single-Agent c
 
 After disconnecting, add another account or sign in again with a saved registration. If that registration was missing plan access, DSA requests consent again when you select it. One connection is active at a time. A stale tab reloads the connection status. The settings API uses the selected `registration_id` to sign in again, and the displayed `connection_id` or `attempt_id` to disconnect or cancel. Reload any open tabs after upgrading. If cancellation overlaps the token exchange, DSA attempts to revoke the newly issued refresh token. If the connection is busy, try disconnecting again shortly. If DSA reports a local disconnection with unconfirmed remote revocation, check the authorization in ChatGPT settings. If DSA cannot confirm the outcome, reload the page to see the current connection status.
 
+If the first code exchange fails, choose **Continue previous authorization** to reuse the issued registration in the current DSA process. After restarting, start authorization again. When local disconnection and its revocation record are saved, DSA can show the last result after restart. A refresh that loses plan permission disables the old connection. Check ChatGPT settings if DSA cannot determine the latest credential or confirm remote revocation. If local storage fails, resolve the error before authorizing again.
+
+In Web chat, confirm the target account and that the visible conversation history will be sent. Confirm again after switching accounts or conversations, or reloading the page.
+
 The single-stock analysis and Chat APIs accept a `model_source` object with `provider: "chatgpt_siwc"`, `connection_id` and `model`. Single-stock analysis also requires `notify: false`. The backend stores credentials in the current macOS user's Application Support directory.
 
 ## Generation Backend (Phase 4)

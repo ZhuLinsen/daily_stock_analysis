@@ -301,7 +301,7 @@ async def app_lifespan(app: FastAPI):
 
         app.state.chatgpt_start_error = False
         try:
-            chatgpt_service = start_chatgpt_service()
+            chatgpt_service = start_chatgpt_service(asyncio.get_running_loop())
         except (OSError, ValueError):
             app.state.chatgpt_start_error = True
     try:

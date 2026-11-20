@@ -19,6 +19,7 @@ const connectionErrors = new Set([
   'chatgpt_plan_permission_required',
   'chatgpt_reauthorization_required',
 ]);
+const statusReadbackErrors = new Set(['chatgpt_protocol_error', 'chatgpt_store_unavailable']);
 
 let readSequence = 0;
 
@@ -34,12 +35,17 @@ export const useChatGPTStore = create<ChatGPTState>((set, get) => {
 
   async function syncConnection(read: number, refreshModels = false) {
     let failedConnection: string | undefined;
+    let catalogError: unknown;
     while (read === readSequence) {
       const status = await chatgptApi.status();
       if (read !== readSequence) return;
       const changed = applyStatus(status);
       const id = status.connection_id;
-      if (!status.connected || !id || id === failedConnection) return status;
+      if (!status.connected || !id) return status;
+      if (id === failedConnection) {
+        if (catalogError) throw catalogError;
+        return status;
+      }
       if (!changed && !refreshModels && get().models.length) return status;
       try {
         const models = await chatgptApi.models(id, refreshModels);
@@ -49,9 +55,14 @@ export const useChatGPTStore = create<ChatGPTState>((set, get) => {
       } catch (error) {
         if (read !== readSequence) return;
         const code = isAxiosError(error) && extractErrorCode(error.response?.data);
-        if (!code || !connectionErrors.has(code)) throw error;
-        // This ID can no longer be selected, even if the following status read fails.
-        set({ status: null, model: '', models: [] });
+        if (code && connectionErrors.has(code)) {
+          // The old selection is invalid even if the next status read fails.
+          set({ status: null, model: '', models: [] });
+        } else if (code && statusReadbackErrors.has(code)) {
+          catalogError = error;
+        } else {
+          throw error;
+        }
         failedConnection = id;
         refreshModels = false;
       }
@@ -76,11 +87,12 @@ export const useChatGPTStore = create<ChatGPTState>((set, get) => {
       try {
         result = await chatgptApi.disconnect(target);
       } catch (error) {
-        if (isAxiosError(error) && extractErrorCode(error.response?.data) === 'chatgpt_target_changed') {
-          await syncConnection(++readSequence);
+        if (!isAxiosError(error)) throw error;
+        if (error.response) {
+          const code = extractErrorCode(error.response.data);
+          if (code === 'chatgpt_target_changed' || code === 'chatgpt_store_unavailable') await get().refresh();
           throw error;
         }
-        if (!isAxiosError(error) || error.response) throw error;
         const status = await syncConnection(++readSequence).catch(() => undefined);
         if (status?.available && !status.connected && status.pending === false) return false;
         return undefined;
@@ -88,12 +100,10 @@ export const useChatGPTStore = create<ChatGPTState>((set, get) => {
 
       if (!result.disconnected) return undefined;
       const status = get().status;
-      if (!connectionId) {
-        await get().refresh();
-      } else if (status?.connection_id === connectionId) {
-        ++readSequence;
-        applyStatus({ ...status, connected: false, pending: false, connection_id: undefined, error: undefined });
+      if (connectionId && status?.connection_id === connectionId) {
+        set({ status: null, models: [], model: '' });
       }
+      await get().refresh();
       return result.revocation_confirmed;
     },
   };

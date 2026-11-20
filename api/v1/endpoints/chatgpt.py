@@ -14,6 +14,13 @@ router = APIRouter()
 class ConnectRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     registration_id: str | None = Field(default=None, min_length=1)
+    retry_id: str | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="after")
+    def one_target(self):
+        if self.registration_id and self.retry_id:
+            raise ValueError("Choose a saved ChatGPT account or retry an authorization")
+        return self
 
 
 class DisconnectRequest(BaseModel):

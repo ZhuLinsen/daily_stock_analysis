@@ -4,15 +4,17 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+from concurrent.futures import Future, TimeoutError as FutureTimeout
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
+import logging
 import os
 from pathlib import Path
 import re
 import secrets
 import stat
 import tempfile
-from threading import RLock, Thread
+from threading import Event, RLock, Thread
 import time
 from urllib.parse import parse_qs, urlencode, urlsplit
 from uuid import uuid4
@@ -35,6 +37,7 @@ APP_NAME = "Daily Stock Analysis"
 PLAN_PERMISSION_REQUIRED = "chatgpt_plan_permission_required"
 DISCONNECT_TIMEOUT = 20
 DISCONNECT_LOCK_TIMEOUT = 2
+logger = logging.getLogger(__name__)
 
 
 def _safe_identifier(value):
@@ -46,7 +49,8 @@ def _safe_identifier(value):
 class ChatGPTError(Exception):
     """Safe error information shared by the OAuth and inference paths."""
 
-    def __init__(self, code, message, *, status=None, upstream_code=None, param=None, request_id=None):
+    def __init__(self, code, message, *, status=None, upstream_code=None, param=None, request_id=None, request_may_have_arrived=False):
+        self.request_may_have_arrived = request_may_have_arrived
         self.usage = None
         self.code = code
         self.status = status
@@ -71,17 +75,20 @@ class ChatGPTError(Exception):
 
 
 class ChatGPTOAuthService:
-    def __init__(self, directory: Path):
+    def __init__(self, directory: Path, loop: asyncio.AbstractEventLoop | None = None):
         import fcntl
 
         self.directory = directory
         self.lock = RLock()
         self.pending = None
+        self.retry_target = None
+        self.disabled_connection_id = None
+        self.revoking: dict[str, Future] = {}
+        self.loop = loop
         self.error = None
         self.models_cache = None
         self.catalog_sequence = 0
         self.published_sequence = 0
-        self.revocation_unconfirmed = False
         self.closed = False
         directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         info = directory.lstat()
@@ -135,6 +142,7 @@ class ChatGPTOAuthService:
     def close(self):
         with self.lock:
             self.closed = True
+            self.retry_target = None
             attempt = self.pending
             if attempt:
                 attempt["cancelled"] = True
@@ -145,18 +153,27 @@ class ChatGPTOAuthService:
 
     def status(self):
         with self.lock:
-            connection = self.data.get("connection") or {}
+            connection = self._active_connection() or {}
             registration = self.data.get("registration") or {}
-            connected = bool(connection.get("active"))
+            session_end = self.data.get("last_session_end") or {}
+            revocation_unconfirmed = session_end.get("result") == "unconfirmed"
+            registrations = self._registrations()
+            ended_id = session_end.get("registration_id")
+            ended_label = registrations.get(ended_id, {}).get("label")
+            if ended_label and len(registrations) > 1:
+                ended_label = f"{ended_label} ({ended_id})"
+            connected = bool(connection)
             grant_error = PLAN_PERMISSION_REQUIRED if registration.get("needs_consent") else self.data.get("authorization_error")
             return {
                 "available": True, "connected": connected,
                 "connection_id": connection.get("id") if connected else None,
                 "account_label": registration.get("label"), "plan_authorized": connected,
-                "revocation_unconfirmed": self.revocation_unconfirmed,
+                "revocation_unconfirmed": revocation_unconfirmed,
+                "revocation_account_label": ended_label if revocation_unconfirmed else None,
+                "retry_id": self.retry_target["id"] if self.retry_target else None,
                 "registration_id": registration.get("client_id"),
                 "accounts": [{"id": entry["client_id"], "label": entry["label"]}
-                             for entry in self._registrations().values()],
+                             for entry in registrations.values()],
                 "pending": self.pending is not None,
                 "attempt_id": self.pending["id"] if self.pending else None,
                 "cancelling": bool(self.pending and self.pending.get("cancelled")),
@@ -166,8 +183,11 @@ class ChatGPTOAuthService:
     def _request(self, method, url, **kwargs):
         try:
             response = self.http.request(method, url, **kwargs)
-        except httpx.HTTPError:
-            raise ChatGPTError("chatgpt_network_error", "Could not reach OpenAI") from None
+        except httpx.HTTPError as exc:
+            raise ChatGPTError(
+                "chatgpt_network_error", "Could not reach OpenAI",
+                request_may_have_arrived=not isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)),
+            ) from None
         return self._checked_response(response)
 
     @staticmethod
@@ -193,7 +213,7 @@ class ChatGPTOAuthService:
         except ValueError:
             body = None
         if not isinstance(body, dict):
-            raise ChatGPTError("chatgpt_protocol_error", "OpenAI returned an invalid JSON object")
+            raise ChatGPTError("chatgpt_protocol_error", "OpenAI returned an invalid JSON object", status=response.status_code)
         return body
 
     @staticmethod
@@ -263,19 +283,30 @@ class ChatGPTOAuthService:
             registrations[current["client_id"]] = current
         return registrations
 
-    def connect(self, loop, *, registration_id=None):
+    def _check_revoking(self, client_id):
+        task = self.revoking.get(client_id)
+        if task is not None and not task.done():
+            raise ChatGPTError("chatgpt_connection_busy", "ChatGPT authorization is still being revoked")
+
+    def connect(self, loop, *, registration_id=None, retry_id=None):
         with self.lock:
             self._enabled()
-            if (self.data.get("connection") or {}).get("active") or self.pending:
+            retry = self.retry_target if retry_id else None
+            if retry_id and (not retry or retry["id"] != retry_id):
+                raise ChatGPTError("chatgpt_target_changed", "Refresh the ChatGPT authorization status")
+            if self._active_connection() or self.pending:
                 raise ChatGPTError("chatgpt_connection_busy", "Disconnect or cancel the current connection first")
-            if not self.data.get("host_id"):
-                self._save({**self.data, "host_id": f"urn:uuid:{uuid4()}"})
             registration = self._registrations().get(registration_id)
             if registration_id and registration is None:
                 raise ChatGPTError("chatgpt_target_changed", "Refresh the saved ChatGPT accounts")
+            expected_client_id = registration_id or (retry["client_id"] if retry else None)
+            self._check_revoking(expected_client_id)
+            if not self.data.get("host_id"):
+                self._save({**self.data, "host_id": f"urn:uuid:{uuid4()}"})
             attempt = {
                 "loop": loop, "id": uuid4().hex, "state": secrets.token_urlsafe(32), "nonce": secrets.token_urlsafe(32),
                 "verifier": secrets.token_urlsafe(64), "registration": registration,
+                "expected_client_id": expected_client_id,
             }
             service = self
 
@@ -305,7 +336,7 @@ class ChatGPTOAuthService:
             attempt["listener"] = listener
             attempt["redirect_uri"] = f"http://127.0.0.1:{listener.server_port}{CALLBACK_PATH}"
             query = {
-                "client_id": registration["client_id"] if registration else DYNAMIC_CLIENT,
+                "client_id": expected_client_id or DYNAMIC_CLIENT,
                 "ext_agent_host_id": self.data["host_id"], "redirect_uri": attempt["redirect_uri"],
                 "response_type": "code", "scope": SCOPES, "resource": RESOURCE,
                 "state": attempt["state"], "nonce": attempt["nonce"],
@@ -314,15 +345,20 @@ class ChatGPTOAuthService:
                 ).decode().rstrip("="),
                 "code_challenge_method": "S256",
             }
-            if not registration:
+            if not expected_client_id:
                 query["agent_name_hint"] = APP_NAME
-            elif registration.get("needs_consent"):
+            elif registration and registration.get("needs_consent"):
                 query["prompt"] = "consent"
-            self.pending = attempt
-            self.revocation_unconfirmed = False
-            self.error = None
             attempt["thread"] = Thread(target=self._listen, args=(attempt,), daemon=True)
-            attempt["thread"].start()
+            self.pending = attempt
+            try:
+                attempt["thread"].start()
+            except RuntimeError:
+                listener.server_close()
+                self.pending = None
+                raise
+            self.retry_target = None
+            self.error = None
             return {
                 "attempt_id": attempt["id"],
                 "authorization_url": ISSUER + "/api/accounts/authorize?" + urlencode(query),
@@ -346,19 +382,29 @@ class ChatGPTOAuthService:
             attempt["deadline"] = time.monotonic() + 45
         unused_refresh = None
         client_id = None
+        exchange_started = False
+        exchange_rejected = False
+        exchange_returned = False
+        retry_client_id = None
         try:
             if "error" in fields:
                 raise ChatGPTError("chatgpt_consent_declined", "ChatGPT authorization was declined")
             registration = attempt["registration"]
-            existing_id = registration["client_id"] if registration else None
+            existing_id = attempt["expected_client_id"]
             client_id, = fields.get("client_id", [existing_id])
             code, = fields.get("code", [None])
             if not code or not client_id or client_id == DYNAMIC_CLIENT or (existing_id and client_id != existing_id):
                 raise ChatGPTError("chatgpt_invalid_callback", "OpenAI callback did not match the selected registration")
+            with self.lock:
+                if attempt.get("cancelled"):
+                    return
+                self._check_revoking(client_id)
+                exchange_started = True
             body = self._grant_request(attempt, "POST", TOKEN, data={
                 "grant_type": "authorization_code", "client_id": client_id, "code": code,
                 "code_verifier": attempt["verifier"], "redirect_uri": attempt["redirect_uri"], "resource": RESOURCE,
             })
+            exchange_returned = True
             if self._valid_refresh(body.get("refresh_token")):
                 unused_refresh = body["refresh_token"]
             claims = self._identity(attempt, body.get("id_token"), client_id, attempt["nonce"])
@@ -386,58 +432,111 @@ class ChatGPTOAuthService:
                         "authorization_error": None,
                     })
                     if complete:
+                        self.disabled_connection_id = None
                         unused_refresh = None
                         self.pending = None
         except (OSError, ValueError, ChatGPTError) as exc:
+            exchange_rejected = (
+                isinstance(exc, ChatGPTError) and not exchange_returned
+                and exc.status is not None and 400 <= exc.status < 500
+            )
             with self.lock:
                 if self.pending is attempt and not attempt.get("cancelled"):
                     self.error = exc.code if isinstance(exc, ChatGPTError) else "chatgpt_authorization_failed"
+                    if (
+                        exchange_started and not exchange_returned and not registration
+                        and isinstance(exc, ChatGPTError) and exc.upstream_code == "invalid_grant"
+                    ):
+                        retry_client_id = client_id
         finally:
-            confirmed = None
-            if unused_refresh:
-                confirmed = self._revoke_before(attempt["loop"], client_id, unused_refresh, time.monotonic() + DISCONNECT_TIMEOUT)
             with self.lock:
                 if self.pending is attempt:
-                    self.revocation_unconfirmed = confirmed is False or (bool(attempt.get("cancelled")) and confirmed is None)
-                    self.pending = None
+                    try:
+                        if unused_refresh or (attempt.get("cancelled") and exchange_started and not exchange_rejected):
+                            self._end_session(
+                                attempt["loop"], client_id, unused_refresh, time.monotonic() + DISCONNECT_TIMEOUT,
+                            )
+                    finally:
+                        if retry_client_id and not attempt.get("cancelled"):
+                            self.retry_target = {"id": attempt["id"], "client_id": retry_client_id}
+                        self.pending = None
+
+    def _active_connection(self):
+        connection = self.data.get("connection")
+        if connection and connection.get("active") and connection["id"] != self.disabled_connection_id:
+            return connection
+        return None
 
     def _connection(self, connection_id):
         self._enabled()
-        connection = self.data.get("connection") or {}
-        if not connection.get("active") or connection["id"] != connection_id:
+        connection = self._active_connection()
+        if not connection or connection["id"] != connection_id:
             raise ChatGPTError("chatgpt_connection_inactive", "Connect ChatGPT and select a model again")
         return connection
+
+    def _mark_refresh_ambiguous(self, connection):
+        if connection.get("refresh_ambiguous"):
+            return
+        data = {**self.data, "connection": {**connection, "refresh_ambiguous": True}}
+        try:
+            self._save(data)
+        except OSError:
+            self.data = data
+            logger.warning("Could not persist uncertainty about the ChatGPT refresh")
 
     def _bearer(self, connection_id):
         connection = self._connection(connection_id)
         if connection["expires_at"] > time.time() + 45:
             return connection["access_token"]
+        client_id = self.data["registration"]["client_id"]
+        deadline = time.monotonic() + DISCONNECT_TIMEOUT
         try:
             body = self._json("POST", TOKEN, data={
-                "grant_type": "refresh_token", "resource": RESOURCE,
-                "client_id": self.data["registration"]["client_id"],
+                "grant_type": "refresh_token", "resource": RESOURCE, "client_id": client_id,
                 "refresh_token": connection["refresh_token"],
             })
         except ChatGPTError as exc:
             if exc.upstream_code in {"invalid_grant", "invalid_refresh_token", "token_expired",
                                      "refresh_token_expired", "refresh_token_invalidated", "refresh_token_reused"}:
-                self._save({**self.data, "connection": None, "authorization_error": "chatgpt_reauthorization_required"})
-                self.models_cache = None
+                if connection.get("refresh_ambiguous"):
+                    self._end_session(self.loop, client_id, None, deadline, connection_id=connection_id,
+                                      authorization_error="chatgpt_reauthorization_required", after_refresh=True)
+                else:
+                    self._disable_connection(connection_id, "chatgpt_reauthorization_required")
                 raise ChatGPTError("chatgpt_reauthorization_required", "Sign in to ChatGPT again",
                                    status=exc.status, upstream_code=exc.upstream_code, request_id=exc.request_id) from None
+            if exc.status is not None and 200 <= exc.status < 300:
+                self._end_session(self.loop, client_id, None, deadline, connection_id=connection_id,
+                                  authorization_error="chatgpt_reauthorization_required", after_refresh=True)
+            elif exc.request_may_have_arrived or (exc.status is not None and exc.status >= 500):
+                self._mark_refresh_ambiguous(connection)
             raise
+
         if "scope" not in body:
             body["scope"] = " ".join(connection["scopes"])
+        issued_refresh = body.get("refresh_token")
         body.setdefault("refresh_token", connection["refresh_token"])
-        tokens = self._token_fields(body)
-        if not REQUIRED_SCOPES.issubset(tokens["scopes"]):
-            self._save({
-                **self.data, "connection": None,
-                "registration": {**self.data["registration"], "needs_consent": True},
-            })
-            self.models_cache = None
-            raise ChatGPTError(PLAN_PERMISSION_REQUIRED, "ChatGPT authorization no longer grants model use")
-        self._save({**self.data, "connection": {**connection, **tokens}})
+        latest_refresh = body["refresh_token"] if self._valid_refresh(body["refresh_token"]) else None
+        ambiguous = bool(connection.get("refresh_ambiguous") and not self._valid_refresh(issued_refresh))
+        authorization_error = "chatgpt_reauthorization_required"
+        needs_consent = False
+        try:
+            tokens = self._token_fields(body)
+            if not REQUIRED_SCOPES.issubset(tokens["scopes"]):
+                authorization_error = PLAN_PERMISSION_REQUIRED
+                needs_consent = True
+                raise ChatGPTError(PLAN_PERMISSION_REQUIRED, "ChatGPT authorization no longer grants model use")
+            renewed = {**connection, **tokens}
+            if not ambiguous:
+                renewed.pop("refresh_ambiguous", None)
+            self._save({**self.data, "connection": renewed})
+        except (ChatGPTError, OSError):
+            self._end_session(
+                self.loop, client_id, latest_refresh, deadline, connection_id=connection_id,
+                authorization_error=authorization_error, needs_consent=needs_consent,
+                ambiguous=ambiguous, after_refresh=True,
+            )
+            raise
         return tokens["access_token"]
 
     def models(self, connection_id, *, refresh=False):
@@ -477,7 +576,57 @@ class ChatGPTOAuthService:
         with self.lock:
             return dispatch(self._bearer(source.connection_id))
 
-    async def _revoke(self, client_id, refresh_token):
+    def _disable_connection(self, connection_id, authorization_error):
+        self.models_cache = None
+        try:
+            self._save({**self.data, "connection": None, "authorization_error": authorization_error})
+        except OSError:
+            self.disabled_connection_id = connection_id
+            self.error = "chatgpt_store_unavailable"
+            raise
+
+    def _end_session(self, loop, client_id, token, deadline, *, connection_id=None, authorization_error=None,
+                     needs_consent=False, ambiguous=False, after_refresh=False):
+        """Retire the connection and publish the outcome of the same revocation."""
+        data = dict(self.data)
+        if connection_id is not None:
+            self.models_cache = None
+            data.update(connection=None, authorization_error=authorization_error)
+            if needs_consent:
+                data["registration"] = {**data["registration"], "needs_consent": True}
+        outcome = {
+            "operation_id": uuid4().hex,
+            "result": "unconfirmed",
+            "registration_id": client_id if client_id in self._registrations() else None,
+        }
+        data["last_session_end"] = outcome
+        storage_error = None
+        try:
+            self._save(data)
+        except OSError as exc:
+            storage_error = exc
+            if connection_id is not None:
+                self.disabled_connection_id = connection_id
+                self.error = "chatgpt_store_unavailable"
+                if not after_refresh:
+                    raise
+            self.data = {**self.data, "last_session_end": outcome}
+            logger.warning("Could not persist the ChatGPT connection retirement")
+
+        confirmed = bool(token and self._revoke_before(loop, client_id, token, deadline)) and not ambiguous
+        if confirmed and self.data["last_session_end"]["operation_id"] == outcome["operation_id"]:
+            updated = {**self.data, "last_session_end": {**outcome, "result": "confirmed"}}
+            if storage_error is None:
+                try:
+                    self._save(updated)
+                except OSError:
+                    logger.warning("Could not persist the ChatGPT revocation result")
+            self.data = updated
+        if storage_error is not None and connection_id is not None:
+            raise storage_error
+        return confirmed
+
+    async def _revoke(self, client_id, refresh_token, deadline):
         async with httpx.AsyncClient(timeout=self.http.timeout, trust_env=False, follow_redirects=False) as client:
             metadata = self._json_body(self._checked_response(await client.get(METADATA)))
             endpoint = self._metadata_endpoint(metadata, "revocation_endpoint")
@@ -486,6 +635,8 @@ class ChatGPTOAuthService:
                 "client_id": client_id,
             }
             for attempt in range(2):
+                if time.monotonic() >= deadline:
+                    return False
                 try:
                     response = self._checked_response(await client.post(endpoint, data=params))
                     return response.status_code == 200
@@ -495,11 +646,58 @@ class ChatGPTOAuthService:
                 await asyncio.sleep(0.25)
 
     def _revoke_before(self, loop, client_id, token, deadline):
+        if loop is None or not loop.is_running() or time.monotonic() >= deadline:
+            return False
+        self.revoking = {key: task for key, task in self.revoking.items() if not task.done()}
+        self._check_revoking(client_id)
+        finished = Future()
+        cancelled = Event()
+        self.revoking[client_id] = finished
+        task = None
+
+        def complete(revocation):
+            if revocation.cancelled():
+                finished.set_result(False)
+                return
+            try:
+                finished.set_result(revocation.result())
+            except (asyncio.TimeoutError, ChatGPTError, httpx.HTTPError):
+                finished.set_result(False)
+            except Exception as exc:
+                finished.set_exception(exc)
+
+        async def revoke():
+            remaining = deadline - time.monotonic()
+            if cancelled.is_set() or remaining <= 0:
+                return False
+            return await self._revoke(client_id, token, deadline)
+
+        def start():
+            nonlocal task
+            if cancelled.is_set() or time.monotonic() >= deadline:
+                finished.set_result(False)
+                return
+            task = loop.create_task(revoke())
+            task.add_done_callback(complete)
+
+        def cancel():
+            if task is not None:
+                task.cancel()
+
         try:
-            return asyncio.run_coroutine_threadsafe(
-                asyncio.wait_for(self._revoke(client_id, token), deadline - time.monotonic()), loop,
-            ).result()
-        except (asyncio.TimeoutError, ChatGPTError, httpx.HTTPError):
+            loop.call_soon_threadsafe(start)
+        except RuntimeError:
+            finished.set_result(False)
+            return False
+        try:
+            return finished.result(timeout=max(0, deadline - time.monotonic()))
+        except FutureTimeout:
+            cancelled.set()
+            try:
+                loop.call_soon_threadsafe(cancel)
+            except RuntimeError:
+                # The loop can no longer initiate I/O for this task.
+                self.revoking.pop(client_id, None)
             return False
 
     def disconnect(self, loop: asyncio.AbstractEventLoop, *, connection_id=None, attempt_id=None):
@@ -520,13 +718,13 @@ class ChatGPTOAuthService:
             if connection:
                 if connection_id != connection["id"]:
                     raise ChatGPTError("chatgpt_target_changed", "The active ChatGPT connection has changed")
-                # Keep the revocation token only in memory once the user disconnects.
-                self._save({**self.data, "connection": None, "authorization_error": None})
-            self.models_cache = None
             self.error = None
             if not connection:
                 return {"disconnected": True, "revocation_confirmed": None}
-            confirmed = self._revoke_before(loop, self.data["registration"]["client_id"], connection["refresh_token"], deadline)
+            confirmed = self._end_session(
+                loop, self.data["registration"]["client_id"], connection["refresh_token"], deadline,
+                connection_id=connection_id, ambiguous=bool(connection.get("refresh_ambiguous")),
+            )
             return {"disconnected": True, "revocation_confirmed": confirmed}
         finally:
             self.lock.release()
@@ -535,9 +733,9 @@ class ChatGPTOAuthService:
 _service = None
 
 
-def start_chatgpt_service():
+def start_chatgpt_service(loop: asyncio.AbstractEventLoop):
     global _service
-    _service = ChatGPTOAuthService(Path.home() / "Library/Application Support/Daily Stock Analysis/chatgpt")
+    _service = ChatGPTOAuthService(Path.home() / "Library/Application Support/Daily Stock Analysis/chatgpt", loop)
     return _service
 
 

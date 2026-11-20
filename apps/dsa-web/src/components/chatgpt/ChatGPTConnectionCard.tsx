@@ -1,7 +1,8 @@
 import { useUiLanguage } from '../../contexts/UiLanguageContext';
 import { useEffect, useState } from 'react';
-import { chatgptApi } from '../../api/chatgpt';
-import { getParsedApiError } from '../../api/error';
+import { chatgptApi, type ConnectTarget } from '../../api/chatgpt';
+import { isAxiosError } from 'axios';
+import { extractErrorCode, getParsedApiError } from '../../api/error';
 import { useChatGPTStore } from '../../stores/chatgptStore';
 
 const messages: Record<string, string> = {
@@ -29,7 +30,7 @@ export function ChatGPTConnectionCard() {
     return () => window.clearInterval(timer);
   }, [refresh, status?.pending]);
 
-  async function connect(registrationId?: string) {
+  async function connect(target?: ConnectTarget) {
     const tab = window.open('about:blank', '_blank');
     if (!tab) {
       setNotice('浏览器阻止了授权窗口。允许弹窗后再试。');
@@ -39,12 +40,13 @@ export function ChatGPTConnectionCard() {
     setWorking(true);
     setNotice(null);
     try {
-      const result = await chatgptApi.connect(registrationId);
+      const result = await chatgptApi.connect(target);
       tab.location.replace(result.authorization_url);
       await refresh();
     } catch (error) {
       tab.close();
       setNotice(getParsedApiError(error).message);
+      if (isAxiosError(error) && extractErrorCode(error.response?.data) === 'chatgpt_target_changed') await refresh();
     } finally {
       setWorking(false);
     }
@@ -59,7 +61,7 @@ export function ChatGPTConnectionCard() {
       if (!target) return;
       const confirmed = await disconnect(target);
       if (confirmed === undefined) setNotice(disconnectStatusUnknown);
-      if (confirmed === false) setNotice('attempt_id' in target ? t('chat.cancelledLocally') : '本地已断开原连接。请在 ChatGPT 设置中确认远端授权是否已撤销。');
+      if (confirmed === false) setNotice('attempt_id' in target ? t('chat.cancelledLocally') : t('chat.disconnectedLocally'));
     } catch (error) {
       setNotice(getParsedApiError(error).message);
     } finally {
@@ -67,6 +69,7 @@ export function ChatGPTConnectionCard() {
     }
   }
 
+  const retryId = status?.retry_id;
   const currentLabel = status?.accounts && status.accounts.length > 1
     ? `${status.account_label} (${status.registration_id})`
     : status?.account_label;
@@ -101,22 +104,37 @@ export function ChatGPTConnectionCard() {
             </button>
           ) : (
             <>
-              <button type="button" className={button} disabled={working} onClick={() => void connect(status.registration_id)}>
-                {status.error === 'chatgpt_plan_permission_required' ? '补充授权' : status.account_label ? '重新授权' : 'Continue with ChatGPT'}
-                {status.accounts && status.accounts.length > 1 && ` · ${currentLabel}`}
-              </button>
-              {status.accounts?.filter((entry) => entry.id !== status.registration_id).map((entry) => (
-                <button key={entry.id} type="button" className={button} disabled={working} onClick={() => void connect(entry.id)}>
+              {retryId ? (
+                <button type="button" className={button} disabled={working} onClick={() => void connect({ retry_id: retryId })}>
+                  {t('chat.continueAuthorization')}
+                </button>
+              ) : (
+                <button type="button" className={button} disabled={working}
+                  onClick={() => void connect(status.registration_id ? { registration_id: status.registration_id } : undefined)}>
+                  {status.error === 'chatgpt_plan_permission_required' ? '补充授权' : status.account_label ? '重新授权' : 'Continue with ChatGPT'}
+                  {status.accounts && status.accounts.length > 1 && ` · ${currentLabel}`}
+                </button>
+              )}
+              {status.accounts?.filter((entry) => status.retry_id || entry.id !== status.registration_id).map((entry) => (
+                <button key={entry.id} type="button" className={button} disabled={working} onClick={() => void connect({ registration_id: entry.id })}>
                   {t('chat.savedAccount')} · {entry.label} ({entry.id})
                 </button>
               ))}
-              {status.account_label && <button type="button" className={button} disabled={working} onClick={() => void connect()}>连接其他账号</button>}
+              {(status.retry_id || status.account_label) && (
+                <button type="button" className={button} disabled={working} onClick={() => void connect()}>
+                  {status.retry_id ? t('chat.restartAuthorization') : '连接其他账号'}
+                </button>
+              )}
             </>
           )}
           <a href="https://chatgpt.com/settings/usage" target="_blank" rel="noreferrer" className="text-sm underline">管理 ChatGPT 用量</a>
         </div>
       )}
-      {status?.revocation_unconfirmed && <p role="status">{t('chat.checkRemoteAuthorization')}</p>}
+      {status?.revocation_unconfirmed && (
+        <p role="status">{status.revocation_account_label
+          ? t('chat.checkRemoteAccountAuthorization', { account: status.revocation_account_label })
+          : t('chat.checkRemoteAuthorization')}</p>
+      )}
       {(notice || error) && <p role="status" className="break-words text-sm text-secondary-text">{notice || error}</p>}
     </section>
   );

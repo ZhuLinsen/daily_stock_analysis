@@ -1,5 +1,7 @@
 import apiClient from './index';
 
+export type ConnectTarget = { registration_id: string } | { retry_id: string };
+
 export type DisconnectTarget = { connection_id: string } | { attempt_id: string };
 
 export interface ChatGPTStatus {
@@ -11,6 +13,8 @@ export interface ChatGPTStatus {
   accounts?: { id: string; label: string }[];
   attempt_id?: string;
   revocation_unconfirmed?: boolean;
+  revocation_account_label?: string | null;
+  retry_id?: string | null;
   pending?: boolean;
   cancelling?: boolean;
   error?: string;
@@ -25,10 +29,8 @@ export const chatgptApi = {
   async status() {
     return (await apiClient.get<ChatGPTStatus>('/api/v1/chatgpt/status')).data;
   },
-  async connect(registrationId?: string) {
-    return (await apiClient.post<{ authorization_url: string }>('/api/v1/chatgpt/connect', {
-      registration_id: registrationId,
-    })).data;
+  async connect(target?: ConnectTarget) {
+    return (await apiClient.post<{ authorization_url: string }>('/api/v1/chatgpt/connect', target ?? {})).data;
   },
   async models(connectionId: string, refresh: boolean) {
     return (await apiClient.get<{ models: ChatGPTModel[] }>('/api/v1/chatgpt/models', {

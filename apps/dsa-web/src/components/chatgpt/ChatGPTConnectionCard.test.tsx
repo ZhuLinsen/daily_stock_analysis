@@ -6,7 +6,7 @@ import { useChatGPTStore } from '../../stores/chatgptStore';
 import { ChatGPTConnectionCard } from './ChatGPTConnectionCard';
 
 vi.mock('../../api/chatgpt', () => ({
-  chatgptApi: { status: vi.fn(), models: vi.fn(), disconnect: vi.fn() },
+  chatgptApi: { status: vi.fn(), models: vi.fn(), disconnect: vi.fn(), connect: vi.fn() },
 }));
 
 const connected = { available: true, connected: true, connection_id: 'old', account_label: 'Test', pending: false };
@@ -26,6 +26,39 @@ describe('ChatGPT connection status', () => {
     useChatGPTStore.setState({ status: null, models: [], model: '', error: null });
     api.status.mockResolvedValue(connected);
     api.models.mockResolvedValue([model]);
+  });
+
+  it('continues the pending retry read from status and starts fresh only on explicit request', async () => {
+    const replacement = { location: { replace: vi.fn() }, close: vi.fn() } as unknown as Window;
+    const popup = vi.spyOn(window, 'open').mockReturnValue(replacement);
+    try {
+      api.status.mockResolvedValue({ ...disconnected, retry_id: 'retry' });
+      api.connect.mockResolvedValue({ authorization_url: 'https://example.invalid/fixture' });
+      render(<ChatGPTConnectionCard />);
+      const retry = await screen.findByRole('button', { name: '继续上次授权' });
+      await act(async () => { fireEvent.click(retry); });
+      expect(api.connect).toHaveBeenLastCalledWith({ retry_id: 'retry' });
+
+      api.status.mockResolvedValue({ ...disconnected, retry_id: null });
+      await act(async () => { fireEvent.click(screen.getByRole('button', { name: '重新开始授权' })); });
+      expect(api.connect).toHaveBeenLastCalledWith(undefined);
+      expect(screen.queryByRole('button', { name: '继续上次授权' })).not.toBeInTheDocument();
+    } finally {
+      popup.mockRestore();
+    }
+  });
+
+  it('reads a named unconfirmed revocation when the settings card is reopened', async () => {
+    const card = render(<ChatGPTConnectionCard />);
+    const disconnect = await screen.findByRole('button', { name: '断开连接' });
+    api.disconnect.mockResolvedValue({ disconnected: true, revocation_confirmed: false });
+    api.status.mockResolvedValue({ ...disconnected, revocation_unconfirmed: true, revocation_account_label: 'Test' });
+    fireEvent.click(disconnect);
+    expect(await screen.findByText(/账号 Test 的远端撤销未确认/)).toBeVisible();
+    card.unmount();
+    useChatGPTStore.setState({ status: null });
+    render(<ChatGPTConnectionCard />);
+    expect(await screen.findByText(/账号 Test 的远端撤销未确认/)).toBeVisible();
   });
 
   it('re-reads status after losing the disconnect response and discards an older model list', async () => {
