@@ -107,14 +107,21 @@ _ROW_ID = 0
 
 
 def _feed_row(title, url, summary="池内摘要", source="华尔街见闻",
-              published_at=None, fetched_at=None):
+              published_at=None, fetched_at=None, market="cn"):
     global _ROW_ID
     _ROW_ID += 1
     return SimpleNamespace(
         id=_ROW_ID,
         title=title, summary=summary, url=url, source=source,
-        published_at=published_at, fetched_at=fetched_at,
+        published_at=published_at, fetched_at=fetched_at, market=market,
     )
+
+
+def _utc_wall_ago(**delta):
+    """池内 UTC 墙钟口径的发布时间构造器（OR-COR-f7b1824e 上界引入后必须
+    与 now 的时区帧一致）：naive 本地墙钟行在非 UTC 机器会落入“未来”被
+    正确排除，故统一按 TUESDAY_PREMARKET（本地墙钟）换算 UTC 墙钟后偏移。"""
+    return TUESDAY_PREMARKET.astimezone(timezone.utc) - timedelta(**delta)
 
 
 def _config(tmp_path=None, **overrides):
@@ -355,7 +362,7 @@ def test_feed_refresh_all_sources_failed_yields_feed_unavailable():
 def test_feed_refresh_partial_source_failure_still_ok():
     """部分来源失败、其余成功且池内有真实条目 → 不过度 fail-closed。"""
     stub = StubIntelligenceService(rows=[
-        _feed_row("成功来源的快讯", "https://f.cn/p1", published_at=TUESDAY_PREMARKET),
+        _feed_row("成功来源的快讯", "https://f.cn/p1", published_at=_utc_wall_ago(minutes=30)),
     ], fetch_result={
         "ok": True, "source_count": 2,
         "results": [
@@ -373,7 +380,7 @@ def test_feed_refresh_all_failed_but_pool_has_entries_still_ok():
     """全部来源失败但池内已有窗口内真实条目 → 摘要内容真实仍按成功处理
     （阻断的是“失败伪装成空池”，不是任何刷新失败都禁止出报）。"""
     stub = StubIntelligenceService(rows=[
-        _feed_row("早前抓到的快讯", "https://f.cn/p2", published_at=TUESDAY_PREMARKET),
+        _feed_row("早前抓到的快讯", "https://f.cn/p2", published_at=_utc_wall_ago(minutes=30)),
     ], fetch_result={
         "ok": True, "source_count": 1,
         "results": [{"ok": False, "source_id": 1, "error": "upstream 503"}],
@@ -395,7 +402,14 @@ def test_feed_refresh_unrecognized_shape_treated_as_ok():
 def test_feed_readback_queries_fetched_window():
     stub = StubIntelligenceService(rows=[])
     collect_feed_entries(stub, now=TUESDAY_PREMARKET)
-    assert stub.list_calls == [{"days": 2, "page": 1, "page_size": 100}], (
+    assert stub.list_calls == [{
+        "market": "cn",
+        "fetched_since": TUESDAY_PREMARKET - timedelta(hours=48),  # naive 本地墙钟
+        "page": 1,
+        "page_size": 100,
+    }], (
+        "回读必须携带 cn 市场过滤（OR-COR-9ca4e2b1）与由运行时刻推得的固定抓取"
+        "下界 fetched_since（OR-COR-f7b1824e：不得依赖仓储 days 的查询时刻预筛）；"
         "page_size 必须对齐真实仓储钳制上限（100），不浪费被静默钳掉的配额"
     )
 
@@ -424,14 +438,14 @@ def test_collect_pages_until_window_covered():
     后页仍在 48 小时窗口内的独立快讯不得因“去重发生在分页之后”被遗漏。"""
     dup_rows = [
         _feed_row(f"重复快讯{i % 10}", f"https://f.cn/dup{i % 10}",
-                  published_at=TUESDAY_PREMARKET - timedelta(minutes=30 + i))
+                  published_at=_utc_wall_ago(minutes=30 + i))
         for i in range(100)
     ]
     tail_rows = [
         _feed_row("后页独家一", "https://f.cn/unique1",
-                  published_at=TUESDAY_PREMARKET - timedelta(hours=1)),
+                  published_at=_utc_wall_ago(hours=1)),
         _feed_row("后页独家二", "https://f.cn/unique2",
-                  published_at=TUESDAY_PREMARKET - timedelta(hours=2)),
+                  published_at=_utc_wall_ago(hours=2)),
     ]
     stub = PaginatedIntelligenceService(rows=dup_rows + tail_rows)
     entries, feed_ok, _fallback = collect_feed_entries(stub, now=TUESDAY_PREMARKET)
@@ -456,9 +470,9 @@ def test_collect_pages_beyond_old_fixed_cap_until_total_covered():
     ]
     tail_rows = [
         _feed_row("上限后独家一", "https://f.cn/unique1",
-                  published_at=TUESDAY_PREMARKET - timedelta(hours=1)),
+                  published_at=_utc_wall_ago(hours=1)),
         _feed_row("上限后独家二", "https://f.cn/unique2",
-                  published_at=TUESDAY_PREMARKET - timedelta(hours=2)),
+                  published_at=_utc_wall_ago(hours=2)),
     ]
     stub = PaginatedIntelligenceService(rows=dup_rows + tail_rows)
     entries, feed_ok, fallback = collect_feed_entries(stub, now=TUESDAY_PREMARKET)
@@ -483,9 +497,9 @@ def test_collect_stops_early_once_dedup_reaches_digest_limit():
     ]
     tail_rows = [
         _feed_row("上限后独家一", "https://f.cn/unique1",
-                  published_at=TUESDAY_PREMARKET - timedelta(hours=1)),
+                  published_at=_utc_wall_ago(hours=1)),
         _feed_row("上限后独家二", "https://f.cn/unique2",
-                  published_at=TUESDAY_PREMARKET - timedelta(hours=2)),
+                  published_at=_utc_wall_ago(hours=2)),
     ]
     stub = PaginatedIntelligenceService(rows=dup_rows + tail_rows)
     entries, feed_ok, _fallback = collect_feed_entries(
@@ -498,7 +512,7 @@ def test_collect_stops_early_once_dedup_reaches_digest_limit():
 
     fresh_rows = [
         _feed_row(f"充足快讯{i}", f"https://f.cn/fresh{i}",
-                  published_at=TUESDAY_PREMARKET - timedelta(minutes=i + 1))
+                  published_at=_utc_wall_ago(minutes=i + 1))
         for i in range(250)
     ]
     fresh_stub = PaginatedIntelligenceService(rows=fresh_rows)
@@ -516,7 +530,7 @@ def test_stale_published_excluded_even_if_fetched_now():
     """OR-COR-e5070d9a 回归：一周前发布的旧文，fetched_at 刚刷新 → 不进池。"""
     stale = _feed_row(
         "一周前旧闻", "https://f.cn/stale",
-        published_at=TUESDAY_PREMARKET - timedelta(days=7),
+        published_at=_utc_wall_ago(days=7),
         fetched_at=TUESDAY_PREMARKET,  # 刚被抓取刷新
     )
     entries, feed_ok, fallback = collect_feed_entries(
@@ -535,7 +549,7 @@ def test_missing_published_falls_back_with_count():
     )
     in_window = _feed_row(
         "窗内新闻", "https://f.cn/in",
-        published_at=TUESDAY_PREMARKET - timedelta(hours=2),
+        published_at=_utc_wall_ago(hours=2),
     )
     entries, feed_ok, fallback = collect_feed_entries(
         StubIntelligenceService(rows=[fresh_missing, in_window]), now=TUESDAY_PREMARKET,
@@ -553,7 +567,7 @@ def test_expired_fallback_row_excluded():
     expired = _feed_row(
         "两侧都过期", "https://f.cn/expired",
         published_at=None,
-        fetched_at=TUESDAY_PREMARKET - timedelta(days=3),
+        fetched_at=_utc_wall_ago(days=3),
     )
     entries, feed_ok, fallback = collect_feed_entries(
         StubIntelligenceService(rows=[expired]), now=TUESDAY_PREMARKET,
@@ -567,8 +581,8 @@ def test_fresh_published_row_kept_by_authoritative_filter():
     """发布时间在窗内的快讯必须保留（Python 层权威过滤不误删新内容）。"""
     fresh_old_fetch = _feed_row(
         "两天前抓到的快讯", "https://f.cn/oldfetch",
-        published_at=TUESDAY_PREMARKET - timedelta(hours=10),
-        fetched_at=TUESDAY_PREMARKET - timedelta(days=3),
+        published_at=_utc_wall_ago(hours=10),
+        fetched_at=_utc_wall_ago(days=3),
     )
     entries, feed_ok, _fallback = collect_feed_entries(
         StubIntelligenceService(rows=[fresh_old_fetch]), now=TUESDAY_PREMARKET,
@@ -581,12 +595,12 @@ def test_tz_aware_published_normalized_to_naive():
     """带时区的发布时间 → 统一转 UTC 无时区（资讯池存储口径）。"""
     tz_row = _feed_row(
         "带时区快讯", "https://f.cn/tz",
-        published_at=(TUESDAY_PREMARKET - timedelta(hours=2)).replace(tzinfo=timezone.utc),
+        published_at=(_utc_wall_ago(hours=2)).replace(tzinfo=timezone.utc),
     )
     entries, _feed_ok, _fallback = collect_feed_entries(
         StubIntelligenceService(rows=[tz_row]), now=TUESDAY_PREMARKET,
     )
-    assert entries[0].published_at == TUESDAY_PREMARKET - timedelta(hours=2)
+    assert entries[0].published_at == _utc_wall_ago(hours=2).replace(tzinfo=None)
     assert entries[0].published_at.tzinfo is None
 
 
@@ -656,7 +670,7 @@ def _premarket_context():
 
 def test_template_digest_contains_header_body_footer():
     report = generate_template_digest(
-        [_entry("池内新闻一", source="华尔街见闻", published_at=TUESDAY_PREMARKET)],
+        [_entry("池内新闻一", source="华尔街见闻", published_at=_utc_wall_ago(minutes=30))],
         _premarket_context(), now=TUESDAY_PREMARKET, feed_count=1, fallback_count=0,
     )
     assert report.startswith("# 消息面汇总（盘前）2026-10-20")
@@ -708,7 +722,7 @@ def test_run_once_emits_once_per_day(tmp_path):
     """OR-COR-860c1e1a 结构性覆盖：无 force 入口，claim 命中即跳过，不重发。"""
     notifier = StubNotifier()
     pool = StubIntelligenceService(rows=[
-        _feed_row("早盘消息", "https://f.cn/9", published_at=TUESDAY_PREMARKET),
+        _feed_row("早盘消息", "https://f.cn/9", published_at=_utc_wall_ago(minutes=30)),
     ])
     config = _config(tmp_path)
     first = run_news_digest_once(
@@ -732,7 +746,7 @@ def test_run_once_unexpected_exception_releases_claim(tmp_path):
     result = run_news_digest_once(
         config, now=TUESDAY_PREMARKET,
         intelligence_service=StubIntelligenceService(rows=[
-            _feed_row("早盘消息", "https://f.cn/9", published_at=TUESDAY_PREMARKET),
+            _feed_row("早盘消息", "https://f.cn/9", published_at=_utc_wall_ago(minutes=30)),
         ]),
         notifier=notifier,
     )
@@ -748,7 +762,7 @@ def test_run_once_no_notify_never_sends_or_claims(tmp_path):
     config = _config(tmp_path)
     notifier = StubNotifier()
     pool = StubIntelligenceService(rows=[
-        _feed_row("早盘消息", "https://f.cn/9", published_at=TUESDAY_PREMARKET),
+        _feed_row("早盘消息", "https://f.cn/9", published_at=_utc_wall_ago(minutes=30)),
     ])
     preview = run_news_digest_once(
         config, now=TUESDAY_PREMARKET, intelligence_service=pool,
@@ -787,7 +801,7 @@ def test_run_once_feed_readback_failure_never_sends_or_claims(tmp_path):
     recovered = run_news_digest_once(
         config, now=TUESDAY_PREMARKET.replace(hour=8, minute=50),
         intelligence_service=StubIntelligenceService(rows=[
-            _feed_row("恢复后的快讯", "https://f.cn/r1", published_at=TUESDAY_PREMARKET),
+            _feed_row("恢复后的快讯", "https://f.cn/r1", published_at=_utc_wall_ago(minutes=30)),
         ]),
         notifier=notifier,
     )
@@ -808,9 +822,9 @@ def test_run_once_pages_beyond_cap_until_digest_full_sends_all_unique(tmp_path):
     ]
     tail_rows = [
         _feed_row("上限后独家一", "https://f.cn/unique1",
-                  published_at=TUESDAY_PREMARKET - timedelta(hours=1)),
+                  published_at=_utc_wall_ago(hours=1)),
         _feed_row("上限后独家二", "https://f.cn/unique2",
-                  published_at=TUESDAY_PREMARKET - timedelta(hours=2)),
+                  published_at=_utc_wall_ago(hours=2)),
     ]
     pool = PaginatedIntelligenceService(rows=dup_rows + tail_rows)
     result = run_news_digest_once(
@@ -849,7 +863,7 @@ def test_run_once_all_sources_failed_never_sends_or_claims(tmp_path):
     recovered = run_news_digest_once(
         config, now=TUESDAY_PREMARKET.replace(hour=8, minute=50),
         intelligence_service=StubIntelligenceService(rows=[
-            _feed_row("恢复后的快讯", "https://f.cn/r2", published_at=TUESDAY_PREMARKET),
+            _feed_row("恢复后的快讯", "https://f.cn/r2", published_at=_utc_wall_ago(minutes=30)),
         ]),
         notifier=notifier,
     )
@@ -877,7 +891,7 @@ def test_run_once_result_schema(tmp_path):
     result = run_news_digest_once(
         _config(tmp_path), now=TUESDAY_PREMARKET,
         intelligence_service=StubIntelligenceService(rows=[
-            _feed_row("池内新闻", "https://f.cn/1", published_at=TUESDAY_PREMARKET),
+            _feed_row("池内新闻", "https://f.cn/1", published_at=_utc_wall_ago(minutes=30)),
             _feed_row("缺时间新闻", "https://f.cn/2", published_at=None,
                       fetched_at=TUESDAY_PREMARKET),
         ]),
@@ -898,7 +912,7 @@ def test_run_once_notifies_with_dedup_key(tmp_path):
     result = run_news_digest_once(
         _config(tmp_path), now=TUESDAY_PREMARKET,
         intelligence_service=StubIntelligenceService(rows=[
-            _feed_row("池内新闻", "https://f.cn/1", published_at=TUESDAY_PREMARKET),
+            _feed_row("池内新闻", "https://f.cn/1", published_at=_utc_wall_ago(minutes=30)),
         ]),
         notifier=notifier,
     )
@@ -916,8 +930,8 @@ def test_run_once_report_footer_and_fallback_metadata(tmp_path):
     result = run_news_digest_once(
         _config(tmp_path), now=TUESDAY_PREMARKET,
         intelligence_service=StubIntelligenceService(rows=[
-            _feed_row("池内新闻一", "https://f.cn/1", published_at=TUESDAY_PREMARKET),
-            _feed_row("池内新闻二", "https://f.cn/2", published_at=TUESDAY_PREMARKET),
+            _feed_row("池内新闻一", "https://f.cn/1", published_at=_utc_wall_ago(minutes=30)),
+            _feed_row("池内新闻二", "https://f.cn/2", published_at=_utc_wall_ago(minutes=30)),
             _feed_row("池内缺时间", "https://f.cn/3", published_at=None,
                       fetched_at=TUESDAY_PREMARKET),
         ]),
@@ -944,7 +958,7 @@ def test_run_once_send_failure_releases_claim_and_fails(tmp_path):
     first = run_news_digest_once(
         config, now=TUESDAY_PREMARKET,
         intelligence_service=StubIntelligenceService(rows=[
-            _feed_row("早盘消息", "https://f.cn/9", published_at=TUESDAY_PREMARKET),
+            _feed_row("早盘消息", "https://f.cn/9", published_at=_utc_wall_ago(minutes=30)),
         ]),
         notifier=failing,
     )
@@ -957,7 +971,7 @@ def test_run_once_send_failure_releases_claim_and_fails(tmp_path):
     second = run_news_digest_once(
         config, now=TUESDAY_PREMARKET.replace(hour=8, minute=50),
         intelligence_service=StubIntelligenceService(rows=[
-            _feed_row("补发快讯", "https://f.cn/r2", published_at=TUESDAY_PREMARKET),
+            _feed_row("补发快讯", "https://f.cn/r2", published_at=_utc_wall_ago(minutes=30)),
         ]),
         notifier=working,
     )
@@ -974,10 +988,194 @@ def test_run_once_send_failure_still_reports_generated_content(tmp_path):
     result = run_news_digest_once(
         _config(tmp_path), now=TUESDAY_PREMARKET,
         intelligence_service=StubIntelligenceService(rows=[
-            _feed_row("池内新闻", "https://f.cn/1", published_at=TUESDAY_PREMARKET),
+            _feed_row("池内新闻", "https://f.cn/1", published_at=_utc_wall_ago(minutes=30)),
         ]),
         notifier=StubNotifier(send_result=False),
     )
     assert result["status"] == "failed"
     assert result.get("report")
     assert "# 消息面汇总" in result["report"]
+
+
+# ---------------------------------------------------------------------------
+# OR 复核轮 2026-11-20（review 5986403101）blocker 回归组
+# ---------------------------------------------------------------------------
+
+
+class MarketFilteredListItemsService:
+    """按真实仓储语义（intelligence_repo.list_items）执行 market 过滤与
+    最新优先排序的桩：scope 语义与本桩无关，只复刻 market 过滤。"""
+
+    def __init__(self, rows):
+        self._rows = list(rows)
+        self.list_calls = []
+        self.repo = SimpleNamespace(list_items=self._list_items)
+
+    def fetch_enabled_sources(self):
+        return {"ok": True, "source_count": 1, "results": [], "saved_count": 0}
+
+    def _list_items(self, **kwargs):
+        self.list_calls.append(dict(kwargs))
+        market = kwargs.get("market")
+        kept = [row for row in self._rows if not market or getattr(row, "market", None) == market]
+        kept.sort(
+            key=lambda row: (row.published_at or row.fetched_at or datetime.min, row.id),
+            reverse=True,
+        )
+        return kept, len(kept)
+
+
+class QueryTimeDriftListItemsService:
+    """真实仓储 days 预筛语义桩：days 分支按“查询时刻”（= 运行时刻 + drift）
+    计算抓取下界；若调用方改传固定 fetched_since，则按固定下界预筛
+    （OR-COR-f7b1824e 修复后语义）。排序与真实仓储一致（最新优先）。"""
+
+    def __init__(self, rows, *, run_now, drift):
+        self._rows = list(rows)
+        self._run_now = run_now
+        self._drift = drift
+        self.list_calls = []
+        self.repo = SimpleNamespace(list_items=self._list_items)
+
+    def fetch_enabled_sources(self):
+        return {"ok": True, "source_count": 1, "results": [], "saved_count": 0}
+
+    def _list_items(self, **kwargs):
+        self.list_calls.append(dict(kwargs))
+        if "fetched_since" in kwargs:
+            bound = kwargs["fetched_since"]
+        else:
+            bound = self._run_now + self._drift - timedelta(
+                days=max(1, int(kwargs.get("days", 2)))
+            )
+        kept = [row for row in self._rows if (row.fetched_at or row.published_at) >= bound]
+        kept.sort(
+            key=lambda row: (row.published_at or row.fetched_at or datetime.min, row.id),
+            reverse=True,
+        )
+        return kept, len(kept)
+
+
+class KeyboardInterruptIntelligenceService:
+    """采集上游等待处注入 KeyboardInterrupt 的桩（BaseException，不经 Exception）。"""
+
+    def __init__(self):
+        self.fetch_called = False
+        self.repo = SimpleNamespace(list_items=lambda **kwargs: ([], 0))
+
+    def fetch_enabled_sources(self):
+        self.fetch_called = True
+        raise KeyboardInterrupt
+
+
+def test_collect_scopes_readback_to_cn_market():
+    """OR-COR-9ca4e2b1 回归：A 股消息面汇总的池回读必须限定 cn 市场——
+    池内 1 条 A 股市场新闻 + 12 条更新的美股个股新闻时，其他市场条目不得
+    按时间排序挤占摘要名额、遗漏池内唯一的 A 股新闻。"""
+    now_cn = datetime(2026, 10, 20, 8, 30, tzinfo=SHANGHAI)
+    now_utc = now_cn.astimezone(timezone.utc).replace(tzinfo=None)  # 池内 UTC 墙钟
+    cn_news = _feed_row(
+        "A股政策快讯", "https://f.cn/cn1",
+        published_at=now_utc - timedelta(hours=1), market="cn",
+    )
+    us_rows = [
+        _feed_row(f"美股个股快讯{i}", f"https://f.cn/us{i}",
+                  published_at=now_utc - timedelta(minutes=i), market="us")
+        for i in range(1, 13)
+    ]
+    stub = MarketFilteredListItemsService([cn_news] + us_rows)
+    entries, feed_ok, _fallback = collect_feed_entries(
+        stub, now=now_cn, digest_limit=12,
+    )
+    assert feed_ok is True
+    assert stub.list_calls, "回读必须发生"
+    assert all(call.get("market") == "cn" for call in stub.list_calls), (
+        "回读查询必须携带 market=cn 过滤"
+    )
+    titles = {entry.title for entry in entries}
+    assert "A股政策快讯" in titles, "池内唯一 A 股新闻必须入选摘要"
+    assert not any(title.startswith("美股个股快讯") for title in titles), (
+        "其他市场的个股资讯不得占用 A 股摘要名额"
+    )
+    assert len(entries) == 1
+
+
+def test_collect_excludes_future_published_rows():
+    """OR-COR-f7b1824e 回归（发布时间上界）：来源时间戳晚于运行时刻的
+    “未来新闻”不得进入 48 小时窗口、不得消耗摘要名额。"""
+    future_row = _feed_row(
+        "未来时间戳快讯", "https://f.cn/future",
+        published_at=TUESDAY_PREMARKET + timedelta(hours=8),
+    )
+    entries, feed_ok, fallback = collect_feed_entries(
+        StubIntelligenceService(rows=[future_row]), now=TUESDAY_PREMARKET,
+    )
+    assert feed_ok is True
+    assert entries == [], "发布时间晚于运行时刻的条目不得纳入摘要"
+    assert fallback == 0
+
+
+def test_collect_readback_survives_query_time_drift():
+    """OR-COR-f7b1824e 回归（下界漂移）：仓储 days 预筛以逐次查询时刻为基准，
+    刷新耗时会收紧抓取下界、在逐行复核前误删刚过运行时刻下界的合格新闻；
+    回读必须携带以运行时刻推得的固定 fetched_since 下界。"""
+    now_naive = datetime(2026, 10, 24, 10, 0)
+    boundary_row = _feed_row(
+        "漂移边界快讯", "https://f.cn/drift",
+        published_at=now_naive - timedelta(hours=48) + timedelta(seconds=5),
+        fetched_at=now_naive - timedelta(hours=48) + timedelta(seconds=10),
+    )
+    stub = QueryTimeDriftListItemsService(
+        [boundary_row], run_now=now_naive, drift=timedelta(seconds=30),
+    )
+    entries, feed_ok, _fallback = collect_feed_entries(
+        stub, now=now_naive, digest_limit=12,
+    )
+    assert feed_ok is True
+    assert "fetched_since" in stub.list_calls[0], (
+        "回读必须传固定 fetched_since 下界，不得依赖仓储 days 的查询时刻预筛"
+    )
+    assert stub.list_calls[0]["fetched_since"] == now_naive - timedelta(hours=48)
+    assert [entry.title for entry in entries] == ["漂移边界快讯"], (
+        "刷新耗时导致的预筛收紧不得误删刚过下界的合格新闻"
+    )
+
+
+def test_run_once_keyboard_interrupt_releases_claim_and_can_resend(tmp_path):
+    """OR-COR-72dfb4e9 回归：采集等待期间 Ctrl+C（KeyboardInterrupt 不在
+    Exception 体系内）也必须释放当日占位，否则窗口内重跑命中 already_claimed
+    无法补发；中断语义保持向上传播（main 入口捕获后按 130 退出）。"""
+    config = _config(tmp_path)
+    pool = KeyboardInterruptIntelligenceService()
+    with pytest.raises(KeyboardInterrupt):
+        run_news_digest_once(
+            config, now=TUESDAY_PREMARKET, intelligence_service=pool,
+            notifier=StubNotifier(),
+        )
+    assert pool.fetch_called
+    assert _claim_count(config.database_path) == 0, "用户中断必须释放本次 claim"
+
+    recovered = run_news_digest_once(
+        config, now=TUESDAY_PREMARKET.replace(hour=8, minute=50),
+        intelligence_service=StubIntelligenceService(rows=[
+            _feed_row("中断后补发快讯", "https://f.cn/r3", published_at=_utc_wall_ago(minutes=30)),
+        ]),
+        notifier=StubNotifier(),
+    )
+    assert recovered["status"] == "success", "同窗口内重跑必须能补发"
+    assert _claim_count(config.database_path) == 1
+
+
+def test_run_once_no_notify_pool_unavailable_fails_not_success(tmp_path):
+    """OR-COR-eb8943cd 回归：本地预览（--no-notify）遇到资讯池不可用必须返回
+    failed/feed_unavailable（CLI 据此映射非零退出码），不得渲染成“正常空池”
+    的成功摘要让调用方把采集故障当成当天没有新闻。"""
+    broken = StubIntelligenceService(list_error=RuntimeError("read boom"))
+    result = run_news_digest_once(
+        _config(tmp_path), now=TUESDAY_PREMARKET,
+        intelligence_service=broken, notifier=StubNotifier(), no_notify=True,
+    )
+    assert result["status"] == "failed"
+    assert result["reason"] == "feed_unavailable"
+    assert result["feed_ok"] is False
+    assert result.get("report", "") == "", "采集失败不得生成“未收集到”空池声明正文"

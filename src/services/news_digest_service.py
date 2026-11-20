@@ -81,6 +81,15 @@ def run_news_digest_once(
         feed_entries, feed_ok, fallback_count = collect_feed_entries(
             intelligence_service, now=now, digest_limit=max_news,
         )
+        if not feed_ok:
+            # OR-COR-eb8943cd：本地预览同样不得把资讯池不可用渲染成“正常空池”
+            # 摘要并返回 success（CLI 按 status 映射退出码，采集故障必须非零），
+            # 否则用户和读取退出码的脚本会把采集故障当成当天没有新闻。
+            logger.error("NEWS_DIGEST 本地预览：资讯池读取失败，不生成摘要")
+            return _res(
+                "failed", "feed_unavailable", context=context.kind,
+                entries_count=0, feed_ok=False, fallback_count=0, notified=False, report="",
+            )
         entries = merge_entries(feed_entries, limit=max_news)
         report = generate_template_digest(
             entries, context, now=now, feed_count=len(feed_entries), fallback_count=fallback_count,
@@ -143,6 +152,14 @@ def run_news_digest_once(
             context=context.kind, entries_count=len(entries), feed_ok=feed_ok,
             fallback_count=fallback_count, notified=notified, report=report,
         )
+    except KeyboardInterrupt:
+        # OR-COR-72dfb4e9：KeyboardInterrupt 不在 Exception 体系内，用户在采集
+        # 等待期间 Ctrl+C 会绕过下方异常处理、把已提交的当日占位留在库里，
+        # 窗口内重跑命中 already_claimed 无法补发。释放本次 claim 后恢复中断
+        # 语义（main 入口捕获后按 130 退出）。
+        logger.warning("NEWS_DIGEST 用户中断（Ctrl+C），释放 claim 待窗口内重试")
+        _release_claim_safely()
+        raise
     except Exception as exc:  # noqa: BLE001 - 未预期异常：释放本次 claim，不上抛
         logger.error("NEWS_DIGEST 未预期异常，释放 claim 待窗口内重试: %s", exc)
         _release_claim_safely()

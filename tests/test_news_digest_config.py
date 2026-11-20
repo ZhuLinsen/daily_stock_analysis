@@ -8,8 +8,9 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 from unittest.mock import patch
 
 import pytest
@@ -156,6 +157,30 @@ def test_cli_news_digest_forwards_no_notify(capsys):
     assert exit_code == 0
 
 
+def test_cli_news_digest_passes_cn_market_now():
+    """OR-COR-3f8c2a61 回归：CLI 必须传入 A 股本地（Asia/Shanghai，UTC+8）的
+    运行时刻，服务器本地时区（如 UTC 部署）不得影响窗口/日期/占位判定——
+    UTC 服务器北京时间 08:30 必须命中盘前窗口而非被跳过。"""
+    fake_result = {"status": "success", "reason": None, "report": "# 摘要"}
+    with patch(
+        "src.services.news_digest_service.build_news_digest_dependencies",
+        return_value={"notifier": None, "intelligence_service": None},
+    ), patch(
+        "src.services.news_digest_service.run_news_digest_once",
+        return_value=fake_result,
+    ) as run_mock:
+        exit_code = main._run_news_digest_once_cli(SimpleNamespace())
+    now_passed = run_mock.call_args.kwargs.get("now")
+    assert isinstance(now_passed, datetime)
+    assert now_passed.tzinfo is not None, (
+        "CLI 必须传入带时区的运行时刻（Asia/Shanghai），不得传服务器本地 naive datetime.now()"
+    )
+    assert now_passed.utcoffset() == timedelta(hours=8), (
+        "运行时刻必须固定为 A 股本地时区（UTC+8），与交易日历口径一致"
+    )
+    assert exit_code == 0
+
+
 def test_cli_news_digest_failed_reports_nonzero(capsys):
     fake_result = {"status": "failed", "reason": "notification_failed", "report": "# 摘要"}
     with patch(
@@ -225,22 +250,28 @@ class _RecordingIntelligence:
 
 
 class _FakeClock(datetime):
-    """固定时钟：2026-10-20 周二 08:30（盘前窗口内）；替换 main.datetime 供 CLI 注入。"""
+    """固定时钟：2026-10-20 周二 08:30 北京时间（盘前窗口内）。
+
+    OR-COR-3f8c2a61 后 CLI 经 ``get_market_now("cn")`` 注入 A 股本地时区的
+    运行时刻，故替换 ``src.core.trading_calendar.datetime``（get_market_now
+    的时钟源），返回带 Asia/Shanghai 时区的 aware datetime。"""
 
     @classmethod
     def now(cls, tz=None):  # noqa: ARG004 - 与 datetime.now 签名兼容
-        return datetime(2026, 10, 20, 8, 30)
+        return datetime(2026, 10, 20, 8, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
 
 
 def test_cli_news_digest_assembles_real_dependencies(tmp_path, monkeypatch, capsys):
     """--news-digest 集成路径：CLI 必须组装真实依赖并注入服务（不 mock
     run_news_digest_once），否则生产输出恒为无数据模板（OR-COR-000c926a）。"""
-    monkeypatch.setattr(main, "datetime", _FakeClock)
+    monkeypatch.setattr("src.core.trading_calendar.datetime", _FakeClock)
     digest_notifier = _RecordingNotifier()
     digest_intelligence = _RecordingIntelligence(rows=[
         SimpleNamespace(
             id=1, title="真实池内快讯", summary="池内正文", url="https://f.cn/1",
-            source="华尔街见闻", published_at=datetime(2026, 10, 20, 8, 0),
+            # 池内 published_at 为 UTC 墙钟（北京 08:00 = UTC 00:00），
+            # fetched_at 为本地墙钟（OR-COR-2f1e978e 口径）。
+            source="华尔街见闻", published_at=datetime(2026, 10, 20, 0, 0),
             fetched_at=datetime(2026, 10, 20, 8, 10),
         ),
     ])

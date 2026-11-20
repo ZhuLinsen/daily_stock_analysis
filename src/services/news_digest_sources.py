@@ -98,15 +98,21 @@ def collect_feed_entries(
     now: datetime,
     lookback_hours: int = _FEED_LOOKBACK_HOURS,
     digest_limit: Optional[int] = None,
+    market: str = "cn",
 ) -> Tuple[List[NewsDigestEntry], bool, int]:
     """资讯池采集：刷新落库后按需翻页回读，发布时间为权威时效口径。
 
     返回 (entries, feed_ok, fallback_count)。逐行按口径 cutoff 复核
     （published_at 用 UTC、fetched_at 用本地，OR-COR-2f1e978e）：发布时间超窗
     的旧闻即使 fetched_at 刚刷新也不进池（e5070d9a）；发布时间缺失按
-    fetched_at 口径保留并计入 fallback（V5）。翻页不设固定页数上限，终止
-    条件只有三个（OR-COR-7cf03c1e）：① 覆盖 total；② 页提前结束；③ 调用方
-    提供 digest_limit 且去重后条数已达上限——真实仓储按最新优先排序，未读行
+    fetched_at 口径保留并计入 fallback（V5）；发布时间晚于运行时刻的“未来
+    新闻”同样不进池、不占名额（OR-COR-f7b1824e 上界）。回读查询固定
+    market=cn（OR-COR-9ca4e2b1：其他市场的个股资讯不得挤占 A 股摘要名额）
+    并携带由运行时刻推得的固定 fetched_since 下界（OR-COR-f7b1824e：仓储
+    days 预筛以逐次查询时刻为基准，刷新耗时会收紧下界、在逐行复核前误删
+    刚过下界的合格新闻）。翻页不设固定页数上限，终止条件只有三个
+    （OR-COR-7cf03c1e）：① 覆盖 total；② 页提前结束；③ 调用方提供
+    digest_limit 且去重后条数已达上限——真实仓储按最新优先排序，未读行
     排序必在已读行之后，提前停止不会改变合并结果。刷新/回读失败按空池处理
     （fail-open，不致命）。
     """
@@ -123,6 +129,7 @@ def collect_feed_entries(
     # cutoff 必须分口径对齐，禁止本地 cutoff 与 UTC 发布时间混用。
     lookback = timedelta(hours=max(1, int(lookback_hours)))
     published_cutoff = now.astimezone(timezone.utc).replace(tzinfo=None) - lookback
+    published_upper = now.astimezone(timezone.utc).replace(tzinfo=None)
     fetched_cutoff = now.astimezone().replace(tzinfo=None) - lookback
     # 按需翻页（OR-COR-7cf03c1e）：真实仓储 page_size 钳 100 且先排序分页，
     # 固定页数上限会在高重复大池去重未满时静默遗漏后页有效新闻，故仅以上述
@@ -139,7 +146,8 @@ def collect_feed_entries(
     while True:
         try:
             page_rows, page_total = intelligence_service.repo.list_items(
-                days=max(1, -(-int(lookback_hours) // 24)), page=page, page_size=_FEED_PAGE_SIZE,
+                market=market, fetched_since=fetched_cutoff,
+                page=page, page_size=_FEED_PAGE_SIZE,
             )
         except Exception as exc:  # noqa: BLE001 - 回读失败不致命
             logger.warning("NEWS_DIGEST 资讯池回读失败，按空池处理: %s", exc)
@@ -152,6 +160,8 @@ def collect_feed_entries(
             published = parse_published_datetime(getattr(row, "published_at", None))
             if published is not None and published < published_cutoff:
                 continue  # 旧闻超窗：即使 fetched_at 刚刷新也不进池（e5070d9a）
+            if published is not None and published > published_upper:
+                continue  # 未来新闻不进池（OR-COR-f7b1824e：逐行复核需发布上界）
             if published is None:
                 fetched = parse_published_datetime(getattr(row, "fetched_at", None))
                 if fetched is not None and fetched < fetched_cutoff:

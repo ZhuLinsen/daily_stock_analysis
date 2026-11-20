@@ -1634,6 +1634,10 @@ def _run_news_digest_once_cli(config, *, no_notify: bool = False) -> int:
         build_news_digest_dependencies,
         run_news_digest_once,
     )
+    # OR-COR-3f8c2a61：窗口/日期/每日占位必须按 A 股本地时区（Asia/Shanghai）
+    # 判定，与交易日历口径一致；服务器本地时区（如 UTC 部署）的 datetime.now()
+    # 会导致真实盘前跳过、收盘后反而触发“盘前”汇总。
+    from src.core.trading_calendar import get_market_now
 
     logger.info("模式: 仅消息面汇总（--news-digest）")
     try:
@@ -1643,7 +1647,7 @@ def _run_news_digest_once_cli(config, *, no_notify: bool = False) -> int:
         deps = {}
     result = run_news_digest_once(
         config,
-        now=datetime.now(),
+        now=get_market_now("cn"),
         intelligence_service=deps.get("intelligence_service"),
         notifier=deps.get("notifier"),
         no_notify=no_notify,
