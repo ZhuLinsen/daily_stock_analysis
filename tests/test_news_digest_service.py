@@ -59,12 +59,16 @@ OFFDAY_WINDOW = "09:00-18:00"
 
 
 class StubIntelligenceService:
-    """fetch_enabled_sources + repo.list_items 记录桩（查询返回全量 rows）。"""
+    """fetch_enabled_sources + repo.list_items 记录桩（查询返回全量 rows）。
 
-    def __init__(self, rows=None, fetch_error=None, list_error=None):
+    fetch_result 可注入真实 fetch_enabled_sources 的结构化返回形态：顶层
+    ok 恒 True、单源失败只体现在 results[].ok=False（OR-COR-d539c8a1）。"""
+
+    def __init__(self, rows=None, fetch_error=None, list_error=None, fetch_result=None):
         self.rows = list(rows or [])
         self._fetch_error = fetch_error
         self._list_error = list_error
+        self._fetch_result = fetch_result
         self.fetch_called = False
         self.list_calls = []
         self.repo = SimpleNamespace(list_items=self._list_items)
@@ -73,6 +77,8 @@ class StubIntelligenceService:
         self.fetch_called = True
         if self._fetch_error is not None:
             raise self._fetch_error
+        if self._fetch_result is not None:
+            return dict(self._fetch_result)
         return {"ok": True, "source_count": 1, "results": [], "saved_count": 0}
 
     def _list_items(self, **kwargs):
@@ -328,6 +334,62 @@ def test_feed_readback_failure_yields_empty():
     stub = StubIntelligenceService(list_error=RuntimeError("list boom"))
     entries, feed_ok, fallback = collect_feed_entries(stub, now=TUESDAY_PREMARKET)
     assert (entries, feed_ok, fallback) == ([], False, 0)
+
+
+def test_feed_refresh_all_sources_failed_yields_feed_unavailable():
+    """OR-COR-d539c8a1 回归：真实刷新服务顶层恒 ok=True，单源失败只体现在
+    results[].ok=False——全部启用来源失败且池内无窗口内条目时，采集必须判
+    失败，不得把采集失败伪装成“合法空池”返回成功。"""
+    stub = StubIntelligenceService(rows=[], fetch_result={
+        "ok": True, "source_count": 2,
+        "results": [
+            {"ok": False, "source_id": 1, "error": "upstream 503"},
+            {"ok": False, "source_id": 2, "error": "upstream timeout"},
+        ],
+        "saved_count": 0,
+    })
+    entries, feed_ok, fallback = collect_feed_entries(stub, now=TUESDAY_PREMARKET)
+    assert (entries, feed_ok, fallback) == ([], False, 0)
+
+
+def test_feed_refresh_partial_source_failure_still_ok():
+    """部分来源失败、其余成功且池内有真实条目 → 不过度 fail-closed。"""
+    stub = StubIntelligenceService(rows=[
+        _feed_row("成功来源的快讯", "https://f.cn/p1", published_at=TUESDAY_PREMARKET),
+    ], fetch_result={
+        "ok": True, "source_count": 2,
+        "results": [
+            {"ok": False, "source_id": 1, "error": "upstream 503"},
+            {"ok": True, "source_id": 2, "fetched_count": 1, "saved_count": 1},
+        ],
+        "saved_count": 1,
+    })
+    entries, feed_ok, _fallback = collect_feed_entries(stub, now=TUESDAY_PREMARKET)
+    assert feed_ok is True
+    assert [entry.title for entry in entries] == ["成功来源的快讯"]
+
+
+def test_feed_refresh_all_failed_but_pool_has_entries_still_ok():
+    """全部来源失败但池内已有窗口内真实条目 → 摘要内容真实仍按成功处理
+    （阻断的是“失败伪装成空池”，不是任何刷新失败都禁止出报）。"""
+    stub = StubIntelligenceService(rows=[
+        _feed_row("早前抓到的快讯", "https://f.cn/p2", published_at=TUESDAY_PREMARKET),
+    ], fetch_result={
+        "ok": True, "source_count": 1,
+        "results": [{"ok": False, "source_id": 1, "error": "upstream 503"}],
+        "saved_count": 0,
+    })
+    entries, feed_ok, _fallback = collect_feed_entries(stub, now=TUESDAY_PREMARKET)
+    assert feed_ok is True
+    assert [entry.title for entry in entries] == ["早前抓到的快讯"]
+
+
+def test_feed_refresh_unrecognized_shape_treated_as_ok():
+    """结构不可识别的刷新返回（如旧测试替身）不做失败判定，交由回读结果。"""
+    stub = StubIntelligenceService(rows=[], fetch_result={"ok": True})
+    entries, feed_ok, _fallback = collect_feed_entries(stub, now=TUESDAY_PREMARKET)
+    assert feed_ok is True
+    assert entries == []
 
 
 def test_feed_readback_queries_fetched_window():
@@ -760,6 +822,40 @@ def test_run_once_pages_beyond_cap_until_digest_full_sends_all_unique(tmp_path):
     report = notifier.calls[0]["content"]
     assert "上限后独家一" in report and "上限后独家二" in report, "上限后独家必须进入推送"
     assert _claim_count(config.database_path) == 1
+
+
+def test_run_once_all_sources_failed_never_sends_or_claims(tmp_path):
+    """OR-COR-d539c8a1 端到端：窗口内首次运行时启用来源全部临时故障，不得把
+    采集失败当“空池成功”推送并占用名额（否则来源恢复后的再次运行命中
+    already_claimed，无法通过正常入口补发）；恢复后同窗口内可补发真实摘要。"""
+    config = _config(tmp_path)
+    notifier = StubNotifier()
+    broken = StubIntelligenceService(rows=[], fetch_result={
+        "ok": True, "source_count": 2,
+        "results": [
+            {"ok": False, "source_id": 1, "error": "upstream 503"},
+            {"ok": False, "source_id": 2, "error": "upstream timeout"},
+        ],
+        "saved_count": 0,
+    })
+    failed = run_news_digest_once(
+        config, now=TUESDAY_PREMARKET, intelligence_service=broken, notifier=notifier,
+    )
+    assert failed["status"] == "failed"
+    assert failed["reason"] == "feed_unavailable"
+    assert notifier.calls == [], "全部来源失败时绝不发送空摘要"
+    assert _claim_count(config.database_path) == 0, "采集失败不得占用当日名额"
+
+    recovered = run_news_digest_once(
+        config, now=TUESDAY_PREMARKET.replace(hour=8, minute=50),
+        intelligence_service=StubIntelligenceService(rows=[
+            _feed_row("恢复后的快讯", "https://f.cn/r2", published_at=TUESDAY_PREMARKET),
+        ]),
+        notifier=notifier,
+    )
+    assert recovered["status"] == "success"
+    assert "恢复后的快讯" in recovered["report"]
+    assert len(notifier.calls) == 1
 
 
 def test_run_once_missing_intelligence_service_fails_without_claim(tmp_path):

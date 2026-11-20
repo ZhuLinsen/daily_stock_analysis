@@ -113,10 +113,11 @@ def collect_feed_entries(
     if intelligence_service is None:
         return [], False, 0
     try:
-        intelligence_service.fetch_enabled_sources()
+        refresh = intelligence_service.fetch_enabled_sources()
     except Exception as exc:  # noqa: BLE001 - 池刷新失败不致命
         logger.warning("NEWS_DIGEST 资讯池刷新失败，按空池处理: %s", exc)
         return [], False, 0
+    all_sources_failed = _refresh_all_sources_failed(refresh)
     # 时区口径（OR-COR-2f1e978e）：池内 published_at 为 UTC 无时区（既有解析链路
     # 统一转 UTC 落库），fetched_at 为本地无时区（ORM default=datetime.now）。
     # cutoff 必须分口径对齐，禁止本地 cutoff 与 UTC 发布时间混用。
@@ -175,4 +176,32 @@ def collect_feed_entries(
 
     if fallback_count:
         logger.info("NEWS_DIGEST 资讯池 %d 条缺失发布时间，按抓取时间口径纳入", fallback_count)
+    if all_sources_failed and not entries:
+        # OR-COR-d539c8a1：刷新服务把单源失败收进 results[].ok=False 而顶层恒
+        # ok=True，采集层此前丢弃该返回值；全部启用来源失败且池内无窗口内条目
+        # 时，采集失败不得伪装成“合法空池”返回成功（否则空摘要占用当日名额，
+        # 来源恢复后的再次运行命中 already_claimed 无法补发）。池内有真实条目
+        # 时摘要内容真实，仍按成功处理（见 test_feed_refresh_all_failed_but_pool_has_entries_still_ok）。
+        logger.warning(
+            "NEWS_DIGEST 刷新显示全部启用来源失败且池内无窗口内条目，按采集失败处理"
+        )
+        return [], False, 0
     return entries, True, fallback_count
+
+
+def _refresh_all_sources_failed(refresh: Any) -> bool:
+    """OR-COR-d539c8a1：识别 fetch_enabled_sources 结构化结果中的“全部来源失败”。
+
+    真实实现（intelligence_service.fetch_enabled_sources）顶层恒 ok=True，
+    单源失败只体现在 results[].ok=False。仅当至少有一个可识别的来源结果且
+    全部失败时才判定失败：results 为空（未启用来源）或结构不可识别（旧测试
+    替身）时返回 False，空池是否合法交由回读结果判定。"""
+    if not isinstance(refresh, dict):
+        return False
+    results = refresh.get("results")
+    if not isinstance(results, list) or not results:
+        return False
+    source_results = [item for item in results if isinstance(item, dict) and "ok" in item]
+    if not source_results:
+        return False
+    return all(not item.get("ok") for item in source_results)
