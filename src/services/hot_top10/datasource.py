@@ -7,9 +7,33 @@ only then truncated (r1 OR-COR-a7e7c3a3: sequential per-bucket fill could
 evict higher-ranked concepts on negative-industry days)."""
 
 import logging
+from datetime import datetime
 from typing import Any, Dict, List, Optional
+from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
+
+CN_MARKET_TIMEZONE = "Asia/Shanghai"
+
+
+def shanghai_now() -> datetime:
+    """Current wall clock in ``Asia/Shanghai`` — the CN market data domain
+    clock (Tushare's 15:30 cut-off runs on it, ``trading_calendar`` and
+    ``tushare_fetcher`` key their dates on it). All hot-top10 day decisions
+    (schedule gate, dedup marker, report file names) key on this clock so a
+    host in another timezone cannot fire the tick at its local 15:35 — i.e.
+    before the Shanghai data cut-off — and book the previous trading day's
+    list as today's delivery (OR-COR-3e7f490e)."""
+    try:
+        return datetime.now(ZoneInfo(CN_MARKET_TIMEZONE))
+    except Exception as exc:  # noqa: BLE001 - tz problems must not break the run
+        logger.warning("[HotTop10] 上海时区不可用，回退主机时钟: %s", exc)
+        return datetime.now()
+
+
+def hot_top10_data_date() -> str:
+    """The hot-list data date (``YYYY-MM-DD``) per the CN market clock."""
+    return shanghai_now().date().isoformat()
 
 
 def is_cn_trading_day_today() -> bool:

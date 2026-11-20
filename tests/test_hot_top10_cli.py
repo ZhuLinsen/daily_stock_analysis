@@ -7,7 +7,6 @@ not signal success) and OR-COR-ac05ea85 (the hot-top10 branch is exempt
 from watchlist parsing via _skips_stock_entry).
 """
 
-import os
 import unittest
 
 from tests.litellm_stub import ensure_litellm_stub
@@ -75,6 +74,52 @@ class HotTop10StockEntryExemptionTestCase(unittest.TestCase):
 
     def test_plain_run_still_consumes_stock_entry(self):
         self.assertFalse(main._skips_stock_entry(self._args(False), self._config()))
+
+
+class HotTop10DryRunProbeTestCase(unittest.TestCase):
+    """OR-COR-hot-top10-dry-run: ``--hot-top10 --dry-run`` must honour the CLI
+    dry-run contract (仅获取数据) — fetch the hot list only: no LLM call, no
+    report file, no push, no dedup marker. The scheduled tick must not even
+    register in dry-run mode."""
+
+    def _config(self):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            database_path="unused.db",
+            hot_top10_count=10,
+            hot_top10_schedule_time="15:35",
+        )
+
+    def test_dry_run_probe_fetches_only_and_exits_zero(self):
+        items = [{"rank": 1, "name": "人工智能", "change_pct": 3.2, "kind": "theme"}]
+        from unittest import mock
+
+        with mock.patch(
+            "src.services.hot_top10.datasource.collect_hot_list_items",
+            return_value=items,
+        ) as mock_collect, mock.patch(
+            "src.services.hot_top10.service.run_hot_top10_analysis",
+            side_effect=AssertionError("dry-run must not run the service"),
+        ), mock.patch(
+            "src.notification.NotificationService",
+            side_effect=AssertionError("dry-run must not build a notifier"),
+        ):
+            code = main._hot_top10_dry_run_probe(self._config())
+
+        self.assertEqual(code, 0)
+        mock_collect.assert_called_once_with(10)
+
+    def test_dry_run_probe_fails_closed_when_data_unavailable(self):
+        from unittest import mock
+
+        with mock.patch(
+            "src.services.hot_top10.datasource.collect_hot_list_items",
+            return_value=None,
+        ):
+            code = main._hot_top10_dry_run_probe(self._config())
+
+        self.assertEqual(code, 1)
 
 
 if __name__ == "__main__":

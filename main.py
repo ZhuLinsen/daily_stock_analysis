@@ -1633,6 +1633,40 @@ def _hot_top10_exit_code(result) -> int:
     return 0 if bool(getattr(result, "delivered", False)) else 1
 
 
+def _hot_top10_dry_run_probe(config) -> int:
+    """``--hot-top10 --dry-run``: fetch the hot list only (OR-COR-hot-top10-
+    dry-run). Honors the CLI dry-run contract (仅获取数据，不进行 AI 分析):
+    no LLM call, no report file, no push, no dedup marker. Exit 0 when the
+    data is usable, 1 otherwise.
+    """
+    from src.services.hot_top10.datasource import collect_hot_list_items, format_change_pct
+    from src.services.hot_top10.service import DEFAULT_HOT_TOP10_COUNT, MAX_HOT_TOP10_COUNT
+
+    try:
+        count = max(1, min(MAX_HOT_TOP10_COUNT, int(getattr(config, "hot_top10_count", DEFAULT_HOT_TOP10_COUNT))))
+    except (TypeError, ValueError):
+        count = DEFAULT_HOT_TOP10_COUNT
+    try:
+        items = collect_hot_list_items(count)
+    except Exception as exc:
+        logger.error("[HotTop10] dry-run 数据获取异常: %s", exc)
+        return 1
+    if not items:
+        logger.error("[HotTop10] dry-run 数据获取失败（无可用热榜条目）")
+        return 1
+    logger.info("[HotTop10] dry-run 获取到 %d 条热榜（仅获取数据：无 AI 分析、无落盘、无推送、无当日标记）:", len(items))
+    for item in items:
+        logger.info(
+            "[HotTop10] dry-run #%02d %s (%s/%s) %s",
+            item.get("rank", 0),
+            item.get("name", ""),
+            item.get("kind", ""),
+            item.get("phase", ""),
+            format_change_pct(item.get("change_pct")),
+        )
+    return 0
+
+
 def _reload_runtime_config() -> Config:
     """Reload config from the latest persisted `.env` values for scheduled runs."""
     _reload_env_file_values_preserving_overrides()
@@ -1937,6 +1971,12 @@ def main() -> int:
         if getattr(args, 'hot_top10', False):
             from src.services.hot_top10 import run_hot_top10_analysis
 
+            # OR-COR-hot-top10-dry-run: honor --dry-run (仅获取数据) before
+            # entering generation/delivery — no LLM, no report file, no push,
+            # no dedup marker.
+            if getattr(args, 'dry_run', False):
+                return _hot_top10_dry_run_probe(config)
+
             result = run_hot_top10_analysis(
                 config, send_notification=not args.no_notify, respect_dedup=False,
                 force_run=getattr(args, 'force_run', False),
@@ -2111,15 +2151,27 @@ def main() -> int:
             # Hot Top10 daily tick (Issue #1936, default OFF): rides the
             # existing background-task threads; the service's per-day marker
             # + in-process mutex make it at-most-once per trading day. Honors
-            # --no-notify like the one-shot --hot-top10 entry.
-            if getattr(config, 'hot_top10_enabled', False):
+            # --no-notify like the one-shot --hot-top10 entry. OR-COR-hot-top10-
+            # dry-run: a --dry-run schedule session must not deliver nor
+            # consume today's dedup marker, so the tick is not registered.
+            if getattr(config, 'hot_top10_enabled', False) and getattr(args, 'dry_run', False):
+                logger.info("[HotTop10] dry-run 模式：不注册热榜定时任务（不推送、不写当日标记）")
+            elif getattr(config, 'hot_top10_enabled', False):
+                from src.services.hot_top10.datasource import shanghai_now
+
                 _hot_top10_state = {"last_attempt": ""}
 
                 def hot_top10_daily_tick():
                     runtime_cfg = _reload_runtime_config()
                     if not getattr(runtime_cfg, 'hot_top10_enabled', False):
                         return
-                    now = datetime.now()
+                    # OR-COR-3e7f490e: gate on the CN market clock. A host in
+                    # another timezone firing at its local 15:35 would run
+                    # before the 15:30 Shanghai data cut-off, receive the
+                    # previous trading day's list, and book it as today's
+                    # delivery — the tick must key on Asia/Shanghai, the same
+                    # clock the datasource's date selection uses.
+                    now = shanghai_now()
                     if now.strftime('%H:%M') < getattr(runtime_cfg, 'hot_top10_schedule_time', '15:35'):
                         return
                     if _hot_top10_state["last_attempt"] == now.strftime('%Y-%m-%d'):

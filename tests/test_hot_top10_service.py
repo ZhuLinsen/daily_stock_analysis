@@ -7,22 +7,28 @@ lead to a same-day re-push of the same list.
 """
 
 import json
-import logging
 import os
 import tempfile
 import threading
 import unittest
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
+from zoneinfo import ZoneInfo
 
 from src.services.hot_top10.analysis import build_hot_top10_prompt, parse_llm_summary
-from src.services.hot_top10.datasource import collect_hot_list_items
+from src.services.hot_top10.datasource import (
+    collect_hot_list_items,
+    hot_top10_data_date,
+    shanghai_now,
+)
 from src.services.hot_top10.idempotency import (
     MARKER_SCHEMA_VERSION,
+    fallback_marker_path,
     hot_top10_already_delivered_today,
     hot_top10_marker_path,
+    hot_top10_state_dir,
     record_hot_top10_marker,
 )
 from src.services.hot_top10.service import (
@@ -245,8 +251,8 @@ class DeliveryAndDedupContractTestCase(unittest.TestCase):
         marker.write_text(
             json.dumps({
                 "schema_version": MARKER_SCHEMA_VERSION,
-                "run_date": date.today().isoformat(),
-                "data_date": date.today().isoformat(),
+                "run_date": hot_top10_data_date(),
+                "data_date": hot_top10_data_date(),
                 "delivered": True,
             }, ensure_ascii=False),
             encoding="utf-8",
@@ -338,7 +344,7 @@ class ManualEntryQuotaTestCase(unittest.TestCase):
         self.assertTrue(hot_top10_marker_path(self.config).exists())
 
     def test_manual_run_ignores_marker_write_failed_block(self):
-        _MARKER_WRITE_FAILED_DAYS.add(date.today().isoformat())
+        _MARKER_WRITE_FAILED_DAYS.add(hot_top10_data_date())
         notifier = FakeNotifier(send_ok=True)
         manual = self._manual(notifier)
         self.assertTrue(manual.delivered)
@@ -508,7 +514,7 @@ class AnalysisLayerTestCase(unittest.TestCase):
                 _run(config, notifier)
                 self.assertEqual(
                     notifier.saved_files,
-                    [f"hot_top10_{date.today().strftime('%Y%m%d')}.md"],
+                    [f"hot_top10_{shanghai_now().strftime('%Y%m%d')}.md"],
                 )
             finally:
                 _MARKER_WRITE_FAILED_DAYS.clear()
@@ -521,6 +527,186 @@ class HotTop10RunResultShapeTestCase(unittest.TestCase):
         self.assertTrue(result.skipped)
         self.assertIsNone(result.report_markdown)
         self.assertEqual(result.notification_status, "not_attempted")
+
+
+class _FixedClockDateTime(datetime):
+    """``datetime`` stand-in whose ``now(tz)`` returns a fixed Shanghai instant
+    while leaving everything else real."""
+
+    _fixed = None
+
+    @classmethod
+    def now(cls, tz=None):  # noqa: D102 - see class docstring
+        if tz is not None:
+            return cls._fixed.astimezone(tz)
+        return cls._fixed.replace(tzinfo=None)
+
+
+def _shanghai_clock(at):
+    """Patch ``datasource.datetime`` so the CN market clock reads ``at``."""
+    cls = type("_FixedClock", (_FixedClockDateTime,), {"_fixed": at})
+    return patch("src.services.hot_top10.datasource.datetime", cls)
+
+
+class ShanghaiClockKeyingTestCase(unittest.TestCase):
+    """OR-COR-3e7f490e: the schedule gate, dedup marker and report file names
+    must all key on the CN market clock (Asia/Shanghai, the clock Tushare's
+    15:30 data cut-off runs on), never on the host clock — otherwise a host
+    in another timezone fires at its local 15:35 (= before Shanghai 15:30),
+    receives the previous trading day's list and books it as today's."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.config = _config(self._tmp.name)
+        _MARKER_WRITE_FAILED_DAYS.clear()
+
+    def tearDown(self):
+        _MARKER_WRITE_FAILED_DAYS.clear()
+        self._tmp.cleanup()
+
+    def test_data_date_follows_shanghai_clock(self):
+        # Shanghai 2026-11-21 00:30 — a UTC host still shows 2026-11-20.
+        at = datetime(2026, 11, 21, 0, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
+        with _shanghai_clock(at):
+            self.assertEqual(hot_top10_data_date(), "2026-11-21")
+            self.assertEqual(shanghai_now().strftime("%H:%M"), "00:30")
+
+    def test_marker_and_gate_use_shanghai_date_over_host_date(self):
+        # Host clock says 2026-11-20; Shanghai clock says 2026-11-21.
+        at = datetime(2026, 11, 21, 0, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
+
+        class _HostDate(date):
+            @classmethod
+            def today(cls):
+                return date(2026, 11, 20)
+
+        with _shanghai_clock(at), patch(
+            "src.services.hot_top10.idempotency.date", _HostDate
+        ):
+            notifier = FakeNotifier(send_ok=True)
+            result = _run(self.config, notifier)
+            self.assertTrue(result.delivered)
+            payload = json.loads(
+                hot_top10_marker_path(self.config).read_text(encoding="utf-8")
+            )
+            # The delivery day key is the Shanghai data date, not the host date.
+            self.assertEqual(payload["data_date"], "2026-11-21")
+            self.assertEqual(payload["run_date"], "2026-11-20")
+            self.assertEqual(
+                notifier.saved_files, ["hot_top10_20261121.md"]
+            )
+            # Same-day gate honours the Shanghai-keyed marker.
+            skip, reason = hot_top10_already_delivered_today(self.config)
+            self.assertTrue(skip, reason)
+
+    def test_marker_file_is_keyed_by_shanghai_date(self):
+        at = datetime(2026, 11, 21, 0, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
+        with _shanghai_clock(at):
+            self.assertEqual(
+                hot_top10_marker_path(self.config).name, "state_2026-11-21.json"
+            )
+
+
+class FallbackMarkerRestartSafetyTestCase(unittest.TestCase):
+    """OR-COR-hot-top10-marker-write-failure: when the primary marker
+    location is unwritable (e.g. data volume full), the delivered-marker must
+    persist to a fallback location so a same-day sequential process restart
+    cannot re-push the already-delivered list. If NO location can be written,
+    the run stays undelivered/blocked in-process (loud ERROR) — the residual
+    case is physically unrecordable."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.config = _config(self._tmp.name)
+        _MARKER_WRITE_FAILED_DAYS.clear()
+
+    def tearDown(self):
+        _MARKER_WRITE_FAILED_DAYS.clear()
+        fallback = fallback_marker_path(self.config)
+        try:
+            fallback.unlink()
+        except FileNotFoundError:
+            pass
+        self._tmp.cleanup()
+
+    def test_primary_failure_persists_fallback_marker_and_restart_gate_skips(self):
+        notifier = FakeNotifier(send_ok=True)
+        primary_dir = str(hot_top10_state_dir(self.config))
+        real_replace = os.replace
+
+        def _fail_primary_only(src, dst):
+            if str(dst).startswith(primary_dir):
+                raise OSError("simulated disk full on data volume")
+            return real_replace(src, dst)
+
+        with patch(
+            "src.services.hot_top10.idempotency.os.replace",
+            side_effect=_fail_primary_only,
+        ):
+            first = _run(self.config, notifier)
+
+        # The push landed and the fallback marker recorded the delivery.
+        self.assertTrue(first.delivered)
+        self.assertEqual(first.reason, "ok")
+        self.assertFalse(hot_top10_marker_path(self.config).exists())
+        self.assertTrue(fallback_marker_path(self.config).exists())
+
+        # Simulate the sequential restart: the gate read is stateless, and
+        # the in-memory failure set / tick last_attempt are gone — the fresh
+        # process must still see today's delivery.
+        skip, reason = hot_top10_already_delivered_today(self.config)
+        self.assertTrue(skip, reason)
+        second = _run(self.config, notifier)
+        self.assertTrue(second.skipped)
+        self.assertIn("already_delivered_today", second.reason)
+        self.assertEqual(len(notifier.sent_contents), 1, "restart must not re-push")
+
+    def test_total_write_failure_still_blocks_and_reports_undelivered(self):
+        notifier = FakeNotifier(send_ok=True)
+        with patch(
+            "src.services.hot_top10.idempotency.os.replace",
+            side_effect=OSError("simulated disk full everywhere"),
+        ):
+            result = _run(self.config, notifier)
+        self.assertFalse(result.delivered)
+        self.assertEqual(result.reason, "marker_write_failed")
+        self.assertFalse(fallback_marker_path(self.config).exists())
+
+
+class ManualRunDistinctReportFileTestCase(unittest.TestCase):
+    """OR-COR-hot-top10-report-overwrite: a same-day manual run shares the
+    dedup-exempt path but must NOT replace the delivered scheduled report
+    file — the marker still points at the original delivery, so the only
+    persisted copy of the scheduled report must survive manual reruns."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.config = _config(self._tmp.name)
+        _MARKER_WRITE_FAILED_DAYS.clear()
+
+    def tearDown(self):
+        _MARKER_WRITE_FAILED_DAYS.clear()
+        self._tmp.cleanup()
+
+    def test_manual_run_saves_distinct_filename(self):
+        notifier = FakeNotifier(send_ok=True)
+        scheduled = _run(self.config, notifier)
+        manual = run_hot_top10_analysis(
+            self.config,
+            notifier=notifier,
+            analyzer=FakeAnalyzer(_LLM_JSON),
+            hotspot_service=SimpleNamespace(get_hotspots=lambda **kw: _hot_payload()),
+            respect_dedup=False,
+        )
+        self.assertTrue(scheduled.delivered)
+        self.assertTrue(manual.delivered)
+        scheduled_name, manual_name = notifier.saved_files[0], notifier.saved_files[1]
+        # The scheduled canonical name is untouched by the manual run.
+        self.assertEqual(
+            scheduled_name, f"hot_top10_{shanghai_now().strftime('%Y%m%d')}.md"
+        )
+        self.assertNotEqual(manual_name, scheduled_name)
+        self.assertIn("manual", manual_name)
 
 
 if __name__ == "__main__":

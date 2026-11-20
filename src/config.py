@@ -1340,7 +1340,7 @@ class Config:
 
     # === 热榜 Top N 轻量分析（Issue #1936，默认关闭） ===
     hot_top10_enabled: bool = False          # 每日热榜 Top N 分析开关（仅 A 股交易日）
-    hot_top10_schedule_time: str = "15:35"   # 执行时间 HH:MM（15:30 数据切割后）
+    hot_top10_schedule_time: str = "15:35"   # 执行时间 HH:MM（按上海时钟；15:30 数据切割后）
     hot_top10_count: int = 10                # 热榜条数（1-30）
 
     # === 实时行情增强数据配置 ===

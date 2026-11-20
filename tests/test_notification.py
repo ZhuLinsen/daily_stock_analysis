@@ -32,7 +32,12 @@ for optional_module in ("litellm", "json_repair"):
         sys.modules[optional_module] = mock.MagicMock()
 
 from src.config import Config
-from src.notification import NotificationBuilder, NotificationChannel, NotificationService
+from src.notification import (
+    NotificationBuilder,
+    NotificationChannel,
+    NotificationDispatchResult,
+    NotificationService,
+)
 from src.notification_noise import reset_notification_noise_state
 from src.analyzer import AnalysisResult
 from src.share_image import build_share_image_html
@@ -2756,6 +2761,81 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
         self.assertTrue(ok)
         self.assertAlmostEqual(mock_post.call_count, 4, delta=1)
         self.assertEqual(mock_sleep.call_count, mock_post.call_count - 1)
+
+
+class TestFeishuFileReportFilename(unittest.TestCase):
+    """OR-COR-hot-top10-report-overwrite (Feishu variant): the report-route
+    Feishu file branch must upload under the caller's ``report_filename`` when
+    one is supplied (hot-top10's own report file), so it never rewrites the
+    shared ``report_YYYYMMDD.md`` persisted by the stock summary daily
+    report. Callers that pass no filename keep the legacy default."""
+
+    def _service(self):
+        service = NotificationService()
+        service._feishu_send_as_file = True
+        service.save_report_to_file = mock.MagicMock(return_value="reports/x.md")
+        service.send_feishu_file = mock.MagicMock(return_value=True)
+        return service
+
+    @mock.patch("src.notification.get_config")
+    def test_report_filename_is_uploaded_verbatim(self, mock_get_config: mock.MagicMock):
+        mock_get_config.return_value = _make_config()
+        service = self._service()
+
+        ok = service._send_to_static_channel(
+            NotificationChannel.FEISHU,
+            "# 市场热榜 Top10",
+            image_bytes=None,
+            email_stock_codes=None,
+            email_send_to_all=False,
+            route_type="report",
+            report_filename="hot_top10_20261120.md",
+        )
+
+        self.assertTrue(ok)
+        service.save_report_to_file.assert_called_once_with(
+            "# 市场热榜 Top10", filename="hot_top10_20261120.md"
+        )
+        service.send_feishu_file.assert_called_once_with("reports/x.md")
+
+    @mock.patch("src.notification.get_config")
+    def test_report_filename_defaults_to_shared_daily_report(self, mock_get_config: mock.MagicMock):
+        mock_get_config.return_value = _make_config()
+        service = self._service()
+
+        ok = service._send_to_static_channel(
+            NotificationChannel.FEISHU,
+            "# 个股汇总日报",
+            image_bytes=None,
+            email_stock_codes=None,
+            email_send_to_all=False,
+            route_type="report",
+        )
+
+        self.assertTrue(ok)
+        filename = service.save_report_to_file.call_args.kwargs["filename"]
+        self.assertTrue(filename.startswith("report_"))
+        self.assertTrue(filename.endswith(".md"))
+
+    @mock.patch("src.notification.get_config")
+    def test_send_threads_report_filename_to_dispatch(self, mock_get_config: mock.MagicMock):
+        mock_get_config.return_value = _make_config()
+        service = self._service()
+
+        with mock.patch.object(
+            service,
+            "send_with_results",
+            return_value=NotificationDispatchResult(
+                dispatched=True, success=True, status="sent", channel_results=[]
+            ),
+        ) as mock_dispatch:
+            service.send("# 市场热榜 Top10", route_type="report", report_filename="hot_top10_20261120.md")
+
+        mock_dispatch.assert_called_once()
+        self.assertEqual(
+            mock_dispatch.call_args.kwargs.get("report_filename"),
+            "hot_top10_20261120.md",
+        )
 
 
 if __name__ == "__main__":
