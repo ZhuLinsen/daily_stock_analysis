@@ -309,3 +309,57 @@ def screening_source_history(
     db_manager: DatabaseManager = Depends(get_database_manager),
 ) -> Dict[str, Any]:
     return _service(config, db_manager).source_history(limit=limit)
+
+
+class ScreeningPromoteRequest(BaseModel):
+    top_n: int = Field(10, ge=1, le=30)
+
+
+class ScreeningAnalyzeTopRequest(BaseModel):
+    top_n: int = Field(5, ge=1, le=10)
+    report_type: Literal["simple", "detailed", "full", "brief"] = "detailed"
+
+
+@router.post("/runs/{run_id}/promote-watchlist")
+def promote_screening_run_to_watchlist(
+    run_id: str,
+    request: Optional[ScreeningPromoteRequest] = None,
+    db_manager: DatabaseManager = Depends(get_database_manager),
+) -> Dict[str, Any]:
+    from src.services.screening_funnel_service import promote_screening_to_watchlist
+
+    req = request or ScreeningPromoteRequest()
+    try:
+        return promote_screening_to_watchlist(run_id, top_n=req.top_n, db_manager=db_manager)
+    except LookupError as exc:
+        raise api_error(404, "screening_run_not_found", str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "screening_promote_failed", "message": str(exc)},
+        ) from exc
+
+
+@router.post("/runs/{run_id}/analyze-top")
+def analyze_screening_run_top(
+    run_id: str,
+    request: Optional[ScreeningAnalyzeTopRequest] = None,
+    db_manager: DatabaseManager = Depends(get_database_manager),
+) -> Dict[str, Any]:
+    from src.services.screening_funnel_service import analyze_screening_candidates
+
+    req = request or ScreeningAnalyzeTopRequest()
+    try:
+        return analyze_screening_candidates(
+            run_id,
+            top_n=req.top_n,
+            report_type=req.report_type,
+            db_manager=db_manager,
+        )
+    except LookupError as exc:
+        raise api_error(404, "screening_run_not_found", str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "screening_analyze_failed", "message": str(exc)},
+        ) from exc
