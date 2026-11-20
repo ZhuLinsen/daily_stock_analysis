@@ -441,6 +441,10 @@ For the notification baseline, diagnostics, and deployment notes, see [Notificat
 | `DAILY_MARKET_CONTEXT_ENABLED` | Inject the daily market context into stock-analysis prompts and soften aggressive buy advice in high-risk/risk-off markets; enabled by default, and market review can still run when this is set to `false` | `true` |
 | `MARKET_REVIEW_REGION` | Market review region: cn (A-shares), hk (HK stocks), us (US stocks), jp (JP stocks), kr (KR stocks), tw (Taiwan), both (all six markets) | `cn` |
 | `MARKET_REVIEW_COLOR_SCHEME` | Index change color style in market reviews: `green_up` = green gains/red losses (default), `red_up` = red gains/green losses | `green_up` |
+| `NEWS_DIGEST_ENABLED` | Enable the news digest (issue #2184): one A-share macro news digest per pre-market/weekend/holiday window, built from local intelligence items of the last 48 hours (filtered by publish time `published_at`; items missing it fall back to fetch time and the digest footer states the count). At most one push per calendar day; failed sends retry within the window; trigger manually with `python main.py --news-digest` | `false` |
+| `NEWS_DIGEST_PREMARKET_WINDOW` | Pre-market window on trading days (HH:MM-HH:MM, [start, end)) | `08:00-09:15` |
+| `NEWS_DIGEST_OFFDAY_WINDOW` | Weekend/holiday window (HH:MM-HH:MM) | `09:00-18:00` |
+| `NEWS_DIGEST_MAX_NEWS` | Max items per digest (4..30) | `12` |
 | `SCHEDULE_ENABLED` | Enable scheduled tasks | `false` |
 | `SCHEDULE_TIME` | Scheduled execution time | `18:00` |
 | `SCHEDULE_TIMES` | Multiple scheduled execution times, comma-separated; falls back to `SCHEDULE_TIME` when empty | empty |

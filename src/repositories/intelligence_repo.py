@@ -157,6 +157,7 @@ class IntelligenceRepository:
         market: Optional[str] = None,
         query: Optional[str] = None,
         days: Optional[int] = None,
+        fetched_since: Optional[datetime] = None,
         published_days: Optional[int] = None,
         page: int = 1,
         page_size: int = 50,
@@ -177,6 +178,11 @@ class IntelligenceRepository:
             conditions.append(or_(IntelligenceItem.title.like(pattern), IntelligenceItem.summary.like(pattern)))
         if days is not None:
             conditions.append(IntelligenceItem.fetched_at >= datetime.now() - timedelta(days=max(1, int(days))))
+        if fetched_since is not None:
+            # 调用方给定的绝对抓取时间下界（OR-COR-f7b1824e）：与 days 的
+            # “查询时刻 - N 天”不同，本下界不随查询时刻漂移，调用方可用
+            # 运行时刻精确预筛（days 与 fetched_since 同传时取交集）。
+            conditions.append(IntelligenceItem.fetched_at >= fetched_since)
         if published_days is not None:
             published_cutoff = datetime.now() - timedelta(days=max(1, int(published_days)))
             conditions.append(IntelligenceItem.published_at >= published_cutoff)

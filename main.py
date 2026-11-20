@@ -387,6 +387,12 @@ def parse_arguments() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        '--news-digest',
+        action='store_true',
+        help='仅运行一次消息面汇总（盘前/周末/节假日窗口内；受每日一次限制）'
+    )
+
+    parser.add_argument(
         '--no-market-review',
         action='store_true',
         help='跳过大盘复盘分析'
@@ -1599,8 +1605,9 @@ def _skips_stock_entry(args: argparse.Namespace, config: Config) -> bool:
     ``--stocks``/``STOCK_LIST`` tokens nor refresh the stock-index registry
     before the mode dispatch, otherwise an unsupported index token would
     wrongly block a run that never consumes it. Covered modes:
-    ``--backtest``, ``--market-review``, ``--etf-rotation``, ``--serve-only``/``--webui-only``,
-    ``--portfolio`` (any value) and ``--schedule``/``config.schedule_enabled``.
+    ``--backtest``, ``--market-review``, ``--news-digest``, ``--etf-rotation``,
+    ``--serve-only``/``--webui-only``, ``--portfolio`` (any value) and
+    ``--schedule``/``config.schedule_enabled``.
     ``--serve`` (not serve-only) and plain one-shot runs still consume the
     stock list and stay outside the guard. The webui-only flag is read
     directly here because the webui -> serve mapping happens only later in
@@ -1610,12 +1617,47 @@ def _skips_stock_entry(args: argparse.Namespace, config: Config) -> bool:
         getattr(args, "backtest", False)
         or getattr(args, "etf_rotation", False)
         or getattr(args, "market_review", False)
+        or getattr(args, "news_digest", False)
         or getattr(args, "serve_only", False)
         or getattr(args, "webui_only", False)
         or bool(getattr(args, "portfolio", None))
         or getattr(args, "schedule", False)
         or getattr(config, "schedule_enabled", False)
     )
+
+
+def _run_news_digest_once_cli(config, *, no_notify: bool = False) -> int:
+    """``--news-digest`` 一次性入口（issue #2184）：组装真实依赖（OR-COR-000c926a）
+    跑一次汇总，仍受 enabled/窗口/每日一次 claim 约束；打印 Markdown 摘要与状态行。
+    ``no_notify`` 贯通 ``--no-notify``（OR-COR-940607c8）：禁推时不发送、不占名额。"""
+    from src.services.news_digest_service import (
+        build_news_digest_dependencies,
+        run_news_digest_once,
+    )
+    # OR-COR-3f8c2a61：窗口/日期/每日占位必须按 A 股本地时区（Asia/Shanghai）
+    # 判定，与交易日历口径一致；服务器本地时区（如 UTC 部署）的 datetime.now()
+    # 会导致真实盘前跳过、收盘后反而触发“盘前”汇总。
+    from src.core.trading_calendar import get_market_now
+
+    logger.info("模式: 仅消息面汇总（--news-digest）")
+    try:
+        deps = build_news_digest_dependencies(config)
+    except Exception as exc:  # 双保险：组装器契约是不抛，这里仍兜底全量降级
+        logger.warning("消息面汇总依赖组装意外失败（全量降级）: %s", exc)
+        deps = {}
+    result = run_news_digest_once(
+        config,
+        now=get_market_now("cn"),
+        intelligence_service=deps.get("intelligence_service"),
+        notifier=deps.get("notifier"),
+        no_notify=no_notify,
+    )
+    status = str(result.get("status") or "unknown") if isinstance(result, dict) else "unknown"
+    report = str(result.get("report") or "") if isinstance(result, dict) else ""
+    print(report or "（本次未生成消息面汇总内容）")
+    print(f"[news-digest] status={status}")
+    logger.info("消息面汇总推送状态: %s", result)
+    return 0 if status == "success" else 1
 
 
 def _reload_runtime_config() -> Config:
@@ -1952,6 +1994,12 @@ def main() -> int:
                 trigger_source="cli",
             )
             return 0 if market_review_result else 1
+
+        # 模式1.5: 仅消息面汇总（CLI 一次性入口，issue #2184；窗口判定在服务层内建）
+        if getattr(args, 'news_digest', False):
+            return _run_news_digest_once_cli(
+                config, no_notify=bool(getattr(args, "no_notify", False)),
+            )
 
         # 模式2: 定时任务模式
         if args.schedule or config.schedule_enabled:

@@ -1335,6 +1335,11 @@ class Config:
     # 大盘复盘市场区域：cn(A股)、hk(港股)、us(美股)、jp(日股)、kr(韩股)、tw(台股)、both(全部市场)
     market_review_region: str = "cn"
     market_review_color_scheme: str = "green_up"
+    # === 消息面汇总（issue #2184；默认关闭=零行为差异；窗口非法值服务层 fail-open）===
+    news_digest_enabled: bool = False
+    news_digest_premarket_window: str = "08:00-09:15"  # 交易日盘前窗口（HH:MM-HH:MM）
+    news_digest_offday_window: str = "09:00-18:00"     # 周末/节假日窗口（HH:MM-HH:MM）
+    news_digest_max_news: int = 12
     # 交易日检查：默认启用，非交易日跳过执行；设为 false 或 --force-run 可强制执行（Issue #373）
     trading_day_check_enabled: bool = True
 
@@ -2351,6 +2356,14 @@ class Config:
             ),
             market_review_color_scheme=cls._parse_market_review_color_scheme(
                 os.getenv('MARKET_REVIEW_COLOR_SCHEME', 'green_up')
+            ),
+            # === 消息面汇总（issue #2184，默认关闭）===
+            news_digest_enabled=os.getenv('NEWS_DIGEST_ENABLED', 'false').lower() == 'true',
+            news_digest_premarket_window=os.getenv('NEWS_DIGEST_PREMARKET_WINDOW') or '08:00-09:15',
+            news_digest_offday_window=os.getenv('NEWS_DIGEST_OFFDAY_WINDOW') or '09:00-18:00',
+            news_digest_max_news=parse_env_int(
+                os.getenv('NEWS_DIGEST_MAX_NEWS'), 12,
+                field_name='NEWS_DIGEST_MAX_NEWS', minimum=4, maximum=30,
             ),
             trading_day_check_enabled=os.getenv('TRADING_DAY_CHECK_ENABLED', 'true').lower() != 'false',
             webui_enabled=os.getenv('WEBUI_ENABLED', 'false').lower() == 'true',
