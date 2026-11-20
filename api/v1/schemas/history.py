@@ -408,6 +408,51 @@ class StockBarResponse(BaseModel):
     items: List[StockBarItem] = Field(default_factory=list, description="个股列表")
 
 
+class DailyHistoryItem(BaseModel):
+    """当日每股最新分析轻量条目（首页历史区日期回看，issue #1661）。
+
+    列表轻量化（维护者 spec 1）：价位字段（ideal_buy 等）一律放在按 ID
+    的报告详情里，有值再展示。
+    """
+
+    id: int = Field(..., description="该股当日最新一条分析记录的主键 ID（点行下钻用）")
+    code: str = Field(..., description="展示用股票代码（经 parser 规范化）")
+    name: str = Field("", description="股票名称")
+    report_type: str = Field("", description="报告类型")
+    sentiment_score: Optional[int] = Field(None, description="情绪评分（历史数据可能超出 0-100，读取时不约束）")
+    sentiment_label: Optional[str] = Field(
+        None,
+        description="本地化情绪标签（由 sentiment_score 阈值得出；score 缺失时为 null）",
+    )
+    operation_advice: Optional[str] = Field(None, description="操作建议")
+    action: Optional[DecisionAction] = Field(None, description="结构化建议动作 taxonomy")
+    action_label: Optional[str] = Field(None, description="建议动作展示标签")
+    trend_prediction: Optional[str] = Field(None, description="趋势预测")
+    is_latest: bool = Field(
+        ...,
+        description="是否为该股票（含全部代码变体）全局最新一条分析；False 表示已被更新分析取代（前端展示「已有更新」）",
+    )
+    analysis_count: int = Field(
+        1,
+        ge=1,
+        description="该股当日（北京时间分析生成日）分析份数；>1 表示同股同日多份报告",
+    )
+    created_at: str = Field("", description="创建时间（含时区偏移的 ISO 字符串）")
+
+
+class DailyHistoryListResponse(BaseModel):
+    """按日历史分析列表响应（issue #1661）。
+
+    日期口径：北京时间（Asia/Shanghai）的分析生成日期；同股同日多份分析
+    时每只股票只出最新一行（analysis_count 标注份数）。
+    """
+
+    total: int = Field(..., description="规范化合并后的股票总数")
+    page: int = Field(..., description="当前页码")
+    limit: int = Field(..., description="每页数量")
+    items: List[DailyHistoryItem] = Field(default_factory=list, description="当日每股最新分析列表")
+
+
 class WatchlistRequest(BaseModel):
     """自选队列操作请求"""
 

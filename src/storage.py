@@ -3423,6 +3423,74 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             )
             return list(results)
 
+    def get_daily_latest_per_code(
+        self,
+        day_start: datetime,
+        day_end: datetime,
+    ) -> List[Tuple[AnalysisHistory, int]]:
+        """
+        获取窗口 ``[day_start, day_end)`` 内每股（raw code 维度）最新一条分析
+        及其当日份数（issue #1661）。边界由服务层按北京时间分析生成日期折算。
+        排除 code=MARKET 与 report_type=market_review；排序 (created_at desc, id desc)。
+        """
+        with self.get_session() as session:
+            subq = (
+                select(
+                    AnalysisHistory.code,
+                    func.max(AnalysisHistory.id).label("max_id"),
+                    func.count().label("day_count"),
+                )
+                .where(
+                    and_(
+                        AnalysisHistory.created_at >= day_start,
+                        AnalysisHistory.created_at < day_end,
+                        AnalysisHistory.code != "MARKET",
+                        or_(
+                            AnalysisHistory.report_type.is_(None),
+                            AnalysisHistory.report_type != "market_review",
+                        ),
+                    )
+                )
+                .group_by(AnalysisHistory.code)
+                .subquery()
+            )
+
+            rows = session.execute(
+                select(AnalysisHistory, subq.c.day_count)
+                .join(subq, AnalysisHistory.id == subq.c.max_id)
+                .order_by(
+                    desc(AnalysisHistory.created_at),
+                    desc(AnalysisHistory.id),
+                )
+            ).all()
+            return [(row[0], int(row[1])) for row in rows]
+
+    def get_latest_analysis_ids_by_code(self) -> Dict[str, int]:
+        """
+        获取每股（raw code 维度）全局最新一条分析的主键 ID（issue #1661）。
+
+        单次聚合（无日期过滤），供服务层判断 is_latest 时效性，避免 N+1；
+        排除谓词与 get_daily_latest_per_code 保持一致。Returns: raw code -> max id。
+        """
+        with self.get_session() as session:
+            rows = session.execute(
+                select(
+                    AnalysisHistory.code,
+                    func.max(AnalysisHistory.id).label("max_id"),
+                )
+                .where(
+                    and_(
+                        AnalysisHistory.code != "MARKET",
+                        or_(
+                            AnalysisHistory.report_type.is_(None),
+                            AnalysisHistory.report_type != "market_review",
+                        ),
+                    )
+                )
+                .group_by(AnalysisHistory.code)
+            ).all()
+            return {str(row.code): int(row.max_id) for row in rows if row.code}
+
     def get_latest_analysis_by_query_id(
         self,
         query_id: str,

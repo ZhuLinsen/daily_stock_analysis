@@ -13,8 +13,10 @@ from __future__ import annotations
 import json
 import logging
 import re
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from typing import Optional, Dict, Any, List, Tuple, TYPE_CHECKING
+
+from zoneinfo import ZoneInfo
 
 from src.config import get_config, resolve_news_window_days
 from src.formatters import markdown_to_plain_text
@@ -24,6 +26,7 @@ from src.report_language import (
     get_bias_status_emoji,
     get_localized_stock_name,
     get_report_labels,
+    get_sentiment_label,
     get_signal_level,
     get_chip_unavailable_reason,
     is_chip_structure_unavailable,
@@ -409,6 +412,131 @@ class HistoryService:
             self._display_stock_code(stock_code),
             context_snapshot,
         )
+
+    _SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
+
+    @staticmethod
+    def shanghai_day_bounds_local(query_date: date) -> Tuple[datetime, datetime]:
+        """北京日历日 ``[00:00, +1d)`` 折算为服务器本地 naive 半开区间。
+
+        issue #1661 spec 3：归组/筛选口径 = 北京时间（Asia/Shanghai）的分析
+        生成日期。存储层 created_at 为服务器本地 naive 时间，边界需显式换算。
+        """
+        start_bj = datetime.combine(query_date, time.min, tzinfo=HistoryService._SHANGHAI_TZ)
+        end_bj = start_bj + timedelta(days=1)
+        start_local = start_bj.astimezone().replace(tzinfo=None)
+        end_local = end_bj.astimezone().replace(tzinfo=None)
+        return start_local, end_local
+
+    @staticmethod
+    def _daily_group_key(raw_code: Any, display_code: str) -> str:
+        """按日回看归组 key：parser 规范化 id 收敛代码变体（``002460.SZ`` → ``sz002460``）。
+
+        parser 失败时回退既有展示归一化（issue #1661 OR-COR-f3050c49）。
+        """
+        from data_provider.base import normalize_stock_code
+        from src.services.stock_list_parser import parse_analysis_target
+
+        code = str(raw_code or "").strip()
+        if code:
+            try:
+                target = parse_analysis_target(code)
+            except Exception:
+                target = None
+            if target is not None and target.canonical_id:
+                return target.canonical_id
+        return normalize_stock_code(display_code or "")
+
+    def get_daily_history(
+        self,
+        query_date: date,
+        language: str = "zh",
+        page: int = 1,
+        limit: int = 20,
+    ) -> Dict[str, Any]:
+        """按北京时间分析生成日期获取每股当日最新分析（issue #1661）。
+
+        存储层按上海时区边界取当日 per-raw-code 最新全集 + 当日份数 → 按
+        ``_daily_group_key`` 合并代码变体（取 id 最大，份数求和）→ 排序分页 →
+        is_latest 按规范化 code 与全局 per-code MAX(id) 比对（被任一写法的
+        更新分析取代即过期）。轻量行不含价位字段（spec 1：价位放报告详情）。
+        """
+        page = max(int(page or 1), 1)
+        limit = max(int(limit or 20), 1)
+
+        day_start, day_end = self.shanghai_day_bounds_local(query_date)
+        records = self.db.get_daily_latest_per_code(day_start=day_start, day_end=day_end)
+
+        # 规范化合并：同一 group key 只保留 id 最大的一条，当日份数求和
+        merged: Dict[str, Any] = {}
+        for record, day_count in records:
+            raw_code = str(getattr(record, "code", "") or "")
+            display_code = self._display_stock_code(raw_code)
+            group_key = self._daily_group_key(raw_code, display_code)
+            current = merged.get(group_key)
+            if current is None:
+                merged[group_key] = {"record": record, "day_count": day_count}
+            else:
+                current["day_count"] += day_count
+                if int(getattr(record, "id", 0) or 0) > int(getattr(current["record"], "id", 0) or 0):
+                    current["record"] = record
+
+        ordered = sorted(
+            merged.values(),
+            key=lambda entry: (
+                getattr(entry["record"], "created_at", None) or datetime.min,
+                int(getattr(entry["record"], "id", 0) or 0),
+            ),
+            reverse=True,
+        )
+
+        total = len(ordered)
+        start = (page - 1) * limit
+        page_entries = ordered[start:start + limit]
+
+        # is_latest：单次全局聚合（无日期过滤），按规范化 code 归组取全局最大 id
+        global_latest_by_group: Dict[str, int] = {}
+        if page_entries:
+            for raw_code, max_id in (self.db.get_latest_analysis_ids_by_code() or {}).items():
+                display = self._display_stock_code(str(raw_code or ""))
+                group_key = self._daily_group_key(str(raw_code or ""), display)
+                if group_key not in global_latest_by_group or int(max_id) > global_latest_by_group[group_key]:
+                    global_latest_by_group[group_key] = int(max_id)
+
+        items: List[Dict[str, Any]] = []
+        for entry in page_entries:
+            record = entry["record"]
+            raw_code = str(getattr(record, "code", "") or "")
+            display_code = self._display_stock_code(raw_code)
+            group_key = self._daily_group_key(raw_code, display_code)
+            score = getattr(record, "sentiment_score", None)
+            record_id = int(getattr(record, "id", 0) or 0)
+            raw_result = parse_json_field(getattr(record, "raw_result", None))
+            action_fields = self._decision_action_fields_for_record(record, raw_result)
+            items.append(
+                {
+                    "id": record_id,
+                    "code": display_code,
+                    "name": str(getattr(record, "name", None) or ""),
+                    "report_type": str(getattr(record, "report_type", None) or ""),
+                    "sentiment_score": score,
+                    # score 缺失（NULL）保持 label 缺失，不落回 0 分的"极度悲观"。
+                    "sentiment_label": (
+                        get_sentiment_label(int(score), language)
+                        if score is not None
+                        else None
+                    ),
+                    "operation_advice": getattr(record, "operation_advice", None),
+                    "action": action_fields["action"],
+                    "action_label": action_fields["action_label"],
+                    "trend_prediction": getattr(record, "trend_prediction", None),
+                    "is_latest": global_latest_by_group.get(group_key) == record_id,
+                    "analysis_count": int(entry["day_count"]),
+                    "created_at": self._serialize_created_at(getattr(record, "created_at", None)) or "",
+                }
+            )
+
+        return {"total": total, "page": page, "limit": limit, "items": items}
 
     @staticmethod
     def _extract_market_review_region(context_snapshot: Any) -> Optional[str]:
