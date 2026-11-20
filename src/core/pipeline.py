@@ -4102,11 +4102,11 @@ class StockAnalysisPipeline:
                         def _send_feishu_report() -> bool:
                             if getattr(self.notifier, "_feishu_send_as_file", False):
                                 date_str = datetime.now().strftime('%Y%m%d')
-                                filepath = self.notifier.save_report_to_file(
+                                return self.notifier.save_and_send_feishu_file(
                                     strip_hidden_markdown_metadata(report).strip(),
                                     filename=f"dashboard_{date_str}.md",
+                                    temporary=True,
                                 )
-                                return self.notifier.send_feishu_file(filepath)
                             return self.notifier.send_to_feishu(report)
 
                         channel_success, channel_error = _send_channel_safely(

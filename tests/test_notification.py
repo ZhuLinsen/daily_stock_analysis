@@ -467,12 +467,41 @@ class TestNotificationServiceSendToMethods(unittest.TestCase):
         )
         mock_get_config.return_value = cfg
         service = NotificationService()
-        with mock.patch.object(service, "send_feishu_file", return_value=True) as mock_file, \
-             mock.patch.object(service, "save_report_to_file", return_value="/tmp/report.md") as mock_save:
+        with mock.patch.object(service, "save_and_send_feishu_file", return_value=True) as mock_attachment:
             result = service.send_with_results("report content", route_type="report")
         self.assertTrue(result.success)
-        mock_file.assert_called_once()
-        mock_save.assert_called_once_with("report content", filename=mock.ANY)
+        mock_attachment.assert_called_once_with(
+            "report content", filename=mock.ANY, temporary=True
+        )
+
+    @mock.patch("src.notification.get_config")
+    def test_temporary_feishu_attachment_does_not_write_reports(self, mock_get_config):
+        cfg = _make_config(
+            feishu_webhook_url="https://feishu.example/hook",
+            feishu_send_as_file=True,
+        )
+        mock_get_config.return_value = cfg
+        service = NotificationService()
+        uploaded_path = None
+
+        def upload(path):
+            nonlocal uploaded_path
+            uploaded_path = path
+            self.assertTrue(os.path.isfile(path))
+            self.assertNotIn(
+                os.sep + "reports" + os.sep,
+                os.path.abspath(path),
+            )
+            return True
+
+        with mock.patch.object(service, "send_feishu_file", side_effect=upload):
+            result = service.save_and_send_feishu_file(
+                "attachment", filename="report_20261121.md", temporary=True
+            )
+
+        self.assertTrue(result)
+        self.assertIsNotNone(uploaded_path)
+        self.assertFalse(os.path.exists(uploaded_path))
 
     @mock.patch("src.notification.get_config")
     def test_feishu_send_as_file_route_report_strips_hidden_metadata_before_save(self, mock_get_config):
@@ -483,15 +512,25 @@ class TestNotificationServiceSendToMethods(unittest.TestCase):
         mock_get_config.return_value = cfg
         service = NotificationService()
         content = "[dsa-market-region]: # (cn)\n\n# 市场复盘\n\n正文"
+        uploaded = {}
 
-        with mock.patch.object(service, "send_feishu_file", return_value=True), \
-             mock.patch.object(service, "save_report_to_file", return_value="/tmp/report.md") as mock_save:
+        def upload(path):
+            uploaded["path"] = path
+            with open(path, encoding="utf-8") as report_file:
+                uploaded["content"] = report_file.read()
+            return True
+
+        with mock.patch.object(service, "send_feishu_file", side_effect=upload):
             result = service.send_with_results(content, route_type="report")
 
         self.assertTrue(result.success)
-        saved_content = mock_save.call_args.args[0]
-        self.assertNotIn("[dsa-market-region]", saved_content)
-        self.assertIn("# 市场复盘", saved_content)
+        self.assertEqual(uploaded["content"], "# 市场复盘\n\n正文")
+        self.assertTrue(
+            uploaded["path"].endswith(
+                f"market_review_{datetime.now().strftime('%Y%m%d')}.md"
+            )
+        )
+        self.assertNotIn(os.sep + "reports" + os.sep, os.path.abspath(uploaded["path"]))
 
     @mock.patch("src.notification.get_config")
     def test_feishu_market_review_file_does_not_overwrite_stock_report(self, mock_get_config):
@@ -503,13 +542,13 @@ class TestNotificationServiceSendToMethods(unittest.TestCase):
         service = NotificationService()
         content = "[dsa-market-region]: # (cn)\n\n# 市场复盘\n\n正文"
 
-        with mock.patch.object(service, "send_feishu_file", return_value=True), \
-             mock.patch.object(service, "save_report_to_file", return_value="/tmp/market_review.md") as mock_save:
+        with mock.patch.object(service, "save_and_send_feishu_file", return_value=True) as mock_attachment:
             result = service.send_with_results(content, route_type="report")
 
         self.assertTrue(result.success)
         expected_filename = f"market_review_{datetime.now().strftime('%Y%m%d')}.md"
-        self.assertEqual(mock_save.call_args.kwargs["filename"], expected_filename)
+        self.assertEqual(mock_attachment.call_args.kwargs["filename"], expected_filename)
+        self.assertTrue(mock_attachment.call_args.kwargs["temporary"])
 
     @mock.patch("src.notification.get_config")
     def test_feishu_reused_market_review_file_does_not_overwrite_stock_report(self, mock_get_config):
@@ -521,13 +560,13 @@ class TestNotificationServiceSendToMethods(unittest.TestCase):
         service = NotificationService()
         content = "# 📈 大盘复盘\n\n复用的本轮复盘正文"
 
-        with mock.patch.object(service, "send_feishu_file", return_value=True), \
-             mock.patch.object(service, "save_report_to_file", return_value="/tmp/market_review.md") as mock_save:
+        with mock.patch.object(service, "save_and_send_feishu_file", return_value=True) as mock_attachment:
             result = service.send_with_results(content, route_type="report")
 
         self.assertTrue(result.success)
         expected_filename = f"market_review_{datetime.now().strftime('%Y%m%d')}.md"
-        self.assertEqual(mock_save.call_args.kwargs["filename"], expected_filename)
+        self.assertEqual(mock_attachment.call_args.kwargs["filename"], expected_filename)
+        self.assertTrue(mock_attachment.call_args.kwargs["temporary"])
 
     @mock.patch("src.notification.get_config")
     def test_feishu_combined_report_does_not_overwrite_stock_report(self, mock_get_config):
@@ -539,13 +578,69 @@ class TestNotificationServiceSendToMethods(unittest.TestCase):
         service = NotificationService()
         content = "# 📈 大盘复盘\n\n复盘正文\n\n---\n\n# 🚀 个股决策仪表盘\n\n汇总正文"
 
-        with mock.patch.object(service, "send_feishu_file", return_value=True), \
-             mock.patch.object(service, "save_report_to_file", return_value="/tmp/dashboard.md") as mock_save:
+        with mock.patch.object(service, "save_and_send_feishu_file", return_value=True) as mock_attachment:
             result = service.send_with_results(content, route_type="report")
 
         self.assertTrue(result.success)
         expected_filename = f"dashboard_{datetime.now().strftime('%Y%m%d')}.md"
-        self.assertEqual(mock_save.call_args.kwargs["filename"], expected_filename)
+        self.assertEqual(mock_attachment.call_args.kwargs["filename"], expected_filename)
+        self.assertTrue(mock_attachment.call_args.kwargs["temporary"])
+
+    @mock.patch("src.notification.get_config")
+    def test_feishu_multi_market_report_uses_market_review_file(self, mock_get_config):
+        cfg = _make_config(
+            feishu_webhook_url="https://feishu.example/hook",
+            feishu_send_as_file=True,
+        )
+        mock_get_config.return_value = cfg
+        service = NotificationService()
+        content = (
+            "🎯 Market Review\n\n"
+            "# A-share Market Recap\n\n中国市场正文\n\n---\n\n"
+            "# US Market Recap\n\n美国市场正文"
+        )
+        uploaded = {}
+
+        def upload(path):
+            uploaded["path"] = path
+            return True
+
+        with mock.patch.object(service, "send_feishu_file", side_effect=upload), \
+             mock.patch.object(service, "save_report_to_file") as mock_save:
+            result = service.send_with_results(content, route_type="report")
+
+        self.assertTrue(result.success)
+        self.assertTrue(
+            uploaded["path"].endswith(
+                f"market_review_{datetime.now().strftime('%Y%m%d')}.md"
+            )
+        )
+        self.assertNotIn(os.sep + "reports" + os.sep, os.path.abspath(uploaded["path"]))
+        mock_save.assert_not_called()
+
+    @mock.patch("src.notification.get_config")
+    def test_feishu_cloud_document_link_is_not_saved_as_report(self, mock_get_config):
+        cfg = _make_config(
+            feishu_webhook_url="https://feishu.example/hook",
+            feishu_send_as_file=True,
+        )
+        mock_get_config.return_value = cfg
+        service = NotificationService()
+
+        with mock.patch.object(service, "send_to_feishu", return_value=True) as mock_text, \
+             mock.patch.object(service, "send_feishu_file") as mock_file, \
+             mock.patch.object(service, "save_and_send_feishu_file") as mock_attachment:
+            result = service.send_with_results(
+                "[2026-11-21 09:00] 复盘文档创建成功: https://feishu.example/docx/abc",
+                route_type="report",
+            )
+
+        self.assertTrue(result.success)
+        mock_text.assert_called_once_with(
+            "[2026-11-21 09:00] 复盘文档创建成功: https://feishu.example/docx/abc"
+        )
+        mock_file.assert_not_called()
+        mock_attachment.assert_not_called()
 
     @mock.patch("src.notification.get_config")
     def test_feishu_send_as_file_route_alert_calls_send_to_feishu(self, mock_get_config):

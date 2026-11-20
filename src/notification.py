@@ -17,6 +17,7 @@ A股自选股智能分析系统 - 通知层
 from __future__ import annotations
 
 import logging
+import tempfile
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -91,15 +92,38 @@ from src.notification_sender import (
 logger = logging.getLogger(__name__)
 
 
-def _report_file_prefix(content: str) -> str:
+def _report_file_prefix(content: str) -> Optional[str]:
     """Choose a non-colliding local filename for Feishu report attachments."""
+    # Cloud-document notifications are links, not report attachments.  Keeping
+    # them out of reports/ prevents a link from replacing the stock aggregate.
+    if "复盘文档创建成功:" in content or "复盘文档创建成功：" in content:
+        return None
     if "[dsa-market-region]" in content:
         return "market_review"
     if "# 🚀 个股决策仪表盘" in content and "# 📈 大盘复盘" in content:
         return "dashboard"
     if any(
         heading in content
-        for heading in ("# 📈 大盘复盘", "# 🎯 大盘复盘", "# 🎯 Market Review")
+        for heading in (
+            "# 📈 大盘复盘",
+            "# 🎯 大盘复盘",
+            "# 🎯 Market Review",
+            "🎯 大盘复盘",
+            "🎯 Market Review",
+            "🎯 시황 리뷰",
+            "# A股大盘复盘",
+            "# 美股大盘复盘",
+            "# 港股大盘复盘",
+            "# 日股大盘复盘",
+            "# 韩股大盘复盘",
+            "# 台股大盘复盘",
+            "# A-share Market Recap",
+            "# US Market Recap",
+            "# HK Market Recap",
+            "# Japan Market Recap",
+            "# Korea Market Recap",
+            "# Taiwan Market Recap",
+        )
     ):
         return "market_review"
     return "report"
@@ -2613,10 +2637,13 @@ class NotificationService(
             if getattr(self, "_feishu_send_as_file", False) and route_type == "report":
                 date_str = datetime.now().strftime('%Y%m%d')
                 filename_prefix = _report_file_prefix(content)
-                filepath = self.save_report_to_file(
-                    sanitized_content, filename=f"{filename_prefix}_{date_str}.md"
+                if filename_prefix is None:
+                    return self.send_to_feishu(sanitized_content)
+                return self.save_and_send_feishu_file(
+                    sanitized_content,
+                    filename=f"{filename_prefix}_{date_str}.md",
+                    temporary=True,
                 )
-                return self.send_feishu_file(filepath)
             return self.send_to_feishu(sanitized_content)
         if channel == NotificationChannel.DINGTALK:
             return self.send_to_dingtalk(sanitized_content)
@@ -2945,26 +2972,41 @@ class NotificationService(
         self,
         content: str,
         filename: Optional[str] = None,
+        *,
+        temporary: bool = False,
     ) -> bool:
         """
         Save report content to a local markdown file and upload it to Feishu.
 
         This is a convenience wrapper around :meth:`save_report_to_file` +
-        :meth:`send_feishu_file`.
+        :meth:`send_feishu_file`. Temporary attachments are written outside
+        ``reports/`` so a notification can never replace an artifact report.
 
         Args:
             content: Report content (Markdown).
             filename: Optional file name; auto-generated from date when omitted.
+            temporary: Write the upload-only attachment to a temporary directory
+                and remove it after the upload.
 
         Returns:
             Whether the Feishu file upload succeeded.
         """
-        filepath = self.save_report_to_file(
-            strip_hidden_markdown_metadata(content).strip(),
-            filename=filename,
-        )
-        logger.info("将上传文件到飞书: %s", filepath)
-        return self.send_feishu_file(filepath)
+        sanitized_content = strip_hidden_markdown_metadata(content).strip()
+        if not temporary:
+            filepath = self.save_report_to_file(sanitized_content, filename=filename)
+            logger.info("将上传文件到飞书: %s", filepath)
+            return self.send_feishu_file(filepath)
+
+        from pathlib import Path
+
+        date_str = datetime.now().strftime('%Y%m%d')
+        attachment_name = filename or f"report_{date_str}.md"
+        attachment_name = Path(attachment_name).name
+        with tempfile.TemporaryDirectory(prefix="dsa_feishu_attachment_") as temp_dir:
+            filepath = Path(temp_dir) / attachment_name
+            filepath.write_text(sanitized_content, encoding="utf-8")
+            logger.info("将上传临时文件到飞书: %s", filepath)
+            return self.send_feishu_file(str(filepath))
 
 
 class NotificationBuilder:

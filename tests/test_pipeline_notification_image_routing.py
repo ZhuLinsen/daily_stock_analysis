@@ -531,7 +531,7 @@ class _FakeFeishuFileNotifier:
         self.generate_dashboard_report = MagicMock(
             return_value="[dsa-market-region]: # (cn)\n\n# 市场复盘\n\n正文"
         )
-        self.save_report_to_file = MagicMock(return_value="/tmp/dashboard_20260802.md")
+        self.save_and_send_feishu_file = MagicMock(return_value=True)
         self.is_available = MagicMock(return_value=True)
         self.get_available_channels = MagicMock(return_value=[NotificationChannel.FEISHU])
         self.get_channels_for_route = MagicMock(return_value=[NotificationChannel.FEISHU])
@@ -541,7 +541,6 @@ class _FakeFeishuFileNotifier:
         )
         self.record_noise_control = MagicMock()
         self.release_noise_control = MagicMock()
-        self.send_feishu_file = MagicMock(return_value=True)
         self.send_to_feishu = MagicMock(return_value=True)
 
 
@@ -554,11 +553,11 @@ class TestPipelineFeishuFileRouting(unittest.TestCase):
 
         pipeline._send_notifications(results, ReportType.SIMPLE)
 
-        pipeline.notifier.save_report_to_file.assert_called_once_with(
+        pipeline.notifier.save_and_send_feishu_file.assert_called_once_with(
             "# 市场复盘\n\n正文",
             filename=mock.ANY,
+            temporary=True,
         )
-        pipeline.notifier.send_feishu_file.assert_called_once_with("/tmp/dashboard_20260802.md")
         pipeline.notifier.send_to_feishu.assert_not_called()
 
 
