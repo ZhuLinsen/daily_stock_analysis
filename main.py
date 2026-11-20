@@ -1723,6 +1723,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     doctor_mode = bool(getattr(args, "doctor", False))
     doctor_json_mode = bool(doctor_mode and getattr(args, "json", False))
     if doctor_mode:
+        # Ensure any cold-start LiteLLM import stays strictly offline.
+        os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
+    if doctor_mode:
         ignored_flags = [
             flag for attr, flag in (
                 ("serve", "--serve"),

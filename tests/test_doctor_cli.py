@@ -6,6 +6,8 @@ from __future__ import annotations
 import io
 import json
 import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -469,6 +471,51 @@ class DoctorCliTestCase(unittest.TestCase):
         payload = resp.json()
         self.assertTrue(payload["checks"]["llm"]["ready"])
         self.assertEqual(payload["checks"]["watchlist"]["count"], 1)
+
+    def test_doctor_subprocess_with_llm_channels_makes_zero_network_requests(self) -> None:
+        repo_root = str(Path(__file__).resolve().parents[1])
+        with tempfile.TemporaryDirectory() as tmpdir:
+            env_file = Path(tmpdir) / ".env"
+            env_file.write_text("", encoding="utf-8")
+            probe_code = """
+import json, os, socket
+def _blocked_connect(*args, **kwargs):
+    raise AssertionError(f"unexpected outbound network connect: {args!r}")
+socket.socket.connect = _blocked_connect
+try:
+    import httpx
+    httpx.get = lambda *a, **kw: (_ for _ in ()).throw(AssertionError("unexpected httpx.get"))
+except Exception:
+    pass
+import main
+raise SystemExit(main.main(["--doctor", "--json"]))
+"""
+            env = {k: v for k, v in os.environ.items() if k != "LITELLM_LOCAL_MODEL_COST_MAP"}
+            env.update({
+                "PYTHONPATH": repo_root,
+                "ENV_FILE": str(env_file),
+                "STOCK_LIST": "600519",
+                "LLM_CHANNELS": "custom",
+                "LLM_CUSTOM_PROTOCOL": "openai",
+                "LLM_CUSTOM_BASE_URL": "https://api.example.com/v1",
+                "LLM_CUSTOM_API_KEY": "sk-cold-start-offline-secret-1234",
+                "LLM_CUSTOM_MODELS": "gpt-4o-mini",
+                "DATABASE_PATH": f"{tmpdir}/doctor.db",
+                "LOG_DIR": tmpdir,
+            })
+            proc = subprocess.run(
+                [sys.executable, "-c", probe_code],
+                cwd=repo_root,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            self.assertEqual(proc.returncode, 0, msg=f"stderr={proc.stderr}\nstdout={proc.stdout}")
+            parsed = json.loads(proc.stdout)
+            self.assertIn(parsed["status"], ("ok", "warn"))
+            self.assertTrue(parsed["checks"]["llm"]["ready"])
+            self.assertNotIn("sk-cold-start-offline-secret-1234", proc.stdout)
 
 
 def _stub_notify(serp_secret: str, router_secret: str):

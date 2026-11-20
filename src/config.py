@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import re
+import sys
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Mapping, Optional, Tuple
@@ -461,6 +462,12 @@ def get_litellm_model_providers() -> frozenset[str]:
     installation gets the complete provider set from its pinned LiteLLM.
     """
     providers = set(_FALLBACK_LITELLM_MODEL_PROVIDERS)
+    had_litellm = "litellm" in sys.modules
+    prev_cost_map_env = os.environ.get("LITELLM_LOCAL_MODEL_COST_MAP")
+    if not had_litellm and prev_cost_map_env is None:
+        # Prevent litellm.__init__ from fetching GitHub's model_prices JSON
+        # during offline config/doctor initialization.
+        os.environ["LITELLM_LOCAL_MODEL_COST_MAP"] = "True"
     try:
         from litellm.types.utils import LlmProviders
 
@@ -471,6 +478,9 @@ def get_litellm_model_providers() -> frozenset[str]:
         )
     except (ImportError, AttributeError, TypeError):
         logger.debug("LiteLLM provider metadata unavailable; using the compatibility fallback")
+    finally:
+        if not had_litellm and prev_cost_map_env is None:
+            os.environ.pop("LITELLM_LOCAL_MODEL_COST_MAP", None)
     return frozenset(providers)
 
 
