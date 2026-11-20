@@ -572,6 +572,11 @@ jobs:
             python main.py $FORCE_RUN_ARG
           fi
       
+      - name: 输出报告到 Job Summary
+        if: ${{ always() && vars.STEP_SUMMARY_REPORT != 'false' }}
+        continue-on-error: true
+        run: python scripts/write_github_step_summary.py --reports-dir reports
+
       - name: 上传分析报告
         uses: actions/upload-artifact@v6
         if: always()
