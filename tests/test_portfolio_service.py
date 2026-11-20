@@ -146,6 +146,52 @@ class PortfolioServiceTestCase(unittest.TestCase):
         self.assertEqual(self.service.list_cash_ledger_events(account_id=aid)["total"], 1)
         self.assertEqual(self.service.list_corporate_action_events(account_id=aid)["total"], 2)
 
+    def test_cash_ledger_source_uid_is_deduped_per_account(self) -> None:
+        aid = self.service.create_account(
+            name="ibkr", broker="IBKR", market="us", base_currency="EUR"
+        )["id"]
+        first = self.service.record_cash_ledger(
+            account_id=aid,
+            event_date=date(2026, 1, 5),
+            direction="in",
+            amount=2000,
+            currency="EUR",
+            source_uid="5186967799",
+        )
+        self.assertIsInstance(first["id"], int)
+
+        events = self.service.list_cash_ledger_events(account_id=aid)
+        self.assertEqual(events["total"], 1)
+        self.assertEqual(events["items"][0]["currency"], "EUR")
+
+        with self.assertRaises(PortfolioConflictError):
+            self.service.record_cash_ledger(
+                account_id=aid,
+                event_date=date(2026, 1, 5),
+                direction="in",
+                amount=2000,
+                currency="EUR",
+                source_uid="5186967799",
+            )
+
+        # A different source_uid (or none) is not a duplicate.
+        self.service.record_cash_ledger(
+            account_id=aid,
+            event_date=date(2026, 1, 6),
+            direction="out",
+            amount=100,
+            currency="EUR",
+            source_uid="5186967800",
+        )
+        self.service.record_cash_ledger(
+            account_id=aid,
+            event_date=date(2026, 1, 7),
+            direction="in",
+            amount=50,
+            currency="EUR",
+        )
+        self.assertEqual(self.service.list_cash_ledger_events(account_id=aid)["total"], 3)
+
     def test_current_snapshot_uses_realtime_price_when_close_missing(self) -> None:
         today = date.today()
         account = self.service.create_account(name="Main", broker="Demo", market="cn", base_currency="CNY")

@@ -6,6 +6,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
 import sqlite3
 import time
 from contextlib import closing
@@ -26,6 +27,9 @@ def claim_scheduled_analysis(config: Any, args: Any, scheduled_for: datetime) ->
     reports. Callers must execute exactly this snapshot without refreshing it.
     """
     portfolio = getattr(args, "portfolio", None)
+    portfolio_query_id = None
+    if portfolio == "ibkr":
+        portfolio_query_id = (os.getenv("IBKR_FLEX_QUERY_ID") or "").strip() or None
     workload = {
         "stocks": [] if portfolio else sorted({
             str(code).strip().upper() for code in getattr(config, "stock_list", [])
@@ -40,6 +44,8 @@ def claim_scheduled_analysis(config: Any, args: Any, scheduled_for: datetime) ->
         "report_language": getattr(config, "report_language", "zh"),
         "report_type": getattr(config, "report_type", "simple"),
     }
+    if portfolio_query_id is not None:
+        workload["portfolio_query_id"] = portfolio_query_id
     workload_key = hashlib.sha256(
         json.dumps(workload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
