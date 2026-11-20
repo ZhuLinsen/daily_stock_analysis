@@ -726,3 +726,30 @@ def get_system_config_schema(
                 "message": "Failed to load system configuration schema",
             },
         )
+
+
+@router.get(
+    "/doctor",
+    responses={
+        200: {"description": "Offline secret-redacted diagnostic report"},
+        500: {"description": "Internal server error", "model": ErrorResponse},
+    },
+    summary="Run offline system diagnostics (doctor)",
+    description="Evaluate config, LLM readiness, notification channels, storage writability, and watchlist safely with secrets redacted.",
+)
+def get_system_doctor_report() -> dict:
+    """Run offline read-only system doctor checks."""
+    from src.config import get_config
+    from src.services.doctor_service import run_doctor_diagnostics
+
+    try:
+        return run_doctor_diagnostics(get_config())
+    except Exception as exc:
+        logger.error("Failed to run system doctor diagnostics: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "internal_error",
+                "message": "Failed to run system doctor diagnostics",
+            },
+        )

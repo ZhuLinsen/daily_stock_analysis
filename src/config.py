@@ -138,13 +138,23 @@ MODELFLARE_LLM_BASE_URL_DEFAULT = "https://modelflare.dev/v1"
 MODELFLARE_LLM_MODEL_DEFAULT = "openai/gpt-6.1-sol"
 
 
+def _safe_urlparse(value: Optional[str]):
+    """Parse a URL without raising ValueError on malformed bracketed hosts or invalid ports."""
+    try:
+        parsed = urlparse((value or "").strip())
+        _ = parsed.port
+        return parsed
+    except ValueError:
+        return None
+
+
 def _has_ntfy_topic_endpoint(value: Optional[str]) -> bool:
     """Return whether an ntfy URL points at a concrete topic endpoint."""
     raw_url = (value or "").strip()
     if not raw_url:
         return False
-    parsed = urlparse(raw_url)
-    if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+    parsed = _safe_urlparse(raw_url)
+    if parsed is None or parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
         return False
     return any(unquote(segment).strip() for segment in parsed.path.split("/") if segment)
 
@@ -154,8 +164,8 @@ def _has_gotify_base_url(value: Optional[str]) -> bool:
     raw_url = (value or "").strip().rstrip("/")
     if not raw_url:
         return False
-    parsed = urlparse(raw_url)
-    if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+    parsed = _safe_urlparse(raw_url)
+    if parsed is None or parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
         return False
     if parsed.query or parsed.fragment:
         return False
@@ -593,8 +603,8 @@ def resolve_llm_channel_protocol(
             return name_protocol
 
     if base_url:
-        parsed = urlparse(base_url)
-        if parsed.hostname in {"127.0.0.1", "localhost", "0.0.0.0"}:
+        parsed = _safe_urlparse(base_url)
+        if parsed is not None and parsed.hostname in {"127.0.0.1", "localhost", "0.0.0.0"}:
             # Default to openai for local servers (vLLM, LM Studio, LocalAI, etc.).
             # Ollama users should set PROTOCOL=ollama explicitly or name the channel "ollama".
             return "openai"
@@ -608,8 +618,8 @@ def channel_allows_empty_api_key(protocol: Optional[str], base_url: Optional[str
     resolved_protocol = resolve_llm_channel_protocol(protocol, base_url=base_url)
     if resolved_protocol == "ollama":
         return True
-    parsed = urlparse(base_url or "")
-    return parsed.hostname in {"127.0.0.1", "localhost", "0.0.0.0"}
+    parsed = _safe_urlparse(base_url)
+    return parsed is not None and parsed.hostname in {"127.0.0.1", "localhost", "0.0.0.0"}
 
 
 def is_vendor_model_gateway_base_url(base_url: Optional[str]) -> bool:
@@ -1826,8 +1836,8 @@ class Config:
         searxng_base_urls = []
         invalid_searxng_urls = []
         for u in _raw_urls:
-            p = urlparse(u)
-            if p.scheme in ('http', 'https') and p.netloc:
+            p = _safe_urlparse(u)
+            if p is not None and p.scheme in ('http', 'https') and p.netloc:
                 searxng_base_urls.append(u)
             else:
                 invalid_searxng_urls.append(u)
@@ -3678,8 +3688,8 @@ class Config:
             raw_url = (value or "").strip()
             if not raw_url:
                 return
-            parsed = urlparse(raw_url)
-            if parsed.scheme.lower() in {"http", "https"} and parsed.netloc:
+            parsed = _safe_urlparse(raw_url)
+            if parsed is not None and parsed.scheme.lower() in {"http", "https"} and parsed.netloc:
                 return
             issues.append(ConfigIssue(
                 severity="warning",

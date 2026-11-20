@@ -749,6 +749,8 @@ python main.py --debug                # 调试模式（详细日志）
 python main.py --workers 5            # 指定并发数
 ```
 
+> **`--doctor` 语义说明**：`python main.py --doctor` 与 `python main.py --doctor --json` 仅运行离线只读脱敏检查（不写入日志或数据库文件）。退出码约定：`0` 表示通过或仅存在警告（例如未配置通知渠道仅作为警告不阻断）；`1` 表示存在配置、LLM、存储可写性或半配置通知渠道错误；`2` 表示参数误用（`--json` 必须配合 `--doctor` 使用）。
+
 ### 指数一次性分析（Phase 1）
 
 `--stocks` 一次性入口支持对已登记的 SH、SZ 与 CSI 指数执行完整分析。指数目标使用 `sh`/`sz` 前缀（如 `sh000016`）或 `.CSI` alias（如 `000300.CSI`、`930955.CSI`）显式指定；裸六码（如 `000016`）始终按股票处理。
