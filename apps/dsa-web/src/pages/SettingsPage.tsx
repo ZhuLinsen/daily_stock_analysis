@@ -27,7 +27,8 @@ import {
 } from '../components/settings';
 import { WEB_BUILD_INFO } from '../utils/constants';
 import { parseStockListValue } from '../utils/stockList';
-import { getCategoryDescription, getCategoryTitle } from '../utils/systemConfigI18n';
+import { getCategoryDescription, getCategoryTitle, getFieldDescriptionZh, getFieldTitleZh } from '../utils/systemConfigI18n';
+import { getSettingsHelpContent } from '../locales/settingsHelp';
 import type {
   ConfigValidationIssue,
   SchedulerStatusResponse,
@@ -162,6 +163,63 @@ const BASE_HIDDEN_KEYS = new Set([
   'SCREENING_ENABLED',
 ]);
 const AGENT_HIDDEN_KEYS = new Set(['AGENT_GENERATION_BACKEND']);
+const LLM_CHANNEL_KEY_RE = /^LLM_[A-Z0-9_]+_(PROTOCOL|API_SURFACE|BASE_URL|API_KEY|API_KEYS|MODELS|EXTRA_HEADERS|ENABLED)$/;
+const AI_MODEL_HIDDEN_KEYS = new Set([
+  'LLM_CHANNELS',
+  'LLM_TEMPERATURE',
+  'LITELLM_MODEL',
+  'AGENT_LITELLM_MODEL',
+  'LITELLM_FALLBACK_MODELS',
+  'AIHUBMIX_KEY',
+  'DEEPSEEK_API_KEY',
+  'DEEPSEEK_API_KEYS',
+  'GEMINI_API_KEY',
+  'GEMINI_API_KEYS',
+  'GEMINI_MODEL',
+  'GEMINI_MODEL_FALLBACK',
+  'GEMINI_TEMPERATURE',
+  'ANTHROPIC_API_KEY',
+  'ANTHROPIC_API_KEYS',
+  'ANTHROPIC_MODEL',
+  'ANTHROPIC_TEMPERATURE',
+  'ANTHROPIC_MAX_TOKENS',
+  'OPENAI_API_KEY',
+  'OPENAI_API_KEYS',
+  'OPENAI_BASE_URL',
+  'OPENAI_MODEL',
+  'OPENAI_VISION_MODEL',
+  'OPENAI_TEMPERATURE',
+  'VISION_MODEL',
+]);
+
+// UI rendering rule only: keep channel-managed and legacy provider keys out
+// of both generic category views and cross-category search so edits stay
+// coordinated through LLMChannelEditor.
+function isItemHiddenInSettings(
+  category: string,
+  item: SystemConfigItem,
+  aiModelHasConfiguredChannels: boolean,
+  aiModelHasLitellmConfig: boolean,
+): boolean {
+  if (category === 'base') {
+    return BASE_HIDDEN_KEYS.has(item.key);
+  }
+  if (category === 'system') {
+    return SYSTEM_HIDDEN_KEYS.has(item.key);
+  }
+  if (category === 'agent') {
+    return AGENT_HIDDEN_KEYS.has(item.key);
+  }
+  if (category === 'ai_model') {
+    if (aiModelHasConfiguredChannels && LLM_CHANNEL_KEY_RE.test(item.key)) {
+      return true;
+    }
+    if (aiModelHasConfiguredChannels && !aiModelHasLitellmConfig && AI_MODEL_HIDDEN_KEYS.has(item.key)) {
+      return true;
+    }
+  }
+  return false;
+}
 const ESSENTIAL_SETTING_KEYS = new Set([
   'STOCK_LIST',
   'REPORT_LANGUAGE',
@@ -745,6 +803,7 @@ const SettingsPage: React.FC = () => {
   const [settingsMode, setSettingsMode] = useState<'all' | 'essential'>('all');
   const envBackupImportRef = useRef<HTMLInputElement | null>(null);
   const setupStatusRequestIdRef = useRef(0);
+  const lastAppliedCategorySearchRef = useRef<string | null>(null);
   const {
     isDesktopRuntime,
     canCheckDesktopUpdate,
@@ -849,10 +908,19 @@ const SettingsPage: React.FC = () => {
 
   useEffect(() => {
     const requestedCategory = new URLSearchParams(location.search).get('category');
-    if (requestedCategory && categories.some((category) => category.category === requestedCategory)) {
+    if (!requestedCategory) {
+      lastAppliedCategorySearchRef.current = null;
+      return;
+    }
+    const navigationSignature = `${location.key}:${location.search}:${requestedCategory}`;
+    if (lastAppliedCategorySearchRef.current === navigationSignature) {
+      return;
+    }
+    if (categories.some((category) => category.category === requestedCategory)) {
+      lastAppliedCategorySearchRef.current = navigationSignature;
       setActiveCategory(requestedCategory);
     }
-  }, [categories, location.search, setActiveCategory]);
+  }, [categories, location.key, location.search, setActiveCategory]);
 
   useEffect(() => {
     if (isLoading || activeCategory !== 'system' || location.hash !== '#desktop-version-info') {
@@ -883,14 +951,16 @@ const SettingsPage: React.FC = () => {
 
   const rawActiveItems = itemsByCategory[activeCategory] || [];
   const rawActiveItemMap = new Map(rawActiveItems.map((item) => [item.key, String(item.value ?? '')]));
+  const aiModelItems = itemsByCategory.ai_model || [];
+  const aiModelItemMap = new Map(aiModelItems.map((item) => [item.key, String(item.value ?? '')]));
   const firstSetupStockCode = parseSetupStockList(getConfigItem(itemsByCategory.base || [], 'STOCK_LIST')?.value)[0] || '';
   const screeningItem = (itemsByCategory.base || []).find((item) => item.key === 'SCREENING_ENABLED');
   const screeningEnabled = String(screeningItem?.value ?? '').trim().toLowerCase() === 'true';
   const shouldShowFirstRunSetup = activeCategory === 'base';
   const shouldShowScreeningSettings = activeCategory === 'base' && Boolean(screeningItem);
-  const hasConfiguredChannels = Boolean((rawActiveItemMap.get('LLM_CHANNELS') || '').trim()
-    || (rawActiveItemMap.get('MODELFLARE_KEY') || '').trim());
-  const hasLitellmConfig = Boolean((rawActiveItemMap.get('LITELLM_CONFIG') || '').trim());
+  const aiModelHasConfiguredChannels = Boolean((aiModelItemMap.get('LLM_CHANNELS') || '').trim()
+    || (aiModelItemMap.get('MODELFLARE_KEY') || '').trim());
+  const aiModelHasLitellmConfig = Boolean((aiModelItemMap.get('LITELLM_CONFIG') || '').trim());
   const hasRuntimeSchedulerMismatch =
     schedulerRuntimeEnabled !== null
     && schedulerOverrideFromUi !== null
@@ -958,55 +1028,9 @@ const SettingsPage: React.FC = () => {
     setSchedulerOverrideFromUi(overrideEnabled);
   }, []);
 
-  // UI rendering rule only: hide channel-managed and legacy provider-specific
-  // LLM keys from generic fields when channel mode is active. This does not
-  // alter save/refresh payloads or config migration/rollback behavior.
-  const LLM_CHANNEL_KEY_RE = /^LLM_[A-Z0-9_]+_(PROTOCOL|API_SURFACE|BASE_URL|API_KEY|API_KEYS|MODELS|EXTRA_HEADERS|ENABLED)$/;
-  const AI_MODEL_HIDDEN_KEYS = new Set([
-    'LLM_CHANNELS',
-    'LLM_TEMPERATURE',
-    'LITELLM_MODEL',
-    'AGENT_LITELLM_MODEL',
-    'LITELLM_FALLBACK_MODELS',
-    'AIHUBMIX_KEY',
-    'DEEPSEEK_API_KEY',
-    'DEEPSEEK_API_KEYS',
-    'GEMINI_API_KEY',
-    'GEMINI_API_KEYS',
-    'GEMINI_MODEL',
-    'GEMINI_MODEL_FALLBACK',
-    'GEMINI_TEMPERATURE',
-    'ANTHROPIC_API_KEY',
-    'ANTHROPIC_API_KEYS',
-    'ANTHROPIC_MODEL',
-    'ANTHROPIC_TEMPERATURE',
-    'ANTHROPIC_MAX_TOKENS',
-    'OPENAI_API_KEY',
-    'OPENAI_API_KEYS',
-    'OPENAI_BASE_URL',
-    'OPENAI_MODEL',
-    'OPENAI_VISION_MODEL',
-    'OPENAI_TEMPERATURE',
-    'VISION_MODEL',
-  ]);
-  const activeItems =
-    activeCategory === 'base'
-      ? rawActiveItems.filter((item) => !BASE_HIDDEN_KEYS.has(item.key))
-    : activeCategory === 'ai_model'
-      ? rawActiveItems.filter((item) => {
-        if (hasConfiguredChannels && LLM_CHANNEL_KEY_RE.test(item.key)) {
-          return false;
-        }
-        if (hasConfiguredChannels && !hasLitellmConfig && AI_MODEL_HIDDEN_KEYS.has(item.key)) {
-          return false;
-        }
-        return true;
-      })
-      : activeCategory === 'system'
-        ? rawActiveItems.filter((item) => !SYSTEM_HIDDEN_KEYS.has(item.key))
-      : activeCategory === 'agent'
-        ? rawActiveItems.filter((item) => !AGENT_HIDDEN_KEYS.has(item.key))
-      : rawActiveItems;
+  const activeItems = rawActiveItems.filter(
+    (item) => !isItemHiddenInSettings(activeCategory, item, aiModelHasConfiguredChannels, aiModelHasLitellmConfig),
+  );
   const promptCacheAdvancedItems = activeCategory === 'ai_model'
     ? activeItems.filter(isPromptCacheAdvancedSetting)
     : [];
@@ -1031,17 +1055,32 @@ const SettingsPage: React.FC = () => {
       const catTitle = getCategoryTitle(category.category as SystemConfigCategory, category.title, uiLanguage);
       const list = itemsByCategory[category.category] || [];
       for (const item of list) {
-        if (category.category === 'base' && BASE_HIDDEN_KEYS.has(item.key)) continue;
-        if (category.category === 'system' && SYSTEM_HIDDEN_KEYS.has(item.key)) continue;
-        if (category.category === 'agent' && AGENT_HIDDEN_KEYS.has(item.key)) continue;
-        const haystack = `${item.key} ${item.schema?.title ?? ''} ${item.schema?.description ?? ''} ${catTitle}`.toLowerCase();
+        if (isItemHiddenInSettings(category.category, item, aiModelHasConfiguredChannels, aiModelHasLitellmConfig)) {
+          continue;
+        }
+        const localizationKey = item.schema?.key ?? item.key;
+        const localizedTitle = uiLanguage === 'zh'
+          ? getFieldTitleZh(localizationKey, getFieldTitleZh(item.key, item.schema?.title ?? item.key))
+          : (item.schema?.title ?? item.key);
+        const helpContent = getSettingsHelpContent(item.schema?.helpKey, item.schema?.description, uiLanguage);
+        const localizedDescription = uiLanguage === 'en'
+          ? helpContent?.summary ?? item.schema?.description ?? ''
+          : getFieldDescriptionZh(localizationKey, getFieldDescriptionZh(item.key, item.schema?.description));
+        const haystack = [
+          item.key,
+          item.schema?.title ?? '',
+          item.schema?.description ?? '',
+          localizedTitle,
+          localizedDescription,
+          catTitle,
+        ].join(' ').toLowerCase();
         if (haystack.includes(trimmedSearchQuery)) {
           matches.push({ category: category.category, categoryTitle: catTitle, item });
         }
       }
     }
     return matches;
-  }, [categories, itemsByCategory, trimmedSearchQuery, uiLanguage]);
+  }, [aiModelHasConfiguredChannels, aiModelHasLitellmConfig, categories, itemsByCategory, trimmedSearchQuery, uiLanguage]);
   const isEnvBackupAllowed = isDesktopRuntime || authEnabled;
   const envBackupActionDisabled = isLoading || isSaving || isExportingEnv || isImportingEnv || !isEnvBackupAllowed;
 
@@ -1523,9 +1562,8 @@ const SettingsPage: React.FC = () => {
                   />
                 )}
               </SettingsSectionCard>
-            ) : (
-              <>
-            {shouldShowFirstRunSetup ? (
+            ) : null}
+            {!trimmedSearchQuery && shouldShowFirstRunSetup ? (
               <FirstRunSetupCard
                 status={setupStatus}
                 isLoading={isRefreshingSetupStatus}
@@ -1543,7 +1581,7 @@ const SettingsPage: React.FC = () => {
                 t={t}
               />
             ) : null}
-            {shouldShowScreeningSettings ? (
+            {!trimmedSearchQuery && shouldShowScreeningSettings ? (
               <SettingsSectionCard
                 title={t('settings.screening')}
                 description={t('settings.screeningDescription')}
@@ -1585,9 +1623,9 @@ const SettingsPage: React.FC = () => {
                 ) : null}
               </SettingsSectionCard>
             ) : null}
-            {activeCategory === 'system' ? <AuthSettingsCard /> : null}
+            {!trimmedSearchQuery && activeCategory === 'system' ? <AuthSettingsCard /> : null}
             {activeCategory === 'system' || schedulerOverrideFromUi !== null ? (
-              <div hidden={activeCategory !== 'system'}>
+              <div hidden={Boolean(trimmedSearchQuery) || activeCategory !== 'system'}>
               <SchedulerSettingsCard
                 draftResetToken={localDraftResetToken}
                 items={itemsByCategory.system || []}
@@ -1601,7 +1639,7 @@ const SettingsPage: React.FC = () => {
               />
               </div>
             ) : null}
-            {activeCategory === 'system' ? (
+            {!trimmedSearchQuery && activeCategory === 'system' ? (
               <div id="desktop-version-info">
               <SettingsSectionCard
                 title={t('settings.versionInfo')}
@@ -1697,7 +1735,7 @@ const SettingsPage: React.FC = () => {
               </SettingsSectionCard>
               </div>
             ) : null}
-            {activeCategory === 'system' ? (
+            {!trimmedSearchQuery && activeCategory === 'system' ? (
               <SettingsSectionCard
                 title={t('settings.configBackup')}
                 description={t('settings.configBackupDescription')}
@@ -1758,7 +1796,7 @@ const SettingsPage: React.FC = () => {
                 </div>
               </SettingsSectionCard>
             ) : null}
-            {activeCategory === 'base' ? (
+            {!trimmedSearchQuery && activeCategory === 'base' ? (
               <SettingsSectionCard
                 title={t('settings.intelligentImport')}
                 description={t('settings.intelligentImportDescription')}
@@ -1778,7 +1816,7 @@ const SettingsPage: React.FC = () => {
               </SettingsSectionCard>
             ) : null}
             {activeCategory === 'ai_model' || llmChannelHasDirty || llmChannelIsSaving ? (
-              <div hidden={activeCategory !== 'ai_model'}>
+              <div hidden={Boolean(trimmedSearchQuery) || activeCategory !== 'ai_model'}>
               <SettingsSectionCard
                 title={t('settings.llmAccess')}
                 description={t('settings.llmAccessDescription')}
@@ -1807,10 +1845,10 @@ const SettingsPage: React.FC = () => {
               </SettingsSectionCard>
               </div>
             ) : null}
-            {activeCategory === 'system' && passwordChangeable ? (
+            {!trimmedSearchQuery && activeCategory === 'system' && passwordChangeable ? (
               <ChangePasswordCard />
             ) : null}
-            {activeCategory === 'notification' ? (
+            {!trimmedSearchQuery && activeCategory === 'notification' ? (
               <SettingsPanelErrorBoundary
                 title={t('settings.notificationTest')}
                 resetKey={`notification-test:${configVersion}`}
@@ -1823,7 +1861,7 @@ const SettingsPage: React.FC = () => {
                 />
               </SettingsPanelErrorBoundary>
             ) : null}
-            {activeCategory === 'agent' ? (
+            {!trimmedSearchQuery && activeCategory === 'agent' ? (
               <SettingsPanelErrorBoundary
                 title={t('settings.agentBackendStatus')}
                 resetKey={`agent-backend:${configVersion}`}
@@ -1843,17 +1881,17 @@ const SettingsPage: React.FC = () => {
                 </SettingsSectionCard>
               </SettingsPanelErrorBoundary>
             ) : null}
-            {shouldGuardActiveConfigPanel && hasActiveConfigItems ? (
-              <SettingsPanelErrorBoundary
-                title={activeConfigPanelErrorTitle}
-                resetKey={`${activeCategory}:${configVersion}`}
-                diagnosticHint={settingsPanelDiagnosticHint}
-              >
-                {activeConfigPanel}
-              </SettingsPanelErrorBoundary>
-            ) : activeConfigPanel}
-              </>
-            )}
+            {!trimmedSearchQuery ? (
+              shouldGuardActiveConfigPanel && hasActiveConfigItems ? (
+                <SettingsPanelErrorBoundary
+                  title={activeConfigPanelErrorTitle}
+                  resetKey={`${activeCategory}:${configVersion}`}
+                  diagnosticHint={settingsPanelDiagnosticHint}
+                >
+                  {activeConfigPanel}
+                </SettingsPanelErrorBoundary>
+              ) : activeConfigPanel
+            ) : null}
           </section>
         </div>
       )}

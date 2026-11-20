@@ -1,11 +1,13 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { createMemoryRouter, RouterProvider } from 'react-router-dom';
+import { useEffect, useState } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import SettingsPage from '../SettingsPage';
 
-const { setActiveCategory, useSystemConfigMock } = vi.hoisted(() => ({
+const { setActiveCategory, useSystemConfigMock, llmUnmountSpy } = vi.hoisted(() => ({
   setActiveCategory: vi.fn(),
   useSystemConfigMock: vi.fn(),
+  llmUnmountSpy: vi.fn(),
 }));
 
 vi.mock('../../hooks', async () => {
@@ -32,7 +34,27 @@ vi.mock('../../components/settings', () => ({
   AuthSettingsCard: () => <div>auth</div>,
   ChangePasswordCard: () => <div>password</div>,
   IntelligentImport: () => <div>import</div>,
-  LLMChannelEditor: () => <div>llm-editor</div>,
+  LLMChannelEditor: ({ onDirtyChange }: { onDirtyChange?: (dirty: boolean) => void }) => {
+    const [baseUrl, setBaseUrl] = useState('https://saved.example/v1');
+    useEffect(() => {
+      return () => {
+        llmUnmountSpy();
+        onDirtyChange?.(false);
+      };
+    }, [onDirtyChange]);
+    return (
+      <div>
+        <input
+          aria-label="Mock Channel Base URL"
+          value={baseUrl}
+          onChange={(event) => {
+            setBaseUrl(event.target.value);
+            onDirtyChange?.(true);
+          }}
+        />
+      </div>
+    );
+  },
   GenerationBackendStatusPanel: () => <div>gen-status</div>,
   AgentBackendStatusPanel: () => <div>agent-status</div>,
   NotificationTestPanel: () => <div>notify-test</div>,
@@ -142,5 +164,174 @@ describe('SettingsPage search and essential mode', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '前往分类' }));
     expect(setActiveCategory).toHaveBeenCalledWith('notification');
+  });
+
+  it('finds localized Chinese fields like 飞书 even when schema title and description are English, and hides channel-managed LLM fields from search', () => {
+    useSystemConfigMock.mockReturnValue({
+      categories: [
+        { category: 'base', title: 'Base', description: '基础配置', displayOrder: 1, fields: [] },
+        { category: 'ai_model', title: 'AI Model', description: '模型配置', displayOrder: 2, fields: [] },
+        { category: 'notification', title: 'Notification', description: '通知配置', displayOrder: 3, fields: [] },
+      ],
+      itemsByCategory: {
+        base: [makeItem('STOCK_LIST', 'base', 'Comma separated tickers')],
+        ai_model: [
+          { ...makeItem('LLM_CHANNELS', 'ai_model', 'Channel names'), value: 'text,vision' },
+          makeItem('VISION_MODEL', 'ai_model', 'Vision model'),
+          makeItem('LITELLM_CONFIG', 'ai_model', 'LiteLLM config'),
+        ],
+        notification: [makeItem('FEISHU_WEBHOOK_URL', 'notification', 'Feishu Webhook URL')],
+      },
+      issueByKey: {},
+      activeCategory: 'base',
+      setActiveCategory,
+      hasDirty: false,
+      dirtyCount: 0,
+      toast: null,
+      clearToast: vi.fn(),
+      isLoading: false,
+      isSaving: false,
+      loadError: null,
+      saveError: null,
+      retryAction: null,
+      load: vi.fn().mockResolvedValue(true),
+      retry: vi.fn(),
+      save: vi.fn(),
+      resetDraft: vi.fn(),
+      setDraftValue: vi.fn(),
+      getChangedItems: () => [],
+      refreshAfterExternalSave: vi.fn(),
+      configVersion: 'v1',
+      maskToken: '***',
+      llmModelProviders: [],
+    });
+
+    const router = createMemoryRouter([{ path: '/settings', element: <SettingsPage /> }], {
+      initialEntries: ['/settings'],
+    });
+    render(<RouterProvider router={router} />);
+
+    const searchInput = screen.getByRole('searchbox');
+    fireEvent.change(searchInput, { target: { value: '飞书' } });
+    expect(screen.getByTestId('field-FEISHU_WEBHOOK_URL')).toBeInTheDocument();
+
+    fireEvent.change(searchInput, { target: { value: 'LLM_CHANNELS' } });
+    expect(screen.queryByTestId('field-LLM_CHANNELS')).not.toBeInTheDocument();
+
+    fireEvent.change(searchInput, { target: { value: 'VISION_MODEL' } });
+    expect(screen.queryByTestId('field-VISION_MODEL')).not.toBeInTheDocument();
+  });
+
+  it('keeps stateful LLMChannelEditor and SchedulerSettingsCard mounted across search and applies ?category= deep link only once per navigation', () => {
+    let currentCategory = 'base';
+    let stockListValue = '600519';
+    const bridge: { trigger: () => void } = { trigger: () => {} };
+    const forceRerender = () => {
+      act(() => {
+        bridge.trigger();
+      });
+    };
+    const SettingsTestHarness = () => {
+      const [, setTick] = useState(0);
+      useEffect(() => {
+        bridge.trigger = () => setTick((tick) => tick + 1);
+        return () => {
+          bridge.trigger = () => {};
+        };
+      }, []);
+      return <SettingsPage />;
+    };
+    const setDraftValueMock = vi.fn((key: string, value: string) => {
+      if (key === 'STOCK_LIST') {
+        stockListValue = value;
+      }
+    });
+    const setActiveCategoryMock = vi.fn((next: string) => {
+      currentCategory = next;
+      forceRerender();
+    });
+
+    const buildConfigState = () => ({
+      categories: [
+        { category: 'base', title: 'Base', description: '基础配置', displayOrder: 1, fields: [] },
+        { category: 'ai_model', title: 'AI Model', description: '模型配置', displayOrder: 2, fields: [] },
+        { category: 'system', title: 'System', description: '系统配置', displayOrder: 3, fields: [] },
+        { category: 'notification', title: 'Notification', description: '通知配置', displayOrder: 4, fields: [] },
+      ],
+      itemsByCategory: {
+        base: [{ ...makeItem('STOCK_LIST', 'base', 'Stocks'), value: stockListValue }],
+        ai_model: [makeItem('LITELLM_CONFIG', 'ai_model', 'Config')],
+        system: [
+          { ...makeItem('SCHEDULE_ENABLED', 'system', 'Schedule'), value: 'false' },
+          { ...makeItem('SCHEDULE_TIME', 'system', 'Time'), value: '18:00' },
+        ],
+        notification: [makeItem('FEISHU_WEBHOOK_URL', 'notification', 'Feishu')],
+      },
+      issueByKey: {},
+      activeCategory: currentCategory,
+      setActiveCategory: setActiveCategoryMock,
+      hasDirty: false,
+      dirtyCount: 0,
+      toast: null,
+      clearToast: vi.fn(),
+      isLoading: false,
+      isSaving: false,
+      loadError: null,
+      saveError: null,
+      retryAction: null,
+      load: vi.fn().mockResolvedValue(true),
+      retry: vi.fn(),
+      save: vi.fn(),
+      resetDraft: vi.fn(),
+      setDraftValue: setDraftValueMock,
+      getChangedItems: () => [],
+      refreshAfterExternalSave: vi.fn(),
+      configVersion: 'v1',
+      maskToken: '***',
+      llmModelProviders: [],
+    });
+
+    useSystemConfigMock.mockImplementation(buildConfigState);
+
+    const router = createMemoryRouter([{ path: '/settings', element: <SettingsTestHarness /> }], {
+      initialEntries: ['/settings?category=ai_model'],
+    });
+    render(<RouterProvider router={router} />);
+
+    expect(setActiveCategoryMock).toHaveBeenCalledWith('ai_model');
+    // Child effects run before parent SettingsTestHarness registers bridge.trigger, so trigger one rerender now.
+    forceRerender();
+
+    const baseUrlInput = screen.getByLabelText('Mock Channel Base URL') as HTMLInputElement;
+    fireEvent.change(baseUrlInput, { target: { value: 'https://draft.example/v1' } });
+    expect(baseUrlInput.value).toBe('https://draft.example/v1');
+
+    const searchInput = screen.getByRole('searchbox');
+    fireEvent.change(searchInput, { target: { value: 'FEISHU' } });
+    expect(llmUnmountSpy).not.toHaveBeenCalled();
+
+    fireEvent.change(searchInput, { target: { value: '' } });
+    expect((screen.getByLabelText('Mock Channel Base URL') as HTMLInputElement).value).toBe('https://draft.example/v1');
+
+    fireEvent.change(searchInput, { target: { value: 'STOCK_LIST' } });
+    fireEvent.click(screen.getByRole('button', { name: '前往分类' }));
+    expect(currentCategory).toBe('base');
+
+    // Simulate draft update rebuilding categories array; must stay on 'base' instead of snapping back to ?category=ai_model.
+    setActiveCategoryMock.mockClear();
+    stockListValue = '600519,AAPL';
+    forceRerender();
+    expect(setActiveCategoryMock).not.toHaveBeenCalledWith('ai_model');
+    expect(currentCategory).toBe('base');
+
+    // Switch to system and toggle scheduler checkbox across search.
+    currentCategory = 'system';
+    forceRerender();
+    const schedulerCheckbox = screen.getByTestId('scheduler-enabled-checkbox') as HTMLInputElement;
+    fireEvent.click(schedulerCheckbox);
+    expect(schedulerCheckbox.checked).toBe(true);
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'FEISHU' } });
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: '' } });
+    expect((screen.getByTestId('scheduler-enabled-checkbox') as HTMLInputElement).checked).toBe(true);
   });
 });

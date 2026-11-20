@@ -54,4 +54,22 @@ describe('CommandPalette', () => {
     fireEvent.keyDown(window, { key: 'Escape' });
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
+
+  it('ignores Enter and Escape during IME composition and executes after composition ends', () => {
+    render(<PaletteHarness />);
+
+    fireEvent.keyDown(window, { key: 'k', ctrlKey: true });
+    const input = screen.getByRole('textbox');
+
+    fireEvent.compositionStart(input);
+    fireEvent.keyDown(input, { key: 'Enter', keyCode: 229 });
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    expect(screen.getByTestId('current-route')).toHaveTextContent('/');
+
+    fireEvent.compositionEnd(input);
+    fireEvent.change(input, { target: { value: 'backtest' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(screen.getByTestId('current-route')).toHaveTextContent('/backtest');
+  });
 });

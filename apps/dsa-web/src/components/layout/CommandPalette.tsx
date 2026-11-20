@@ -42,6 +42,7 @@ const CommandPaletteDialog: React.FC<{ onClose: () => void }> = ({ onClose }) =>
   const [query, setQuery] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const isComposingRef = useRef(false);
 
   useEffect(() => {
     const timer = window.setTimeout(() => inputRef.current?.focus(), 0);
@@ -86,6 +87,10 @@ const CommandPaletteDialog: React.FC<{ onClose: () => void }> = ({ onClose }) =>
   };
 
   const handleInputKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    // Ignore Enter/arrow navigation while Chinese/Japanese/Korean IME is composing.
+    if (isComposingRef.current || event.nativeEvent.isComposing || event.key === 'Process' || event.keyCode === 229) {
+      return;
+    }
     if (event.key === 'ArrowDown' && items.length > 0) {
       event.preventDefault();
       setSelectedIndex((prev) => (prev + 1) % items.length);
@@ -120,6 +125,12 @@ const CommandPaletteDialog: React.FC<{ onClose: () => void }> = ({ onClose }) =>
             onChange={(event) => {
               setQuery(event.target.value);
               setSelectedIndex(0);
+            }}
+            onCompositionStart={() => {
+              isComposingRef.current = true;
+            }}
+            onCompositionEnd={() => {
+              isComposingRef.current = false;
             }}
             onKeyDown={handleInputKeyDown}
             placeholder={t('palette.placeholder')}
@@ -177,7 +188,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({ isOpen, onClose,
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
         event.preventDefault();
         onToggle();
-      } else if (isOpen && event.key === 'Escape') {
+      } else if (isOpen && event.key === 'Escape' && !event.isComposing) {
         event.preventDefault();
         onClose();
       }
