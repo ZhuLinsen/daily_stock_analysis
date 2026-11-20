@@ -18,7 +18,7 @@ import json
 import os
 import sys
 import unittest
-from datetime import date
+from datetime import date, datetime
 from unittest import mock
 from typing import Optional
 
@@ -492,6 +492,60 @@ class TestNotificationServiceSendToMethods(unittest.TestCase):
         saved_content = mock_save.call_args.args[0]
         self.assertNotIn("[dsa-market-region]", saved_content)
         self.assertIn("# 市场复盘", saved_content)
+
+    @mock.patch("src.notification.get_config")
+    def test_feishu_market_review_file_does_not_overwrite_stock_report(self, mock_get_config):
+        cfg = _make_config(
+            feishu_webhook_url="https://feishu.example/hook",
+            feishu_send_as_file=True,
+        )
+        mock_get_config.return_value = cfg
+        service = NotificationService()
+        content = "[dsa-market-region]: # (cn)\n\n# 市场复盘\n\n正文"
+
+        with mock.patch.object(service, "send_feishu_file", return_value=True), \
+             mock.patch.object(service, "save_report_to_file", return_value="/tmp/market_review.md") as mock_save:
+            result = service.send_with_results(content, route_type="report")
+
+        self.assertTrue(result.success)
+        expected_filename = f"market_review_{datetime.now().strftime('%Y%m%d')}.md"
+        self.assertEqual(mock_save.call_args.kwargs["filename"], expected_filename)
+
+    @mock.patch("src.notification.get_config")
+    def test_feishu_reused_market_review_file_does_not_overwrite_stock_report(self, mock_get_config):
+        cfg = _make_config(
+            feishu_webhook_url="https://feishu.example/hook",
+            feishu_send_as_file=True,
+        )
+        mock_get_config.return_value = cfg
+        service = NotificationService()
+        content = "# 📈 大盘复盘\n\n复用的本轮复盘正文"
+
+        with mock.patch.object(service, "send_feishu_file", return_value=True), \
+             mock.patch.object(service, "save_report_to_file", return_value="/tmp/market_review.md") as mock_save:
+            result = service.send_with_results(content, route_type="report")
+
+        self.assertTrue(result.success)
+        expected_filename = f"market_review_{datetime.now().strftime('%Y%m%d')}.md"
+        self.assertEqual(mock_save.call_args.kwargs["filename"], expected_filename)
+
+    @mock.patch("src.notification.get_config")
+    def test_feishu_combined_report_does_not_overwrite_stock_report(self, mock_get_config):
+        cfg = _make_config(
+            feishu_webhook_url="https://feishu.example/hook",
+            feishu_send_as_file=True,
+        )
+        mock_get_config.return_value = cfg
+        service = NotificationService()
+        content = "# 📈 大盘复盘\n\n复盘正文\n\n---\n\n# 🚀 个股决策仪表盘\n\n汇总正文"
+
+        with mock.patch.object(service, "send_feishu_file", return_value=True), \
+             mock.patch.object(service, "save_report_to_file", return_value="/tmp/dashboard.md") as mock_save:
+            result = service.send_with_results(content, route_type="report")
+
+        self.assertTrue(result.success)
+        expected_filename = f"dashboard_{datetime.now().strftime('%Y%m%d')}.md"
+        self.assertEqual(mock_save.call_args.kwargs["filename"], expected_filename)
 
     @mock.patch("src.notification.get_config")
     def test_feishu_send_as_file_route_alert_calls_send_to_feishu(self, mock_get_config):

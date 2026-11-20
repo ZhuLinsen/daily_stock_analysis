@@ -183,3 +183,21 @@ def test_cross_midnight_run_pairs_yesterday_stock_report_with_today_market_revie
 
     assert "# 汇总报告" in rendered
     assert "# 大盘复盘" in rendered
+
+
+def test_cross_midnight_run_pairs_reports_after_two_hours(tmp_path: Path) -> None:
+    """The pair is still from one workflow run when the phases are delayed."""
+    reports_dir = tmp_path / "reports"
+    reports_dir.mkdir()
+    now_ts = time.time()
+    agg = reports_dir / "report_20261120.md"
+    mr = reports_dir / "market_review_20261121.md"
+    agg.write_text("# 汇总报告\n个股结论", encoding="utf-8")
+    mr.write_text("# 大盘复盘\n市场结论", encoding="utf-8")
+    os.utime(agg, (now_ts - 7500, now_ts - 7500))
+    os.utime(mr, (now_ts, now_ts))
+
+    rendered = build_step_summary_markdown(reports_dir, target_date="20261121")
+
+    assert "# 汇总报告" in rendered
+    assert "# 大盘复盘" in rendered

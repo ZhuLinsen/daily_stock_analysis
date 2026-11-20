@@ -91,6 +91,20 @@ from src.notification_sender import (
 logger = logging.getLogger(__name__)
 
 
+def _report_file_prefix(content: str) -> str:
+    """Choose a non-colliding local filename for Feishu report attachments."""
+    if "[dsa-market-region]" in content:
+        return "market_review"
+    if "# 🚀 个股决策仪表盘" in content and "# 📈 大盘复盘" in content:
+        return "dashboard"
+    if any(
+        heading in content
+        for heading in ("# 📈 大盘复盘", "# 🎯 大盘复盘", "# 🎯 Market Review")
+    ):
+        return "market_review"
+    return "report"
+
+
 def _safe_float(value: Any) -> Optional[float]:
     """Best-effort float conversion; handles `"3.2%"` and `"1,234"` shapes."""
     if value is None:
@@ -2598,8 +2612,9 @@ class NotificationService(
         if channel == NotificationChannel.FEISHU:
             if getattr(self, "_feishu_send_as_file", False) and route_type == "report":
                 date_str = datetime.now().strftime('%Y%m%d')
+                filename_prefix = _report_file_prefix(content)
                 filepath = self.save_report_to_file(
-                    sanitized_content, filename=f"report_{date_str}.md"
+                    sanitized_content, filename=f"{filename_prefix}_{date_str}.md"
                 )
                 return self.send_feishu_file(filepath)
             return self.send_to_feishu(sanitized_content)

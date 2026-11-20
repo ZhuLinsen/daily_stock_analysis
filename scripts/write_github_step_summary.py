@@ -18,7 +18,6 @@ if str(_REPO_ROOT) not in sys.path:
 
 
 _DEFAULT_MAX_BYTES = 200_000
-_CROSS_MIDNIGHT_WINDOW_SECONDS = 7_200
 _AGGREGATE_REPORT_RE = re.compile(r"^report_\d{8}\.md$")
 
 
@@ -80,27 +79,18 @@ def _select_report_files(reports_dir: Path, target_date: Optional[str] = None) -
     if market_match:
         chosen_market = list(market_match)
 
-    # Cross-midnight run pairing (only when clock/date matches one side of a single run):
-    # if stock report saved at 23:59 (day N) and market review saved at 00:01 (day N+1),
-    # pair the partner written within the run window instead of dropping one half.
+    # Cross-midnight run pairing: the workflow may deliberately wait longer than two
+    # hours between the stock and market phases, so use the latest report from the
+    # other category rather than imposing a shorter, unrelated clock window.
     if chosen_market and not chosen_stock:
-        anchor_mtime = max(p.stat().st_mtime for p in chosen_market)
         if agg_stock:
             latest_agg = max(agg_stock, key=_mtime_name_key)
-            if abs(anchor_mtime - latest_agg.stat().st_mtime) <= _CROSS_MIDNIGHT_WINDOW_SECONDS:
-                chosen_stock = [latest_agg]
+            chosen_stock = [latest_agg]
         elif single_stock:
-            paired_singles = [
-                p for p in single_stock if abs(anchor_mtime - p.stat().st_mtime) <= _CROSS_MIDNIGHT_WINDOW_SECONDS
-            ]
-            if paired_singles:
-                chosen_stock = paired_singles
+            chosen_stock = [max(single_stock, key=_mtime_name_key)]
 
     if chosen_stock and not chosen_market and market_reviews:
-        anchor_mtime = max(p.stat().st_mtime for p in chosen_stock)
-        latest_mr = max(market_reviews, key=_mtime_name_key)
-        if abs(anchor_mtime - latest_mr.stat().st_mtime) <= _CROSS_MIDNIGHT_WINDOW_SECONDS:
-            chosen_market = [latest_mr]
+        chosen_market = [max(market_reviews, key=_mtime_name_key)]
 
     # When neither category matched date_token (e.g. manual run on older artifacts),
     # fall back cleanly to the latest aggregate stock report (or singles if absent) + latest market review.
