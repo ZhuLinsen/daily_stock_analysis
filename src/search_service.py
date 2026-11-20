@@ -2274,7 +2274,7 @@ class SearchService:
     NEWS_OVERSAMPLE_MAX = 10
     FUTURE_TOLERANCE_DAYS = 1
     ANALYTICAL_INTEL_LOOKBACK_DAYS = 180
-    ANALYTICAL_INTEL_DIMENSIONS = {"market_analysis", "earnings"}
+    ANALYTICAL_INTEL_DIMENSIONS = {"market_analysis", "earnings", "industry"}
     _CHINESE_TEXT_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
     _US_STOCK_RE = re.compile(r"^[A-Za-z]{1,5}(\.[A-Za-z])?$")
     _DIRECT_NEWS_CATEGORY = "direct_company_news"
@@ -3684,6 +3684,14 @@ class SearchService:
 
         return None
 
+    @staticmethod
+    def _dedup_title_key(title: Any) -> str:
+        text = str(title or "").strip().lower()
+        if not text:
+            return ""
+        compact = re.sub(r"[\s\W_]+", "", text, flags=re.UNICODE)
+        return compact or text
+
     def _filter_news_response(
         self,
         response: SearchResponse,
@@ -3702,14 +3710,20 @@ class SearchService:
         latest = today + timedelta(days=self.FUTURE_TOLERANCE_DAYS)
 
         filtered: List[SearchResult] = []
+        seen_titles: set[str] = set()
         dropped_unknown = 0
         dropped_old = 0
         dropped_future = 0
 
         for item in response.results:
+            title_key = self._dedup_title_key(item.title)
+            if title_key and title_key in seen_titles:
+                continue
             published = self._normalize_news_publish_date(item.published_date)
             if published is None:
                 if keep_unknown:
+                    if title_key:
+                        seen_titles.add(title_key)
                     filtered.append(
                         SearchResult(
                             title=item.title,
@@ -3735,6 +3749,8 @@ class SearchService:
                 dropped_future += 1
                 continue
 
+            if title_key:
+                seen_titles.add(title_key)
             filtered.append(
                 SearchResult(
                     title=item.title,
@@ -3785,7 +3801,13 @@ class SearchService:
             return response
 
         normalized_results: List[SearchResult] = []
-        for item in response.results[:max_results]:
+        seen_titles: set[str] = set()
+        for item in response.results:
+            title_key = self._dedup_title_key(item.title)
+            if title_key and title_key in seen_titles:
+                continue
+            if title_key:
+                seen_titles.add(title_key)
             normalized_date = self._normalize_news_publish_date(item.published_date)
             normalized_results.append(
                 SearchResult(
@@ -3802,6 +3824,8 @@ class SearchService:
                     retrieved_at=item.retrieved_at,
                 )
             )
+            if len(normalized_results) >= max_results:
+                break
 
         return SearchResponse(
             query=response.query,
@@ -4673,7 +4697,16 @@ class SearchService:
             if resp.success and resp.results:
                 # 增加显示条数
                 for i, r in enumerate(resp.results[:4], 1):
-                    date_str = f" [{r.published_date}]" if r.published_date else ""
+                    if r.published_date:
+                        pub_date = SearchService._normalize_news_publish_date(r.published_date)
+                        if pub_date is not None:
+                            age_days = (datetime.now().date() - pub_date).days
+                            age_label = "今日" if age_days <= 0 else f"{age_days}天前"
+                            date_str = f" [{r.published_date} · {age_label}]"
+                        else:
+                            date_str = f" [{r.published_date}]"
+                    else:
+                        date_str = " [日期未知·勿作短期催化]"
                     lines.append(f"  {i}. {r.title}{date_str}")
                     # 如果摘要太短，可能信息量不足
                     snippet = r.snippet[:150] if len(r.snippet) > 20 else r.snippet

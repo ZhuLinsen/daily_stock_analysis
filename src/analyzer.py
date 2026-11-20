@@ -1054,6 +1054,198 @@ def fill_price_position_if_needed(
         logger.warning("[price_position] Fill failed, skipping: %s", e)
 
 
+def _extract_positive_finite_float(value: Any) -> Optional[float]:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        parsed = float(value)
+        return parsed if math.isfinite(parsed) and parsed > 0 else None
+    from src.utils.sniper_points import parse_sniper_value
+
+    parsed = parse_sniper_value(value)
+    return parsed if parsed is not None and math.isfinite(parsed) and parsed > 0 else None
+
+
+_SNIPER_CURRENCY_MARKERS = ("元", "¥", "￥", "$", "NT$", "HK$", "US$", "₩", "円")
+
+
+def _extract_raw_sniper_points(result: "AnalysisResult") -> Dict[str, Any]:
+    """Return raw sniper-point strings/numbers without stripping percentage signs."""
+    from collections.abc import Mapping
+    from src.utils.sniper_points import find_sniper_points
+
+    raw_points: Mapping[str, Any] = {}
+    if hasattr(result, "get_sniper_points"):
+        candidate = result.get_sniper_points() or {}
+        if isinstance(candidate, Mapping):
+            raw_points = candidate
+    if not raw_points or not any(raw_points.get(k) not in (None, "") for k in ("ideal_buy", "stop_loss", "take_profit")):
+        dashboard = getattr(result, "dashboard", None)
+        if isinstance(dashboard, Mapping):
+            raw_points = find_sniper_points(dashboard) or raw_points
+    if not raw_points or not any(raw_points.get(k) not in (None, "") for k in ("ideal_buy", "stop_loss", "take_profit")):
+        raw_response = getattr(result, "raw_response", None)
+        if isinstance(raw_response, Mapping):
+            raw_points = find_sniper_points(raw_response) or raw_points
+    return dict(raw_points)
+
+
+def _extract_sniper_price_only(raw_value: Any) -> Optional[float]:
+    """Extract positive finite price from a sniper value, ignoring relative % targets."""
+    if isinstance(raw_value, str):
+        text = raw_value.strip()
+        if not text:
+            return None
+        pre_paren = text.split("(")[0].split("（")[0]
+        if ("%" in pre_paren or "％" in pre_paren) and not any(m in text for m in _SNIPER_CURRENCY_MARKERS):
+            return None
+    return _extract_positive_finite_float(raw_value)
+
+
+def _build_sniper_inverted_warning(report_language: Any) -> str:
+    """Keep warning <= 36 chars so compact notification & share-image exits preserve it verbatim."""
+    lang = normalize_report_language(report_language)
+    if lang == "en":
+        return "Price check: stop/target inverted"
+    if lang == "ko":
+        return "가격 점검: 손절/목표가 역전, 재확인 필요"
+    return "点位校验：止损/目标与买入价倒挂，请复核"
+
+
+def validate_sniper_price_sanity(
+    result: "AnalysisResult",
+    context: Optional[Dict[str, Any]] = None,
+    *,
+    emit_log: bool = True,
+) -> List[str]:
+    """Check deterministic ordering and R:R bounds on LLM sniper points.
+
+    Additive-only guardrail: records diagnostic metadata under
+    ``dashboard["data_perspective"]["price_sanity"]`` without failing report
+    generation or altering legacy fields. When a buy report contains inverted
+    sniper points, prepends a concise warning to ``risk_alerts`` and
+    ``risk_warning`` so compact notification/share-image exits always surface it.
+    """
+    if not result:
+        return []
+
+    ctx = context if isinstance(context, dict) else {}
+    realtime = ctx.get("realtime") if isinstance(ctx.get("realtime"), dict) else {}
+    realtime_quote = ctx.get("realtime_quote") if isinstance(ctx.get("realtime_quote"), dict) else {}
+    today = ctx.get("today") if isinstance(ctx.get("today"), dict) else {}
+    trend_ctx = ctx.get("trend_result") if isinstance(ctx.get("trend_result"), dict) else {}
+    trend_analysis = ctx.get("trend_analysis") if isinstance(ctx.get("trend_analysis"), dict) else {}
+    snapshot = result.market_snapshot if isinstance(getattr(result, "market_snapshot", None), dict) else {}
+    dash = result.dashboard if isinstance(getattr(result, "dashboard", None), dict) else None
+    dp = dash.get("data_perspective") if isinstance(dash, dict) and isinstance(dash.get("data_perspective"), dict) else {}
+    pp = dp.get("price_position") if isinstance(dp.get("price_position"), dict) else {}
+
+    current_price = None
+    for candidate in (
+        getattr(result, "current_price", None),
+        realtime.get("price"),
+        realtime_quote.get("price"),
+        today.get("close"),
+        trend_ctx.get("current_price"),
+        trend_analysis.get("current_price"),
+        ctx.get("current_price"),
+        snapshot.get("current_price"),
+        snapshot.get("price"),
+        snapshot.get("close"),
+        pp.get("current_price"),
+    ):
+        current_price = _extract_positive_finite_float(candidate)
+        if current_price is not None:
+            break
+
+    raw_points = _extract_raw_sniper_points(result)
+    ideal_buy = _extract_sniper_price_only(raw_points.get("ideal_buy"))
+    stop_loss = _extract_sniper_price_only(raw_points.get("stop_loss"))
+    take_profit = _extract_sniper_price_only(raw_points.get("take_profit"))
+
+    decision_type = str(getattr(result, "decision_type", None) or "").strip().lower()
+    final_action = str(getattr(result, "action", None) or "").strip().lower()
+    is_buy = (decision_type == "buy") or (not decision_type and final_action == "buy")
+
+    warnings: List[str] = []
+    inverted = False
+    if is_buy:
+        if ideal_buy is not None:
+            if stop_loss is not None and stop_loss >= ideal_buy:
+                warnings.append("stop_loss_above_ideal_buy")
+                inverted = True
+            if take_profit is not None and take_profit <= ideal_buy:
+                warnings.append("take_profit_below_ideal_buy")
+                inverted = True
+        elif current_price is not None:
+            if stop_loss is not None and stop_loss >= current_price:
+                warnings.append("stop_loss_above_current_price")
+                inverted = True
+            if take_profit is not None and take_profit <= current_price:
+                warnings.append("take_profit_below_current_price")
+                inverted = True
+
+        ref_entry = ideal_buy if (ideal_buy is not None and ideal_buy > 0) else current_price
+        if (
+            ref_entry is not None
+            and stop_loss is not None
+            and take_profit is not None
+            and stop_loss < ref_entry < take_profit
+        ):
+            reward_risk = (take_profit - ref_entry) / (ref_entry - stop_loss)
+            if reward_risk < 1.0:
+                warnings.append("reward_risk_below_1")
+
+    if inverted and dash is None:
+        result.dashboard = {}
+        dash = result.dashboard
+
+    if isinstance(dash, dict):
+        dp_target = dash.get("data_perspective")
+        if dp_target is None or isinstance(dp_target, dict):
+            if dp_target is None:
+                dp_target = {}
+                dash["data_perspective"] = dp_target
+            dp_target["price_sanity"] = {
+                "status": "warn" if warnings else "ok",
+                "warnings": list(warnings),
+                "inverted": inverted,
+                "current_price": current_price,
+                "ideal_buy": ideal_buy,
+                "stop_loss": stop_loss,
+                "take_profit": take_profit,
+            }
+
+    if inverted:
+        warning_text = _build_sniper_inverted_warning(getattr(result, "report_language", "zh"))
+        if isinstance(dash, dict):
+            intel = dash.get("intelligence")
+            if not isinstance(intel, dict):
+                intel = {}
+                dash["intelligence"] = intel
+            existing_alerts = _normalize_risk_warning_values(intel.get("risk_alerts"))
+            deduped_alerts = [warning_text] + [
+                item for item in existing_alerts if item != warning_text
+            ]
+            intel["risk_alerts"] = deduped_alerts
+
+        existing_rw = str(getattr(result, "risk_warning", None) or "").strip()
+        if not existing_rw:
+            result.risk_warning = warning_text
+        elif warning_text not in existing_rw:
+            sep = "；" if any("\u4e00" <= ch <= "\u9fff" for ch in existing_rw + warning_text) else "; "
+            result.risk_warning = f"{warning_text}{sep}{existing_rw}"
+
+    if warnings and emit_log:
+        logger.warning(
+            "[price_sanity] %s(%s) sniper point sanity warnings: %s",
+            getattr(result, "name", ""),
+            getattr(result, "code", ""),
+            ",".join(warnings),
+        )
+    return warnings
+
+
 def stabilize_decision_with_structure(
     result: "AnalysisResult",
     trend_result: Any = None,

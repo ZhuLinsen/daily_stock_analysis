@@ -13,12 +13,13 @@ A股自选股智能分析系统 - 核心分析流水线
 
 import logging
 import inspect
+import math
 import threading
 import time
 from pathlib import Path
 import uuid
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import List, Dict, Any, Optional, Tuple, Callable
@@ -37,6 +38,7 @@ from src.analyzer import (
     normalize_chip_structure_availability,
     populate_decision_action_fields,
     stabilize_decision_with_structure,
+    validate_sniper_price_sanity,
 )
 from src.notification import NotificationService, NotificationChannel
 from src.schemas.decision_action import normalize_decision_action
@@ -1845,6 +1847,7 @@ class StockAnalysisPipeline:
                             ),
                         )
                     )
+                validate_sniper_price_sanity(result, initial_context)
 
             if result:
                 self._append_daily_data_source(
@@ -3581,11 +3584,22 @@ class StockAnalysisPipeline:
             )
         
         results: List[AnalysisResult] = []
-        
-        # 使用线程池并发处理
+        per_stock_timeout = max(
+            0,
+            int(getattr(self.config, "per_stock_timeout_seconds", 300) or 0),
+        )
+        worker_waves = max(1, math.ceil(len(stock_codes) / max(1, int(self.max_workers or 1))))
+        batch_deadline = (
+            time.monotonic() + (per_stock_timeout * worker_waves)
+            if per_stock_timeout > 0 and stock_codes
+            else None
+        )
+
+        # 使用线程池并发处理，并为单只股票卡死提供有界超时隔离
         # 注意：max_workers 设置较低（默认3）以避免触发反爬
-        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            # 提交任务
+        executor = ThreadPoolExecutor(max_workers=self.max_workers)
+        timed_out_any = False
+        try:
             future_to_code = {}
             for idx, code in enumerate(stock_codes):
                 target = (
@@ -3608,37 +3622,69 @@ class StockAnalysisPipeline:
                     **submit_kwargs,
                 )
                 future_to_code[future] = code
-            
-            # 收集结果
-            for idx, future in enumerate(as_completed(future_to_code)):
-                code = future_to_code[future]
-                try:
-                    result = future.result()
-                    if result and result.success:
-                        results.append(result)
-                        if single_stock_notify and send_notification and not dry_run:
-                            self._send_single_stock_notification(
-                                result,
-                                report_type=report_type,
-                                fallback_code=code,
+
+            pending = set(future_to_code.keys())
+            completed_count = 0
+            while pending:
+                wait_timeout: Optional[float] = None
+                if batch_deadline is not None:
+                    remaining = batch_deadline - time.monotonic()
+                    if remaining <= 0:
+                        timed_out_any = True
+                        break
+                    wait_timeout = remaining
+
+                done, pending = wait(
+                    pending,
+                    timeout=wait_timeout,
+                    return_when=FIRST_COMPLETED,
+                )
+                if not done and pending:
+                    timed_out_any = True
+                    break
+
+                for future in done:
+                    completed_count += 1
+                    code = future_to_code[future]
+                    try:
+                        result = future.result()
+                        if result and result.success:
+                            results.append(result)
+                            if single_stock_notify and send_notification and not dry_run:
+                                self._send_single_stock_notification(
+                                    result,
+                                    report_type=report_type,
+                                    fallback_code=code,
+                                )
+                        elif result and not result.success:
+                            logger.warning(
+                                f"[{code}] 分析结果标记为失败，不计入汇总: "
+                                f"{result.error_message or '未知原因'}"
                             )
-                    elif result and not result.success:
-                        logger.warning(
-                            f"[{code}] 分析结果标记为失败，不计入汇总: "
-                            f"{result.error_message or '未知原因'}"
-                        )
 
-                    # Issue #128: 分析间隔 - 在个股分析和大盘分析之间添加延迟
-                    if idx < len(stock_codes) - 1 and analysis_delay > 0:
-                        # 注意：此 sleep 发生在“主线程收集 future 的循环”中，
-                        # 并不会阻止线程池中的任务同时发起网络请求。
-                        # 因此它对降低并发请求峰值的效果有限；真正的峰值主要由 max_workers 决定。
-                        # 该行为目前保留（按需求不改逻辑）。
-                        logger.debug(f"等待 {analysis_delay} 秒后继续下一只股票...")
-                        time.sleep(analysis_delay)
+                        # Issue #128: 分析间隔 - 在个股分析和大盘分析之间添加延迟
+                        if completed_count < len(stock_codes) and analysis_delay > 0:
+                            logger.debug(f"等待 {analysis_delay} 秒后继续下一只股票...")
+                            time.sleep(analysis_delay)
 
-                except Exception as e:
-                    logger.error(f"[{code}] 任务执行失败: {e}")
+                    except Exception as e:
+                        logger.error(f"[{code}] 任务执行失败: {e}")
+
+            if timed_out_any and pending:
+                timed_out_codes = [future_to_code[f] for f in pending]
+                for future in pending:
+                    future.cancel()
+                logger.warning(
+                    "批量分析触发超时隔离 (per_stock_timeout=%ss)，已跳过卡住标的 %s 并保留其余 %d 条已完成结果",
+                    per_stock_timeout,
+                    timed_out_codes,
+                    len(results),
+                )
+        finally:
+            try:
+                executor.shutdown(wait=not timed_out_any, cancel_futures=timed_out_any)
+            except TypeError:
+                executor.shutdown(wait=not timed_out_any)
         
         # 统计
         elapsed_time = time.time() - start_time

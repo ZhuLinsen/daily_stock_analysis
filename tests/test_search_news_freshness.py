@@ -2421,5 +2421,122 @@ class SearchNewsFreshnessTestCase(unittest.TestCase):
         self.assertIn("摘要命中公司英文别名 Apple", reasons)
         self.assertNotIn("标题命中公司英文别名", reasons)
 
+    def test_search_comprehensive_intel_stock_industry_filters_multi_year_stale_keeps_undated(self) -> None:
+        """Industry intel uses analytical window: drops >180d stale items, keeps undated."""
+        today = datetime.now().date()
+        fresh = today.isoformat()
+        recent_analytical = (today - timedelta(days=30)).isoformat()
+        multi_year_stale = (today - timedelta(days=400)).isoformat()
+        service, mock_search = self._create_service_with_mock_provider(
+            news_max_age_days=3,
+            news_strategy_profile="short",
+        )
+        mock_search.side_effect = [
+            _response([_result("latest_news", fresh)]),
+            _response([_result("market_analysis", None)]),
+            _response([_result("risk_check", fresh)]),
+            _response([_result("announcements", fresh)]),
+            _response([_result("earnings", None)]),
+            _response([
+                _result("stale_industry", multi_year_stale),
+                _result("undated_industry", None),
+                _result("recent_industry", recent_analytical),
+                _result("fresh_industry", fresh),
+            ]),
+        ]
+
+        with patch("src.search_service.time.sleep"):
+            intel = service.search_comprehensive_intel(
+                stock_code="600519",
+                stock_name="贵州茅台",
+                max_searches=6,
+            )
+
+        self.assertEqual(
+            [item.title for item in intel["industry"].results],
+            ["undated_industry", "recent_industry", "fresh_industry"],
+        )
+        formatted = service.format_intel_report({"industry": intel["industry"]}, "贵州茅台")
+        self.assertIn("[日期未知·勿作短期催化]", formatted)
+
+    def test_search_comprehensive_intel_etf_industry_preserves_undated_holdings(self) -> None:
+        """Index ETF industry allocation queries keep undated items for tolerance."""
+        fresh = datetime.now().date().isoformat()
+        service, mock_search = self._create_service_with_mock_provider(
+            news_max_age_days=3,
+            news_strategy_profile="short",
+        )
+        mock_search.side_effect = [
+            _response([_result("latest_news", fresh)]),
+            _response([_result("market_analysis", None)]),
+            _response([_result("risk_check", None)]),
+            _response([_result("announcements", fresh)]),
+            _response([_result("earnings", None)]),
+            _response([
+                _result("沪深300ETF 行业配置权重", None),
+                _result("沪深300ETF 行业配置权重！", None),
+                _result("沪深300ETF 前十大重仓行业", fresh),
+            ]),
+        ]
+
+        with patch("src.search_service.time.sleep"):
+            intel = service.search_comprehensive_intel(
+                stock_code="510300",
+                stock_name="沪深300ETF",
+                max_searches=6,
+            )
+
+        self.assertEqual(
+            [item.title for item in intel["industry"].results],
+            ["沪深300ETF 行业配置权重", "沪深300ETF 前十大重仓行业"],
+        )
+
+    def test_title_dedup_and_format_intel_report_age_labels(self) -> None:
+        """Duplicate titles collapse and formatted intel marks age or unknown-date guard."""
+        today = datetime.now().date()
+        two_days_ago = (today - timedelta(days=2)).isoformat()
+        service, _ = self._create_service_with_mock_provider(
+            news_max_age_days=7,
+            news_strategy_profile="medium",
+        )
+        filtered = service._filter_news_response(
+            _response([
+                _result("贵州茅台 分红预案!", today.isoformat()),
+                _result("贵州茅台分红预案", today.isoformat()),
+                _result("贵州茅台 产能扩建", two_days_ago),
+            ]),
+            search_days=7,
+            max_results=5,
+            log_scope="dedup_test",
+        )
+        self.assertEqual(
+            [item.title for item in filtered.results],
+            ["贵州茅台 分红预案!", "贵州茅台 产能扩建"],
+        )
+
+        normalized = service._normalize_and_limit_response(
+            _response([
+                _result("Same Title", today.isoformat()),
+                _result("same-title!", today.isoformat()),
+                _result("Second Story", None),
+            ]),
+            max_results=2,
+        )
+        self.assertEqual(
+            [item.title for item in normalized.results],
+            ["Same Title", "Second Story"],
+        )
+
+        formatted = service.format_intel_report(
+            {
+                "latest_news": filtered,
+                "market_analysis": normalized,
+            },
+            "贵州茅台",
+        )
+        self.assertIn(f"[{today.isoformat()} · 今日]", formatted)
+        self.assertIn(f"[{two_days_ago} · 2天前]", formatted)
+        self.assertIn("[日期未知·勿作短期催化]", formatted)
+
 if __name__ == "__main__":
     unittest.main()

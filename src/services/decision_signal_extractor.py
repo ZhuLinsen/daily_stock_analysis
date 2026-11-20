@@ -461,14 +461,23 @@ def _extract_holding_state(portfolio_context: Optional[Mapping[str, Any]]) -> st
 
 
 def _risk_summary(result: AnalysisResult, dashboard: Mapping[str, Any]) -> Optional[Any]:
-    risks = []
-    risk_warning = getattr(result, "risk_warning", None)
+    risks: list[str] = []
+    seen: list[str] = []
+    risk_warning = str(getattr(result, "risk_warning", None) or "").strip()
     if risk_warning:
-        risks.append(str(risk_warning))
+        risks.append(risk_warning)
+        seen.append(risk_warning)
     intelligence = _as_mapping(dashboard.get("intelligence"))
     risk_alerts = intelligence.get("risk_alerts")
     if isinstance(risk_alerts, list):
-        risks.extend(str(item) for item in risk_alerts if str(item or "").strip())
+        for item in risk_alerts:
+            text = str(item or "").strip()
+            if not text:
+                continue
+            if any(text == prev or text in prev for prev in seen):
+                continue
+            risks.append(text)
+            seen.append(text)
     return risks[:5] or None
 
 
