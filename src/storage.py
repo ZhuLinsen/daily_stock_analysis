@@ -3332,6 +3332,34 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             _write,
         )
 
+    def get_analysis_history_counts(
+        self, code_groups: Dict[str, List[str]],
+    ) -> Dict[str, int]:
+        """Count lifetime reports per displayed code, including its persisted aliases."""
+        if not code_groups:
+            return {}
+
+        grouped = select(AnalysisHistory.code, func.count()).group_by(AnalysisHistory.code)
+        counts_by_code: Dict[str, int] = {}
+        with self.get_session() as session:
+            if all(code_groups.values()):
+                codes = sorted({code for aliases in code_groups.values() for code in aliases})
+                # Include legacy SQLite builds with a 999-variable limit.
+                batch_size = 900
+                for offset in range(0, len(codes), batch_size):
+                    batch = codes[offset:offset + batch_size]
+                    rows = session.execute(grouped.where(AnalysisHistory.code.in_(batch)))
+                    counts_by_code.update(rows.tuples().all())
+            else:
+                # An empty history filter (possible for old blank codes) counts all rows.
+                counts_by_code.update(session.execute(grouped).tuples().all())
+
+        total = sum(counts_by_code.values())
+        return {
+            display_code: sum(counts_by_code.get(code, 0) for code in set(aliases)) if aliases else total
+            for display_code, aliases in code_groups.items()
+        }
+
     def get_distinct_stocks_from_history(
         self,
         start_date: Optional[date] = None,

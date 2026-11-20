@@ -1495,8 +1495,16 @@ Set the following variables in `.env` (all optional, have defaults):
 | `BACKTEST_ENABLED` | `true` | Whether to auto-run backtest after daily analysis |
 | `BACKTEST_EVAL_WINDOW_DAYS` | `10` | Evaluation window (trading days) |
 | `BACKTEST_MIN_AGE_DAYS` | `14` | Only backtest records older than N days to avoid incomplete data |
-| `BACKTEST_ENGINE_VERSION` | `v1` | Engine version, used to distinguish results when logic is updated |
+| `BACKTEST_ENGINE_VERSION` | `v1.1` | Engine version, used to distinguish results when logic is updated |
 | `BACKTEST_NEUTRAL_BAND_PCT` | `2.0` | Neutral band threshold (%), ±2% treated as range-bound |
+
+### Intraday backtest semantics
+
+With the default `BACKTEST_ENGINE_VERSION=v1.1`, analyses in `intraday`, `lunch_break`, or `closing_auction` use session T's close as the evaluation entry anchor and forward bars from the next trading session. The already observed T-1 → T move is excluded. `premarket` keeps the T-1 close anchor. This daily-bar convention does not assume execution at the intraday analysis price. Explicitly setting `BACKTEST_ENGINE_VERSION=v1` restores the legacy T-1 intraday anchor; results remain isolated by engine version and default queries exclude v1 results.
+
+For a long plan, stop-loss must be below the evaluation entry and take-profit must be above it. If either supplied target is invalid, the original targets and direction evaluation are preserved, `simulated_exit_reason=invalid_targets`, and simulated exit price, return and both hit flags are null. These plans are excluded from simulated-return averages and target-hit rates. Target validation also applies to explicit v1; the v1 fallback restores only the old anchor convention. Existing stored results are not automatically recalculated; rerun the backtest API with `force=true` to reevaluate them.
+
+Skill opinion outcomes use the same intraday anchor. New results are stored separately under `skill-opinion-outcome-v1.1`.
 
 ### Auto-run
 
@@ -1729,6 +1737,12 @@ A: Check if Actions is enabled, and if cron expression is correct (note it's UTC
 ---
 
 ## Portfolio Web Notes
+
+### Numeric validation for portfolio events and CSV imports
+
+- Trade quantity, price, fees, taxes, cash amounts, dividends per share, and split ratios must be finite. Manual event APIs return `422` for non-finite inputs such as `NaN`, `Infinity`, and overflowing values such as `1e309`.
+- If a recognized CSV trade row contains a non-finite number or its combined fees/taxes overflow, parsing, dry-run, and commit all return `400` with the row and field. No rows from that upload are written; correct the file and retry. Blank optional fees retain their existing zero default.
+- This validation does not clean up existing ledger data or change oversell checks, deduplication, or per-row busy/conflict handling after successful parsing.
 
 ### Portfolio account archive on `/portfolio`
 

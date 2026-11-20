@@ -201,6 +201,35 @@ def test_effective_daily_bar_date_requires_exact_start_bar(isolated_db) -> None:
     assert item["start_trade_date"] is None
 
 
+@pytest.mark.parametrize("phase", ["intraday", "lunch_break", "closing_auction"])
+def test_intraday_outcome_excludes_the_observed_session_move(isolated_db, phase) -> None:
+    _, sample_id = _add_sample(
+        isolated_db,
+        created_at=datetime(2024, 1, 5, 10, 30),
+        context_snapshot={
+            "enhanced_context": {"date": "2024-01-05"},
+            "market_phase_summary": {
+                "market": "cn", "phase": phase, "session_date": "2024-01-05",
+                "effective_daily_bar_date": "2024-01-04",
+            },
+        },
+    )
+    _seed_bars(isolated_db, code="600519", bars=[
+        (date(2024, 1, 4), 99.0), (date(2024, 1, 5), 110.0), (date(2024, 1, 8), 105.0),
+    ])
+
+    item = SkillOpinionOutcomeService(db_manager=isolated_db).run_outcomes(
+        sample_id=sample_id, horizons=["1d"],
+    )["items"][0]
+    assert item["engine_version"] == SKILL_OPINION_OUTCOME_ENGINE_VERSION
+    assert item["start_trade_date"] == "2024-01-05"
+    assert item["end_trade_date"] == "2024-01-08"
+    assert item["start_price"] == 110.0
+    assert item["stock_return_pct"] == pytest.approx(-5 / 110 * 100)
+    assert item["outcome"] == "miss"
+    assert _stored_outcome(isolated_db, sample_id).outcome == "miss"
+
+
 @pytest.mark.parametrize(
     ("phase_summary", "expected_reason"),
     [

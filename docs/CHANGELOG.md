@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-> For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
+> Release notes are generated from merged PRs and archived here by version. For the published notes, see [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases).
 
 ## [Unreleased]
 
@@ -15,6 +15,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [修复] Telegram 推送按 UTF-16 长度判断与分段，修复含大量 emoji 的报告超出 4096 限制导致发送失败的问题。
 - [新功能] 多策略综合结果新增 signal_distribution（多/中性/空阵营计数与权重占比）与 primary_dissent（确定性主要反对观点）展示契约（schema_version=strategy-synthesis-v1）；报告详情 API（同步/异步/历史）提供 report.details.strategy_synthesis 类型化投影，旧报告与畸形数据安全降级为 null；Web/桌面新增 StrategySynthesisCard 多策略共识卡片（zh/en/ko 三语，协同推演结果标注为非权威预览）。
 - [修复] Telegram 文本推送遇到 HTTP 429 时遵守响应 JSON 中的 `parameters.retry_after`，避免忽略服务端等待时间而过早重试；保留响应头和指数退避兜底及 3 次尝试上限。
+- [修复] 选股、告警与个股分析报告统一使用同一 Wilder RSI（`src/utils/rsi.py`，基于 `fin-primitives`，以前 period 个涨跌幅的简单均值起算，与 TA-Lib 一致）：选股不再使用简单滚动均值，告警与报告不再以首行零涨跌幅起算 ewm，短历史下三处的超买/超卖判断不再出现分歧。预热期与无波动时仍为中性值 50；RSI 告警不再用预热占位值判断穿越，最少历史改为 period+2 根。
+- [文档] 将 AlphaSift 与 AlphaEvo 的项目入口前移至 README 产品预览之后、功能特性之前，以 `[!TIP]` 提示框展示，同步简体、英文与繁体版本。
+
+- [修复] 盘中回测与 Skill 观点评估从当日收盘起算，避免计入分析时已发生的日内涨跌；回测排除相对评估入场价失效的止盈止损方案的模拟收益及命中率，方向评估继续保留。
+- [修复] 钉钉和飞书凭据在 `.env.example` 中默认留空，避免首次配置时误报；模型缺失提示补充 `MODELFLARE_KEY`。
+- [修复] Agent 缺少真实历史置信度数据时保持中性校准，不再使用固定的估计值。
+- [文档] 将简体、英文和繁体 README 首页的 HelloGitHub 徽章替换为 Star History 全球排名徽章，与 Trendshift 徽章等高并排展示。
+- [改进] 历史个股栏批量统计展示股票的历史分析次数，减少刷新时的数据库查询。
+- [修复] 持仓交易、现金流水和公司行动拒绝 NaN / Infinity 等非有限数值；CSV 预览、预演和提交在写入前拒绝包含非有限数值或费税合计溢出的交易行，并返回行号和字段，避免污染账本和快照；API 校验错误中的非有限数值可安全返回 JSON。
+- [改进] Web 股票输入框的联想搜索为每只股票只规范化一次代码、名称、拼音和别名，后续搜索直接复用，不再每次都对约 3.2 万条索引重新做 Unicode 规范化。
 
 ## [3.35.0] - 2026-11-16
 
