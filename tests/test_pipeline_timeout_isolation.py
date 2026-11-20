@@ -159,3 +159,16 @@ def test_daemon_executor_sets_cancel_context_on_timeout(tmp_path) -> None:
     finally:
         release_worker.set()
         executor.shutdown(wait=True, cancel_futures=True)
+
+
+def test_daemon_executor_completes_future_when_stock_worker_raises_base_exception():
+    from src.core.pipeline import _DaemonThreadStockExecutor
+
+    executor = _DaemonThreadStockExecutor(timeout_seconds=1, max_workers=1)
+
+    def abort(_code):
+        raise SystemExit("worker stopped")
+
+    future = executor.submit(abort, "600519")
+    assert future.result(timeout=2) is None
+    executor.shutdown()

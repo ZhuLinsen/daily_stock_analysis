@@ -197,9 +197,18 @@ class _DaemonThreadStockExecutor:
                             fut.set_result(None)
                     elif not fut.done():
                         fut.set_result(res)
-                except Exception as exc:
+                except BaseException as exc:
+                    # Keep the Future terminal even for cancellation/system
+                    # exceptions; otherwise the batch collector can wait
+                    # forever after the worker slot has already been released.
+                    logger.warning(
+                        "[%s] 股票分析线程异常终止 (%s): %s",
+                        stock_code,
+                        type(exc).__name__,
+                        exc,
+                    )
                     if not fut.done() and not c_ev.is_set():
-                        fut.set_exception(exc)
+                        fut.set_result(None)
                 finally:
                     _STOCK_CANCEL_CTX.cancel_event = prev_event
                     d_ev.set()
