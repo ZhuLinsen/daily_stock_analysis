@@ -3,8 +3,9 @@
 
 from __future__ import annotations
 
+import math
 import re
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from src.schemas.decision_scale import signal_key_for_score
 
@@ -1114,7 +1115,10 @@ def normalize_strategy_synthesis_payload(value: Any) -> Dict[str, Any]:
 
     Historical records and external callers may contain pre-contract values.
     Renderers must treat a malformed top-level payload as absent and must not
-    iterate malformed collection fields as strategy/conflict entries.
+    iterate malformed collection fields as strategy/conflict entries. The
+    issue #2071 fields (schema_version / signal_distribution /
+    primary_dissent) are sanitized the same way: non-conforming values are
+    replaced with None instead of leaking malformed structures to renderers.
     """
     if not isinstance(value, dict) or not value:
         return {}
@@ -1127,7 +1131,256 @@ def normalize_strategy_synthesis_payload(value: Any) -> Dict[str, Any]:
             if isinstance(items, list)
             else []
         )
+
+    schema_version = payload.get("schema_version")
+    payload["schema_version"] = schema_version if isinstance(schema_version, str) else None
+    distribution = payload.get("signal_distribution")
+    payload["signal_distribution"] = distribution if isinstance(distribution, dict) else None
+    dissent = payload.get("primary_dissent")
+    payload["primary_dissent"] = dissent if isinstance(dissent, dict) else None
     return payload
+
+
+# Mirror of ``src/agent/skills/synthesis.py`` STRATEGY_SYNTHESIS_SCHEMA_VERSION.
+# Kept as a local literal so this low-level module does not import the
+# agent-skills (LLM) chain; W4 contract doc pins the mirroring requirement.
+STRATEGY_SYNTHESIS_PROJECTABLE_SCHEMA_VERSION = "strategy-synthesis-v1"
+
+_SYNTHESIS_DISTRIBUTION_CAMPS = ("bullish", "neutral", "bearish")
+
+
+def _synthesis_optional_str(value: Any) -> Optional[str]:
+    return value if isinstance(value, str) else None
+
+
+def _synthesis_optional_float(value: Any) -> Optional[float]:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) else None
+
+
+def _synthesis_optional_int(value: Any) -> Optional[int]:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
+def _synthesis_signal_distribution(value: Any) -> Optional[Dict[str, Any]]:
+    """Keep the camp triple only when every bucket is well-formed.
+
+    A structurally illegal distribution (non-dict bucket, non-integer count or
+    non-numeric share) degrades the whole field to ``None`` instead of leaking
+    a malformed shape to the typed schema.
+    """
+    if not isinstance(value, dict):
+        return None
+    distribution: Dict[str, Any] = {}
+    for camp in _SYNTHESIS_DISTRIBUTION_CAMPS:
+        bucket = value.get(camp)
+        if not isinstance(bucket, dict):
+            return None
+        count = bucket.get("count")
+        if isinstance(count, bool) or not isinstance(count, int):
+            return None
+        share = bucket.get("weight_share")
+        if share is not None:
+            share = _synthesis_optional_float(share)
+            if share is None:
+                return None
+        distribution[camp] = {"count": count, "weight_share": share}
+    return distribution
+
+
+def _synthesis_skill_entries(value: Any) -> List[Dict[str, Any]]:
+    """Whitelist skill entries; non-dict entries are dropped (normalize semantics)."""
+    if not isinstance(value, list):
+        return []
+    entries: List[Dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        conditions = item.get("conditions_met")
+        invalid_signal = item.get("invalid_signal")
+        entries.append(
+            {
+                "skill_id": _synthesis_optional_str(item.get("skill_id")),
+                "agent_name": _synthesis_optional_str(item.get("agent_name")),
+                "signal": _synthesis_optional_str(item.get("signal")),
+                "confidence": _synthesis_optional_float(item.get("confidence")),
+                "reasoning": _synthesis_optional_str(item.get("reasoning")),
+                "score_adjustment": _synthesis_optional_float(item.get("score_adjustment")),
+                "conditions_met": (
+                    [entry for entry in conditions if isinstance(entry, str)]
+                    if isinstance(conditions, list)
+                    else None
+                ),
+                "invalid_signal": invalid_signal if isinstance(invalid_signal, bool) else None,
+            }
+        )
+    return entries
+
+
+def _synthesis_primary_dissent(value: Any) -> Optional[Dict[str, Any]]:
+    """Keep the dissent only when its identity and confidence are well-formed.
+
+    A v1 dissent always carries string identity fields and a numeric
+    confidence; anything else is treated as structurally illegal and the whole
+    field degrades to ``None`` (the rest of the payload still projects).
+    """
+    if not isinstance(value, dict):
+        return None
+    skill_id = _synthesis_optional_str(value.get("skill_id"))
+    agent_name = _synthesis_optional_str(value.get("agent_name"))
+    signal = _synthesis_optional_str(value.get("signal"))
+    confidence = _synthesis_optional_float(value.get("confidence"))
+    if skill_id is None or agent_name is None or signal is None or confidence is None:
+        return None
+    return {
+        "skill_id": skill_id,
+        "agent_name": agent_name,
+        "signal": signal,
+        "confidence": confidence,
+        "reasoning": _synthesis_optional_str(value.get("reasoning")),
+    }
+
+
+def _synthesis_string_list(value: Any) -> Optional[List[str]]:
+    """Keep only the string members of a list; any other shape degrades to None."""
+    if not isinstance(value, list):
+        return None
+    return [entry for entry in value if isinstance(entry, str)]
+
+
+def _synthesis_conflict_entries(value: Any) -> List[Dict[str, Any]]:
+    """Sanitize conflict entries field by field for the typed projection.
+
+    Issue #2071 review fix (OR-COR-12e5b2ef): conflicts used to pass through
+    with only a non-dict filter, so a malformed entry field (e.g. ``severity``
+    as an object, ``description_key`` as a list) reached the Web card and
+    broke rendering as an invalid React child. Display fields are now
+    type-guarded in place — a malformed value becomes ``None`` (JSON
+    ``null``) while the rest of the entry, its unknown keys and its
+    well-formed sibling fields stay intact. The Pydantic declaration remains
+    ``List[Dict[str, Any]]`` (values are sanitized, not reshaped).
+    """
+    if not isinstance(value, list):
+        return []
+    entries: List[Dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        entry = dict(item)
+        if "conflict_type" in entry:
+            entry["conflict_type"] = _synthesis_optional_str(entry["conflict_type"])
+        if "severity" in entry:
+            entry["severity"] = _synthesis_optional_str(entry["severity"])
+        if "description_key" in entry:
+            entry["description_key"] = _synthesis_optional_str(entry["description_key"])
+        if "participants" in entry:
+            entry["participants"] = _synthesis_string_list(entry["participants"])
+        if "metadata" in entry and not isinstance(entry["metadata"], dict):
+            entry["metadata"] = None
+        entries.append(entry)
+    return entries
+
+
+def _synthesis_revision_projection(value: Any) -> Optional[Dict[str, Any]]:
+    """Sanitize the revision-preview block field by field for the typed projection.
+
+    Issue #2071 review fix (OR-COR-12e5b2ef): the preview dict used to be
+    shallow-copied verbatim, so a malformed ``projected_signal`` (an object
+    instead of a string) reached the Web card and crashed
+    ``normalizeSignal``. Every contract display field is type-guarded here: a
+    malformed value becomes ``None`` (JSON ``null``) while well-formed
+    sibling fields — and unknown keys — are preserved untouched. The Pydantic
+    declaration remains ``Optional[Dict[str, Any]]`` (values are sanitized,
+    not reshaped).
+    """
+    if not isinstance(value, dict):
+        return None
+    projected = dict(value)
+    for key in (
+        "status",
+        "mode",
+        "source_mode",
+        "projected_signal",
+        "projected_conflict_severity",
+        "projected_consensus_level",
+    ):
+        if key in projected:
+            projected[key] = _synthesis_optional_str(projected[key])
+    for key in (
+        "projected_weighted_score",
+        "projected_confidence",
+        "projected_original_confidence",
+    ):
+        if key in projected:
+            projected[key] = _synthesis_optional_float(projected[key])
+    for key in ("projected_conflict_count", "changed_skill_count"):
+        if key in projected:
+            projected[key] = _synthesis_optional_int(projected[key])
+    if "changed_skills" in projected:
+        projected["changed_skills"] = _synthesis_string_list(projected["changed_skills"])
+    if "final_signal_overridden" in projected and not isinstance(
+        projected["final_signal_overridden"], bool
+    ):
+        projected["final_signal_overridden"] = None
+    return projected
+
+
+def project_strategy_synthesis_for_details(raw_result: Any) -> Optional[Dict[str, Any]]:
+    """Typed low-sensitivity projection for ``report.details.strategy_synthesis``.
+
+    Issue #2071: the API layer exposes the strategy synthesis payload as a
+    typed, whitelisted structure while ``details.raw_result`` keeps the
+    dashboard原文 untouched.
+
+    Gate: only payloads carrying
+    ``schema_version == "strategy-synthesis-v1"`` are projected. Legacy
+    reports (key missing or ``None``) and unknown future versions project to
+    ``None``. After :func:`normalize_strategy_synthesis_payload` a missing key
+    and a ``None`` value are indistinguishable by design, so both are treated
+    as legacy — do not rely on key existence.
+
+    Every whitelisted field is type-sanitized here so the Pydantic
+    ``StrategySynthesis`` schema never receives a malformed shape: malformed
+    payloads degrade per field (or to the whole field being ``None``) instead
+    of raising, so no API path can 500 on a legacy/malformed record.
+    """
+    if not isinstance(raw_result, dict):
+        return None
+    dashboard = raw_result.get("dashboard")
+    if not isinstance(dashboard, dict):
+        return None
+    payload = normalize_strategy_synthesis_payload(dashboard.get("strategy_synthesis"))
+    if payload.get("schema_version") != STRATEGY_SYNTHESIS_PROJECTABLE_SCHEMA_VERSION:
+        return None
+    summary_params = payload.get("summary_params")
+    conflicts = payload.get("conflicts")
+    deliberation = payload.get("deliberation")
+    revision_projection = payload.get("revision_projection")
+    return {
+        "schema_version": payload["schema_version"],
+        "final_signal": _synthesis_optional_str(payload.get("final_signal")),
+        "weighted_score": _synthesis_optional_float(payload.get("weighted_score")),
+        "confidence": _synthesis_optional_float(payload.get("confidence")),
+        "original_confidence": _synthesis_optional_float(payload.get("original_confidence")),
+        "consensus_level": _synthesis_optional_str(payload.get("consensus_level")),
+        "conflict_count": _synthesis_optional_int(payload.get("conflict_count")),
+        "conflict_severity": _synthesis_optional_str(payload.get("conflict_severity")),
+        "summary_key": _synthesis_optional_str(payload.get("summary_key")),
+        "summary_params": dict(summary_params) if isinstance(summary_params, dict) else None,
+        "signal_distribution": _synthesis_signal_distribution(
+            payload.get("signal_distribution")
+        ),
+        "supporting_skills": _synthesis_skill_entries(payload.get("supporting_skills")),
+        "opposing_skills": _synthesis_skill_entries(payload.get("opposing_skills")),
+        "primary_dissent": _synthesis_primary_dissent(payload.get("primary_dissent")),
+        "conflicts": _synthesis_conflict_entries(conflicts),
+        "deliberation": dict(deliberation) if isinstance(deliberation, dict) else None,
+        "revision_projection": _synthesis_revision_projection(revision_projection),
+    }
 
 
 def strategy_invalid_opinion_count(strategy_synthesis: Any) -> int:
