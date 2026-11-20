@@ -23,6 +23,7 @@ interface ReportPriceLevelsChartProps {
   bars: StockKLineItem[];
   strategy?: ReportStrategy;
   language?: ReportLanguage;
+  onRetry?: () => void;
 }
 
 const LevelsTooltip: React.FC<{
@@ -50,9 +51,10 @@ export const ReportPriceLevelsChart: React.FC<ReportPriceLevelsChartProps> = ({
   bars,
   strategy,
   language = 'zh',
+  onRetry,
 }) => {
   const isEnglish = normalizeReportLanguage(language) === 'en';
-  const data = useMemo(() => enrichBarsWithMovingAverages(bars), [bars]);
+  const data = useMemo(() => enrichBarsWithMovingAverages(bars, 60), [bars]);
 
   const idealBuy = parseStrategyPriceLevel(strategy?.idealBuy);
   const secondaryBuy = parseStrategyPriceLevel(strategy?.secondaryBuy);
@@ -76,8 +78,17 @@ export const ReportPriceLevelsChart: React.FC<ReportPriceLevelsChartProps> = ({
 
   if (data.length === 0) {
     return (
-      <div className="rounded-xl border border-border/60 bg-background/40 px-3 py-4 text-center text-xs text-muted-text">
-        {isEnglish ? 'No daily K-line history available for price overlay.' : '暂无可用的日线历史行情数据。'}
+      <div className="mb-3 flex flex-wrap items-center justify-center gap-2 rounded-xl border border-border/60 bg-background/40 px-3 py-4 text-center text-xs text-muted-text">
+        <span>{isEnglish ? 'No daily K-line history available for price overlay.' : '暂无可用的日线历史行情数据。'}</span>
+        {onRetry ? (
+          <button
+            type="button"
+            onClick={onRetry}
+            className="rounded border border-border/70 px-2 py-0.5 text-[11px] font-medium text-foreground hover:bg-hover"
+          >
+            {isEnglish ? 'Retry' : '重新加载'}
+          </button>
+        ) : null}
       </div>
     );
   }
@@ -94,6 +105,11 @@ export const ReportPriceLevelsChart: React.FC<ReportPriceLevelsChartProps> = ({
           {idealBuy != null ? (
             <span className="text-sky-500">
               {isEnglish ? 'Ideal Buy' : '理想买点'}: <strong className="font-mono">{idealBuy}</strong>
+            </span>
+          ) : null}
+          {secondaryBuy != null ? (
+            <span className="text-amber-500">
+              {isEnglish ? 'Secondary Buy' : '次优买点'}: <strong className="font-mono">{secondaryBuy}</strong>
             </span>
           ) : null}
           {stopLoss != null ? (
@@ -160,6 +176,14 @@ export const ReportPriceLevelsChart: React.FC<ReportPriceLevelsChartProps> = ({
                 stroke="#0ea5e9"
                 strokeDasharray="4 4"
                 label={{ value: `${isEnglish ? 'Buy' : '买'} ${idealBuy}`, position: 'insideBottomRight', fill: '#0ea5e9', fontSize: 10 }}
+              />
+            ) : null}
+            {secondaryBuy != null ? (
+              <ReferenceLine
+                y={secondaryBuy}
+                stroke="#f59e0b"
+                strokeDasharray="3 3"
+                label={{ value: `${isEnglish ? '2nd' : '次'} ${secondaryBuy}`, position: 'insideTopLeft', fill: '#f59e0b', fontSize: 10 }}
               />
             ) : null}
             {stopLoss != null ? (

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { LineChart } from 'lucide-react';
 import { getParsedApiError } from '../../api/error';
 import { stocksApi, type StockKLineItem } from '../../api/stocks';
@@ -13,6 +13,14 @@ interface ReportStrategyProps {
   language?: ReportLanguage;
   recordId?: number;
   stockCode?: string;
+}
+
+interface ChartState {
+  key: string;
+  open: boolean;
+  loading: boolean;
+  bars: StockKLineItem[] | null;
+  error: string | null;
 }
 
 interface StrategyItemProps {
@@ -49,10 +57,21 @@ export const ReportStrategy: React.FC<ReportStrategyProps> = ({
   recordId,
   stockCode,
 }) => {
-  const [showChart, setShowChart] = useState(false);
-  const [isLoadingChart, setIsLoadingChart] = useState(false);
-  const [chartBars, setChartBars] = useState<StockKLineItem[] | null>(null);
-  const [chartError, setChartError] = useState<string | null>(null);
+  const reportKey = `${recordId ?? 0}:${(stockCode ?? '').trim().toUpperCase()}`;
+  const [chartState, setChartState] = useState<ChartState>({
+    key: '',
+    open: false,
+    loading: false,
+    bars: null,
+    error: null,
+  });
+  const activeKeyRef = useRef(reportKey);
+  const requestSeqRef = useRef(0);
+
+  useEffect(() => {
+    activeKeyRef.current = reportKey;
+    requestSeqRef.current += 1;
+  }, [reportKey]);
 
   if (!strategy) {
     return null;
@@ -65,22 +84,67 @@ export const ReportStrategy: React.FC<ReportStrategyProps> = ({
     recordId && recordId > 0 && stockCode && typeof stocksApi?.getHistory === 'function',
   );
 
-  const handleToggleChart = async () => {
-    const nextOpen = !showChart;
-    setShowChart(nextOpen);
-    if (!nextOpen || chartBars !== null || !stockCode || !canShowChart || isLoadingChart) {
+  const isSameReport = chartState.key === reportKey;
+  const showChart = isSameReport ? chartState.open : false;
+  const isLoadingChart = isSameReport ? chartState.loading : false;
+  const chartBars = isSameReport ? chartState.bars : null;
+  const chartError = isSameReport ? chartState.error : null;
+
+  const fetchChartBars = async (forceRefresh = false) => {
+    if (!stockCode || !canShowChart || isLoadingChart) {
       return;
     }
-    setIsLoadingChart(true);
-    setChartError(null);
+    if (!forceRefresh && chartBars !== null && chartBars.length > 0) {
+      return;
+    }
+    const targetKey = reportKey;
+    const reqId = ++requestSeqRef.current;
+    setChartState({
+      key: targetKey,
+      open: true,
+      loading: true,
+      bars: chartBars,
+      error: null,
+    });
     try {
       const res = await stocksApi.getHistory(stockCode, 60, 'daily');
-      setChartBars(res.data || []);
+      if (activeKeyRef.current !== targetKey || requestSeqRef.current !== reqId) {
+        return;
+      }
+      setChartState({
+        key: targetKey,
+        open: true,
+        loading: false,
+        bars: res.data || [],
+        error: null,
+      });
     } catch (err) {
-      setChartError(getParsedApiError(err).message);
-    } finally {
-      setIsLoadingChart(false);
+      if (activeKeyRef.current !== targetKey || requestSeqRef.current !== reqId) {
+        return;
+      }
+      setChartState({
+        key: targetKey,
+        open: true,
+        loading: false,
+        bars: chartBars,
+        error: getParsedApiError(err).message,
+      });
     }
+  };
+
+  const handleToggleChart = async () => {
+    const nextOpen = !showChart;
+    setChartState({
+      key: reportKey,
+      open: nextOpen,
+      loading: false,
+      bars: chartBars,
+      error: nextOpen ? null : chartError,
+    });
+    if (!nextOpen) {
+      return;
+    }
+    await fetchChartBars(false);
   };
 
   const strategyItems = [
@@ -130,7 +194,12 @@ export const ReportStrategy: React.FC<ReportStrategyProps> = ({
       />
       {chartError ? <p className="mb-3 text-xs text-rose-500">{chartError}</p> : null}
       {showChart && chartBars ? (
-        <ReportPriceLevelsChart bars={chartBars} strategy={strategy} language={reportLanguage} />
+        <ReportPriceLevelsChart
+          bars={chartBars}
+          strategy={strategy}
+          language={reportLanguage}
+          onRetry={() => void fetchChartBars(true)}
+        />
       ) : null}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         {strategyItems.map((item) => (
