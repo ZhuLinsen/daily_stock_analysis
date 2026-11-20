@@ -1783,7 +1783,11 @@ def main(argv: Optional[List[str]] = None) -> int:
             print(json.dumps(res, ensure_ascii=False, indent=2))
         else:
             print(f"Generated minimal config: {res['path']} (provider={res['provider']}, stocks={res['stocks']})")
-            for step in res["next_steps"]:
+            next_steps = res.get("next_steps") or [
+                f"Fill {res['env_key']} in the generated file if left blank",
+                "python main.py --serve-only",
+            ]
+            for step in next_steps:
                 print(step)
         return 0
     if getattr(args, "json", False):
