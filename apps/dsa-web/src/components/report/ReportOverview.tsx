@@ -260,10 +260,10 @@ export const ReportOverview: React.FC<ReportOverviewProps> = ({
                   {/* 价格和涨跌幅 */}
                   {meta.currentPrice != null && (
                     <div className="flex items-baseline gap-2">
-                      <span className="text-xl font-bold font-mono" style={getPriceChangeStyle(meta.changePct)}>
+                      <span className="num text-xl font-bold font-mono" style={getPriceChangeStyle(meta.changePct)}>
                         {meta.currentPrice.toFixed(2)}
                       </span>
-                      <span className="text-sm font-semibold font-mono" style={getPriceChangeStyle(meta.changePct)}>
+                      <span className="num text-sm font-semibold font-mono" style={getPriceChangeStyle(meta.changePct)}>
                         {formatChangePct(meta.changePct)}
                       </span>
                     </div>
