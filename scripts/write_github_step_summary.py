@@ -7,6 +7,7 @@ import argparse
 from datetime import datetime
 import os
 from pathlib import Path
+import re
 import sys
 from typing import List, Optional, Sequence
 
@@ -17,6 +18,8 @@ if str(_REPO_ROOT) not in sys.path:
 
 
 _DEFAULT_MAX_BYTES = 200_000
+_CROSS_MIDNIGHT_WINDOW_SECONDS = 7_200
+_AGGREGATE_REPORT_RE = re.compile(r"^report_\d{8}\.md$")
 
 
 def _redact_text(text: str) -> Optional[str]:
@@ -33,8 +36,12 @@ def _truncate_utf8_bytes(text: str, max_bytes: int) -> tuple[str, bool]:
     encoded = text.encode("utf-8", errors="ignore")
     if len(encoded) <= max_bytes:
         return text, False
-    truncated = encoded[:max_bytes].decode("utf-8", errors="ignore").rstrip()
+    truncated = encoded[: max(0, max_bytes)].decode("utf-8", errors="ignore").rstrip()
     return truncated, True
+
+
+def _mtime_name_key(path: Path) -> tuple[float, str]:
+    return (path.stat().st_mtime, path.name)
 
 
 def _select_report_files(reports_dir: Path, target_date: Optional[str] = None) -> List[Path]:
@@ -43,25 +50,72 @@ def _select_report_files(reports_dir: Path, target_date: Optional[str] = None) -
 
     date_token = (target_date or datetime.now().strftime("%Y%m%d")).strip()
     candidates = [
-        p for p in reports_dir.iterdir()
-        if p.is_file() and p.suffix.lower() == ".md"
+        p
+        for p in reports_dir.iterdir()
+        if p.is_file()
+        and p.suffix.lower() == ".md"
         and (p.name.startswith("report_") or p.name.startswith("market_review_"))
     ]
     if not candidates:
         return []
 
-    matching = [p for p in candidates if date_token and date_token in p.name]
-    if matching:
-        chosen = matching
-    else:
-        chosen = []
-        for prefix in ("report_", "market_review_"):
-            prefix_candidates = [p for p in candidates if p.name.startswith(prefix)]
-            if prefix_candidates:
-                chosen.append(max(prefix_candidates, key=lambda p: (p.stat().st_mtime, p.name)))
+    agg_stock = [p for p in candidates if _AGGREGATE_REPORT_RE.match(p.name)]
+    single_stock = [
+        p for p in candidates if p.name.startswith("report_") and not _AGGREGATE_REPORT_RE.match(p.name)
+    ]
+    market_reviews = [p for p in candidates if p.name.startswith("market_review_")]
+
+    agg_match = [p for p in agg_stock if date_token and date_token in p.name]
+    single_match = [p for p in single_stock if date_token and date_token in p.name]
+    market_match = [p for p in market_reviews if date_token and date_token in p.name]
+
+    chosen_stock: List[Path] = []
+    chosen_market: List[Path] = []
+
+    if agg_match:
+        chosen_stock = list(agg_match)
+    elif single_match:
+        chosen_stock = list(single_match)
+
+    if market_match:
+        chosen_market = list(market_match)
+
+    # Cross-midnight run pairing (only when clock/date matches one side of a single run):
+    # if stock report saved at 23:59 (day N) and market review saved at 00:01 (day N+1),
+    # pair the partner written within the run window instead of dropping one half.
+    if chosen_market and not chosen_stock:
+        anchor_mtime = max(p.stat().st_mtime for p in chosen_market)
+        if agg_stock:
+            latest_agg = max(agg_stock, key=_mtime_name_key)
+            if abs(anchor_mtime - latest_agg.stat().st_mtime) <= _CROSS_MIDNIGHT_WINDOW_SECONDS:
+                chosen_stock = [latest_agg]
+        elif single_stock:
+            paired_singles = [
+                p for p in single_stock if abs(anchor_mtime - p.stat().st_mtime) <= _CROSS_MIDNIGHT_WINDOW_SECONDS
+            ]
+            if paired_singles:
+                chosen_stock = paired_singles
+
+    if chosen_stock and not chosen_market and market_reviews:
+        anchor_mtime = max(p.stat().st_mtime for p in chosen_stock)
+        latest_mr = max(market_reviews, key=_mtime_name_key)
+        if abs(anchor_mtime - latest_mr.stat().st_mtime) <= _CROSS_MIDNIGHT_WINDOW_SECONDS:
+            chosen_market = [latest_mr]
+
+    # When neither category matched date_token (e.g. manual run on older artifacts),
+    # fall back cleanly to the latest aggregate stock report (or singles if absent) + latest market review.
+    if not chosen_stock and not chosen_market:
+        if agg_stock:
+            chosen_stock = [max(agg_stock, key=_mtime_name_key)]
+        elif single_stock:
+            chosen_stock = [max(single_stock, key=_mtime_name_key)]
+        if market_reviews:
+            chosen_market = [max(market_reviews, key=_mtime_name_key)]
+
+    chosen = chosen_stock + chosen_market
 
     def _sort_key(path: Path) -> tuple[int, float, str]:
-        # Put stock dashboard reports first, then market review, newest first.
+        # Put aggregate/stock reports first, then market review, newest first.
         group = 0 if path.name.startswith("report_") else 1
         return (group, -path.stat().st_mtime, path.name)
 
@@ -79,35 +133,64 @@ def build_step_summary_markdown(
     if not files:
         return ""
 
-    sections: List[str] = ["<!-- dsa-step-summary -->"]
-    for idx, path in enumerate(files):
+    stock_sections: List[str] = []
+    market_sections: List[str] = []
+    for path in files:
         raw = path.read_text(encoding="utf-8", errors="replace").strip()
         if not raw:
             continue
-        if idx > 0:
-            sections.append("\n---\n")
         redacted = _redact_text(raw)
         if redacted is None:
             return ""
-        sections.append(redacted)
+        if path.name.startswith("market_review_"):
+            market_sections.append(redacted)
+        else:
+            stock_sections.append(redacted)
 
-    if len(sections) == 1:
+    if not stock_sections and not market_sections:
         return ""
 
-    footer = "\n\n---\n\n> Full reports and logs are saved in the workflow artifact (`analysis-reports-*`)."
-    body = "\n".join(sections)
+    header = "<!-- dsa-step-summary -->\n"
+    sep = "\n\n---\n\n"
+    footer = "\n\n---\n\n> Full reports and logs are saved in the workflow artifact (`analysis-reports-*`).\n"
+    notice = "\n\n> _(Summary preview truncated to fit Job Summary limit; download `analysis-reports-*` artifact for the complete report.)_"
+    suffix = f"{notice}{footer}"
+
+    stock_body = sep.join(stock_sections)
+    market_body = sep.join(market_sections)
+    if stock_body and market_body:
+        full_body = f"{stock_body}{sep}{market_body}"
+    else:
+        full_body = stock_body or market_body
+
     max_bytes = max(0, int(max_bytes))
-    complete = f"{body}{footer}\n"
+    complete = f"{header}{full_body}{footer}"
     if len(complete.encode("utf-8")) <= max_bytes:
         return complete
 
-    notice = "\n\n> _(Summary preview truncated to fit Job Summary limit; download `analysis-reports-*` artifact for the complete report.)_"
-    suffix = f"{notice}{footer}\n"
-    suffix_bytes = len(suffix.encode("utf-8"))
-    if suffix_bytes >= max_bytes:
-        return _truncate_utf8_bytes(suffix, max_bytes)[0]
-    clipped, _ = _truncate_utf8_bytes(body, max_bytes - suffix_bytes)
-    return f"{clipped}{suffix}"
+    overhead_bytes = len(f"{header}{suffix}".encode("utf-8"))
+    if overhead_bytes >= max_bytes:
+        clipped_all, _ = _truncate_utf8_bytes(f"{header}{suffix}", max_bytes)
+        return clipped_all
+
+    body_budget = max_bytes - overhead_bytes
+    if stock_body and market_body and body_budget > len(sep.encode("utf-8")) + 64:
+        sep_bytes = len(sep.encode("utf-8"))
+        usable = body_budget - sep_bytes
+        market_bytes = len(market_body.encode("utf-8"))
+        reserve_cap = int(usable * 0.4)
+        market_alloc = min(market_bytes, max(reserve_cap, 1)) if market_bytes <= reserve_cap else reserve_cap
+        stock_alloc = usable - market_alloc
+        clipped_stock, _ = _truncate_utf8_bytes(stock_body, stock_alloc)
+        clipped_market, _ = _truncate_utf8_bytes(market_body, market_alloc)
+        body_out = f"{clipped_stock}{sep}{clipped_market}" if clipped_stock and clipped_market else (clipped_stock or clipped_market)
+    else:
+        body_out, _ = _truncate_utf8_bytes(full_body, body_budget)
+
+    result = f"{header}{body_out}{suffix}"
+    if len(result.encode("utf-8")) > max_bytes:
+        result, _ = _truncate_utf8_bytes(result, max_bytes)
+    return result
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
