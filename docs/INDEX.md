@@ -1,83 +1,70 @@
 # 文档中心
 
-这里是项目文档入口。README 负责项目概览和快速开始；更完整的配置、部署、功能说明和排障内容从这里进入。
+> [!TIP]
+> **新手建议从 [3 分钟快速上手指南](QUICKSTART.md) 开始** —— 首次运行只需 `1 个 AI Key + STOCK_LIST` 即可跑通。无需通读 `.env.example` 全文。
 
-## 按场景选择
+---
 
-| 我想要 | 先看 | 继续看 |
+## 🚀 第一步：3 分钟快速上手
+
+| 目标 | 推荐入口 | 说明 |
 | --- | --- | --- |
-| 快速了解项目能做什么 | [README](../README.md) | [完整配置与部署指南](full-guide.md) |
-| 第一次把项目跑起来 | [小白客户端安装与配置](beginner-client-setup.md) | [完整配置与部署指南](full-guide.md) |
-| 配置大模型渠道 | [LLM 配置指南](LLM_CONFIG_GUIDE.md) | [LLM 服务商配置指南](llm-providers.md)（含 xAI Grok 直连） |
-| 配置推送通知 | [通知能力基线](notifications.md) | [完整配置与部署指南](full-guide.md) |
-| 部署到服务器或云平台 | [部署指南](DEPLOY.md) | [云端 WebUI 部署](deploy-webui-cloud.md)、[Zeabur 部署](docker/zeabur-deployment.md) |
-| 使用 Bot / IM 接入 | [Bot 命令与接入](bot-command.md) | [Bot 平台配置](bot/)、[Grok Bot 集成](grok-bot-integration.md) |
-| 排查运行问题 | [FAQ](FAQ.md) | [更新日志](CHANGELOG.md) |
-| 处理数据源失败或降级 | [数据源稳定性与故障处理图示](data-source-stability.md) | [FAQ](FAQ.md) |
-| 确认某个市场支持哪些数据 | [市场支持与边界](market-support.md) | [数据中心](data-center-diagnostics.md) |
-| 参与开发或提交 PR | [贡献指南](CONTRIBUTING.md) | [API 规格](architecture/api_spec.json) |
+| **3 分钟极简跑通（强烈推荐）** | [3 分钟快速上手指南](QUICKSTART.md) | 只配 1 个 AI Key + 自选股的最小路径 |
+| **图形化桌面端小白教程** | [小白客户端安装与配置](beginner-client-setup.md) | 零命令行安装与常见问题 |
+| **项目概览与核心功能** | [README](../README.md) | 项目定位、支持市场、快速开始 |
+| **排查报错与运行问题** | [FAQ](FAQ.md) | 常见配置、行情源与运行故障排查 |
 
-## 快速开始
+---
 
-| 文档 | 内容 |
+## ⚙️ 第二步：常用配置与部署
+
+| 我想要 | 先看 | 延伸阅读 |
+| --- | --- | --- |
+| 配置大模型 / 多渠道容灾 | [LLM 配置指南](LLM_CONFIG_GUIDE.md) | [LLM 服务商配置指南](llm-providers.md) |
+| 配置推送通知（微信/飞书/TG/邮件） | [通知能力基线](notifications.md) | [完整配置与部署指南](full-guide.md) |
+| 部署到云服务器 / Docker / Zeabur | [部署指南](DEPLOY.md) | [云端 WebUI 部署](deploy-webui-cloud.md) · [Zeabur 部署](docker/zeabur-deployment.md) |
+| 处理数据源失败 / 确认市场支持边界 | [市场支持与边界](market-support.md) | [数据源稳定性图示](data-source-stability.md) · [数据中心](data-center-diagnostics.md) |
+| 查询特定数据源 / 宏观工具配置 | [TickPlus 接入](tickplus.md) · [FXMacroData 说明](FXMACRODATA.md) | [Tushare 股票列表](TUSHARE_STOCK_LIST_GUIDE.md) |
+
+---
+
+## 📈 第三步：进阶投研、Agent 与可验证战绩
+
+| 功能专题 | 文档 | 内容 |
+| --- | --- | --- |
+| **持仓风险与自选状态** | [组合风险与暴露看板](portfolio-risk-exposure-dashboard.md) · [自选股状态与下一步](watchlist-next-action.md) | 持仓暴露分析、相关性压力测试与首页三段信号 |
+| **智能选股与 ETF 轮动** | [智能选股引擎](screening-engine.md) · [ETF 轮动](etf-rotation.md) | 多因子/自然语言选股与 `--etf-rotation` 双动量策略 |
+| **决策信号与实时告警** | [DecisionSignal 决策信号专题](decision-signals.md) · [实时告警中心](alerts.md) | AI 建议池、止损/观点盯盘规则与推送尝试 |
+| **Bot / 外部 Agent 集成** | [Bot 命令与接入](bot-command.md) · [Bot 平台配置](bot/) | 企业微信/飞书/TG/Discord/Slack 命令 · [Grok Bot](grok-bot-integration.md) · [OpenClaw](openclaw-skill-integration.md) · [Grok Skill](examples/grok_bot/README.md) |
+| **完整指南与专项功能** | [完整配置与部署指南](full-guide.md) | 含 [分享长图](share-images.md) · [资讯情报源](intelligence-sources.md) · [桌面端打包](desktop-package.md) · [Web 设置草稿保护](settings-help.md) |
+
+---
+
+## 🛠️ 开发者参考与内部契约（普通用户可跳过）
+
+<details>
+<summary>展开查看 P0–P7 内部架构契约、API 规格、贡献指南与更新日志</summary>
+
+| 文档 | 说明 |
 | --- | --- |
-| [README](../README.md) | 项目定位、核心能力、快速开始、推送效果 |
-| [小白客户端安装与配置](beginner-client-setup.md) | 面向不会代码用户的客户端下载、AIHubMix 等模型配置、新闻源配置和常见问题 |
-| [完整配置与部署指南](full-guide.md) | 环境准备、运行方式、配置说明、部署路径和常见问题 |
-| [FAQ](FAQ.md) | 常见配置、模型、通知、部署和运行问题 |
-| [数据源稳定性与故障处理图示](data-source-stability.md) | TickPlus（A 股 / ETF 首选）、Tushare、TickFlow、AkShare、Efinance、YFinance、Longbridge 等已接入源的使用场景、fallback 链路和推荐配置 |
-| [数据中心](data-center-diagnostics.md) | 只读 Provider 能力、数据集质量、精确市场支持与运行时优先级 |
-| [市场支持与边界](market-support.md) | A股/港股/美股/日股/韩股/台股的可用数据、suffix 规则、降级边界与不承诺项 |
-| [更新日志](CHANGELOG.md) | 版本变化、能力调整和迁移说明 |
-
-## 配置
-
-| 文档 | 内容 |
-| --- | --- |
-| [LLM 配置指南](LLM_CONFIG_GUIDE.md) | 大模型渠道、三层配置、Web 设置页和常见模型配置 |
-| [LLM 服务商配置指南](llm-providers.md) | Provider 预设、Actions 映射、错误分类和诊断建议 |
-| [LiteLLM YAML 示例](examples/litellm_config.example.yaml) | LiteLLM 多渠道配置示例 |
-| [Grok Bot Skill 示例](examples/grok_bot/README.md) | 给 Grok Bot 粘贴的最小 Skill，调用现有 REST |
-| [通知能力基线](notifications.md) | 企业微信、飞书、Telegram、Discord、Slack、邮件等通知渠道配置 |
-| [Tushare 股票列表指南](TUSHARE_STOCK_LIST_GUIDE.md) | Tushare 股票列表相关配置和使用说明 |
-
-## 使用专题
-
-| 文档 | 内容 |
-| --- | --- |
-| [自选股变化状态与下一步](watchlist-next-action.md) | 首页自选股列表的变化、状态、下一步三段信号、映射规则和后续扩展边界 |
-| [Bot 命令与接入](bot-command.md) | Bot 命令、Webhook、平台接入和回调说明 |
-| [Bot 平台配置](bot/) | 飞书、钉钉、Discord 等 Bot 配置截图和补充说明 |
-| [实时告警中心](alerts.md) | EventMonitor 基线、Web 规则管理、通知结果、冷却状态和 Phase 边界 |
-| [个股研究聚合 API](stock-profile-api.md) | 单一 stock-profile 契约、分块质量状态、代码归一与后续 Web 边界 |
-| [DecisionSignal 决策信号专题](decision-signals.md) | AI 建议池字段语义、API、Web 展示、告警/通知/组合风险联动、后验评估、脱敏、迁移与回滚 |
-| [ETF 轮动](etf-rotation.md) | `--etf-rotation` 规则化双动量轮动：规则、配置、报告章节、参数平原解读与数据告警边界 |
-| [ResearchArtifact 结构化研究产物](research-artifact.md) | structured_report 字段、Thesis / Evidence / Invalidation / Next Action / Data Quality 契约和旧报告兼容边界 |
-| [组合风险与暴露看板](portfolio-risk-exposure-dashboard.md) | 持仓页风险旗标、市场暴露、币种暴露和价格质量聚合展示 |
-| [选股解释契约](screening-explanations.md) | Why Selected / Why Now 的后端确定性解释、来源、质量状态与缺失值边界 |
-| [资讯 / 情报源](intelligence-sources.md) | RSS/Atom 合规资讯源配置、测试、拉取、去重、存储、查询与安全边界 |
-| [分析上下文包契约、运行态消费与可见性](analysis-context-pack.md) | AnalysisContextPack 首版范围、字段质量状态、P1/P2 内部契约、P3 Prompt 摘要消费、P4 历史/API/Web 低敏可见性、P5 数据质量评分、P6 迁移回滚与源码锚点；完整指南补充 #1386 阶段感知分析、迁移与回滚入口 |
-| [图片识别 Prompt](image-extract-prompt.md) | 图片识别股票信息的 Prompt 与使用边界 |
-| [OpenClaw Skill 集成](openclaw-skill-integration.md) | OpenClaw / Skill 外部集成说明 |
-| [Grok Bot 集成](grok-bot-integration.md) | 2026-08-11 Grok Bot（AI teammate）与 DSA REST / DecisionSignal / Skill 的对接边界 |
-
-## 部署与打包
-
-| 文档 | 内容 |
-| --- | --- |
-| [部署指南](DEPLOY.md) | 服务器部署、Docker、systemd、Supervisor 等部署方式 |
-| [云端 WebUI 部署](deploy-webui-cloud.md) | 云服务器访问 WebUI 的部署说明 |
-| [Zeabur 部署](docker/zeabur-deployment.md) | Zeabur 平台部署说明 |
-| [桌面端打包说明](desktop-package.md) | Electron 桌面端和 Web 构建产物打包说明 |
-
-## 参考与开发
-
-| 文档 | 内容 |
-| --- | --- |
-| [API 规格](architecture/api_spec.json) | FastAPI OpenAPI 规格产物 |
 | [贡献指南](CONTRIBUTING.md) | Issue、PR、测试、文档同步和协作要求 |
+| [API 规格](architecture/api_spec.json) | FastAPI OpenAPI 规格产物 |
+| [更新日志](CHANGELOG.md) | 版本变化、能力调整和迁移说明 |
+| [LiteLLM YAML 示例](examples/litellm_config.example.yaml) | LiteLLM 多渠道配置示例 |
+| [个股研究聚合 API](stock-profile-api.md) | stock-profile 契约、分块质量状态与代码归一 |
+| [ResearchArtifact 结构化产物](research-artifact.md) | structured_report 字段与旧报告兼容边界 |
+| [选股解释契约](screening-explanations.md) | Why Selected / Why Now 的确定性解释边界 |
+| [分析上下文包契约](analysis-context-pack.md) | P1–P6 内部上下文包契约、评分与回滚锚点 |
+| [Agent 流式事件与多策略契约](agent-stream-events.md) | 流式事件契约 · [多策略协同契约](multi-strategy-contract.md) · [轨迹评估](agent-trajectory-eval.md) |
+| [运行诊断与可观测规范](run-diagnostics-p0.md) | [P0](run-diagnostics-p0.md) · [P1](run-diagnostics-p1.md) · [P2](run-diagnostics-p2.md) · [P3](run-diagnostics-p3.md) |
+| [Web 设置帮助与草稿保护](settings-draft-protection.md) | Web 设置页草稿保护机制 |
+| [图片识别 Prompt](image-extract-prompt.md) | 图片识别股票信息的 Prompt 与使用边界 |
 
-## 多语言
+</details>
+
+---
+
+## 🌐 多语言文档
 
 | 文档 | 内容 |
 | --- | --- |

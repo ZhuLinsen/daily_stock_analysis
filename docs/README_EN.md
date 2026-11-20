@@ -1,6 +1,6 @@
 <div align="center">
 
-# AI Stock Analysis System
+# 📈 AI Stock Analysis System (DSA)
 
 [![GitHub stars](https://img.shields.io/github/stars/ZhuLinsen/daily_stock_analysis?style=social)](https://github.com/ZhuLinsen/daily_stock_analysis/stargazers)
 [![arXiv](https://img.shields.io/badge/arXiv-2608.26990-b31b1b.svg)](https://arxiv.org/abs/2608.26990)
@@ -21,11 +21,11 @@
   </a>
 </p>
 
-**AI-powered stock analysis system for A-shares / Hong Kong / US / Japanese / Korean / Taiwan stocks**
+> 🤖 **6-Market AI Equity Research Agent & Dashboard** (**US / HK / JP / KR / TW / CN**): multi-source market data, technical & intel analysis, 15-strategy Agent Q&A, signal backtesting, portfolio risk tracking, and read-only **MCP Server**
 
-Analyze your watchlist daily -> generate a decision dashboard -> push to Telegram / Discord / Slack / Email / WeChat Work / Feishu.
+[**Product Preview**](#-product-preview) · [**Key Features**](#-key-features) · [**Quick Start**](#-quick-start) · [**MCP Server**](#-mcp-server-for-claude-code--cursor) · [**Sample Output**](#-sample-output) · [**Docs Index**](./INDEX_EN.md)
 
-[**Product Preview**](#-product-preview) · [**Key Features**](#-key-features) · [**Quick Start**](#-quick-start) · [**Sample Output**](#-sample-output) · [**Documentation Index**](./INDEX_EN.md) · [**Full Guide**](./full-guide_EN.md)
+**[5-Min GitHub Actions](#option-1-github-actions-recommended) · [Docker / Local WebUI](#option-2-local--docker-deployment) · [Download Desktop App](https://github.com/ZhuLinsen/daily_stock_analysis/releases)**
 
 English | [简体中文](../README.md) | [繁體中文](README_CHT.md)
 
@@ -40,11 +40,11 @@ English | [简体中文](../README.md) | [繁體中文](README_CHT.md)
 </table>
 </details>
 
-## 🖥️ Product Preview
+## 💻 Product Preview
 
 <p align="center">
   <a href="assets/readme_workspace_tour_20260510.gif"><img src="assets/readme_workspace_preview.gif" alt="DSA Web workspace demo" width="640"></a><br>
-  <sub>Click the GIF to view the full demo</sub>
+  <sub>Click the GIF to view the full demo (analysis, screening, decision signals, portfolio risk, backtest &amp; Agent chat)</sub>
 </p>
 
 > [!TIP]
@@ -52,222 +52,109 @@ English | [简体中文](../README.md) | [繁體中文](README_CHT.md)
 
 ## ✨ Key Features
 
-| Capability | Coverage |
-|------------|----------|
-| AI decision reports | Core conclusion, score, trend, entry/exit levels, risk alerts, catalysts, and action checklist |
-| Multi-market data | Covers A-shares, Hong Kong, US, Japanese, Korean, Taiwan stocks, and ETFs, with quotes, K-lines, technical indicators, news, announcements, fundamentals, and report context. Data-source coverage and market boundaries are documented in [market boundaries](./market-support.md) |
-| Web / desktop workspace | Manual analysis, task progress, history, full Markdown reports, backtest, portfolio, settings, and light/dark themes |
-| Agent strategy chat | Multi-turn Q&A with 15 built-in strategies across Web/Bot/API |
-| Smart import & autocomplete | Image, CSV/Excel, clipboard import; code/name/pinyin/alias autocomplete |
-| Automation & notifications | GitHub Actions, Docker, local scheduler, FastAPI service, and WeChat Work / Feishu / Telegram / Discord / Slack / Email delivery |
-
-> Detailed fields, fundamental P0 timeout semantics, trading rules, data-source priority, Web/API behavior, and troubleshooting live in the [Full Guide](./full-guide_EN.md).
+| Stage | Core Capabilities & Web Workspace Modules | Docs |
+|-------|-------------------------------------------|------|
+| **Discover** | Multi-factor & natural-language stock screening (`/screening`), market hotspots, rule-based dual-momentum ETF rotation (`--etf-rotation`) | [Screening Engine](./screening-engine.md) · [ETF Rotation](./etf-rotation.md) |
+| **Analyze** | 6-market Decision Dashboard (`/`), market review, multi-turn Agent strategy chat with 15 built-in strategies (`/chat`) | [Full Guide](./full-guide_EN.md) · [Market Boundaries](./market-support.md) |
+| **Verify** | Decision signal pool (`/decision-signals`), win-rate backtest (`/backtest`), data-source diagnostics & run observability | [Decision Signals](./decision-signals.md) · [Data Center](./data-center-diagnostics.md) |
+| **Track** | Portfolio ledger & risk exposure (`/portfolio`, Futu sync), real-time alerts (`/alerts`), token usage (`/usage`) | [Portfolio Risk](./portfolio-risk-exposure-dashboard.md) · [Alerts](./alerts.md) |
+| **Deliver** | Zero-server GitHub Actions schedule, Electron desktop app, Telegram / Discord / Slack / Email / ntfy / Gotify / WeChat / Feishu notifications | [Notifications](./notifications.md) · [Bot Commands](./bot-command_EN.md) |
 
 ### Tech Stack & Data Sources
 
 | Type | Supported |
 |------|-----------|
-| AI Models | [Modelflare](https://modelflare.dev/sign-up?utm_source=github&utm_campaign=daily_stock_analysis), [x6.ai](https://console.x6pro.io/register?code=zJ2qSdns), AIHubMix, Gemini, OpenAI-compatible providers, DeepSeek, Qwen, Claude, Ollama |
-| Market Data | [TickPlus (Recommended)](http://www.tickplus.org/register?reg=5433cf922395), AkShare, Tushare, Pytdx, Baostock, YFinance, Longbridge |
-| News Search | [SerpAPI](https://serpapi.com/github-daily-stock-analysis), Anspire, Tavily, Bocha, Brave, MiniMax, SearXNG |
-| Social Sentiment | Stock Sentiment API for Reddit / X / Polymarket, US stocks only |
-
-> The project includes free market-data sources such as AkShare, Baostock, and YFinance and can run without extra data-source credentials. These free sources can be rate-limited, change upstream contracts, or fluctuate by network condition, so stability is not guaranteed. For scheduled runs, batch analysis, or steadier quotes, configure token-based sources such as Tushare or Longbridge; market coverage, Actions mappings, and fallback rules are documented in [Data Source Configuration](./full-guide_EN.md#data-source-configuration).
+| **AI Models** | [Modelflare](https://modelflare.dev/sign-up?utm_source=github&utm_campaign=daily_stock_analysis), [x6.ai](https://console.x6pro.io/register?code=zJ2qSdns), AIHubMix, Gemini, OpenAI-compatible providers, DeepSeek, Qwen, Claude, Ollama |
+| **Market Data** | YFinance, Longbridge, AkShare, Tushare, [TickPlus](http://www.tickplus.org/register?reg=5433cf922395), Pytdx, Baostock (works out-of-the-box with free sources across US/HK/JP/KR/TW/CN; token sources optional for heavy batches) |
+| **News & Sentiment** | [SerpAPI](https://serpapi.com/github-daily-stock-analysis), Tavily, Brave, Anspire, Bocha, MiniMax, SearXNG; optional Stock Sentiment API (Reddit / X / Polymarket for US tickers) |
 
 ## 🚀 Quick Start
 
+| Entry | Best For | Prerequisite | Link |
+|-------|----------|--------------|------|
+| **GitHub Actions** | Zero-server daily scheduled analysis (Recommended) | **Only 1 AI Model Secret** | [4-Step Setup Below](#option-1-github-actions-recommended) |
+| **Docker / Local WebUI** | Self-hosting, portfolio risk & interactive Agent chat | Docker or Python 3.10+ | [Commands Below](#option-2-local--docker-deployment) · [Deploy Guide](./DEPLOY_EN.md) |
+| **MCP Server (Stdio)** | Exposing 6-market data & reports to Claude Code / Cursor | Python 3.10+ | [MCP Setup Below](#-mcp-server-for-claude-code--cursor) |
+| **Desktop App** | Personal investors preferring a native GUI | 1 AI API Key | [Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) · [Setup Guide](./beginner-client-setup.md) |
+
 ### Option 1: GitHub Actions (Recommended)
 
-> Deploy in about 5 minutes, with no server and no infrastructure cost.
+> Deploy in ~5 minutes with **zero server cost** (LLM API usage is billed by your provider). Only **1 AI model Secret** is needed; `STOCK_LIST` defaults to `600519` (override with e.g. `AAPL,NVDA,hk00700,7203.T,005930.KS,2330.TW`), and notification webhooks are optional.
 
-#### 1. Fork this repository
-
-Click `Fork` in the upper-right corner. A star is very welcome if this project helps you.
-
-#### 2. Configure Secrets
-
-Open your forked repository, then go to `Settings` -> `Secrets and variables` -> `Actions` -> `New repository secret`.
-
-**AI model configuration (configure at least one)**
-
-Start with one provider and one API key. For multi-model routing, image recognition, local models, or advanced routing, see the [LLM Config Guide](./LLM_CONFIG_GUIDE_EN.md).
-
-| Secret Name | Description | Required |
-|-------------|-------------|:--------:|
-| `MODELFLARE_KEY` | [Modelflare](https://modelflare.dev/sign-up?utm_source=github&utm_campaign=daily_stock_analysis) API key for leading global models at lower cost | **Recommended** |
-| `LLM_X6AI_API_KEY` | [x6.ai](https://console.x6pro.io/register?code=zJ2qSdns) API key for affordable access to 100+ models, including Claude and GPT | **Recommended** |
-| `AIHUBMIX_KEY` | AIHubMix API key, one key for multiple model families and a 10% top-up discount for this project | Optional |
-| `GEMINI_API_KEY` | Google Gemini API key | Optional |
-| `ANTHROPIC_API_KEY` | Anthropic Claude API key | Optional |
-| `OPENAI_API_KEY` | OpenAI-compatible API key, including DeepSeek and Qwen-compatible services | Optional |
-| `OPENAI_BASE_URL` / `OPENAI_MODEL` | Fill these when using an OpenAI-compatible provider | Optional |
-
-> Ollama is better suited for local or Docker deployment. GitHub Actions is usually smoother with a cloud API.
-
-**Notification channels (configure at least one)**
-
-| Secret Name | Description |
-|-------------|-------------|
-| `WECHAT_WEBHOOK_URL` | WeChat Work bot |
-| `FEISHU_WEBHOOK_URL` | Feishu bot |
-| `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` | Telegram |
-| `DISCORD_WEBHOOK_URL` | Discord webhook |
-| `SLACK_BOT_TOKEN` + `SLACK_CHANNEL_ID` | Slack bot |
-| `EMAIL_SENDER` + `EMAIL_PASSWORD` | Email push |
-
-More channels, signatures, email groups, and Markdown-to-image settings are in [Notification Configuration](./full-guide_EN.md#notification-channel-configuration).
-
-**Watchlist (required)**
-
-| Secret Name | Description | Required |
-|-------------|-------------|:--------:|
-| `STOCK_LIST` | Watchlist codes, such as `600519,hk00700,AAPL,7203.T,005930.KS,2330.TW`; registered-index explicit codes (e.g. `sh000016`, `930606.CSI`) are supported via the one-shot `--stocks` argument or the GitHub Actions entry — see [Index watchlist configuration](./full-guide_EN.md#index-watchlist-configuration) | ✅ |
-
-**News sources (recommended)**
-
-News search strongly improves sentiment, announcements, events, and catalyst quality. Configure at least one search provider if possible.
-
-| Secret Name | Description | Required |
-|-------------|-------------|:--------:|
-| `SERPAPI_API_KEYS` | [SerpAPI](https://serpapi.com/github-daily-stock-analysis), search-engine results for realtime financial news | **Recommended** |
-| `ANSPIRE_API_KEYS` | Anspire search API key; can also be shared with its LLM gateway | Optional |
-| `TAVILY_API_KEYS` | Tavily, general news search API | Optional |
-| `BOCHA_API_KEYS` | Bocha, Chinese search with AI summaries | Optional |
-| `BRAVE_API_KEYS` | Brave Search, privacy-first search and US-stock news enrichment | Optional |
-| `MINIMAX_API_KEYS` | MiniMax, structured search results | Optional |
-| `SEARXNG_BASE_URLS` | Self-hosted SearXNG instances for quota-free fallback | Optional |
-
-More search providers, social sentiment, and fallback behavior are in [Search Configuration](./full-guide_EN.md#search-service-configuration).
-
-**Market data sources (optional)**
-
-> Free sources like AkShare, Baostock, and YFinance are used by default. "Not configured" messages in the logs are informational and do not affect execution.
-> For more stable data, configure the following secrets per market:
-
-| Secret Name | Market | Description |
-|-------------|:------:|-------------|
-| `TICKPLUS_API_KEY` | A-shares / ETFs | [TickPlus (Recommended)](http://www.tickplus.org/register?reg=5433cf922395): daily bars, realtime indicators and names |
-| `TUSHARE_TOKEN` | A-shares | Improves historical data stability |
-| `LONGBRIDGE_OAUTH_CLIENT_ID` + `LONGBRIDGE_OAUTH_TOKEN_CACHE_B64` | HK/US stocks | Fills in volume ratio, turnover rate, P/E, and other fields |
-
-> See [Data Source Configuration](./full-guide_EN.md#data-source-configuration).
-
-#### 3. Enable Actions
-
-Open the `Actions` tab and click `I understand my workflows, go ahead and enable them`.
-
-#### 4. Manual Test
-
-`Actions` -> `Daily Stock Analysis` -> `Run workflow` -> `Run workflow`.
-
-#### Done
-
-By default, the workflow runs every weekday at 18:00 Beijing time and skips non-trading days. Forced runs, trading-day checks, and resume rules are covered in the [Full Guide](./full-guide_EN.md#scheduled-task-configuration).
+1. **Fork this repository**: Click `Fork` in the upper-right corner (a star is always appreciated!).
+2. **Add at least 1 AI model Secret** (`Settings` -> `Secrets and variables` -> `Actions` -> `New repository secret`):
+   - **1-Secret setup (ready out-of-the-box)**: `MODELFLARE_KEY` ([Modelflare](https://modelflare.dev/sign-up?utm_source=github&utm_campaign=daily_stock_analysis), auto-configures default base URL & model), `AIHUBMIX_KEY`, `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, or official `OPENAI_API_KEY`
+   - **Multi-variable channels / custom endpoints**: For [x6.ai](https://console.x6pro.io/register?code=zJ2qSdns), configure `LLM_CHANNELS=x6ai`, `LLM_X6AI_BASE_URL`, `LLM_X6AI_API_KEY`, and `LLM_X6AI_MODELS` (see [x6.ai channel example](./llm-providers.md#x6ai-聚合平台)); for OpenAI-compatible DeepSeek/Qwen, set `OPENAI_API_KEY` + `OPENAI_BASE_URL` + `OPENAI_MODEL`
+   - **Optional extras**: `STOCK_LIST` (e.g. `AAPL,NVDA,hk00700,7203.T,005930.KS,2330.TW,600519`; see [Index Watchlist](./full-guide_EN.md#index-watchlist-configuration)), `SERPAPI_API_KEYS` / `TAVILY_API_KEYS` (news), `LONGBRIDGE_OAUTH_CLIENT_ID` / `TUSHARE_TOKEN` / `TICKPLUS_API_KEY` (market data), and notification webhooks (`TELEGRAM_BOT_TOKEN`+`TELEGRAM_CHAT_ID`, `DISCORD_WEBHOOK_URL`, `SLACK_BOT_TOKEN`+`SLACK_CHANNEL_ID`, `EMAIL_SENDER`+`EMAIL_PASSWORD`, `NTFY_URL`, `GOTIFY_URL`+`GOTIFY_TOKEN`, `FEISHU_WEBHOOK_URL`, `WECHAT_WEBHOOK_URL`; see [Full Guide](./full-guide_EN.md)).
+3. **Enable Workflows**: Open `Actions` -> click `I understand my workflows, go ahead and enable them`.
+4. **Manual Test & Read Report**: `Actions` -> `每日股票分析` (Daily Stock Analysis workflow) -> `Run workflow`. Check pushed notifications or download the `analysis-reports-*` artifact after completion. Runs every weekday at **18:00 Beijing Time** (skip/resume rules in [Scheduled Task Configuration](./full-guide_EN.md#scheduled-task-configuration)).
 
 ### Option 2: Local / Docker Deployment
 
 ```bash
-# Clone the project
-git clone https://github.com/ZhuLinsen/daily_stock_analysis.git && cd daily_stock_analysis
+# 1. Shallow clone for faster download
+git clone --depth 1 https://github.com/ZhuLinsen/daily_stock_analysis.git && cd daily_stock_analysis
 
-# Install dependencies
+# 2. Install dependencies and launch the Web workspace (configure keys & watchlist directly in Settings)
 pip install -r requirements.txt
-
-# Configure environment variables
-cp .env.example .env && vim .env
-
-# Run analysis
-python main.py
+python main.py --webui-only
 ```
 
-Common commands:
+Open `http://127.0.0.1:8000` in your browser (preview the built-in sample report immediately, or run live analysis after saving a key). For CLI / `.env` workflows:
 
 ```bash
-python main.py --debug
-python main.py --dry-run
-python main.py --stocks 600519,hk00700,AAPL,2330.TW
-python main.py --market-review
-python main.py --schedule
-python main.py --serve-only
+cp .env.example .env && vim .env
+python main.py                               # Full analysis (stocks + market review)
+python main.py --stocks AAPL,hk00700,2330.TW # One-shot analysis for specific tickers
+python main.py --market-review               # Market review only
+python main.py --schedule                    # Local scheduler
+python main.py --serve-only                  # FastAPI + WebUI only
 ```
 
-> Docker deployment, scheduling, and cloud-server WebUI access are documented in the [Full Guide](./full-guide_EN.md).
+> Docker deployment, cloud WebUI access, and `--etf-rotation` are in the [Full Guide](./full-guide_EN.md); multi-model routing and Agent flags are in the [LLM Config Guide](./LLM_CONFIG_GUIDE_EN.md).
+
+## 🔌 MCP Server (for Claude Code / Cursor)
+
+Expose DSA's 6-market quotes, daily history, technical analysis, news search, and persisted reports directly to Claude Code, Cursor, or any MCP-compatible client over stdio (stdlib JSON-RPC 2.0, zero extra dependencies, read-only with secrets redacted and portfolio tools disabled):
+
+```bash
+claude mcp add dsa -- python -m src.mcp_server
+# Optional flags: "--include-macro" (FX/macro read-only) or "--enable-paper-trading" (sandbox with hard stop-loss & 25% cap).
+```
+
 
 ## 📱 Sample Output
 
-### Decision Dashboard
+<details>
+<summary>Click to expand sample outputs (Decision Dashboard &amp; Market Review)</summary>
 
 ```markdown
 🎯 2026-02-08 Decision Dashboard
 Analyzed 3 stocks | 🟢 Buy:0 🟡 Watch:2 🔴 Sell:1
-
-📊 Summary
 🟡 000657: Watch | Score 65 | Bullish
 🟡 600105: Watch | Score 48 | Range-bound
 🔴 300260: Sell | Score 35 | Bearish
+🚨 Risk Alerts: Main-force funds showed notable outflow; chip concentration suggests short-term resistance.
+✨ Positive Catalysts: AI-server supply-chain exposure and recent earnings growth support fundamentals.
 
-🚨 Risk Alerts:
-Risk 1: Main-force funds showed notable outflow.
-Risk 2: Chip concentration suggests short-term resistance.
-
-✨ Positive Catalysts:
-Catalyst 1: AI-server supply-chain exposure remains a market focus.
-Catalyst 2: Recent earnings growth provides fundamental support.
-```
-
-### Market Review
-
-```markdown
 🎯 2026-01-10 Market Review
-
-📊 Major Indices
-- SSE Composite: 3250.12 (🟢+0.85%)
-- SZSE Component: 10521.36 (🟢+1.02%)
-- ChiNext: 2156.78 (🟢+1.35%)
-
-📈 Market Breadth
-Up: 3920 | Down: 1349 | Limit up: 155 | Limit down: 3
-
-🔥 Sector Performance
-Leading: Internet Services, Media & Entertainment, Minor Metals
-Lagging: Insurance, Airlines & Airports, Solar Equipment
+📊 Major Indices: SSE Composite 3250.12 (🟢+0.85%) | SZSE Component 10521.36 (🟢+1.02%) | ChiNext 2156.78 (🟢+1.35%)
+📈 Market Breadth: Up 3920 | Down 1349 | Limit up 155 | Limit down 3
 ```
 
-## ⚙️ Configuration
+</details>
 
-Full environment variables, model routing, notification channels, data-source priority, trading rules, fundamental P0 semantics, and deployment details are in the [Full Guide](./full-guide_EN.md).
+## 🛠️ Troubleshooting & Keeping Updated
 
-## 🖥️ Web UI
-
-The Web workspace supports settings, task monitoring, manual analysis, history reports, full Markdown reports, Agent strategy chat, backtest, portfolio management, smart import, and light/dark themes.
-
-```bash
-python main.py --webui
-python main.py --webui-only
-```
-
-Visit `http://127.0.0.1:8000`. Authentication, smart import, autocomplete, report copying, and cloud-server access are documented in [Local WebUI Management](./full-guide_EN.md#local-webui-management-interface).
-
-## 🤖 Agent Strategy Chat
-
-After configuring any available AI API key, the Web `/chat` page can use strategy chat. Set `AGENT_MODE=false` only if you want to disable it explicitly.
-
-- Built-in strategies include moving-average crossovers, Chan theory, Elliott wave, bull trend, hot themes, event-driven, growth quality, expectation repricing, and more
-- Calls realtime quotes, K-line data, technical indicators, news, and risk context
-- Supports follow-up questions, session export, notification sending, and background execution
-- Supports custom strategy files and experimental multi-agent orchestration
-
-> Agent parameters, `skill` naming compatibility, multi-agent mode, and budget guards are covered in the [Full Guide](./full-guide_EN.md#local-webui-management-interface) and [LLM Config Guide](./LLM_CONFIG_GUIDE_EN.md).
+- **Syncing your fork**: Click `Sync fork` on GitHub regularly for upstream data-source and model fixes; avoid editing workflow YAML directly so syncs stay conflict-free.
+- **60-day schedule pause**: GitHub pauses scheduled workflows in repositories with **no repository activity for 60 days**—re-enable under `Actions` or sync your fork. See [FAQ](./FAQ_EN.md).
 
 ## 📞 Contact
 
 <table>
   <tr>
     <td width="92" valign="top"><strong>Email</strong></td>
-    <td valign="top">
-      <a href="mailto:zhuls345@gmail.com">zhuls345@gmail.com</a><br>
-      Project consulting, deployment support, and feature extensions
-    </td>
+    <td valign="top"><a href="mailto:zhuls345@gmail.com">zhuls345@gmail.com</a> (Consulting, deployment support &amp; custom extensions)</td>
     <td align="center" rowspan="3" valign="middle" width="148">
       <a href="http://xhslink.com/m/tU520DWCKT" target="_blank"><img src="assets/xiaohongshu_tick.jpg" width="112" alt="Xiaohongshu QR code"></a><br>
       <sub>Follow on Xiaohongshu</sub>
@@ -279,16 +166,10 @@ After configuring any available AI API key, the Web `/chat` page can use strateg
   </tr>
   <tr>
     <td width="92" valign="top"><strong>Feedback</strong></td>
-    <td valign="top"><a href="https://github.com/ZhuLinsen/daily_stock_analysis/issues">GitHub Issues</a> · <a href="https://github.com/ZhuLinsen/daily_stock_analysis/discussions">Discussions</a></td>
+    <td valign="top"><a href="https://github.com/ZhuLinsen/daily_stock_analysis/issues">GitHub Issues</a> · <a href="./INDEX_EN.md">Documentation Index</a></td>
   </tr>
 </table>
 
-## 📄 License
+## 📄 License & ⚠️ Disclaimer
 
-[MIT License](../LICENSE) © 2026 ZhuLinsen
-
-If you use or build on this project, attribution with a link back to this repository is appreciated.
-
-## ⚠️ Disclaimer
-
-This project is for informational and educational purposes only. AI-generated analysis is not investment advice. Stock market investing involves risk; do your own research and consult a licensed financial advisor when needed.
+[MIT License](../LICENSE) © 2026 ZhuLinsen — Attribution with a link back to this repository is appreciated. This project is for informational and educational purposes only and is not investment advice; stock investing involves risk.

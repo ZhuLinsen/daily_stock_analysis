@@ -1,82 +1,71 @@
 # English Documentation Index
 
-This is the entry point for project documentation. The README covers the project overview and quick start; detailed setup, configuration, deployment, feature usage, and troubleshooting docs are linked below.
+> [!TIP]
+> **New users:** Start with the [3-Minute Quickstart (ZH)](QUICKSTART.md) or [README (EN)](README_EN.md). You only need **1 AI API Key** and a watchlist (`STOCK_LIST`) — free market data sources work out of the box.
 
 > For Chinese documentation, see [docs/INDEX.md](INDEX.md).
 
-## Choose By Goal
+---
 
-| I want to | Start with | Then read |
+## 🚀 Step 1: 3-Minute Quickstart
+
+| Goal | Start with | Notes |
 | --- | --- | --- |
-| Understand what the project does | [README (EN)](README_EN.md) | [Full Guide (EN)](full-guide_EN.md) |
-| Run the project for the first time | [README (EN)](README_EN.md) | [Full Guide (EN)](full-guide_EN.md) |
-| Configure model providers | [LLM Config Guide (EN)](LLM_CONFIG_GUIDE_EN.md) | [Provider Configuration Guide](llm-providers.md) <sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub> (Chinese-only) |
-| Configure notifications | [Notification Baseline](notifications.md) <sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub> (Chinese-only) | [Full Guide (EN)](full-guide_EN.md) |
-| Deploy to a server or cloud platform | [Deploy Guide (EN)](DEPLOY_EN.md) | [Cloud WebUI Deployment](deploy-webui-cloud.md) <sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub> (Chinese-only), [Zeabur Deployment](docker/zeabur-deployment.md) <sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub> (Chinese-only) |
-| Use Bot / IM integrations | [Bot Commands (EN)](bot-command_EN.md) | [Bot Platform Docs](bot/) <sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub> (Chinese-only) |
-| Troubleshoot runtime issues | [FAQ (EN)](FAQ_EN.md) | [Changelog](CHANGELOG.md) |
-| Troubleshoot data-source failures | [Data-source stability diagrams](data-source-stability.md) <sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub> (Chinese-only) | [FAQ (EN)](FAQ_EN.md) |
-| Confirm what a market supports | [Market Support And Boundaries](market-support.md) (Chinese-only) | [Data Center](data-center-diagnostics.md) (Chinese-only) |
-| Contribute code or docs | [Contributing Guide (EN)](CONTRIBUTING_EN.md) | [API Spec](architecture/api_spec.json) |
+| Understand DSA in 2 minutes | [README (EN)](README_EN.md) | Project overview, features, sample outputs |
+| Desktop client beginner walkthrough | [Beginner Client Setup](beginner-client-setup.md) (Chinese-only) | Installer download, API key setup, FAQ |
+| Troubleshooting & diagnostics | [FAQ (EN)](FAQ_EN.md) | Common configuration, data-source & runtime FAQs |
 
-## Getting Started
+---
 
-| Document | Contents |
-| --- | --- |
-| [README (EN)](README_EN.md) | Project overview, key features, quick start, sample output |
-| [Full Guide (EN)](full-guide_EN.md) | Environment setup, run modes, configuration, deployment paths, and common issues |
-| [FAQ (EN)](FAQ_EN.md) | Common configuration, model, notification, deployment, and runtime issues |
-| [Data-source stability diagrams](data-source-stability.md) <sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub> (Chinese-only) | TickPlus (preferred for A-shares / ETFs), existing-source routing, fallback chains and configuration profiles |
-| [Data Center](data-center-diagnostics.md) (Chinese-only) | Read-only provider capabilities, exact dataset/market support, quality states, and runtime priorities |
-| [Market Support And Boundaries](market-support.md) (Chinese-only) | Market coverage, suffix rules, degraded capabilities, and explicit non-goals for A/H/US/JP/KR/TW stocks |
-| [Changelog](CHANGELOG.md) | Release notes, capability changes, and migration notes |
+## ⚙️ Step 2: Configuration & Deployment
 
-## Configuration
+| Goal | Start with | Then read |
+| --- | --- | --- |
+| Configure AI model providers | [LLM Config Guide (EN)](LLM_CONFIG_GUIDE_EN.md) | [Provider Configuration Guide](llm-providers.md) (Chinese-only) |
+| Configure push notifications | [Notification Baseline](notifications.md) (Chinese-only) | [Full Guide (EN)](full-guide_EN.md) |
+| Deploy to server / Docker / cloud | [Deploy Guide (EN)](DEPLOY_EN.md) | [Cloud WebUI](deploy-webui-cloud.md) · [Zeabur](docker/zeabur-deployment.md) (Chinese-only) |
+| Market support & data sources | [Market Support And Boundaries](market-support.md) (Chinese-only) | [Data-source stability diagrams](data-source-stability.md) · [Data Center](data-center-diagnostics.md) |
+| Specific data / macro adapters | [FXMacroData Integration](FXMACRODATA_EN.md) | [TickPlus Integration](tickplus.md) · [Tushare Stock List Guide](TUSHARE_STOCK_LIST_GUIDE.md) |
 
-| Document | Contents |
-| --- | --- |
-| [LLM Config Guide (EN)](LLM_CONFIG_GUIDE_EN.md) | Model providers, three-tier configuration, Web settings, and common model setup |
-| [Provider Configuration Guide](llm-providers.md) <sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub> (Chinese-only) | Provider presets, GitHub Actions mapping, error categories, and diagnostics |
-| [LiteLLM YAML Example](examples/litellm_config.example.yaml) | Example LiteLLM multi-provider configuration |
-| [Notification Baseline](notifications.md) <sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub> (Chinese-only) | WeChat Work, Feishu, Telegram, Discord, Slack, Email, and other notification channels |
-| [Tushare Stock List Guide](TUSHARE_STOCK_LIST_GUIDE.md) <sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub> (Chinese-only) | Tushare stock-list configuration and usage notes |
+---
 
-## Usage Topics
+## 📈 Step 3: Portfolio, Screening, Bots & Verifiable Arena
 
-| Document | Contents |
-| --- | --- |
-| [Watchlist Change, State, And Next Action](watchlist-next-action.md) <sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub> (Chinese-only) | Three compact signals shown for each stock in the home-page watchlist, their mapping rules, and the boundary for later extensions |
-| [Bot Commands (EN)](bot-command_EN.md) | Bot commands, webhooks, platform integration, and callback behavior |
-| [Bot Platform Docs](bot/) <sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub> (Chinese-only) | Feishu, DingTalk, Discord, and related Bot configuration screenshots and notes |
-| [Real-Time Alert Center](alerts.md) <sub><sub>![P4 Badge](https://img.shields.io/badge/P4-yellow?style=flat)</sub></sub> (Chinese-only) | EventMonitor baseline, Web rule management, notification attempts, cooldown state, and phase boundaries |
-| [Stock Profile API](stock-profile-api.md) <sub><sub>![P1 Badge](https://img.shields.io/badge/P1-yellow?style=flat)</sub></sub> (Chinese-only) | Single stock-profile contract, per-block quality status, code normalization, and Web phase boundaries |
-| [DecisionSignal Topic](decision-signals.md) <sub><sub>![P7 Badge](https://img.shields.io/badge/P7-orange?style=flat)</sub></sub> (Chinese-only) | AI signal fields, API, Web display, alert/notification/portfolio-risk linkage, outcome evaluation, redaction, migration, and rollback |
-| [ETF Rotation](etf-rotation.md) (Chinese-only) | Rule-based dual-momentum ETF rotation via `--etf-rotation`: rules, config, report sections, parameter-plateau reading, and data-quality warnings |
-| [ResearchArtifact Contract](research-artifact.md) <sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub> (Chinese-only) | Structured thesis, evidence, invalidation conditions, deterministic fallback identity, and the boundary before persistence/API integration |
-| [Portfolio Risk And Exposure Dashboard](portfolio-risk-exposure-dashboard.md) <sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub> (Chinese-only) | Portfolio-page risk flags, market/currency exposure, classified-sector handling, and price-quality aggregation |
-| [Screening Explanation Contract](screening-explanations.md) <sub><sub>![P5 Badge](https://img.shields.io/badge/P5-orange?style=flat)</sub></sub> (Chinese-only) | Deterministic Why Selected / Why Now explanations, provenance, quality, and missing-value boundaries |
-| [Analysis Context Pack Contract, Runtime Consumption, And Visibility](analysis-context-pack.md) <sub><sub>![P6 Badge](https://img.shields.io/badge/P6-orange?style=flat)</sub></sub> (Chinese-only) | AnalysisContextPack first-scope boundaries, field quality states, P1/P2 internal contracts, P3 prompt-summary consumption, P4 history/API/Web low-sensitivity visibility, P5 data-quality scoring, and P6 migration/rollback notes, plus source anchors; the full guide adds #1386 market-phase analysis, migration, and rollback entry points |
-| [Image Extraction Prompt](image-extract-prompt.md) <sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub> (Chinese-only) | Prompt and boundaries for extracting stock information from images |
-| [OpenClaw Skill Integration](openclaw-skill-integration.md) <sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub> (Chinese-only) | OpenClaw / Skill external integration notes |
-| [Grok Bot Integration](grok-bot-integration.md) <sub><sub>![P0 Badge](https://img.shields.io/badge/P0-green?style=flat)</sub></sub> (Chinese-only) | 2026-08-11 Grok Bot (AI teammate) vs LiteLLM `xai/` provider; HTTP / Skill / DecisionSignal consumption |
+| Topic | Document | Contents |
+| --- | --- | --- |
+| **Portfolio & Watchlist Signals** | [Portfolio Risk & Exposure](portfolio-risk-exposure-dashboard.md) · [Watchlist Next Action](watchlist-next-action.md) (Chinese-only) | Concentration/correlation stress-test and home watchlist status signals |
+| **Screening & ETF Rotation** | [Screening Engine](screening-engine.md) · [ETF Rotation](etf-rotation.md) (Chinese-only) | Multi-factor/NL screening & rule-based `--etf-rotation` |
+| **AI Signals & Real-Time Alerts** | [DecisionSignal Topic](decision-signals.md) · [Real-Time Alert Center](alerts.md) (Chinese-only) | AI recommendations, price/thesis watch triggers, notification attempts |
+| **Bot / IM Integrations** | [Bot Commands (EN)](bot-command_EN.md) | [Bot Platform Docs](bot/) · [Grok Bot Integration](grok-bot-integration.md) · [OpenClaw Integration](openclaw-skill-integration.md) · [Grok Bot Skill](examples/grok_bot/README.md) |
+| **Full Reference & Packaging** | [Full Guide (EN)](full-guide_EN.md) | [Share Images](share-images.md) · [Intelligence Sources](intelligence-sources.md) · [Desktop Packaging](desktop-package.md) · [Web Settings Help](settings-help.md) |
 
-## Deployment And Packaging
+---
+
+## 🛠️ Developer Reference & Internal Contracts
+
+<details>
+<summary>Expand developer specs, P0–P7 internal contracts, OpenAPI spec & changelog</summary>
 
 | Document | Contents |
 | --- | --- |
-| [Deploy Guide (EN)](DEPLOY_EN.md) | Server deployment, Docker, systemd, Supervisor, and related options |
-| [Cloud WebUI Deployment](deploy-webui-cloud.md) <sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub> (Chinese-only) | Cloud server WebUI access and deployment notes |
-| [Zeabur Deployment](docker/zeabur-deployment.md) <sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub> (Chinese-only) | Zeabur platform deployment |
-| [Desktop Packaging](desktop-package.md) <sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub> (Chinese-only) | Electron desktop app and Web artifact packaging |
-
-## Reference And Development
-
-| Document | Contents |
-| --- | --- |
+| [Contributing Guide (EN)](CONTRIBUTING_EN.md) | Issues, pull requests, tests, and collaboration expectations |
 | [API Spec](architecture/api_spec.json) | FastAPI OpenAPI artifact |
-| [Contributing Guide (EN)](CONTRIBUTING_EN.md) | Issues, pull requests, tests, documentation sync, and collaboration expectations |
+| [Changelog](CHANGELOG.md) | Release notes and migration notes |
+| [LiteLLM YAML Example](examples/litellm_config.example.yaml) | Multi-provider LiteLLM config template |
+| [Stock Profile API](stock-profile-api.md) (Chinese-only) | Single stock-profile contract and quality states |
+| [ResearchArtifact Contract](research-artifact.md) (Chinese-only) | Structured thesis, evidence, and invalidation boundaries |
+| [Screening Explanation Contract](screening-explanations.md) (Chinese-only) | Deterministic Why Selected / Why Now provenance |
+| [Analysis Context Pack](analysis-context-pack.md) (Chinese-only) | P1–P6 internal context contracts, quality scoring, rollback anchors |
+| [Agent Stream Events & Trajectory Eval](agent-stream-events.md) (Chinese-only) | [Multi-Strategy Contract](multi-strategy-contract.md) · [Trajectory Eval](agent-trajectory-eval.md) |
+| [Run Diagnostics Specs](run-diagnostics-p0.md) (Chinese-only) | [P0](run-diagnostics-p0.md) · [P1](run-diagnostics-p1.md) · [P2](run-diagnostics-p2.md) · [P3](run-diagnostics-p3.md) |
+| [Web Settings Draft Protection](settings-draft-protection.md) (Chinese-only) | Unsaved settings draft guard mechanics |
+| [Image Extraction Prompt](image-extract-prompt.md) (Chinese-only) | Vision prompt for portfolio/watchlist screenshot extraction |
 
-## Languages
+</details>
+
+---
+
+## 🌐 Languages
 
 | Document | Contents |
 | --- | --- |
