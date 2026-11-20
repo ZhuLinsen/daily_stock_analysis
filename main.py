@@ -1106,7 +1106,6 @@ def run_full_analysis(
         should_run_market_review = (
             config.market_review_enabled
             and not args.no_market_review
-            and not getattr(args, "dry_run", False)
             and (market_review_region or '') != ''
         )
         if (

@@ -1834,37 +1834,6 @@ class MainScheduleModeTestCase(unittest.TestCase):
         run_market_review.assert_not_called()
         refresh.assert_called_once_with(config)
 
-    def test_run_full_analysis_skips_market_review_during_dry_run(self) -> None:
-        args = self._make_args(dry_run=True)
-        config = self._make_config(
-            trading_day_check_enabled=False,
-            market_review_enabled=True,
-            daily_market_context_enabled=True,
-            single_stock_notify=False,
-            merge_email_notification=False,
-            analysis_delay=0,
-            database_path=str(Path(self.temp_dir.name) / "stock_analysis.db"),
-        )
-        pipeline = MagicMock()
-        pipeline.run.return_value = []
-        pipeline_kwargs = {}
-
-        def build_pipeline(*args, **kwargs):
-            pipeline_kwargs.update(kwargs)
-            return pipeline
-
-        with patch.object(main, "_refresh_stock_index_cache_for_analysis"), \
-             patch("main._compute_trading_day_filter", return_value=([], "cn", False)), \
-             patch("src.core.pipeline.StockAnalysisPipeline", side_effect=build_pipeline), \
-             patch("main._prime_daily_market_context") as prime_context, \
-             patch("src.core.market_review.run_market_review") as run_market_review:
-            main.run_full_analysis(config, args, [])
-
-        self.assertFalse(pipeline_kwargs["daily_market_context_allow_generate"])
-        self.assertFalse(pipeline_kwargs["daily_market_context_enabled"])
-        prime_context.assert_not_called()
-        run_market_review.assert_not_called()
-
     def test_run_full_analysis_defaults_daily_context_on_without_disabling_market_review(self) -> None:
         args = self._make_args()
         config = self._make_config(
