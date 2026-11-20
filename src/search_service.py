@@ -3688,6 +3688,7 @@ class SearchService:
     @staticmethod
     def _dedup_title_key(title: Any) -> str:
         text = unicodedata.normalize("NFKC", str(title or "")).strip().casefold()
+        text = text.replace("−", "-").replace("﹣", "-").replace("－", "-")
         if not text:
             return ""
         compact: List[str] = []
@@ -3751,12 +3752,22 @@ class SearchService:
             )
             previous_score = previous.relevance_score or 0
             current_score = item.relevance_score or 0
+            # Distinct dated editions are distinct evidence, even when their
+            # headlines are identical (for example, weekly industry reports).
+            if previous_date is not None and current_date is not None and previous_date != current_date:
+                selected.append(item)
+                continue
             if current_bad and not previous_bad:
                 current_wins = False
+            elif previous_date is not None and current_date is None:
+                # A later official/clean undated copy must not erase dated
+                # evidence merely because its source is trusted.
+                current_wins = False
+            elif previous_date is None and current_date is not None:
+                current_wins = not current_bad
             else:
                 current_wins = (
                     (previous_bad and not current_bad)
-                    or (previous_date is None and current_date is not None)
                     or (not previous_official and current_official)
                     or (
                         previous_score == 0
@@ -3883,6 +3894,7 @@ class SearchService:
         response: SearchResponse,
         *,
         max_results: int,
+        deduplicate: bool = True,
     ) -> SearchResponse:
         """Normalize parseable dates without enforcing freshness filtering."""
         if not response.success or not response.results:
@@ -3906,14 +3918,17 @@ class SearchService:
                     retrieved_at=item.retrieved_at,
                 )
             )
-        return self._deduplicate_news_response(SearchResponse(
+        normalized_response = SearchResponse(
             query=response.query,
             results=normalized_results,
             provider=response.provider,
             success=response.success,
             error_message=response.error_message,
             search_time=response.search_time,
-        ), max_results=max_results)
+        )
+        if not deduplicate:
+            return normalized_response
+        return self._deduplicate_news_response(normalized_response, max_results=max_results)
 
     @staticmethod
     def _limit_search_response(
@@ -4711,6 +4726,7 @@ class SearchService:
                 filtered_response = self._normalize_and_limit_response(
                     response,
                     max_results=provider_max_results,
+                    deduplicate=dim["name"] != "industry",
                 )
             filtered_response = self._rank_news_response(
                 filtered_response,

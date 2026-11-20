@@ -15,6 +15,16 @@ from src.agent.tools.registry import ToolParameter, ToolDefinition, ToolPolicy
 
 logger = logging.getLogger(__name__)
 
+
+def _stock_run_cancelled() -> bool:
+    """Avoid doing persistence work after the owning batch slot timed out."""
+    try:
+        from src.core.stock_execution_context import is_current_stock_cancelled
+        return is_current_stock_cancelled()
+    except Exception:
+        return False
+
+
 _NEWS_READ_POLICY = ToolPolicy.declared(
     read_only=True,
     side_effects=["network_read", "db_write_cache"],
@@ -80,6 +90,8 @@ def _persist_news_response(
     response,
 ) -> None:
     """Best-effort news persistence for Agent search tools."""
+    if _stock_run_cancelled():
+        return
     if not response or not getattr(response, "success", False) or not getattr(response, "results", None):
         return
 
@@ -117,6 +129,10 @@ def _handle_search_stock_news(stock_code: str, stock_name: str) -> dict:
         return {"error": "No search engine available (no API keys configured)"}
 
     response = service.search_stock_news(query_code, query_name, max_results=5)
+
+    if _stock_run_cancelled():
+        record_news_evidence(0)
+        return {"error": "Stock analysis timed out while searching news"}
 
     if not response.success:
         # 检索已发起但失败：Agent 这一轮没有拿到新闻证据，必须记 0 而不是不记，
@@ -195,6 +211,10 @@ def _handle_search_comprehensive_intel(stock_code: str, stock_name: str) -> dict
         stock_name=query_name,
         max_searches=6,
     )
+
+    if _stock_run_cancelled():
+        record_news_evidence(0)
+        return {"error": "Stock analysis timed out while searching intelligence"}
 
     if not intel_results:
         # 多维检索已发起但整体没有结果，同样必须记 0（见 _handle_search_stock_news）。

@@ -76,7 +76,7 @@ def test_pipeline_run_isolates_hung_stock_and_saves_completed_results(tmp_path) 
     assert saved_batches[0][1] == ReportType.SIMPLE
 
 
-def test_pipeline_timeout_releases_single_worker_for_queued_stock(tmp_path) -> None:
+def test_pipeline_timeout_does_not_overlap_queued_stock(tmp_path) -> None:
     config = Config(
         stock_list=["HUNG", "FAST"],
         per_stock_timeout_seconds=1,
@@ -112,7 +112,9 @@ def test_pipeline_timeout_releases_single_worker_for_queued_stock(tmp_path) -> N
     )
 
     assert time.monotonic() - started < 2.5
-    assert [result.code for result in results] == ["FAST"]
+    # A timed-out thread remains in flight; starting FAST here would exceed
+    # the configured concurrency limit and allow overlapping provider calls.
+    assert results == []
 
 
 def test_daemon_executor_sets_cancel_context_on_timeout(tmp_path) -> None:

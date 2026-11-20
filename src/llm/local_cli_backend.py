@@ -465,6 +465,23 @@ _CONCURRENCY_CONDITION = threading.Condition()
 _CONCURRENCY_ACTIVE = 0
 
 
+def _stock_run_cancelled() -> bool:
+    """Read the optional per-stock cancellation context without coupling imports."""
+    try:
+        from src.core.stock_execution_context import is_current_stock_cancelled
+        return is_current_stock_cancelled()
+    except Exception:
+        return False
+
+
+def _current_stock_cancel_token():
+    try:
+        from src.core.stock_execution_context import get_current_stock_cancellation
+        return get_current_stock_cancellation()
+    except Exception:
+        return None
+
+
 @dataclass(frozen=True)
 class LocalCliExecutionResult:
     """Raw subprocess output passed to a preset-specific extractor."""
@@ -2203,9 +2220,27 @@ class LocalCliGenerationBackend(GenerationBackend):
                             shell=False,
                             **_popen_session_kwargs(),
                         )
+                        cancel_token = _current_stock_cancel_token()
+                        if cancel_token is not None:
+                            cancel_token.add_callback(
+                                lambda process=process: self._terminate_process_group(process)
+                            )
                         self._emit_progress(stream_progress_callback, 1)
                         deadline = time.monotonic() + timeout_seconds
                         while True:
+                            if _stock_run_cancelled():
+                                self._terminate_process_group(process)
+                                diagnostics.update(_preview_diagnostics_from_files(stdout_path, stderr_path))
+                                raise self._error(
+                                    GenerationErrorCode.TIMEOUT,
+                                    stage="execution",
+                                    retryable=True,
+                                    fallbackable=True,
+                                    details={
+                                        **diagnostics,
+                                        "reason": "stock_analysis_cancelled",
+                                    },
+                                )
                             stdout_handle.flush()
                             stderr_handle.flush()
                             try:

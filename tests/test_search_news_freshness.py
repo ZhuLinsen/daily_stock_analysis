@@ -2581,5 +2581,32 @@ class SearchNewsFreshnessTestCase(unittest.TestCase):
             "https://www.sse.com.cn/disclosure/announcement",
         )
 
+    def test_title_dedup_preserves_unicode_direction_and_dated_evidence(self) -> None:
+        service, _ = self._create_service_with_mock_provider()
+        self.assertNotEqual(
+            service._dedup_title_key("贵州茅台净利同比5%"),
+            service._dedup_title_key("贵州茅台净利同比−5%"),
+        )
+
+        today = datetime.now().date()
+        response = service._deduplicate_news_response(
+            _response([
+                _result("白酒行业周报", (today - timedelta(days=7)).isoformat()),
+                _result("白酒行业周报！", today.isoformat()),
+                _result(
+                    "白酒行业周报",
+                    None,
+                    source="上交所",
+                    url="https://www.sse.com.cn/disclosure/announcement",
+                ),
+            ]),
+            max_results=5,
+        )
+        self.assertEqual(
+            [item.published_date for item in response.results],
+            [(today - timedelta(days=7)).isoformat(), today.isoformat()],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -13,7 +13,6 @@ A股自选股智能分析系统 - 核心分析流水线
 
 import logging
 import inspect
-import math
 import threading
 import time
 from pathlib import Path
@@ -99,6 +98,11 @@ from src.services.decision_signal_extractor import (
 )
 from src.services.stock_list_parser import AnalysisTarget, ParseStatus
 from src.services.decision_signal_summary import summarize_decision_signal
+from src.core.stock_execution_context import (
+    StockCancellationToken,
+    get_current_stock_cancellation,
+    set_current_stock_cancellation,
+)
 from src.enums import ReportType
 from src.stock_analyzer import StockTrendAnalyzer, TrendAnalysisResult
 from src.core.trading_calendar import (
@@ -120,20 +124,24 @@ _STOCK_CANCEL_CTX = threading.local()
 
 def _is_current_stock_cancelled() -> bool:
     """Return True if the current worker thread's stock run timed out or shut down."""
+    token = get_current_stock_cancellation()
+    if token is not None:
+        return token.is_cancelled()
     cancel_event = getattr(_STOCK_CANCEL_CTX, "cancel_event", None)
     return bool(cancel_event is not None and cancel_event.is_set())
 
 
 class _DaemonThreadStockExecutor:
-    """Bounded daemon-thread executor releasing timed-out stock slots immediately."""
+    """Bounded daemon-thread executor with cooperative stock cancellation."""
 
     def __init__(self, timeout_seconds: float, max_workers: int = 1):
         self._timeout_seconds = max(0.0, float(timeout_seconds or 0.0))
         self._max_workers = max(1, int(max_workers or 1))
         self._lock = threading.Lock()
         self._cond = threading.Condition(self._lock)
-        self._queue: List[Tuple[Callable[..., Any], str, Dict[str, Any], Future, threading.Event]] = []
-        self._active: Dict[Future, Tuple[threading.Event, threading.Event]] = {}
+        self._queue: List[Tuple[Callable[..., Any], str, Dict[str, Any], Future, StockCancellationToken]] = []
+        self._active: Dict[Future, Tuple[StockCancellationToken, threading.Event]] = {}
+        self._cancelled: set[Future] = set()
         self._closed = False
 
     def submit(self, function: Callable[..., Any], code: str, **kwargs: Any) -> Future:
@@ -141,32 +149,62 @@ class _DaemonThreadStockExecutor:
         with self._lock:
             if self._closed:
                 raise RuntimeError("daemon stock executor has been shut down")
-            cancel_event = threading.Event()
-            self._queue.append((function, code, kwargs, future, cancel_event))
+            cancel_token = StockCancellationToken()
+            self._queue.append((function, code, kwargs, future, cancel_token))
             self._dispatch_locked()
         return future
 
     def cancel_future(self, future: Future) -> None:
+        cancel_token: Optional[StockCancellationToken] = None
         with self._lock:
             pair = self._active.get(future)
             if pair is not None:
-                cancel_event, done_event = pair
-                cancel_event.set()
-                done_event.set()
+                cancel_token, _done_event = pair
+                self._cancelled.add(future)
+            else:
+                for _, _, _, queued_future, queued_token in self._queue:
+                    if queued_future is future:
+                        cancel_token = queued_token
+                        self._cancelled.add(future)
+                        break
             if not future.done():
                 future.set_result(None)
+        if cancel_token is not None:
+            cancel_token.cancel()
+
+    def was_cancelled(self, future: Future) -> bool:
+        with self._lock:
+            return future in self._cancelled or (
+                future in self._active and self._active[future][0].is_cancelled()
+            )
+
+    def wait_for_cancelled_workers(self, timeout: Optional[float]) -> bool:
+        """Wait for timed-out workers to release real execution slots."""
+        deadline = None if timeout is None else time.monotonic() + max(0.0, timeout)
+        with self._lock:
+            while any(
+                token.is_cancelled() for token, _done_event in self._active.values()
+            ):
+                if deadline is None:
+                    self._cond.wait(timeout=0.05)
+                    continue
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                self._cond.wait(timeout=min(0.05, remaining))
+            return True
 
     def _dispatch_locked(self) -> None:
         while not self._closed and self._queue and len(self._active) < self._max_workers:
-            function, code, kwargs, future, cancel_event = self._queue.pop(0)
-            if future.cancelled() or cancel_event.is_set():
+            function, code, kwargs, future, cancel_token = self._queue.pop(0)
+            if future.cancelled() or cancel_token.is_cancelled():
                 if not future.done():
                     future.set_result(None)
                 continue
 
             done_event = threading.Event()
             slot_released = [False]
-            self._active[future] = (cancel_event, done_event)
+            self._active[future] = (cancel_token, done_event)
 
             def release_slot_once(
                 fut: Future = future,
@@ -184,15 +222,16 @@ class _DaemonThreadStockExecutor:
                 stock_code: str = code,
                 kw: Dict[str, Any] = kwargs,
                 fut: Future = future,
-                c_ev: threading.Event = cancel_event,
+                token: StockCancellationToken = cancel_token,
                 d_ev: threading.Event = done_event,
                 release: Callable[[], None] = release_slot_once,
             ) -> None:
+                prev_token = set_current_stock_cancellation(token)
                 prev_event = getattr(_STOCK_CANCEL_CTX, "cancel_event", None)
-                _STOCK_CANCEL_CTX.cancel_event = c_ev
+                _STOCK_CANCEL_CTX.cancel_event = token
                 try:
                     res = fn(stock_code, **kw)
-                    if c_ev.is_set() or self._closed:
+                    if token.is_cancelled() or self._closed:
                         if not fut.done():
                             fut.set_result(None)
                     elif not fut.done():
@@ -207,9 +246,10 @@ class _DaemonThreadStockExecutor:
                         type(exc).__name__,
                         exc,
                     )
-                    if not fut.done() and not c_ev.is_set():
+                    if not fut.done() and not token.is_cancelled():
                         fut.set_result(None)
                 finally:
+                    set_current_stock_cancellation(prev_token)
                     _STOCK_CANCEL_CTX.cancel_event = prev_event
                     d_ev.set()
                     release()
@@ -224,21 +264,24 @@ class _DaemonThreadStockExecutor:
                 def watchdog(
                     fut: Future = future,
                     stock_code: str = code,
-                    c_ev: threading.Event = cancel_event,
+                    token: StockCancellationToken = cancel_token,
                     d_ev: threading.Event = done_event,
-                    release: Callable[[], None] = release_slot_once,
                 ) -> None:
                     finished = d_ev.wait(timeout=self._timeout_seconds)
-                    if not finished and not c_ev.is_set():
-                        c_ev.set()
+                    if not finished and not token.is_cancelled():
+                        token.cancel()
+                        with self._lock:
+                            self._cancelled.add(fut)
                         logger.warning(
-                            "[%s] 单只股票分析超时 (%ss)，标记取消并释放执行槽位",
+                            "[%s] 单只股票分析超时 (%ss)，标记取消并保留执行槽位直到线程退出",
                             stock_code,
                             self._timeout_seconds,
                         )
                         if not fut.done():
                             fut.set_result(None)
-                        release()
+                        # Keep the slot occupied until the worker really exits.
+                        # A cooperative worker must observe the event before a
+                        # queued stock is allowed to start.
 
                 threading.Thread(
                     target=watchdog,
@@ -247,19 +290,25 @@ class _DaemonThreadStockExecutor:
                 ).start()
 
     def shutdown(self, wait: bool = True, cancel_futures: bool = False) -> None:
+        cancel_tokens: List[StockCancellationToken] = []
         with self._lock:
             self._closed = True
             if cancel_futures:
-                for fut, (cancel_event, done_event) in list(self._active.items()):
-                    cancel_event.set()
+                for fut, (cancel_token, done_event) in list(self._active.items()):
+                    cancel_tokens.append(cancel_token)
+                    self._cancelled.add(fut)
                     done_event.set()
                     if not fut.done():
                         fut.set_result(None)
-                for _, _, _, fut, cancel_event in self._queue:
-                    cancel_event.set()
+                for _, _, _, fut, cancel_token in self._queue:
+                    cancel_tokens.append(cancel_token)
+                    self._cancelled.add(fut)
                     if not fut.done():
                         fut.set_result(None)
                 self._queue.clear()
+        for cancel_token in cancel_tokens:
+            cancel_token.cancel()
+        with self._lock:
             if wait:
                 while self._active or self._queue:
                     self._cond.wait(timeout=0.05)
@@ -572,6 +621,9 @@ class StockAnalysisPipeline:
             if df is None or df.empty:
                 return False, "获取数据为空"
 
+            if _is_current_stock_cancelled():
+                return False, "股票分析已取消"
+
             # 保存到数据库
             saved_count = self.db.save_daily_data(df, code, source_name)
             logger.info(f"{stock_name}({code}) 数据保存成功（来源: {source_name}，新增 {saved_count} 条）")
@@ -614,6 +666,8 @@ class StockAnalysisPipeline:
         """
         stock_name = code
         try:
+            if _is_current_stock_cancelled():
+                return None
             portfolio_context = getattr(self, "portfolio_context", None)
             if not isinstance(portfolio_context, dict):
                 portfolio_context = None
@@ -851,11 +905,15 @@ class StockAnalysisPipeline:
                 # 使用多维度搜索（最多5次搜索）
                 # 指数目标：查询 subject 仅用注册表中文名称，不把 canonical code /
                 # 六码机器码带入查询（Story 1.5 V7）。
+                if _is_current_stock_cancelled():
+                    return None
                 intel_results = self.search_service.search_comprehensive_intel(
                     stock_code=("" if is_index else code),
                     stock_name=stock_name,
                     max_searches=5
                 )
+                if _is_current_stock_cancelled():
+                    return None
 
                 # 格式化情报报告
                 if intel_results:
@@ -871,6 +929,8 @@ class StockAnalysisPipeline:
                     try:
                         query_context = self._build_query_context(query_id=query_id)
                         for dim_name, response in intel_results.items():
+                            if _is_current_stock_cancelled():
+                                return None
                             if response and response.success and response.results:
                                 self.db.save_news_intel(
                                     code=code,
@@ -889,7 +949,11 @@ class StockAnalysisPipeline:
             social_evidence_context: Optional[str] = None
             if self.social_sentiment_service is not None and self.social_sentiment_service.is_available and is_us_stock_code(code):
                 try:
+                    if _is_current_stock_cancelled():
+                        return None
                     social_context = self.social_sentiment_service.get_social_context(code)
+                    if _is_current_stock_cancelled():
+                        return None
                     if social_context:
                         logger.info(f"{stock_name}({code}) Social sentiment data retrieved")
                         social_evidence_context = social_context
@@ -987,6 +1051,8 @@ class StockAnalysisPipeline:
                 )
 
             self._emit_progress(64, f"{stock_name}：正在请求 LLM 生成报告")
+            if _is_current_stock_cancelled():
+                return None
             llm_started_at = time.monotonic()
             try:
                 record_llm_run_started(
@@ -1000,6 +1066,8 @@ class StockAnalysisPipeline:
                     stream_progress_callback=_on_llm_stream,
                     analysis_context_pack_summary=analysis_context_pack_summary,
                 )
+                if _is_current_stock_cancelled():
+                    return None
                 llm_duration_ms = int((time.monotonic() - llm_started_at) * 1000)
                 if result is not None:
                     # 交给展示层区分「未配置渠道」「检索零命中」和「正常命中」。
@@ -1042,6 +1110,8 @@ class StockAnalysisPipeline:
 
             # Step 7.5: 填充分析时的价格信息到 result
             if result:
+                if _is_current_stock_cancelled():
+                    return None
                 self._emit_progress(94, f"{stock_name}：正在校验并整理分析结果")
                 result.query_id = query_id
                 realtime_data = enhanced_context.get('realtime', {})
@@ -1100,6 +1170,8 @@ class StockAnalysisPipeline:
                 return None
             if result and result.success:
                 try:
+                    if _is_current_stock_cancelled():
+                        return None
                     self._emit_progress(97, f"{stock_name}：正在保存分析报告")
                     context_snapshot = self._build_context_snapshot(
                         enhanced_context=enhanced_context,
@@ -1802,6 +1874,8 @@ class StockAnalysisPipeline:
                 reset_news_evidence_scope(news_evidence_token)
 
             # 转换为 AnalysisResult
+            if _is_current_stock_cancelled():
+                return None
             result = self._agent_result_to_analysis_result(
                 agent_result,
                 code,
@@ -2016,11 +2090,15 @@ class StockAnalysisPipeline:
             # 使用 search_stock_news（与 Agent 工具调用逻辑一致），仅 1 次 API 调用，无额外延迟
             if self.search_service is not None and self.search_service.is_available:
                 try:
+                    if _is_current_stock_cancelled():
+                        return None
                     news_response = self.search_service.search_stock_news(
                         stock_code=("" if is_index else code),
                         stock_name=resolved_stock_name,
                         max_results=5
                     )
+                    if _is_current_stock_cancelled():
+                        return None
                     # 这次补查只为持久化新闻情报（Fixes #396），刻意不写
                     # result.news_result_count：它发生在分析结束之后，与 Agent 实际
                     # 消费的证据无关，用它做披露判定会两个方向都失真。真正的计数在
@@ -2049,6 +2127,8 @@ class StockAnalysisPipeline:
                 return None
             if result and result.success:
                 try:
+                    if _is_current_stock_cancelled():
+                        return None
                     agent_context_snapshot = self._build_context_snapshot(
                         enhanced_context={
                             **self._without_runtime_prompt_context(initial_context),
@@ -3577,6 +3657,9 @@ class StockAnalysisPipeline:
             success, error = self.fetch_and_save_stock_data(
                 code, current_time=current_time, analysis_target=analysis_target
             )
+            if _is_current_stock_cancelled():
+                logger.warning("[%s] 已超时取消，跳过后续分析", code)
+                return None
             
             if not success:
                 logger.warning(f"[{code}] 数据获取失败: {error}")
@@ -3595,6 +3678,9 @@ class StockAnalysisPipeline:
             if analysis_target is not None:
                 analyze_kwargs["analysis_target"] = analysis_target
             result = self.analyze_stock(code, report_type, **analyze_kwargs)
+            if _is_current_stock_cancelled():
+                logger.warning("[%s] 已超时取消，丢弃分析结果", code)
+                return None
             
             if result and result.success:
                 logger.info(
@@ -3749,12 +3835,6 @@ class StockAnalysisPipeline:
             0,
             int(getattr(self.config, "per_stock_timeout_seconds", 300) or 0),
         )
-        worker_waves = max(1, math.ceil(len(stock_codes) / max(1, int(self.max_workers or 1))))
-        batch_deadline = (
-            time.monotonic() + (per_stock_timeout * worker_waves)
-            if per_stock_timeout > 0 and stock_codes
-            else None
-        )
 
         # 使用线程池并发处理，并为单只股票卡死提供有界超时隔离
         # 注意：max_workers 设置较低（默认3）以避免触发反爬
@@ -3792,12 +3872,6 @@ class StockAnalysisPipeline:
             completed_count = 0
             while pending:
                 wait_timeout: Optional[float] = None
-                if batch_deadline is not None:
-                    remaining = batch_deadline - time.monotonic()
-                    # Use a final non-blocking drain at the deadline. A future
-                    # may have completed while notification/analysis delay ran.
-                    wait_timeout = max(0.0, remaining)
-
                 done, pending = wait(
                     pending,
                     timeout=wait_timeout,
@@ -3810,6 +3884,8 @@ class StockAnalysisPipeline:
                 for future in done:
                     completed_count += 1
                     code = future_to_code[future]
+                    if getattr(executor, "was_cancelled", lambda _future: False)(future):
+                        timed_out_any = True
                     try:
                         result = future.result()
                         if result and result.success:
@@ -3834,6 +3910,11 @@ class StockAnalysisPipeline:
                     except Exception as e:
                         logger.error(f"[{code}] 任务执行失败: {e}")
 
+                if timed_out_any and pending:
+                    wait_for_slots = getattr(executor, "wait_for_cancelled_workers", None)
+                    if callable(wait_for_slots) and not wait_for_slots(per_stock_timeout):
+                        break
+
             if timed_out_any and pending:
                 timed_out_codes = [future_to_code[f] for f in pending]
                 for future in pending:
@@ -3848,11 +3929,23 @@ class StockAnalysisPipeline:
                     timed_out_codes,
                     len(results),
                 )
+        except (KeyboardInterrupt, SystemExit):
+            # Do not leave queued futures behind when the CLI is interrupted
+            # while wait() is collecting results.  The finally block also
+            # closes the executor, but explicit cancellation makes the
+            # shutdown path deterministic for both executor implementations.
+            for future in locals().get("pending", set()):
+                cancel_fn = getattr(executor, "cancel_future", None)
+                if callable(cancel_fn):
+                    cancel_fn(future)
+                else:
+                    future.cancel()
+            raise
         finally:
             try:
-                executor.shutdown(wait=not timed_out_any, cancel_futures=timed_out_any)
+                executor.shutdown(wait=False, cancel_futures=True)
             except TypeError:
-                executor.shutdown(wait=not timed_out_any)
+                executor.shutdown(wait=False)
         
         # 统计
         elapsed_time = time.time() - start_time

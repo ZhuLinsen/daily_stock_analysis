@@ -1076,29 +1076,51 @@ def _extract_raw_sniper_points(result: "AnalysisResult") -> Dict[str, Any]:
 
     raw_points: Mapping[str, Any] = {}
     if hasattr(result, "get_sniper_points"):
-        candidate = result.get_sniper_points() or {}
+        try:
+            candidate = result.get_sniper_points() or {}
+        except (AttributeError, TypeError):
+            candidate = {}
         if isinstance(candidate, Mapping):
             raw_points = candidate
-    if not raw_points or not any(raw_points.get(k) not in (None, "") for k in ("ideal_buy", "stop_loss", "take_profit")):
+    if not raw_points or not any(raw_points.get(k) not in (None, "") for k in ("ideal_buy", "secondary_buy", "stop_loss", "take_profit")):
         dashboard = getattr(result, "dashboard", None)
         if isinstance(dashboard, Mapping):
             raw_points = find_sniper_points(dashboard) or raw_points
-    if not raw_points or not any(raw_points.get(k) not in (None, "") for k in ("ideal_buy", "stop_loss", "take_profit")):
+    if not raw_points or not any(raw_points.get(k) not in (None, "") for k in ("ideal_buy", "secondary_buy", "stop_loss", "take_profit")):
         raw_response = getattr(result, "raw_response", None)
         if isinstance(raw_response, Mapping):
             raw_points = find_sniper_points(raw_response) or raw_points
     return dict(raw_points)
 
 
-def _extract_sniper_price_only(raw_value: Any) -> Optional[float]:
+def _extract_sniper_price_only(raw_value: Any, current_price: Optional[float] = None) -> Optional[float]:
     """Extract positive finite price from a sniper value, ignoring relative % targets."""
     if isinstance(raw_value, str):
         text = raw_value.strip()
         if not text:
             return None
         pre_paren = text.split("(")[0].split("（")[0]
-        if ("%" in pre_paren or "％" in pre_paren) and not any(m in text for m in _SNIPER_CURRENCY_MARKERS):
+        percent_match = re.search(r"(\d+(?:\.\d+)?)\s*[%％]", text)
+        if percent_match and current_price is not None and not any(
+            marker in text.upper() for marker in _SNIPER_CURRENCY_MARKERS + ("USD",)
+        ):
+            percent = float(percent_match.group(1)) / 100
+            if re.search(r"below|低于|下方|低位", text, re.IGNORECASE):
+                return current_price * (1 - percent)
+            if re.search(r"above|高于|上方|高位", text, re.IGNORECASE):
+                return current_price * (1 + percent)
             return None
+        if percent_match and any(marker in text.upper() for marker in _SNIPER_CURRENCY_MARKERS + ("USD",)):
+            price_match = re.search(
+                r"(?<![A-Za-z])(?:[$¥￥₩]\s*\d+(?:\.\d+)?|"
+                r"\d+(?:\.\d+)?\s*(?:USD|US\$|HK\$|元|¥|￥|円))",
+                pre_paren,
+                re.IGNORECASE,
+            )
+            if price_match:
+                number_match = re.search(r"\d+(?:\.\d+)?", price_match.group(0))
+                if number_match:
+                    return float(number_match.group(0))
     return _extract_positive_finite_float(raw_value)
 
 
@@ -1159,10 +1181,10 @@ def validate_sniper_price_sanity(
             break
 
     raw_points = _extract_raw_sniper_points(result)
-    ideal_buy = _extract_sniper_price_only(raw_points.get("ideal_buy"))
-    secondary_buy = _extract_sniper_price_only(raw_points.get("secondary_buy"))
-    stop_loss = _extract_sniper_price_only(raw_points.get("stop_loss"))
-    take_profit = _extract_sniper_price_only(raw_points.get("take_profit"))
+    ideal_buy = _extract_sniper_price_only(raw_points.get("ideal_buy"), current_price)
+    secondary_buy = _extract_sniper_price_only(raw_points.get("secondary_buy"), current_price)
+    stop_loss = _extract_sniper_price_only(raw_points.get("stop_loss"), current_price)
+    take_profit = _extract_sniper_price_only(raw_points.get("take_profit"), current_price)
 
     decision_type = str(getattr(result, "decision_type", None) or "").strip().lower()
     final_action = normalize_decision_action(getattr(result, "action", None))
@@ -1174,8 +1196,6 @@ def validate_sniper_price_sanity(
     inverted = False
     if is_buy:
         entries = [("ideal_buy", ideal_buy), ("secondary_buy", secondary_buy)]
-        if not any(entry is not None for _, entry in entries):
-            entries = [("current_price", current_price)]
         for entry_name, entry in entries:
             if entry is None:
                 continue
@@ -1186,7 +1206,7 @@ def validate_sniper_price_sanity(
                 warnings.append(f"take_profit_below_{entry_name}")
                 inverted = True
 
-        ref_entry = ideal_buy or secondary_buy or current_price
+        ref_entry = ideal_buy or secondary_buy
         if (
             ref_entry is not None
             and stop_loss is not None

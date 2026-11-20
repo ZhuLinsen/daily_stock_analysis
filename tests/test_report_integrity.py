@@ -757,3 +757,19 @@ class TestSniperPriceSanityChecks(unittest.TestCase):
         )
         no_ideal_warnings = validate_sniper_price_sanity(no_ideal_result, emit_log=False)
         self.assertIn("stop_loss_above_secondary_buy", no_ideal_warnings)
+
+    def test_absolute_price_is_extracted_when_percentage_is_also_present(self) -> None:
+        from src.analyzer import validate_sniper_price_sanity
+
+        result = self._make_buy_result(
+            ideal_buy="10% above spot at 110 USD",
+            stop_loss="95 USD",
+            take_profit="105 USD",
+            current_price=100.0,
+        )
+        warnings = validate_sniper_price_sanity(result, emit_log=False)
+        self.assertIn("take_profit_below_ideal_buy", warnings)
+        self.assertEqual(
+            result.dashboard["data_perspective"]["price_sanity"]["ideal_buy"],
+            110.0,
+        )

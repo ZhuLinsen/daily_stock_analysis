@@ -493,13 +493,17 @@ def _risk_items_duplicate(current: str, previous: str) -> bool:
     # both when the shared phrase is qualified by negation or conditional wording.
     start = longer.find(shorter)
     prefix = longer[:start].lower()
+    suffix = longer[start + len(shorter):].lower()
     negations = (
         "无", "没有", "不存在", "未见", "未发现", "暂无", "不构成", "不具备",
         "no ", "not ", "without ", "none",
     )
     qualifiers = ("若", "如", "如果", "一旦", "若有", "如有", "若出现", "如出现")
+    resolving_terms = ("解除", "已消除", "不存在", "没有", "无")
     if any(negation in prefix for negation in negations) or any(
         qualifier in prefix for qualifier in qualifiers
+    ) or any(
+        term in suffix for term in resolving_terms
     ):
         return False
     return True
