@@ -97,6 +97,11 @@ interface HomeStockWorkspaceProps {
   selectedAssetType?: AssetAwareAssetType | null;
   selectedRecordId?: number;
   onHistoryItemClick: (recordId: number) => void;
+  /** issue #1661 OR-COR-278fd558：日期状态寄存在 HomePage，抽屉卸载重开不回跳今天 */
+  dailyHistoryDate?: string;
+  onDailyHistoryDateChange?: (dateKey: string) => void;
+  /** issue #1661 OR-COM-91cc3feb：最近一份大盘复盘入口（替代旧 MARKET 历史行） */
+  marketReviewEntry?: { id: number; name: string; createdAt?: string } | null;
   className?: string;
 }
 
@@ -402,6 +407,9 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
   selectedAssetType,
   selectedRecordId,
   onHistoryItemClick,
+  dailyHistoryDate,
+  onDailyHistoryDateChange,
+  marketReviewEntry = null,
   className = '',
 }) => {
   const { t } = useUiLanguage();
@@ -505,6 +513,9 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
         <DailyHistoryPanel
           selectedRecordId={selectedRecordId}
           onSelectRecord={onHistoryItemClick}
+          dateKey={dailyHistoryDate}
+          onDateKeyChange={onDailyHistoryDateChange}
+          marketReviewEntry={marketReviewEntry}
           className="flex-1"
         />
       </div>

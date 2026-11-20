@@ -288,6 +288,9 @@ const HomePage: React.FC = () => {
   );
 
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  // issue #1661（OR-COR-278fd558）：手机上点行会关闭并卸载历史抽屉，日期必须
+  // 寄存在本组件（不随抽屉卸载），重开抽屉才能回到所选日期。
+  const [dailyHistoryDate, setDailyHistoryDate] = useState(() => getTodayInShanghai());
   const [isSubmittingMarketReview, setIsSubmittingMarketReview] = useState(false);
   const [marketReviewNotice, setMarketReviewNotice] = useState<MarketReviewNotice>(null);
   const [marketReviewError, setMarketReviewError] = useState<ParsedApiError | null>(null);
@@ -363,6 +366,7 @@ const HomePage: React.FC = () => {
     selectedReport,
     isLoadingReport,
     isHistoryTrendOpen,
+    marketReviewHistoryItems,
     stockHistoryItems,
     stockHistoryTotal,
     stockHistoryHasMore,
@@ -1401,6 +1405,20 @@ const HomePage: React.FC = () => {
     watchlistState.watchlistCodes,
   ]);
 
+  // issue #1661（OR-COM-91cc3feb）：旧个股栏把最近一份大盘复盘注入历史区
+  // （MARKET 行），按日列表替换后由日期回看面板固定入口承接，入口不丢。
+  const marketReviewEntry = useMemo(() => {
+    const latestMarketReview = marketReviewHistoryItems[0];
+    if (!latestMarketReview) {
+      return null;
+    }
+    return {
+      id: latestMarketReview.id,
+      name: latestMarketReview.stockName || t('home.marketReview'),
+      createdAt: latestMarketReview.createdAt,
+    };
+  }, [marketReviewHistoryItems, t]);
+
   const sidebarContent = useMemo(
     () => (
       <div className="flex h-full min-h-0 flex-col gap-2 overflow-hidden">
@@ -1431,6 +1449,9 @@ const HomePage: React.FC = () => {
           selectedAssetType={selectedReport?.meta.assetType ?? null}
           selectedRecordId={selectedReport?.meta.id}
           onHistoryItemClick={handleHistoryItemClick}
+          dailyHistoryDate={dailyHistoryDate}
+          onDailyHistoryDateChange={setDailyHistoryDate}
+          marketReviewEntry={marketReviewEntry}
           className="flex-1"
         />
       </div>
@@ -1438,6 +1459,7 @@ const HomePage: React.FC = () => {
     [
       activeTasks,
       batchAnalyzeStatus,
+      dailyHistoryDate,
       handleAnalyzeWatchlist,
       handleHistoryItemClick,
       handleRefreshWatchlist,
@@ -1446,6 +1468,7 @@ const HomePage: React.FC = () => {
       isLoadingTodayAnalysisItems,
       isStockIndexReady,
       isTaskPanelCollapsed,
+      marketReviewEntry,
       todayAnalysisLoadFailed,
       openTaskRunFlow,
       selectedReport?.meta.id,

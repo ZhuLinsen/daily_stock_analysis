@@ -89,9 +89,89 @@ describe('DailyHistoryPanel', () => {
 
     const rowB = await screen.findByTestId('daily-history-row-12');
     expect(rowB.getAttribute('aria-pressed')).toBe('true');
+    // OR-COR-3a68c9f3：选中态走专用 CSS 类（.home-subpanel 的非分层样式会
+    // 覆盖 Tailwind 分层工具类，必须用同层专用类表达选中）
+    expect(rowB).toHaveClass('home-subpanel-selected');
+    expect(screen.getByTestId('daily-history-row-11')).not.toHaveClass('home-subpanel-selected');
 
     fireEvent.click(screen.getByTestId('daily-history-row-11'));
     expect(onSelectRecord).toHaveBeenCalledWith(11);
+  });
+
+  it('fetches every page of the selected date so all reports are reachable (OR-COR-899887df)', async () => {
+    const pageOne = Array.from({ length: 100 }, (_, index) => ({
+      ...latestOfStockA,
+      id: index + 1,
+      code: `6005${String(index).padStart(2, '0')}`,
+      name: `股票${index + 1}`,
+    }));
+    const pageTwo = [{ ...latestOfStockA, id: 101, code: '000001', name: '平安银行' }];
+    getDaily.mockImplementation((_date: string, options: { page?: number } = {}) => {
+      if ((options.page ?? 1) === 1) {
+        return Promise.resolve({ total: 101, page: 1, limit: 100, items: pageOne });
+      }
+      return Promise.resolve({ total: 101, page: 2, limit: 100, items: pageTwo });
+    });
+
+    render(<DailyHistoryPanel selectedRecordId={null} onSelectRecord={vi.fn()} />);
+
+    // 第 21 只起的报告此前不可达：修复后须自动翻页直到取满 total
+    expect(await screen.findByTestId('daily-history-row-101')).toBeInTheDocument();
+    expect(getDaily).toHaveBeenCalledTimes(2);
+    expect(getDaily).toHaveBeenLastCalledWith(
+      expect.any(String),
+      expect.objectContaining({ page: 2, limit: 100 }),
+    );
+  });
+
+  it('supports a controlled date so the selection survives drawer remount (OR-COR-278fd558)', async () => {
+    const onDateKeyChange = vi.fn();
+    render(
+      <DailyHistoryPanel
+        dateKey="2026-05-18"
+        onDateKeyChange={onDateKeyChange}
+        selectedRecordId={null}
+        onSelectRecord={vi.fn()}
+      />,
+    );
+
+    // 受控日期：请求带的是外部日期，而非组件内部重置的今天
+    expect(await screen.findByTestId('daily-history-row-11')).toBeInTheDocument();
+    expect(getDaily).toHaveBeenCalledWith('2026-05-18', expect.anything());
+
+    fireEvent.change(screen.getByTestId('daily-history-date-input'), { target: { value: '2026-05-19' } });
+    expect(onDateKeyChange).toHaveBeenCalledWith('2026-05-19');
+  });
+
+  it('pins a market review entry so saved recaps stay reachable (OR-COM-91cc3feb)', async () => {
+    const onSelectRecord = vi.fn();
+    getDaily.mockResolvedValue(dailyResponse([]));
+
+    render(
+      <DailyHistoryPanel
+        marketReviewEntry={{ id: 2, name: '大盘复盘', createdAt: '2026-05-17T15:00:00+08:00' }}
+        selectedRecordId={null}
+        onSelectRecord={onSelectRecord}
+      />,
+    );
+
+    // 当日列表为空也不得吞掉大盘复盘入口（旧个股栏的 MARKET 行语义）
+    const entry = await screen.findByTestId('daily-history-market-entry-2');
+    expect(screen.getByTestId('daily-history-empty')).toBeInTheDocument();
+    fireEvent.click(entry);
+    expect(onSelectRecord).toHaveBeenCalledWith(2);
+  });
+
+  it('scrolls the selected report row into view after load', async () => {
+    const scrollIntoView = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoView;
+    try {
+      render(<DailyHistoryPanel selectedRecordId={12} onSelectRecord={vi.fn()} />);
+      await screen.findByTestId('daily-history-row-12');
+      await waitFor(() => expect(scrollIntoView).toHaveBeenCalled());
+    } finally {
+      delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView;
+    }
   });
 
   it('discards stale date responses so old requests never overwrite newer results', async () => {

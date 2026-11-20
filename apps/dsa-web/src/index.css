@@ -1339,6 +1339,15 @@ textarea {
   transform: translateY(-1px);
 }
 
+/* issue #1661（OR-COR-3a68c9f3）：日期回看行的选中态。非分层 .home-subpanel 的
+   border/background 会覆盖 Tailwind @layer 工具类（border-primary/35 等不生效），
+   与 .home-history-item-selected 同模式，用同层专用类表达选中。 */
+.home-subpanel-selected {
+  border-color: var(--home-panel-border-selected);
+  background: var(--home-history-item-selected-bg);
+  box-shadow: var(--home-panel-selected-shadow);
+}
+
 .home-history-item {
   position: relative;
   overflow: hidden;

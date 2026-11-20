@@ -36,6 +36,7 @@ from sqlalchemy import (
     Index,
     UniqueConstraint,
     CheckConstraint,
+    case,
     Text,
     text,
     select,
@@ -3423,27 +3424,39 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             )
             return list(results)
 
-    def get_daily_latest_per_code(
+    def get_daily_history_snapshot(
         self,
         day_start: datetime,
         day_end: datetime,
-    ) -> List[Tuple[AnalysisHistory, int]]:
+    ) -> Tuple[List[Tuple[AnalysisHistory, int]], Dict[str, int]]:
         """
-        获取窗口 ``[day_start, day_end)`` 内每股（raw code 维度）最新一条分析
-        及其当日份数（issue #1661）。边界由服务层按北京时间分析生成日期折算。
-        排除 code=MARKET 与 report_type=market_review；排序 (created_at desc, id desc)。
+        单次读取当日与全局两个聚合快照（issue #1661，OR-COR-afa444c6）。
+
+        返回 ``([([AnalysisHistory, 当日份数], ...), ...], {raw code: 全局最新 id})``：
+        前者为窗口 ``[day_start, day_end)`` 内每股（raw code 维度）最新一条分析及
+        其当日份数；后者为每股全局最新一条分析的主键 ID（供服务层判断 is_latest）。
+
+        当日聚合与全局聚合以条件聚合放进同一条 SELECT（SQLite 读自动提交语义下
+        两次独立查询可能读到不同快照：其间提交的新报告会产生「当日列表给旧记录
+        + 时效标记按新记录」的撕裂组合）。排除谓词 code=MARKET 与
+        report_type=market_review；当日行按 (created_at desc, id desc) 排序。
         """
+        in_day = and_(
+            AnalysisHistory.created_at >= day_start,
+            AnalysisHistory.created_at < day_end,
+        )
+        day_max_id_expr = case((in_day, AnalysisHistory.id), else_=None)
+        day_count_expr = case((in_day, 1), else_=0)
         with self.get_session() as session:
-            subq = (
+            aggregated = session.execute(
                 select(
                     AnalysisHistory.code,
-                    func.max(AnalysisHistory.id).label("max_id"),
-                    func.count().label("day_count"),
+                    func.max(day_max_id_expr).label("day_max_id"),
+                    func.sum(day_count_expr).label("day_count"),
+                    func.max(AnalysisHistory.id).label("global_max_id"),
                 )
                 .where(
                     and_(
-                        AnalysisHistory.created_at >= day_start,
-                        AnalysisHistory.created_at < day_end,
                         AnalysisHistory.code != "MARKET",
                         or_(
                             AnalysisHistory.report_type.is_(None),
@@ -3452,44 +3465,37 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                     )
                 )
                 .group_by(AnalysisHistory.code)
-                .subquery()
+            ).all()
+
+            day_max_ids = [int(row.day_max_id) for row in aggregated if row.day_max_id is not None]
+            day_rows: Dict[int, AnalysisHistory] = {}
+            if day_max_ids:
+                # 按主键点查当日最新行：只读取已提交数据，不引入快照差异
+                records = session.execute(
+                    select(AnalysisHistory).where(AnalysisHistory.id.in_(day_max_ids))
+                ).scalars().all()
+                day_rows = {int(record.id): record for record in records}
+
+            daily: List[Tuple[AnalysisHistory, int]] = []
+            global_latest: Dict[str, int] = {}
+            for row in aggregated:
+                if not row.code:
+                    continue
+                global_latest[str(row.code)] = int(row.global_max_id)
+                if row.day_max_id is None:
+                    continue
+                record = day_rows.get(int(row.day_max_id))
+                if record is not None:
+                    daily.append((record, int(row.day_count or 0)))
+
+            daily.sort(
+                key=lambda item: (
+                    getattr(item[0], "created_at", None) or datetime.min,
+                    int(getattr(item[0], "id", 0) or 0),
+                ),
+                reverse=True,
             )
-
-            rows = session.execute(
-                select(AnalysisHistory, subq.c.day_count)
-                .join(subq, AnalysisHistory.id == subq.c.max_id)
-                .order_by(
-                    desc(AnalysisHistory.created_at),
-                    desc(AnalysisHistory.id),
-                )
-            ).all()
-            return [(row[0], int(row[1])) for row in rows]
-
-    def get_latest_analysis_ids_by_code(self) -> Dict[str, int]:
-        """
-        获取每股（raw code 维度）全局最新一条分析的主键 ID（issue #1661）。
-
-        单次聚合（无日期过滤），供服务层判断 is_latest 时效性，避免 N+1；
-        排除谓词与 get_daily_latest_per_code 保持一致。Returns: raw code -> max id。
-        """
-        with self.get_session() as session:
-            rows = session.execute(
-                select(
-                    AnalysisHistory.code,
-                    func.max(AnalysisHistory.id).label("max_id"),
-                )
-                .where(
-                    and_(
-                        AnalysisHistory.code != "MARKET",
-                        or_(
-                            AnalysisHistory.report_type.is_(None),
-                            AnalysisHistory.report_type != "market_review",
-                        ),
-                    )
-                )
-                .group_by(AnalysisHistory.code)
-            ).all()
-            return {str(row.code): int(row.max_id) for row in rows if row.code}
+            return daily, global_latest
 
     def get_latest_analysis_by_query_id(
         self,

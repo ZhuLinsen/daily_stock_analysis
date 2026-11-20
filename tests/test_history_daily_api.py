@@ -16,13 +16,15 @@ unittest.TestCase + FastAPI TestClient + DatabaseManager.reset_instance() + 真�
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import tempfile
 import unittest
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
+from zoneinfo import ZoneInfo
 
 try:
     import litellm  # noqa: F401
@@ -311,6 +313,165 @@ class HistoryDailyApiTestCase(unittest.TestCase):
             self.assertEqual(payload["summary"]["sentiment_score"], expected_score)
             # 详情含价位字段（spec 1：价位放报告详情，有值再展示）
             self.assertIn("ideal_buy", payload["strategy"])
+
+    # ------------------------------------------------------------------
+    # OR-COR-a911f1cb：指数与同号裸码股票不得折叠为一行
+    # ------------------------------------------------------------------
+
+    def test_sz_index_and_bare_same_code_stock_stay_separate(self) -> None:
+        """归组键必须区分资产类型：``sz399001``（指数）与裸 ``399001``（股票）
+        是两个标的，同日各出一行、份数互不并入（与个股栏既有语义一致，
+        tests/test_analysis_history.py::test_stock_bar_exposes_sz_index_canonical_row_with_independent_count）。"""
+        day_start, _day_end = HistoryService.shanghai_day_bounds_local(QUERY_DATE)
+        self._add_history("sz399001", day_start + timedelta(hours=1), name="深证成指")
+        self._add_history("399001", day_start + timedelta(hours=2), name="平安银行")
+
+        response = self._get_daily()
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["total"], 2)
+        by_code = {item["code"]: item for item in payload["items"]}
+        self.assertIn("sz399001", by_code)
+        self.assertIn("399001", by_code)
+        self.assertEqual(by_code["sz399001"]["analysis_count"], 1)
+        self.assertEqual(by_code["399001"]["analysis_count"], 1)
+
+    # ------------------------------------------------------------------
+    # OR-COR-c9984f4e / OR-COR-c60dfc2b：旧日韩裸码与现行带后缀代码必须合并
+    # ------------------------------------------------------------------
+
+    def test_legacy_bare_jp_kr_code_merges_with_resolved_suffix_code(self) -> None:
+        """``005930`` 与 ``005930.KS`` 同日保存 → 合并一行、份数求和（与个股栏
+        test_history_filter_and_stock_bar_merge_bare_and_resolved_jp_kr_codes 同语义）。"""
+        day_start, _day_end = HistoryService.shanghai_day_bounds_local(QUERY_DATE)
+        self._add_history("005930", day_start + timedelta(hours=1), name="Samsung Electronics")
+        latest_id = self._add_history(
+            "005930.KS", day_start + timedelta(hours=2), name="Samsung Electronics",
+        )
+
+        with patch(
+            "src.services.history_service.resolve_index_stock_code",
+            return_value="005930.KS",
+        ):
+            response = self._get_daily()
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["total"], 1)
+        self.assertEqual(len(payload["items"]), 1)
+        self.assertEqual(payload["items"][0]["id"], latest_id)
+        self.assertEqual(payload["items"][0]["code"], "005930.KS")
+        self.assertEqual(payload["items"][0]["analysis_count"], 2)
+
+    def test_legacy_bare_jp_kr_code_superseded_across_days(self) -> None:
+        """跨日：旧裸码报告被新 ``.KS`` 报告取代 → is_latest=False（不得因拆键失真）。"""
+        day_start, _day_end = HistoryService.shanghai_day_bounds_local(QUERY_DATE)
+        next_day_start, _ = HistoryService.shanghai_day_bounds_local(QUERY_DATE + timedelta(days=1))
+        self._add_history("005930", day_start + timedelta(hours=1), name="Samsung Electronics")
+        self._add_history("005930.KS", next_day_start + timedelta(hours=1), name="Samsung Electronics")
+
+        with patch(
+            "src.services.history_service.resolve_index_stock_code",
+            return_value="005930.KS",
+        ):
+            response = self._get_daily()
+        self.assertEqual(response.status_code, 200)
+        items = response.json()["items"]
+        self.assertEqual(len(items), 1)
+        self.assertFalse(items[0]["is_latest"])
+
+    # ------------------------------------------------------------------
+    # OR-COR-afa444c6：当日列表与全局时效标记必须来自同一读取快照
+    # ------------------------------------------------------------------
+
+    def test_snapshot_pair_is_consistent_for_day_and_global_scopes(self) -> None:
+        """get_daily_history_snapshot 单次读取同时给出当日 (最新行, 份数) 与
+        全局 per-code 最新 id：窗口外记录只进全局（跨日取代语义），窗口内
+        记录两者皆进，且服务层单次调用只取一次快照。"""
+        day_start, day_end = HistoryService.shanghai_day_bounds_local(QUERY_DATE)
+        in_day_id = self._add_history("600519", day_start + timedelta(hours=1), name="贵州茅台")
+        self._add_history("600519", day_end + timedelta(hours=1), name="贵州茅台")
+        outside_only_id = self._add_history("000002", day_end + timedelta(hours=2), name="万科")
+
+        daily, global_latest = self.db.get_daily_history_snapshot(
+            day_start=day_start, day_end=day_end,
+        )
+        daily_by_id = {int(record.id): count for record, count in daily}
+        self.assertIn(in_day_id, daily_by_id)
+        self.assertEqual(daily_by_id[in_day_id], 1)
+        self.assertNotIn(outside_only_id, daily_by_id)
+        self.assertEqual(global_latest.get("600519"), in_day_id + 1)
+        self.assertEqual(global_latest.get("000002"), outside_only_id)
+
+        service = HistoryService(self.db)
+        with patch.object(
+            self.db, "get_daily_history_snapshot", wraps=self.db.get_daily_history_snapshot,
+        ) as spy:
+            service.get_daily_history(QUERY_DATE)
+        self.assertEqual(spy.call_count, 1)
+
+    # ------------------------------------------------------------------
+    # OR-COR-71b5736f：列表时间必须是北京钟点（与归组日历日一致）
+    # ------------------------------------------------------------------
+
+    def test_created_at_serialized_in_shanghai_time(self) -> None:
+        """行内分析时间以 Asia/Shanghai 显式偏移序列化：服务器 UTC（17:30 本地）
+        时所选北京日的行也显示北京钟点（01:30），不再暴露服务器钟点。"""
+        # 直接验证转换契约（OR-COR-71b5736f 场景）：UTC 10-19 17:30 == 北京 10-20 01:30
+        utc_value = datetime(2026, 10, 19, 17, 30, tzinfo=ZoneInfo("UTC"))
+        self.assertEqual(
+            HistoryService._serialize_created_at_shanghai(utc_value),
+            "2026-10-20T01:30:00+08:00",
+        )
+
+        # 存储为 naive 本地时间 → 行内时间必须是北京钟点 + 北京日历日
+        day_start, _day_end = HistoryService.shanghai_day_bounds_local(QUERY_DATE)
+        self._add_history("600519", day_start + timedelta(minutes=30), name="贵州茅台")
+
+        response = self._get_daily()
+        self.assertEqual(response.status_code, 200)
+        created_at = response.json()["items"][0]["created_at"]
+        # day_start 构造上即北京零点 → 行内日期必须仍是所选北京日（服务器西侧
+        # 时区部署下，旧实现会泄漏本地钟点/前一天日期）
+        self.assertTrue(
+            created_at.startswith(f"{QUERY_DATE.isoformat()}T"),
+            f"created_at 应为北京日 {QUERY_DATE}，实际 {created_at}",
+        )
+        expected_bj = (
+            (day_start + timedelta(minutes=30))
+            .astimezone()
+            .astimezone(HistoryService._SHANGHAI_TZ)
+            .isoformat()
+        )
+        self.assertEqual(created_at, expected_bj)
+
+    # ------------------------------------------------------------------
+    # OR-COM-cb90db57：摘要列缺失时回退 raw_result（与个股栏同语义）
+    # ------------------------------------------------------------------
+
+    def test_raw_result_fallback_restores_score_and_advice(self) -> None:
+        """旧记录 sentiment_score/operation_advice 列为空、raw_result 仍有
+        78 分与 Hold 建议 → 新接口必须像 /history/stocks 一样补齐，动作计算
+        使用补齐后的评分。"""
+        day_start, _day_end = HistoryService.shanghai_day_bounds_local(QUERY_DATE)
+        self._add_history(
+            "600519", day_start + timedelta(hours=1), name="贵州茅台",
+            sentiment_score=None, operation_advice=None,
+            raw_result=json.dumps({
+                "summary": {"sentiment_score": 78, "operation_advice": "Hold"},
+                "action": "hold",
+                "report_language": "en",
+            }),
+        )
+
+        response = self._get_daily()
+        self.assertEqual(response.status_code, 200)
+        item = response.json()["items"][0]
+        self.assertEqual(item["sentiment_score"], 78)
+        self.assertEqual(item["operation_advice"], "Hold")
+        self.assertEqual(item["sentiment_label"], get_sentiment_label(78, "zh"))
+        # 动作基于补齐后的 78 分 + Hold：不得因评分缺失退化
+        self.assertIsNotNone(item["action"])
+        self.assertIsNotNone(item["action_label"])
 
 
 if __name__ == "__main__":

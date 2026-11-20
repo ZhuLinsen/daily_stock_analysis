@@ -14,8 +14,25 @@ import { truncateStockName } from '../../utils/stockName';
 interface DailyHistoryPanelProps {
   selectedRecordId?: number | null;
   onSelectRecord: (recordId: number) => void;
+  /**
+   * 受控日期（issue #1661 OR-COR-278fd558）：首页历史抽屉在手机上随行点击关闭
+   * 卸载，日期状态必须寄存在不卸载的父级（HomePage），重开抽屉才不回跳今天。
+   * 缺省时退回组件内部状态（独立使用/测试）。
+   */
+  dateKey?: string;
+  onDateKeyChange?: (dateKey: string) => void;
+  /**
+   * 最近一份大盘复盘入口（OR-COM-91cc3feb）：旧个股栏把 MARKET 行注入历史区，
+   * 换成按日列表后由 HomePage 传入最新复盘，保住「重开已保存复盘」的入口。
+   */
+  marketReviewEntry?: { id: number; name: string; createdAt?: string } | null;
   className?: string;
 }
+
+/** 单页条数：面板自动翻页取满 total（OR-COR-899887df），仅超长日才发后续请求 */
+const DAILY_PAGE_SIZE = 100;
+/** 防御上限：超过该页数视为异常响应，停止翻页避免死循环 */
+const DAILY_MAX_PAGES = 50;
 
 /**
  * 首页历史区「日期回看」面板（issue #1661，G1a 方案一）。
@@ -26,10 +43,19 @@ interface DailyHistoryPanelProps {
 const DailyHistoryPanel: React.FC<DailyHistoryPanelProps> = ({
   selectedRecordId = null,
   onSelectRecord,
+  dateKey: controlledDateKey,
+  onDateKeyChange,
+  marketReviewEntry = null,
   className = '',
 }) => {
   const { t } = useUiLanguage();
-  const [dateKey, setDateKey] = useState(() => getTodayInShanghai());
+  const [internalDateKey, setInternalDateKey] = useState(() => getTodayInShanghai());
+  const dateKey = controlledDateKey ?? internalDateKey;
+
+  const changeDate = (nextDateKey: string) => {
+    setInternalDateKey(nextDateKey);
+    onDateKeyChange?.(nextDateKey);
+  };
 
   return (
     <div data-testid="daily-history-panel" className={`flex min-h-0 flex-col gap-2 ${className}`}>
@@ -43,13 +69,33 @@ const DailyHistoryPanel: React.FC<DailyHistoryPanelProps> = ({
           data-testid="daily-history-date-input"
           value={dateKey}
           onChange={(event) => {
-            if (event.target.value) setDateKey(event.target.value);
+            if (event.target.value) changeDate(event.target.value);
           }}
           aria-label={t('historyDaily.dateLabel')}
           className="h-8 rounded-lg border border-subtle bg-base/40 px-2 text-xs text-foreground focus:border-primary/50 focus:outline-none"
         />
       </div>
       <p className="text-[10px] leading-snug text-muted-text">{t('historyDaily.tzHint')}</p>
+      {marketReviewEntry ? (
+        <button
+          type="button"
+          data-testid={`daily-history-market-entry-${marketReviewEntry.id}`}
+          aria-pressed={selectedRecordId === marketReviewEntry.id}
+          className={`home-subpanel flex min-w-0 w-full cursor-pointer items-center gap-2 px-3 py-2 text-left transition-colors ${
+            selectedRecordId === marketReviewEntry.id ? 'home-subpanel-selected' : ''
+          }`}
+          onClick={() => onSelectRecord(marketReviewEntry.id)}
+        >
+          <span className="min-w-0 flex-1 truncate text-sm font-semibold text-foreground">
+            {marketReviewEntry.name}
+          </span>
+          {marketReviewEntry.createdAt ? (
+            <span className="shrink-0 font-mono text-[11px] text-muted-text">
+              {marketReviewEntry.createdAt.slice(0, 10)}
+            </span>
+          ) : null}
+        </button>
+      ) : null}
       <DailyHistoryList
         // 按日期 key 重挂载：状态初始化即重置，旧日期的迟到响应落在新挂载之外，天然隔离
         key={dateKey}
@@ -75,6 +121,7 @@ const DailyHistoryList: React.FC<{
   const [isLoading, setIsLoading] = useState(true);
   const [loadFailed, setLoadFailed] = useState(false);
   const requestSeqRef = useRef(0);
+  const didInitialScrollRef = useRef(false);
 
   useEffect(() => {
     if (!dateKey) {
@@ -84,27 +131,57 @@ const DailyHistoryList: React.FC<{
     const controller = new AbortController();
     let active = true;
 
-    void historyApi
-      .getDaily(dateKey, { signal: controller.signal })
-      .then((response) => {
-        if (!active || seq !== requestSeqRef.current) return;
-        setItems(response.items);
-        setTotal(response.total);
+    // 自动翻页取满当日全集（OR-COR-899887df/adc0d89a）：面板展示 total 只股票，
+    // 就必须提供 total 个报告入口，不能停留在默认第一页
+    const load = async () => {
+      const collected: DailyHistoryItem[] = [];
+      let totalExpected = 0;
+      let page = 1;
+      try {
+        while (true) {
+          const response = await historyApi.getDaily(dateKey, {
+            signal: controller.signal,
+            page,
+            limit: DAILY_PAGE_SIZE,
+          });
+          if (!active || seq !== requestSeqRef.current) return;
+          totalExpected = response.total;
+          collected.push(...response.items);
+          if (response.items.length === 0 || collected.length >= totalExpected || page >= DAILY_MAX_PAGES) break;
+          page += 1;
+        }
+        setItems(collected);
+        setTotal(totalExpected);
         setIsLoading(false);
-      })
-      .catch(() => {
+      } catch {
         if (!active || seq !== requestSeqRef.current) return;
         setItems([]);
         setTotal(0);
         setLoadFailed(true);
         setIsLoading(false);
-      });
+      }
+    };
+    void load();
 
     return () => {
       active = false;
       controller.abort();
     };
   }, [dateKey]);
+
+  // 重开抽屉/换行点击后，让当前报告所在行可见（OR-COR-278fd558 的滚动定位部分）
+  useEffect(() => {
+    if (didInitialScrollRef.current || selectedRecordId == null || items.length === 0) {
+      return;
+    }
+    const selectedRow = document.querySelector<HTMLElement>(
+      `[data-testid="daily-history-row-${selectedRecordId}"]`,
+    );
+    if (selectedRow && typeof selectedRow.scrollIntoView === 'function') {
+      didInitialScrollRef.current = true;
+      selectedRow.scrollIntoView({ block: 'nearest' });
+    }
+  }, [items, selectedRecordId]);
 
   const actionLabels = useMemo(() => buildDecisionActionLabelMap(t), [t]);
 
@@ -138,17 +215,18 @@ const DailyHistoryList: React.FC<{
           t('history.sentiment'),
           actionLabels,
         );
+        const isSelected = selectedRecordId === item.id;
         return (
           <button
             key={`${item.code}-${item.id}`}
             type="button"
             data-testid={`daily-history-row-${item.id}`}
-            aria-pressed={selectedRecordId === item.id}
+            aria-pressed={isSelected}
             aria-label={t('history.itemAria', { name: stockName, code: item.code })}
             className={`home-subpanel flex min-w-0 w-full cursor-pointer items-center px-3 py-2 text-left transition-colors ${
-              selectedRecordId === item.id
-                ? 'border-primary/35 bg-primary/10'
-                : 'hover:border-subtle-hover hover:bg-base/65'
+              // 选中态用非分层专用类：Tailwind 分层工具类会被 .home-subpanel 的
+              // 同属性非分层规则覆盖（OR-COR-3a68c9f3）
+              isSelected ? 'home-subpanel-selected' : ''
             }`}
             onClick={() => onSelectRecord(item.id)}
           >

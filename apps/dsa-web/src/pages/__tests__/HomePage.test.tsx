@@ -474,6 +474,93 @@ describe('HomePage', () => {
     expect(historyApi.getDetail).toHaveBeenCalledWith(11);
   });
 
+  it('keeps the saved market review reachable from the daily history view (issue #1661)', async () => {
+    vi.mocked(historyApi.getStockBarList).mockResolvedValue({ total: 0, items: [] });
+    vi.mocked(historyApi.getList).mockImplementation((params: { reportType?: string } = {}) => {
+      if (params.reportType === 'market_review') {
+        return Promise.resolve({
+          total: 1,
+          page: 1,
+          limit: 10,
+          items: [marketReviewHistoryItem],
+        });
+      }
+      return Promise.resolve({
+        total: 0,
+        page: 1,
+        limit: 20,
+        items: [],
+      });
+    });
+    vi.mocked(historyApi.getDaily).mockResolvedValue({ total: 0, page: 1, limit: 20, items: [] });
+    vi.mocked(historyApi.getDetail).mockResolvedValue(marketReviewHistoryReport);
+
+    render(
+      <MemoryRouter>
+        <HomePage />
+      </MemoryRouter>,
+    );
+
+    // OR-COM-91cc3feb：首页历史区不再注入 MARKET 行后，大盘复盘入口必须
+    // 迁移到日期回看面板，最近一份复盘仍可一键打开
+    const entry = await screen.findByTestId('daily-history-market-entry-2');
+    fireEvent.click(entry);
+    expect(await screen.findByText('大盘复盘摘要')).toBeInTheDocument();
+    expect(historyApi.getDetail).toHaveBeenCalledWith(2);
+  });
+
+  it('preserves the selected daily date across mobile drawer close/reopen (issue #1661)', async () => {
+    vi.mocked(historyApi.getStockBarList).mockResolvedValue({ total: 0, items: [] });
+    vi.mocked(historyApi.getList).mockResolvedValue({ total: 0, page: 1, limit: 20, items: [] });
+    vi.mocked(historyApi.getDaily).mockResolvedValue({
+      total: 1,
+      page: 1,
+      limit: 20,
+      items: [{
+        id: 11,
+        code: '600519',
+        name: '贵州茅台',
+        reportType: 'detailed',
+        sentimentScore: 82,
+        sentimentLabel: '极度乐观',
+        operationAdvice: '持有',
+        action: 'hold' as const,
+        actionLabel: '持有',
+        trendPrediction: null,
+        isLatest: true,
+        analysisCount: 1,
+        createdAt: '2026-03-18T08:00:00Z',
+      }],
+    });
+    vi.mocked(historyApi.getDetail).mockResolvedValue(historyReport);
+
+    render(
+      <MemoryRouter>
+        <HomePage />
+      </MemoryRouter>,
+    );
+
+    // 选择昨天并等待列表加载
+    fireEvent.change(screen.getAllByTestId('daily-history-date-input')[0], { target: { value: '2026-05-18' } });
+    await screen.findByTestId('daily-history-row-11');
+
+    // 打开手机抽屉：第二实例受控同步同一日期
+    fireEvent.click(screen.getByRole('button', { name: '历史记录' }));
+    const inputsWhileOpen = screen.getAllByTestId('daily-history-date-input');
+    expect(inputsWhileOpen).toHaveLength(2);
+    expect(inputsWhileOpen.every((input) => (input as HTMLInputElement).value === '2026-05-18')).toBe(true);
+
+    // 点击抽屉中的行打开报告 → 抽屉关闭卸载
+    const drawerRows = screen.getAllByTestId('daily-history-row-11');
+    fireEvent.click(drawerRows[drawerRows.length - 1]);
+    await waitFor(() => expect(screen.getAllByTestId('daily-history-date-input')).toHaveLength(1));
+
+    // 重新打开抽屉：日期必须仍是所选日期（修复前回到今天，OR-COR-278fd558）
+    fireEvent.click(screen.getByRole('button', { name: '历史记录' }));
+    const inputsAfterReopen = screen.getAllByTestId('daily-history-date-input');
+    expect(inputsAfterReopen.every((input) => (input as HTMLInputElement).value === '2026-05-18')).toBe(true);
+  });
+
   it('treats timezone-less stock-bar timestamps as Shanghai local time for watchlist pending state', async () => {
     const todayInShanghai = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date());
     vi.mocked(systemConfigApi.getWatchlist).mockResolvedValue(['600519']);
