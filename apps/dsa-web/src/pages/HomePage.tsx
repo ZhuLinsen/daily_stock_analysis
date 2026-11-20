@@ -363,7 +363,6 @@ const HomePage: React.FC = () => {
     selectedReport,
     isLoadingReport,
     isHistoryTrendOpen,
-    marketReviewHistoryItems,
     stockHistoryItems,
     stockHistoryTotal,
     stockHistoryHasMore,
@@ -850,23 +849,8 @@ const HomePage: React.FC = () => {
     setWatchlistHistoryRetryVersion((version) => version + 1);
   }, [refreshStockBar, refreshWatchlist]);
 
-  const [isDeletingStock, setIsDeletingStock] = useState(false);
-  const handleDeleteStock = useCallback(async (stockCode: string) => {
-    if (isDeletingStock) return;
-    setIsDeletingStock(true);
-    try {
-      await historyApi.deleteByCode(stockCode);
-      await refreshStockBar();
-      await refreshHistory(true);
-      if (stockCode === 'MARKET') {
-        await refreshMarketReviewHistory(false);
-      }
-    } catch {
-      // error silently ignored
-    } finally {
-      setIsDeletingStock(false);
-    }
-  }, [isDeletingStock, refreshMarketReviewHistory, refreshStockBar, refreshHistory]);
+  // issue #1661（维护者 spec 2）：按日回看为只读视图，「删除该股票全部历史」
+  // 的批量删除入口不再挂在历史区列表上（后端 deleteByCode API 保持向后兼容）。
 
   const handleSubmitAnalysis = useCallback(
     (
@@ -1417,33 +1401,6 @@ const HomePage: React.FC = () => {
     watchlistState.watchlistCodes,
   ]);
 
-  const mergedStockBarItems = useMemo<StockBarItem[]>(() => {
-    const latestMarketReview = marketReviewHistoryItems[0];
-    const stockItems = stockBarItems.filter((item) => item.stockCode !== 'MARKET');
-    if (!latestMarketReview) {
-      return stockItems;
-    }
-
-    const marketReviewItem: StockBarItem = {
-      id: latestMarketReview.id,
-      stockCode: 'MARKET',
-      stockName: latestMarketReview.stockName || t('home.marketReview'),
-      reportType: 'market_review',
-      sentimentScore: latestMarketReview.sentimentScore,
-      operationAdvice: latestMarketReview.operationAdvice,
-      analysisCount: Math.max(marketReviewHistoryItems.length, 1),
-      lastAnalysisTime: latestMarketReview.createdAt,
-      modelUsed: latestMarketReview.modelUsed,
-      marketPhaseSummary: latestMarketReview.marketPhaseSummary,
-    };
-
-    return [marketReviewItem, ...stockItems].sort((left, right) => {
-      const leftTime = left.lastAnalysisTime ? Date.parse(left.lastAnalysisTime) : 0;
-      const rightTime = right.lastAnalysisTime ? Date.parse(right.lastAnalysisTime) : 0;
-      return rightTime - leftTime;
-    });
-  }, [marketReviewHistoryItems, stockBarItems, t]);
-
   const sidebarContent = useMemo(
     () => (
       <div className="flex h-full min-h-0 flex-col gap-2 overflow-hidden">
@@ -1470,14 +1427,10 @@ const HomePage: React.FC = () => {
           isLoadingTodayItems={isLoadingTodayAnalysisItems}
           todayLoadError={todayAnalysisLoadFailed}
           watchlistAnalyzedTodayCount={watchlistAnalyzedTodayCount}
-          historyItems={mergedStockBarItems}
-          isLoadingHistory={isLoadingStockBar}
           selectedStockCode={selectedReport?.meta.stockCode}
           selectedAssetType={selectedReport?.meta.assetType ?? null}
           selectedRecordId={selectedReport?.meta.id}
           onHistoryItemClick={handleHistoryItemClick}
-          onDeleteStock={handleDeleteStock}
-          isDeleting={isDeletingStock}
           className="flex-1"
         />
       </div>
@@ -1486,18 +1439,14 @@ const HomePage: React.FC = () => {
       activeTasks,
       batchAnalyzeStatus,
       handleAnalyzeWatchlist,
-      handleDeleteStock,
       handleHistoryItemClick,
       handleRefreshWatchlist,
       handleTaskPanelCollapsedChange,
       isBatchAnalyzingWatchlist,
-      isDeletingStock,
-      isLoadingStockBar,
       isLoadingTodayAnalysisItems,
       isStockIndexReady,
       isTaskPanelCollapsed,
       todayAnalysisLoadFailed,
-      mergedStockBarItems,
       openTaskRunFlow,
       selectedReport?.meta.id,
       selectedReport?.meta.assetType,

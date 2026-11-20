@@ -15,7 +15,7 @@ import {
 } from 'lucide-react';
 import { Badge, Button, InlineAlert, Input, ScrollArea, StatusDot } from '../common';
 import { DashboardPanelHeader, DashboardStateBlock } from '../dashboard';
-import { StockBar } from '../history';
+import { DailyHistoryPanel } from '../history';
 import type { StockBarItem, TaskInfo } from '../../types/analysis';
 import { getSentimentColor } from '../../types/analysis';
 import { buildDecisionActionLabelMap, getDecisionActionLabel } from '../../utils/decisionAction';
@@ -93,14 +93,10 @@ interface HomeStockWorkspaceProps {
   isLoadingTodayItems: boolean;
   todayLoadError: boolean;
   watchlistAnalyzedTodayCount: number;
-  historyItems: StockBarItem[];
-  isLoadingHistory: boolean;
   selectedStockCode?: string;
   selectedAssetType?: AssetAwareAssetType | null;
   selectedRecordId?: number;
   onHistoryItemClick: (recordId: number) => void;
-  onDeleteStock?: (stockCode: string) => Promise<void> | void;
-  isDeleting?: boolean;
   className?: string;
 }
 
@@ -402,14 +398,10 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
   isLoadingTodayItems,
   todayLoadError,
   watchlistAnalyzedTodayCount,
-  historyItems,
-  isLoadingHistory,
   selectedStockCode,
   selectedAssetType,
   selectedRecordId,
   onHistoryItemClick,
-  onDeleteStock,
-  isDeleting = false,
   className = '',
 }) => {
   const { t } = useUiLanguage();
@@ -505,14 +497,14 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
         className={`home-stock-scroll-shell flex min-h-0 flex-1 flex-col gap-2 ${className}`}
       >
         {renderTabs}
-        <StockBar
-          items={historyItems}
-          isLoading={isLoadingHistory}
-          selectedStockCode={selectedStockCode}
+        {/*
+          issue #1661（G1a 方案一）：历史区 = 日期选择器 + 当日每股最新结果轻量列表 +
+          行内下钻。只读视图（不复用「删除该股票全部历史」操作），选中高亮与完整报告
+          下钻复用既有选中/报告加载链路。
+        */}
+        <DailyHistoryPanel
           selectedRecordId={selectedRecordId}
-          onItemClick={onHistoryItemClick}
-          onDeleteStock={onDeleteStock}
-          isDeleting={isDeleting}
+          onSelectRecord={onHistoryItemClick}
           className="flex-1"
         />
       </div>

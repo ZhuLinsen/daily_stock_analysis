@@ -617,6 +617,31 @@ export interface StockBarResponse {
   items: StockBarItem[];
 }
 
+// ============ Daily History Types (issue #1661 首页历史区日期回看) ============
+
+export interface DailyHistoryItem {
+  id: number;
+  code: string;
+  name?: string;
+  reportType?: string;
+  sentimentScore?: number | null;
+  sentimentLabel?: string | null;
+  operationAdvice?: string | null;
+  action?: DecisionAction | null;
+  actionLabel?: string | null;
+  trendPrediction?: string | null;
+  isLatest: boolean;
+  analysisCount: number;
+  createdAt?: string;
+}
+
+export interface DailyHistoryListResponse {
+  total: number;
+  page: number;
+  limit: number;
+  items: DailyHistoryItem[];
+}
+
 // ============ Error Types ============
 
 export interface ApiError {

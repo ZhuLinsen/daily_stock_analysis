@@ -5,6 +5,17 @@ import { UI_LANGUAGE_STORAGE_KEY } from '../../../utils/uiLanguage';
 import { HomeStockWorkspace } from '../HomeStockWorkspace';
 import type { HomeWatchlistRow, HomeWorkspaceTab } from '../HomeStockWorkspace';
 
+vi.mock('../../../api/history', () => ({
+  historyApi: {
+    getList: vi.fn().mockResolvedValue({ total: 0, page: 1, limit: 50, items: [] }),
+    getDetail: vi.fn(),
+    // issue #1661：历史区日期回看面板的当日列表接口
+    getDaily: vi.fn().mockResolvedValue({ total: 0, page: 1, limit: 20, items: [] }),
+    getStockBarList: vi.fn().mockResolvedValue({ total: 0, items: [] }),
+    deleteByCode: vi.fn(),
+  },
+}));
+
 function renderWorkspace({
   watchlistRows,
   selectedRecordId,
@@ -43,8 +54,7 @@ function renderWorkspace({
         isLoadingTodayItems={false}
         todayLoadError={false}
         watchlistAnalyzedTodayCount={rows.filter((row) => row.analyzedToday).length}
-        historyItems={[]}
-        isLoadingHistory={false}
+        historyRefreshKey={0}
         selectedStockCode={selectedStockCode}
         selectedAssetType={selectedAssetType ?? null}
         selectedRecordId={selectedRecordId}
@@ -71,16 +81,16 @@ describe('HomeStockWorkspace', () => {
     expect(screen.getByTestId('home-stock-workspace-scroll')).toHaveClass('overscroll-y-contain', 'touch-pan-y');
   });
 
-  it('uses the same mobile scroll-shell contract around history and StockBar', () => {
+  it('uses the same mobile scroll-shell contract around history and the daily panel', () => {
     renderWorkspace({ watchlistRows: [], activeTab: 'history' });
 
     const workspace = screen.getByTestId('home-stock-workspace');
-    const stockBar = screen.getByTestId('home-stock-bar');
+    // issue #1661：历史区 = 日期回看面板（StockBar 已由轻量日期列表取代）
+    const dailyPanel = screen.getByTestId('daily-history-panel');
     expect(workspace).toHaveClass('home-stock-scroll-shell');
     expect(workspace).not.toHaveClass('overflow-hidden');
-    expect(stockBar).toHaveClass('glass-card', 'home-stock-scroll-shell', 'min-h-0');
-    expect(stockBar).not.toHaveClass('overflow-hidden');
-    expect(screen.getByTestId('home-stock-bar-scroll')).toHaveClass('touch-pan-y');
+    expect(dailyPanel).toBeInTheDocument();
+    expect(screen.getByTestId('daily-history-date-input')).toBeInTheDocument();
   });
 
   it('opens the latest watchlist detail from a native button and keeps the row selected', () => {
