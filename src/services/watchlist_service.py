@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import threading
 from typing import Callable, TypeVar
 
 from data_provider.base import normalize_stock_code
@@ -10,6 +11,7 @@ from src.services.stock_list_parser import ParseStatus, parse_analysis_target
 from src.services.system_config_service import ConfigConflictError, SystemConfigService
 
 _US_CLASS_HYPHEN_RE = re.compile(r"[A-Z]{1,5}-[A-Z]", re.IGNORECASE)
+_WATCHLIST_UPDATE_LOCK = threading.Lock()
 _EditResult = TypeVar("_EditResult")
 
 
@@ -50,6 +52,11 @@ def edit_watchlist(
             updated_codes = codes.copy()
             result = edit(updated_codes)
             if updated_codes != codes:
+                # Serialize the persistence step for all in-process watchlist
+                # writers. SystemConfigService acquires this lock after
+                # validation, immediately around its optimistic write check;
+                # the version and expected-list checks remain authoritative
+                # for writers outside this process.
                 service.update(
                     config_version=version,
                     items=[{"key": "STOCK_LIST", "value": ",".join(updated_codes)}],

@@ -10,6 +10,7 @@ import os
 import re
 import shutil
 import time
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
@@ -2106,7 +2107,15 @@ class SystemConfigService:
 
         warnings: List[str] = []
         reload_triggered = False
-        with self._manager.locked():
+        # Watchlist mutations share a process-wide write lock. Acquire it only
+        # after validation so a paused/slow validation cannot block another
+        # writer from completing its own optimistic update.
+        watchlist_lock = nullcontext()
+        if "STOCK_LIST" in submitted_keys:
+            from src.services.watchlist_service import _WATCHLIST_UPDATE_LOCK
+
+            watchlist_lock = _WATCHLIST_UPDATE_LOCK
+        with watchlist_lock, self._manager.locked():
             if expected_watchlist is None:
                 current_version = self._manager.get_config_version()
             else:
