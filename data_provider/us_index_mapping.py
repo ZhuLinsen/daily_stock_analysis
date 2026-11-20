@@ -12,6 +12,7 @@
 """
 
 import re
+from typing import Optional
 
 # 美股代码正则：1-5 个大写字母，可选 .X 后缀（如 BRK.B）
 _US_STOCK_PATTERN = re.compile(r'^[A-Z]{1,5}(\.[A-Z])?$')
@@ -92,6 +93,13 @@ def is_us_stock_code(code: str) -> bool:
     if normalized in US_INDEX_MAPPING:
         return False
     return bool(_US_STOCK_PATTERN.match(normalized))
+
+
+def get_us_stock_yf_symbol(code: str) -> Optional[str]:
+    """Convert an internal US stock code to Yahoo's symbol format."""
+    if is_us_stock_code(code):
+        return code.strip().upper().replace(".", "-")
+    return None
 
 
 def get_us_index_yf_symbol(code: str) -> tuple:

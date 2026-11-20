@@ -8,10 +8,11 @@ import logging
 import os
 import re
 import threading
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Iterable, List, Literal, Optional, Set, Tuple
+from typing import Dict, Iterable, Iterator, List, Literal, Optional, Set, Tuple
 
 from dotenv import dotenv_values
 
@@ -112,9 +113,17 @@ class ConfigLineEntry:
 class ConfigManager:
     """Manage `.env` read/write operations with optimistic versioning."""
 
+    # Separate services can manage the same file and process environment.
+    _lock = threading.RLock()
+
     def __init__(self, env_path: Optional[Path] = None):
         self._env_path = env_path or self._resolve_env_path()
-        self._lock = threading.RLock()
+
+    @contextmanager
+    def locked(self) -> Iterator[None]:
+        """Keep related config reads and writes together across manager instances."""
+        with self._lock:
+            yield
 
     @property
     def env_path(self) -> Path:

@@ -40,7 +40,7 @@ import type {
 import type { RunFlowSnapshotSource } from '../types/runFlow';
 import { getTodayInShanghai } from '../utils/format';
 import { useStockIndex } from '../hooks/useStockIndex';
-import { resolveRegisteredIndexCanonical, toAssetAwareCodeKey, type AssetAwareAssetType } from '../utils/stockCode';
+import { resolveRegisteredIndexCanonical, toAssetAwareCodeKey, watchlistStockCodeKey, type AssetAwareAssetType } from '../utils/stockCode';
 
 type MarketReviewNotice = {
   variant: 'success' | 'warning' | 'danger';
@@ -277,7 +277,7 @@ const HomePage: React.FC = () => {
       if (indexCanonical) {
         return { key: indexCanonical, assetType: 'index' };
       }
-      return { key: getStockCodeKey(trimmed, 'stock'), assetType: 'stock' };
+      return { key: watchlistStockCodeKey(trimmed), assetType: 'stock' };
     },
     [stockIndexItems],
   );
@@ -708,7 +708,7 @@ const HomePage: React.FC = () => {
     }
   }, [isLoadingStockBar, stockBarItems.length]);
 
-  const watchlistState = useWatchlist();
+  const watchlistState = useWatchlist(getWatchlistCodeKey);
   const refreshWatchlist = watchlistState.refresh;
   const watchlistCodesByNormalized = useMemo(() => {
     const codesByNormalized = new Map<string, string>();

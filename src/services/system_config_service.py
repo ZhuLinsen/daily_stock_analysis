@@ -459,8 +459,11 @@ class SystemConfigService:
 
     def get_config(self, include_schema: bool = True, mask_token: str = "******") -> Dict[str, Any]:
         """Return display config values with mask metadata for server-masked fields."""
-        saved_config_map = self._build_display_config_map(self._manager.read_config_map())
-        runtime_config_map = self._build_runtime_display_config_map(saved_config_map)
+        with self._manager.locked():
+            config_version = self._manager.get_config_version()
+            saved_config_map = self._build_display_config_map(self._manager.read_config_map())
+            runtime_config_map = self._build_runtime_display_config_map(saved_config_map)
+            updated_at = self._manager.get_updated_at()
         config_map = {
             **runtime_config_map,
             **saved_config_map,
@@ -509,12 +512,24 @@ class SystemConfigService:
         )
 
         return {
-            "config_version": self._manager.get_config_version(),
+            "config_version": config_version,
             "mask_token": mask_token,
             "items": items,
             "llm_model_providers": sorted(get_litellm_model_providers()),
-            "updated_at": self._manager.get_updated_at(),
+            "updated_at": updated_at,
         }
+
+    def get_watchlist_snapshot(self) -> Tuple[List[str], str]:
+        """Read the effective STOCK_LIST and its version in one snapshot."""
+        with self._manager.locked():
+            version = self._manager.get_config_version()
+            value = self._manager.read_config_map().get("STOCK_LIST", "")
+            if not value.strip():
+                value = os.getenv("STOCK_LIST", "")
+            current_version = self._manager.get_config_version()
+            if current_version != version:
+                raise ConfigConflictError(current_version=current_version)
+        return split_stock_list(value), version
 
     def validate(self, items: Sequence[Dict[str, str]], mask_token: str = "******") -> Dict[str, Any]:
         """Validate submitted items without writing to `.env`."""
@@ -2062,6 +2077,8 @@ class SystemConfigService:
         items: Sequence[Dict[str, str]],
         mask_token: str = "******",
         reload_now: bool = True,
+        *,
+        expected_watchlist: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """Validate and persist updates into `.env`, then reload runtime config."""
         current_version = self._manager.get_config_version()
@@ -2087,36 +2104,42 @@ class SystemConfigService:
             if bool(field_schema.get("is_sensitive", False)):
                 sensitive_keys.add(key)
 
-        updated_keys, skipped_masked_keys, new_version = self._manager.apply_updates(
-            updates=updates,
-            sensitive_keys=sensitive_keys,
-            mask_token=mask_token,
-        )
-
         warnings: List[str] = []
         reload_triggered = False
-        if reload_now:
-            try:
-                if submitted_keys == {"STOCK_LIST"}:
-                    # Watchlist edits need no global dotenv/singleton reload: it
-                    # would also overwrite unrelated container env overrides.
-                    # STOCK_LIST itself must still be mirrored, because
-                    # refresh_stock_list() falls back to os.environ whenever the
-                    # file value is empty -- without this a cleared watchlist
-                    # would resurrect the previous list from the environment.
-                    os.environ["STOCK_LIST"] = self._manager.read_config_map().get("STOCK_LIST", "")
-                    config = Config.get_instance()
-                    config.refresh_stock_list()
-                else:
-                    Config.reset_instance()
-                    self._reload_runtime_singletons()
-                    setup_env(override=True)
-                    config = Config.get_instance()
-                warnings.extend(config.validate())
-                reload_triggered = True
-            except Exception as exc:  # pragma: no cover - defensive branch
-                logger.error("Configuration reload failed: %s", exc, exc_info=True)
-                warnings.append("Configuration updated but reload failed")
+        with self._manager.locked():
+            if expected_watchlist is None:
+                current_version = self._manager.get_config_version()
+            else:
+                # An environment fallback can change while the file stays unchanged.
+                current_watchlist, current_version = self.get_watchlist_snapshot()
+                if current_watchlist != expected_watchlist:
+                    raise ConfigConflictError(current_version=current_version)
+            if current_version != config_version:
+                raise ConfigConflictError(current_version=current_version)
+            updated_keys, skipped_masked_keys, new_version = self._manager.apply_updates(
+                updates=updates,
+                sensitive_keys=sensitive_keys,
+                mask_token=mask_token,
+            )
+
+            if reload_now:
+                try:
+                    if submitted_keys == {"STOCK_LIST"}:
+                        # Mirror the saved list, including a clear, before the runtime
+                        # refresh can fall back to the process environment.
+                        os.environ["STOCK_LIST"] = self._manager.read_config_map().get("STOCK_LIST", "")
+                        config = Config.get_instance()
+                        config.refresh_stock_list()
+                    else:
+                        Config.reset_instance()
+                        self._reload_runtime_singletons()
+                        setup_env(override=True)
+                        config = Config.get_instance()
+                    warnings.extend(config.validate())
+                    reload_triggered = True
+                except Exception as exc:  # pragma: no cover - defensive branch
+                    logger.error("Configuration reload failed: %s", exc, exc_info=True)
+                    warnings.append("Configuration updated but reload failed")
 
         warnings.extend(
             self._build_explainability_warnings(

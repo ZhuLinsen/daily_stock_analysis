@@ -9,14 +9,14 @@ from typing import Any, Dict, List, Literal, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field, field_validator
 
-from api.deps import get_config_dep, get_database_manager
+from api.deps import get_config_dep, get_database_manager, get_system_config_service
 from api.v1.errors import api_error
 from src.config import Config
 from src.services.screening.config import Config as ScreeningRuntimeConfig
 from src.services.screening.filter import check_hard_filters, validate_check_snapshot
 from src.services.screening.strategy import load_all_strategies
 from src.services.screening_service import ScreeningService, _ensure_screening_enabled
-from src.services.system_config_service import ConfigConflictError
+from src.services.system_config_service import ConfigConflictError, SystemConfigService
 from src.services.task_queue import TaskStatus as QueueTaskStatus
 from src.services.task_queue import get_task_queue
 from src.storage import DatabaseManager
@@ -327,13 +327,16 @@ def promote_screening_run_to_watchlist(
     request: Optional[ScreeningPromoteRequest] = None,
     config: Config = Depends(get_config_dep),
     db_manager: DatabaseManager = Depends(get_database_manager),
+    config_service: SystemConfigService = Depends(get_system_config_service),
 ) -> Dict[str, Any]:
     from src.services.screening_funnel_service import promote_screening_to_watchlist
 
     _ensure_screening_enabled(config)
     req = request or ScreeningPromoteRequest()
     try:
-        return promote_screening_to_watchlist(run_id, top_n=req.top_n, db_manager=db_manager)
+        return promote_screening_to_watchlist(
+            run_id, top_n=req.top_n, db_manager=db_manager, config_service=config_service,
+        )
     except HTTPException:
         raise
     except LookupError as exc:

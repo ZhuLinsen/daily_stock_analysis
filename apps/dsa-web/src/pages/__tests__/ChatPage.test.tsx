@@ -2070,7 +2070,7 @@ describe('watchlist button with code variants', () => {
     expect(await screen.findByText('从自选删除')).toBeInTheDocument();
   });
 
-  it('removes the matched raw HK watchlist entry instead of adding a duplicate variant', async () => {
+  it('removes an HK watchlist entry by the active stock code', async () => {
     mockStoreState.activeStockContext = { stock_code: 'HK00700', canonical_id: 'hk00700', stock_name: null, asset_type: 'stock' };
     mockGetWatchlist.mockResolvedValue(['00700']);
     mockRemoveFromWatchlist.mockResolvedValue([]);
@@ -2087,8 +2087,27 @@ describe('watchlist button with code variants', () => {
     fireEvent.click(await screen.findByText('从自选删除'));
 
     await waitFor(() => {
-      expect(mockRemoveFromWatchlist).toHaveBeenCalledWith('00700');
+      expect(mockRemoveFromWatchlist).toHaveBeenCalledWith('HK00700');
     });
     expect(mockAddToWatchlist).not.toHaveBeenCalled();
+  });
+
+  it('adds the active stock when the watchlist only contains a same-code index', async () => {
+    mockStoreState.activeStockContext = { stock_code: '000016', canonical_id: 'sz000016', stock_name: null, asset_type: 'stock' };
+    mockGetWatchlist.mockResolvedValue(['000016.SH']);
+    mockAddToWatchlist.mockResolvedValue(['000016.SH', '000016']);
+
+    await act(async () => {
+      render(
+        <MemoryRouter>
+          <ChatPage />
+        </MemoryRouter>,
+      );
+    });
+
+    expect(mockGetWatchlist).toHaveBeenCalled();
+    fireEvent.click(screen.getByText('加入自选'));
+    await waitFor(() => expect(mockAddToWatchlist).toHaveBeenCalledWith('000016'));
+    expect(mockRemoveFromWatchlist).not.toHaveBeenCalled();
   });
 });

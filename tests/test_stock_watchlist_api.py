@@ -11,6 +11,7 @@ from api.v1.endpoints.stocks import add_to_watchlist, get_watchlist, remove_from
 from api.v1.schemas.history import WatchlistRequest
 from src.config import Config, setup_env
 from src.core.config_manager import ConfigManager
+from src.services.stock_list_parser import split_stock_list
 from src.services.system_config_service import SystemConfigService
 
 
@@ -20,11 +21,8 @@ class FakeSystemConfigService:
         self.config_version = "cfg-v1"
         self.update_calls: list[str] = []
 
-    def get_config(self, include_schema: bool = False) -> dict:
-        return {
-            "config_version": self.config_version,
-            "items": [{"key": "STOCK_LIST", "value": self.stock_list}],
-        }
+    def get_watchlist_snapshot(self) -> tuple[list[str], str]:
+        return split_stock_list(self.stock_list), self.config_version
 
     def update(self, **kwargs) -> None:
         items = kwargs["items"]
@@ -94,6 +92,20 @@ def test_watchlist_add_normalizes_existing_mixed_separators_on_write() -> None:
     assert response.stock_codes == ["600519", "300750", "AAPL"]
     assert service.stock_list == "600519,300750,AAPL"
     assert service.update_calls == ["600519,300750,AAPL"]
+
+
+def test_watchlist_mutations_accept_yahoo_class_share_alias() -> None:
+    service = FakeSystemConfigService("600519,BRK-B")
+
+    added = add_to_watchlist(WatchlistRequest(stock_code="BRK.B"), service=service)
+    assert added.stock_codes == ["600519", "BRK-B"]
+    assert service.update_calls == []
+
+    removed = remove_from_watchlist(WatchlistRequest(stock_code="BRK-B"), service=service)
+    assert removed.stock_codes == ["600519"]
+
+    added = add_to_watchlist(WatchlistRequest(stock_code="BRK-B"), service=service)
+    assert added.stock_codes == ["600519", "BRK.B"]
 
 
 @pytest.mark.parametrize(

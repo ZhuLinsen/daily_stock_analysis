@@ -98,19 +98,32 @@ function stockCodeMatchKey(stockCode: string): string {
   return normalizeStockCode(stockCode).toUpperCase();
 }
 
+export function watchlistStockCodeKey(stockCode: string): string {
+  const key = stockCodeMatchKey(stockCode);
+  return /^[A-Z]{1,5}-[A-Z]$/.test(key) ? key.replace('-', '.') : key;
+}
+
 export function areStockCodesEquivalent(left: string, right: string): boolean {
   if (!left.trim() || !right.trim()) return false;
   return stockCodeMatchKey(left) === stockCodeMatchKey(right);
 }
 
-export function findMatchingStockCode(codes: string[], stockCode: string): string | undefined {
+export function findMatchingStockCode(
+  codes: string[],
+  stockCode: string,
+  getCodeKey: (code: string) => string = stockCodeMatchKey,
+): string | undefined {
   if (!stockCode.trim()) return undefined;
-  const targetKey = stockCodeMatchKey(stockCode);
-  return codes.find((code) => code.trim() && stockCodeMatchKey(code) === targetKey);
+  const targetKey = getCodeKey(stockCode);
+  return codes.find((code) => code.trim() && getCodeKey(code) === targetKey);
 }
 
-export function includesStockCode(codes: string[], stockCode: string): boolean {
-  return findMatchingStockCode(codes, stockCode) !== undefined;
+export function includesStockCode(
+  codes: string[],
+  stockCode: string,
+  getCodeKey?: (code: string) => string,
+): boolean {
+  return findMatchingStockCode(codes, stockCode, getCodeKey) !== undefined;
 }
 
 // ============ Asset-aware identity key (PR #2312) ============

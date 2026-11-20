@@ -566,6 +566,7 @@ describe('HomePage', () => {
     // (`sh000016`) — the registry-resolved identity must bridge them without
     // crossing into the bare `000016` stock row.
     vi.mocked(systemConfigApi.getWatchlist).mockResolvedValue(['000016.SH', '000016']);
+    vi.mocked(systemConfigApi.removeFromWatchlist).mockResolvedValue(['000016.SH']);
     vi.mocked(historyApi.getStockBarList).mockResolvedValue({
       total: 2,
       items: [
@@ -651,6 +652,11 @@ describe('HomePage', () => {
     expect(stockRow).not.toHaveTextContent('上证50');
     expect(stockRow).toHaveTextContent('任务等待中');
     expect(stockRow).not.toHaveTextContent('任务分析中');
+
+    fireEvent.click(screen.getByRole('button', { name: '从自选股移除 000016' }));
+    await waitFor(() => expect(screen.queryByTestId('watchlist-row-000016')).not.toBeInTheDocument());
+    expect(systemConfigApi.removeFromWatchlist).toHaveBeenCalledWith('000016');
+    expect(screen.getByTestId('watchlist-row-000016.SH')).toHaveTextContent('上证50');
   });
 
   it('keeps the watchlist workspace loading and defers history lookup until the index registry is ready (PR #2312)', async () => {
