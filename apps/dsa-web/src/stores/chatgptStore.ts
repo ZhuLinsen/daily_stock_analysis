@@ -94,7 +94,7 @@ export const useChatGPTStore = create<ChatGPTState>((set, get) => {
           throw error;
         }
         const status = await syncConnection(++readSequence).catch(() => undefined);
-        if (status?.available && !status.connected && status.pending === false) return false;
+        if (status?.available && !status.connected && status.pending === false && !status.disconnect_retry_connection_id) return false;
         return undefined;
       }
 

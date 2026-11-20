@@ -23,6 +23,8 @@ export function ChatGPTConnectionCard() {
   const { t } = useUiLanguage();
   const [working, setWorking] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const disconnectRetryId = status?.disconnect_retry_connection_id;
+  const disconnectConnectionId = status?.connection_id ?? disconnectRetryId;
   useEffect(() => { void refresh(); }, [refresh]);
   useEffect(() => {
     if (!status?.pending) return;
@@ -45,8 +47,11 @@ export function ChatGPTConnectionCard() {
       await refresh();
     } catch (error) {
       tab.close();
-      setNotice(getParsedApiError(error).message);
-      if (isAxiosError(error) && extractErrorCode(error.response?.data) === 'chatgpt_target_changed') await refresh();
+      const code = isAxiosError(error) && extractErrorCode(error.response?.data);
+      if (code === 'chatgpt_target_changed' || code === 'chatgpt_connection_busy') await refresh();
+      if (code !== 'chatgpt_connection_busy' || !useChatGPTStore.getState().status?.disconnect_retry_connection_id) {
+        setNotice(getParsedApiError(error).message);
+      }
     } finally {
       setWorking(false);
     }
@@ -56,14 +61,18 @@ export function ChatGPTConnectionCard() {
     setWorking(true);
     setNotice(null);
     try {
-      const target = status?.connection_id ? { connection_id: status.connection_id }
+      const target = disconnectConnectionId ? { connection_id: disconnectConnectionId }
         : status?.attempt_id ? { attempt_id: status.attempt_id } : null;
       if (!target) return;
       const confirmed = await disconnect(target);
-      if (confirmed === undefined) setNotice(disconnectStatusUnknown);
+      if (confirmed === undefined && !useChatGPTStore.getState().status?.disconnect_retry_connection_id) {
+        setNotice(disconnectStatusUnknown);
+      }
       if (confirmed === false) setNotice('attempt_id' in target ? t('chat.cancelledLocally') : t('chat.disconnectedLocally'));
     } catch (error) {
-      setNotice(getParsedApiError(error).message);
+      const code = isAxiosError(error) && extractErrorCode(error.response?.data);
+      if (code === 'chatgpt_store_unavailable' && useChatGPTStore.getState().status?.disconnect_retry_connection_id) return;
+      setNotice(code === 'chatgpt_target_changed' ? t('chat.chatGPTConnectionChanged') : getParsedApiError(error).message);
     } finally {
       setWorking(false);
     }
@@ -80,7 +89,7 @@ export function ChatGPTConnectionCard() {
     <section aria-labelledby="chatgpt-connection-title" className="space-y-3 border-t border-subtle pt-4">
       <h3 id="chatgpt-connection-title" className="text-sm font-semibold">ChatGPT 授权</h3>
       <p aria-live="polite" className="text-sm text-secondary-text">
-        {notice === disconnectStatusUnknown ? null : status?.cancelling ? t('chat.finishingAuthorization') : status?.pending ? '请在 ChatGPT 页面完成授权。' : status?.connected
+        {disconnectRetryId ? t('chat.fixStorageBeforeRetryingDisconnect') : notice === disconnectStatusUnknown ? null : status?.cancelling ? t('chat.finishingAuthorization') : status?.pending ? '请在 ChatGPT 页面完成授权。' : status?.connected
           ? `已授权 · ${currentLabel || 'ChatGPT'}`
           : statusMessage || (status?.available ? '连接后可在普通单股分析或问股中选择 ChatGPT。' : null)}
       </p>
@@ -98,9 +107,9 @@ export function ChatGPTConnectionCard() {
               <button type="button" className={button} disabled={working} onClick={() => void refresh(true)}>刷新模型</button>
             </>
           ) : null}
-          {status.connected || status.pending ? (
+          {disconnectRetryId || status.connected || status.pending ? (
             <button type="button" className={button} disabled={working || status.cancelling} onClick={() => void disconnectCurrent()}>
-              {status.connected ? '断开连接' : '取消授权'}
+              {disconnectRetryId ? t('chat.retryDisconnect') : status.connected ? '断开连接' : '取消授权'}
             </button>
           ) : (
             <>
@@ -117,7 +126,9 @@ export function ChatGPTConnectionCard() {
               )}
               {status.accounts?.filter((entry) => status.retry_id || entry.id !== status.registration_id).map((entry) => (
                 <button key={entry.id} type="button" className={button} disabled={working} onClick={() => void connect({ registration_id: entry.id })}>
-                  {t('chat.savedAccount')} · {entry.label} ({entry.id})
+                  {retryId
+                    ? t('chat.abandonRetryForSavedAccount', { account: `${entry.label} (${entry.id})` })
+                    : `${t('chat.savedAccount')} · ${entry.label} (${entry.id})`}
                 </button>
               ))}
               {(status.retry_id || status.account_label) && (

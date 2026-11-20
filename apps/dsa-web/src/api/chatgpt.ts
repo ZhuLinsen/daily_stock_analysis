@@ -8,6 +8,7 @@ export interface ChatGPTStatus {
   available: boolean;
   connected: boolean;
   connection_id?: string;
+  disconnect_retry_connection_id?: string | null;
   account_label?: string;
   registration_id?: string;
   accounts?: { id: string; label: string }[];

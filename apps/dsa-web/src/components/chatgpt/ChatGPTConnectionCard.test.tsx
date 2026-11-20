@@ -11,7 +11,12 @@ vi.mock('../../api/chatgpt', () => ({
 
 const connected = { available: true, connected: true, connection_id: 'old', account_label: 'Test', pending: false };
 const disconnected = { available: true, connected: false, account_label: 'Test', pending: false };
+const retryDisconnect = { ...disconnected, error: 'chatgpt_store_unavailable', disconnect_retry_connection_id: 'old' };
 const model = { slug: 'fixture', display_name: 'Fixture model' };
+
+function apiError(status: number, error: string) {
+  return { isAxiosError: true, response: { status, data: { error, message: 'Fixture error' } } };
+}
 const api = vi.mocked(chatgptApi);
 
 async function openConnectionCard() {
@@ -32,12 +37,16 @@ describe('ChatGPT connection status', () => {
     const replacement = { location: { replace: vi.fn() }, close: vi.fn() } as unknown as Window;
     const popup = vi.spyOn(window, 'open').mockReturnValue(replacement);
     try {
-      api.status.mockResolvedValue({ ...disconnected, retry_id: 'retry' });
+      api.status.mockResolvedValue({ ...disconnected, retry_id: 'retry', accounts: [{ id: 'saved', label: 'Saved' }] });
       api.connect.mockResolvedValue({ authorization_url: 'https://example.invalid/fixture' });
       render(<ChatGPTConnectionCard />);
       const retry = await screen.findByRole('button', { name: '继续上次授权' });
       await act(async () => { fireEvent.click(retry); });
       expect(api.connect).toHaveBeenLastCalledWith({ retry_id: 'retry' });
+
+      const saved = screen.getByRole('button', { name: '放弃上次授权，改用 Saved (saved)' });
+      await act(async () => { fireEvent.click(saved); });
+      expect(api.connect).toHaveBeenLastCalledWith({ registration_id: 'saved' });
 
       api.status.mockResolvedValue({ ...disconnected, retry_id: null });
       await act(async () => { fireEvent.click(screen.getByRole('button', { name: '重新开始授权' })); });
@@ -48,10 +57,14 @@ describe('ChatGPT connection status', () => {
     }
   });
 
-  it('reads a named unconfirmed revocation when the settings card is reopened', async () => {
+  it.each([false, true])('reads a named unconfirmed revocation after disconnect (stale: %s)', async (stale) => {
     const card = render(<ChatGPTConnectionCard />);
     const disconnect = await screen.findByRole('button', { name: '断开连接' });
-    api.disconnect.mockResolvedValue({ disconnected: true, revocation_confirmed: false });
+    if (stale) {
+      api.disconnect.mockRejectedValueOnce(apiError(409, 'chatgpt_target_changed'));
+    } else {
+      api.disconnect.mockResolvedValue({ disconnected: true, revocation_confirmed: false });
+    }
     api.status.mockResolvedValue({ ...disconnected, revocation_unconfirmed: true, revocation_account_label: 'Test' });
     fireEvent.click(disconnect);
     expect(await screen.findByText(/账号 Test 的远端撤销未确认/)).toBeVisible();
@@ -59,6 +72,51 @@ describe('ChatGPT connection status', () => {
     useChatGPTStore.setState({ status: null });
     render(<ChatGPTConnectionCard />);
     expect(await screen.findByText(/账号 Test 的远端撤销未确认/)).toBeVisible();
+  });
+
+  it.each([
+    apiError(503, 'chatgpt_store_unavailable'),
+    new AxiosError('timeout', 'ECONNABORTED'),
+  ])('keeps the server-owned disconnect target when the first attempt fails (%#)', async (error) => {
+    const view = render(<ChatGPTConnectionCard />);
+    const disconnect = await screen.findByRole('button', { name: '断开连接' });
+    api.disconnect.mockRejectedValueOnce(error);
+    api.status.mockResolvedValue(retryDisconnect);
+    await act(async () => { fireEvent.click(disconnect); });
+
+    expect(screen.getByRole('button', { name: '重试断开' })).toBeVisible();
+    expect(screen.queryByRole('button', { name: '重新授权' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '连接其他账号' })).not.toBeInTheDocument();
+    expect(screen.queryByText(/本地已断开/)).not.toBeInTheDocument();
+    view.unmount();
+    render(<ChatGPTConnectionCard />);
+
+    api.disconnect.mockResolvedValueOnce({ disconnected: true, revocation_confirmed: true });
+    const retry = await screen.findByRole('button', { name: '重试断开' });
+    api.status.mockResolvedValue(disconnected);
+    await act(async () => { fireEvent.click(retry); });
+    expect(api.disconnect).toHaveBeenNthCalledWith(2, { connection_id: 'old' });
+    expect(screen.queryByRole('button', { name: '重试断开' })).not.toBeInTheDocument();
+  });
+
+  it('reads a pending disconnect when a stale authorization action returns busy', async () => {
+    const replacement = { close: vi.fn() } as unknown as Window;
+    const popup = vi.spyOn(window, 'open').mockReturnValue(replacement);
+    try {
+      api.status.mockResolvedValue(disconnected);
+      render(<ChatGPTConnectionCard />);
+      const connect = await screen.findByRole('button', { name: '重新授权' });
+      api.connect.mockRejectedValueOnce(apiError(409, 'chatgpt_connection_busy'));
+      api.status.mockResolvedValue(retryDisconnect);
+      await act(async () => { fireEvent.click(connect); });
+
+      expect(replacement.close).toHaveBeenCalledOnce();
+      expect(screen.getByRole('button', { name: '重试断开' })).toBeVisible();
+      expect(screen.getByText(/请先修复本机 ChatGPT 凭据存储/)).toBeVisible();
+      expect(screen.queryByRole('button', { name: '重新授权' })).not.toBeInTheDocument();
+    } finally {
+      popup.mockRestore();
+    }
   });
 
   it('re-reads status after losing the disconnect response and discards an older model list', async () => {

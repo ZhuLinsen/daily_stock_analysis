@@ -332,6 +332,133 @@ def test_rotated_grant_write_failure_stops_the_old_connection(oauth, monkeypatch
     dispatch.assert_not_called()
 
 
+@pytest.fixture
+def chatgpt_routes(oauth, monkeypatch):
+    app = FastAPI()
+    app.include_router(chatgpt.router)
+    monkeypatch.setattr(chatgpt, "require_chatgpt_access", lambda request: None)
+    monkeypatch.setattr(chatgpt, "chatgpt_unavailable_reason", lambda request: None)
+    monkeypatch.setattr(chatgpt, "get_chatgpt_service", lambda: oauth)
+    return app
+
+
+@pytest.mark.parametrize("revocation", ["refused", "exiting", "unknown-token", "refresh-rejected"])
+def test_stale_disconnect_cannot_replace_failed_refresh_retirement(oauth, chatgpt_routes, monkeypatch, revocation):
+    expire_connection(oauth)
+    target = {"connection_id": SOURCE.connection_id}
+
+    def refresh(request):
+        assert request.url == chatgpt_oauth_service.TOKEN
+        if revocation == "unknown-token":
+            return httpx.Response(200, content=b"invalid JSON")
+        if revocation == "refresh-rejected":
+            return httpx.Response(400, json={"error": "invalid_grant"})
+        return httpx.Response(200, json=token_body())
+
+    async def verify():
+        loop = asyncio.get_running_loop()
+        oauth.loop = loop
+        monkeypatch.setattr(chatgpt_oauth_service, "DISCONNECT_TIMEOUT", 0.5)
+        exiting, release = asyncio.Event(), asyncio.Event()
+        revoked = []
+
+        async def upstream(request):
+            if request.url == chatgpt_oauth_service.METADATA:
+                return httpx.Response(200, json={
+                    "issuer": chatgpt_oauth_service.ISSUER,
+                    "revocation_endpoint": chatgpt_oauth_service.ISSUER + "/fixture-revoke",
+                })
+            form = parse_qs(request.content.decode())
+            assert form["client_id"] == ["issued"]
+            token, = form["token"]
+            revoked.append(token)
+            if token == "refresh-old":
+                return httpx.Response(200)
+            if revocation == "exiting":
+                try:
+                    await asyncio.sleep(60)
+                finally:
+                    exiting.set()
+                    await release.wait()
+            return httpx.Response(400)
+
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=chatgpt_routes), base_url="http://test") as client:
+            mock_revocation_transport(monkeypatch, upstream)
+            oauth.http.close()
+            oauth.http = httpx.Client(transport=httpx.MockTransport(refresh), trust_env=False)
+            try:
+                with monkeypatch.context() as failed:
+                    failed.setattr(oauth, "_save", Mock(side_effect=OSError("fixture")))
+                    result = await client.get("/models", params={**target, "refresh": True})
+                assert result.status_code == 503
+                if revocation == "exiting":
+                    await asyncio.wait_for(exiting.wait(), timeout=2)
+                    assert not oauth.revoking["issued"].done()
+                status = (await client.get("/status")).json()
+                assert not status["connected"]
+                assert status["revocation_unconfirmed"] == (revocation != "refresh-rejected")
+                assert status["disconnect_retry_connection_id"] is None
+                before = json.dumps(oauth.data.get("last_session_end"))
+                record = oauth.directory / "connection.json"
+                previous_file = record.read_bytes()
+
+                stale = await client.post("/disconnect", json=target)
+                assert stale.status_code == 409 and stale.json()["detail"]["error"] == "chatgpt_target_changed"
+                assert revoked == (["refresh-new"] if revocation in {"refused", "exiting"} else [])
+                assert record.read_bytes() == previous_file
+                assert json.dumps(oauth.data.get("last_session_end")) == before
+                assert (await client.get("/status")).json() == status
+            finally:
+                release.set()
+                finished = oauth.revoking.get("issued")
+                if finished:
+                    await asyncio.to_thread(finished.result, 2)
+
+    asyncio.run(verify())
+
+
+def test_disconnect_write_failure_keeps_the_original_api_target_until_detached(oauth, chatgpt_routes, monkeypatch):
+    expire_connection(oauth)
+    target = {"connection_id": SOURCE.connection_id}
+    previous_end = {"operation_id": "earlier", "result": "unconfirmed", "registration_id": "issued"}
+    oauth._save({**oauth.data, "last_session_end": previous_end})
+    revoked = []
+
+    def upstream(request):
+        if request.url == chatgpt_oauth_service.METADATA:
+            return httpx.Response(200, json={
+                "issuer": chatgpt_oauth_service.ISSUER,
+                "revocation_endpoint": chatgpt_oauth_service.ISSUER + "/fixture-revoke",
+            })
+        revoked.append(parse_qs(request.content.decode())["token"])
+        return httpx.Response(200)
+
+    mock_revocation_transport(monkeypatch, upstream)
+    client = TestClient(chatgpt_routes)
+    with monkeypatch.context() as failed:
+        failed.setattr(oauth, "_save", Mock(side_effect=OSError("fixture")))
+        assert client.post("/disconnect", json=target).status_code == 503
+    status = client.get("/status").json()
+    assert not status["connected"] and status["connection_id"] is None
+    assert status["disconnect_retry_connection_id"] == SOURCE.connection_id
+    assert revoked == [] and oauth.data["last_session_end"] == previous_end and status["revocation_unconfirmed"]
+    assert client.get("/models", params=target).json()["detail"]["error"] == "chatgpt_connection_inactive"
+    connect = client.post("/connect", json={})
+    assert connect.status_code == 409 and connect.json()["detail"]["error"] == "chatgpt_connection_busy"
+    assert oauth.pending is None
+
+    assert client.post("/disconnect", json=target).json() == {"disconnected": True, "revocation_confirmed": True}
+    status = client.get("/status").json()
+    assert status["disconnect_retry_connection_id"] is None and not status["revocation_unconfirmed"]
+    record = oauth.directory / "connection.json"
+    after = record.read_bytes()
+    stale = client.post("/disconnect", json=target)
+    assert stale.status_code == 409 and stale.json()["detail"]["error"] == "chatgpt_target_changed"
+    assert revoked == [["refresh-old"]] and record.read_bytes() == after
+    assert client.get("/status").json() == status
+    assert client.post("/connect", json={"registration_id": "issued"}).status_code == 200
+
+
 def test_second_write_failure_preserves_local_disconnect_and_live_result(oauth, monkeypatch):
     expire_connection(oauth)
     original_save = oauth._save
