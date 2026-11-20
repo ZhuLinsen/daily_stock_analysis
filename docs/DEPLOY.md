@@ -487,6 +487,7 @@ git push
 
 - Actions 页面可以看到运行历史
 - 点击具体的运行记录查看详细日志
+- 默认会在运行记录的 **Summary** 面板展示已脱敏的报告摘要；如需关闭，可将仓库变量 `STEP_SUMMARY_REPORT` 设置为 `false`
 - 分析报告会作为 Artifact 保存 30 天
 
 ### 定时说明
@@ -525,7 +526,7 @@ git push
 A: GitHub Actions 定时任务可能有 5-15 分钟延迟，且仅在仓库有活动时才触发。长时间无 commit 可能导致 workflow 被禁用。
 
 **Q: 如何查看历史报告？**
-A: Actions → 选择运行记录 → Artifacts → 下载 `analysis-reports-xxx`
+A: 先在 Actions → 选择运行记录 → **Summary** 查看已脱敏摘要；需要完整报告时，再从 Artifacts 下载 `analysis-reports-xxx`。如不需要 Summary，可将仓库变量 `STEP_SUMMARY_REPORT` 设置为 `false`。
 
 **Q: 免费额度够用吗？**
 A: 每次运行约 2-5 分钟，一个月 22 个工作日 = 44-110 分钟，远低于 2000 分钟限制。

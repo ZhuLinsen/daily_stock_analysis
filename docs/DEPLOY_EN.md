@@ -443,6 +443,7 @@ git push
 
 - Actions page shows run history
 - Click specific run record to view detailed logs
+- By default, the run's **Summary** panel shows a redacted report preview; set the repository variable `STEP_SUMMARY_REPORT` to `false` to disable it
 - Analysis reports are saved as Artifacts for 30 days
 
 ### Schedule Details
@@ -481,7 +482,7 @@ git push
 A: GitHub Actions scheduled tasks may have 5-15 minute delays, and only trigger when repo has activity. Long periods without commits may cause workflow to be disabled.
 
 **Q: How to view historical reports?**
-A: Actions → Select run record → Artifacts → Download `analysis-reports-xxx`
+A: First open the redacted preview in Actions → Select run record → **Summary**. Download `analysis-reports-xxx` from Artifacts when you need the full reports. Set the repository variable `STEP_SUMMARY_REPORT` to `false` if you do not want the Summary preview.
 
 **Q: Is the free quota enough?**
 A: Each run takes about 2-5 minutes, 22 workdays per month = 44-110 minutes, well below the 2000 minute limit.

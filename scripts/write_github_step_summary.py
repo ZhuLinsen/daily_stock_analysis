@@ -4,25 +4,29 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 import os
 from pathlib import Path
 import sys
 from typing import List, Optional, Sequence
 
 
-_SHANGHAI_TZ = timezone(timedelta(hours=8))
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+
 _DEFAULT_MAX_BYTES = 200_000
 
 
-def _redact_text(text: str) -> str:
-    """Best-effort redaction reusing diagnostic secret scrubber."""
+def _redact_text(text: str) -> Optional[str]:
+    """Redact the complete report, or fail closed if the scrubber is unavailable."""
     try:
         from src.llm.local_cli_backend import redact_diagnostic_text
 
-        return redact_diagnostic_text(text)
+        return redact_diagnostic_text(text, limit=sys.maxsize)
     except Exception:
-        return text
+        return None
 
 
 def _truncate_utf8_bytes(text: str, max_bytes: int) -> tuple[str, bool]:
@@ -37,7 +41,7 @@ def _select_report_files(reports_dir: Path, target_date: Optional[str] = None) -
     if not reports_dir.is_dir():
         return []
 
-    date_token = (target_date or datetime.now(_SHANGHAI_TZ).strftime("%Y%m%d")).strip()
+    date_token = (target_date or datetime.now().strftime("%Y%m%d")).strip()
     candidates = [
         p for p in reports_dir.iterdir()
         if p.is_file() and p.suffix.lower() == ".md"
@@ -47,7 +51,14 @@ def _select_report_files(reports_dir: Path, target_date: Optional[str] = None) -
         return []
 
     matching = [p for p in candidates if date_token and date_token in p.name]
-    chosen = matching if matching else [max(candidates, key=lambda p: (p.stat().st_mtime, p.name))]
+    if matching:
+        chosen = matching
+    else:
+        chosen = []
+        for prefix in ("report_", "market_review_"):
+            prefix_candidates = [p for p in candidates if p.name.startswith(prefix)]
+            if prefix_candidates:
+                chosen.append(max(prefix_candidates, key=lambda p: (p.stat().st_mtime, p.name)))
 
     def _sort_key(path: Path) -> tuple[int, float, str]:
         # Put stock dashboard reports first, then market review, newest first.
@@ -57,49 +68,11 @@ def _select_report_files(reports_dir: Path, target_date: Optional[str] = None) -
     return sorted(chosen, key=_sort_key)
 
 
-def _build_ledger_summary_block(ledger_dir: Optional[Path]) -> str:
-    if ledger_dir is None or not ledger_dir.is_dir():
-        return ""
-    try:
-        from src.services.ledger_arena_service import verify_commitments
-
-        status = verify_commitments(ledger_dir=ledger_dir)
-    except Exception:
-        return ""
-
-    total = int(status.get("total") or 0)
-    if total <= 0:
-        return ""
-
-    verified = int(status.get("verified") or 0)
-    all_valid = bool(status.get("all_valid", False))
-    shield = "✅ Verified" if all_valid else "⚠️ Tamper / Mismatch Detected"
-    items = status.get("items") or []
-    latest_line = ""
-    if items:
-        top = items[0]
-        latest_line = (
-            f"| Latest Signed Ledger | `{top.get('date')}` ({top.get('group')}) — "
-            f"`{str(top.get('sha256') or '')[:16]}...` ({top.get('record_count', 0)} calls) |"
-        )
-    lines = [
-        "\n\n---\n",
-        "### 🏆 Verifiable SHA-256 Track Record",
-        "| Metric | Value |",
-        "| --- | --- |",
-        f"| Commitment Integrity | {shield} ({verified}/{total} files) |",
-    ]
-    if latest_line:
-        lines.append(latest_line)
-    return "\n".join(lines)
-
-
 def build_step_summary_markdown(
     reports_dir: Path,
     *,
     max_bytes: int = _DEFAULT_MAX_BYTES,
     target_date: Optional[str] = None,
-    ledger_dir: Optional[Path] = None,
 ) -> str:
     """Build redacted Markdown payload for GitHub Actions Job Summary."""
     files = _select_report_files(reports_dir, target_date=target_date)
@@ -113,23 +86,28 @@ def build_step_summary_markdown(
             continue
         if idx > 0:
             sections.append("\n---\n")
-        sections.append(_redact_text(raw))
+        redacted = _redact_text(raw)
+        if redacted is None:
+            return ""
+        sections.append(redacted)
 
     if len(sections) == 1:
         return ""
 
-    ledger_block = _build_ledger_summary_block(ledger_dir)
-    footer = (
-        f"{ledger_block}\n\n---\n\n"
-        "> Full reports and logs are saved in the workflow artifact (`analysis-reports-*`)."
-    )
+    footer = "\n\n---\n\n> Full reports and logs are saved in the workflow artifact (`analysis-reports-*`)."
     body = "\n".join(sections)
-    budget = max(1024, int(max_bytes) - len(footer.encode("utf-8")) - 128)
-    clipped, was_truncated = _truncate_utf8_bytes(body, budget)
-    if was_truncated:
-        notice = "\n\n> _(Summary preview truncated to fit Job Summary limit; download `analysis-reports-*` artifact for the complete report.)_"
-        return f"{clipped}{notice}{footer}\n"
-    return f"{clipped}{footer}\n"
+    max_bytes = max(0, int(max_bytes))
+    complete = f"{body}{footer}\n"
+    if len(complete.encode("utf-8")) <= max_bytes:
+        return complete
+
+    notice = "\n\n> _(Summary preview truncated to fit Job Summary limit; download `analysis-reports-*` artifact for the complete report.)_"
+    suffix = f"{notice}{footer}\n"
+    suffix_bytes = len(suffix.encode("utf-8"))
+    if suffix_bytes >= max_bytes:
+        return _truncate_utf8_bytes(suffix, max_bytes)[0]
+    clipped, _ = _truncate_utf8_bytes(body, max_bytes - suffix_bytes)
+    return f"{clipped}{suffix}"
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
@@ -137,7 +115,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--reports-dir", default="reports", help="Directory containing generated Markdown reports")
     parser.add_argument("--max-bytes", type=int, default=_DEFAULT_MAX_BYTES, help="Maximum UTF-8 bytes to append")
     parser.add_argument("--date", default=None, help="Optional YYYYMMDD date filter")
-    parser.add_argument("--ledger-dir", default=None, help="Optional SHA-256 ledger directory for summary badge")
     args = parser.parse_args(argv)
 
     summary_path_raw = (os.getenv("GITHUB_STEP_SUMMARY") or "").strip()
@@ -149,7 +126,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             Path(args.reports_dir),
             max_bytes=args.max_bytes,
             target_date=args.date,
-            ledger_dir=Path(args.ledger_dir) if args.ledger_dir else None,
         )
         if not markdown:
             return 0
