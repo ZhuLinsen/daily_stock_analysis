@@ -78,7 +78,9 @@ def run_news_digest_once(
         # 不占用当日 claim；仅生成摘要供 CLI 本地查看。
         logger.info("NEWS_DIGEST --no-notify：仅生成摘要，不推送、不占用当日名额")
         max_news = max(1, min(int(getattr(config, "news_digest_max_news", 12) or 12), 30))
-        feed_entries, feed_ok, fallback_count = collect_feed_entries(intelligence_service, now=now)
+        feed_entries, feed_ok, fallback_count = collect_feed_entries(
+            intelligence_service, now=now, digest_limit=max_news,
+        )
         entries = merge_entries(feed_entries, limit=max_news)
         report = generate_template_digest(
             entries, context, now=now, feed_count=len(feed_entries), fallback_count=fallback_count,
@@ -107,7 +109,9 @@ def run_news_digest_once(
 
     try:
         max_news = max(1, min(int(getattr(config, "news_digest_max_news", 12) or 12), 30))
-        feed_entries, feed_ok, fallback_count = collect_feed_entries(intelligence_service, now=now)
+        feed_entries, feed_ok, fallback_count = collect_feed_entries(
+            intelligence_service, now=now, digest_limit=max_news,
+        )
         if not feed_ok:
             # 资讯池读取失败（OR-COR-28338a9e）：绝不把失败伪装成“空池摘要”
             # 推送并占用当日名额；释放 claim，窗口内恢复后可补发真实新闻。

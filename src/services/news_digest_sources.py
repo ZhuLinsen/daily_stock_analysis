@@ -22,7 +22,6 @@ _TRUNCATE_SNIPPET = 220
 _TRUNCATE_SOURCE = 60
 _FEED_LOOKBACK_HOURS = 48
 _FEED_PAGE_SIZE = 100  # 对齐真实仓储钳制上限（intelligence_repo.list_items）
-_FEED_MAX_PAGES = 10   # 翻页安全上限：最多回读 10 页，防患异常大池
 _CONTROL_CHARS_PATTERN = re.compile(r"[\x00-\x1f\x7f]")
 _TRACKING_PARAM_PREFIXES = ("utm_",)
 _TRACKING_PARAMS = frozenset({"utm", "spm"})
@@ -98,14 +97,18 @@ def collect_feed_entries(
     *,
     now: datetime,
     lookback_hours: int = _FEED_LOOKBACK_HOURS,
+    digest_limit: Optional[int] = None,
 ) -> Tuple[List[NewsDigestEntry], bool, int]:
     """资讯池采集：刷新落库后按需翻页回读，发布时间为权威时效口径。
 
     返回 (entries, feed_ok, fallback_count)。逐行按口径 cutoff 复核
     （published_at 用 UTC、fetched_at 用本地，OR-COR-2f1e978e）：发布时间超窗
     的旧闻即使 fetched_at 刚刷新也不进池（e5070d9a）；发布时间缺失按
-    fetched_at 口径保留并计入 fallback（V5）。翻页直至覆盖 total 或页提前
-    结束（OR-COR-7cf03c1e）。刷新/回读失败按空池处理（fail-open，不致命）。
+    fetched_at 口径保留并计入 fallback（V5）。翻页不设固定页数上限，终止
+    条件只有三个（OR-COR-7cf03c1e）：① 覆盖 total；② 页提前结束；③ 调用方
+    提供 digest_limit 且去重后条数已达上限——真实仓储按最新优先排序，未读行
+    排序必在已读行之后，提前停止不会改变合并结果。刷新/回读失败按空池处理
+    （fail-open，不致命）。
     """
     if intelligence_service is None:
         return [], False, 0
@@ -114,13 +117,25 @@ def collect_feed_entries(
     except Exception as exc:  # noqa: BLE001 - 池刷新失败不致命
         logger.warning("NEWS_DIGEST 资讯池刷新失败，按空池处理: %s", exc)
         return [], False, 0
+    # 时区口径（OR-COR-2f1e978e）：池内 published_at 为 UTC 无时区（既有解析链路
+    # 统一转 UTC 落库），fetched_at 为本地无时区（ORM default=datetime.now）。
+    # cutoff 必须分口径对齐，禁止本地 cutoff 与 UTC 发布时间混用。
+    lookback = timedelta(hours=max(1, int(lookback_hours)))
+    published_cutoff = now.astimezone(timezone.utc).replace(tzinfo=None) - lookback
+    fetched_cutoff = now.astimezone().replace(tzinfo=None) - lookback
     # 按需翻页（OR-COR-7cf03c1e）：真实仓储 page_size 钳 100 且先排序分页，
-    # 只读第一页再去重会让后页窗口内有效新闻在摘要未满时被遗漏。翻页直至
-    # 覆盖 total 或页提前结束（_FEED_MAX_PAGES 兜底），去重仍在窗口层统一进行。
-    rows: List[Any] = []
+    # 固定页数上限会在高重复大池去重未满时静默遗漏后页有效新闻，故仅以上述
+    # 三个自然条件终止；去重计数与窗口层 merge_entries 的存活口径逐条一致
+    # （规范化 URL 去重、缺失 URL 不去重），去重本身仍由窗口层统一进行。
+    limit = None if digest_limit is None else max(1, int(digest_limit))
+    read_count = 0
     total: Optional[int] = None
     page = 1
-    while page <= _FEED_MAX_PAGES:
+    entries: List[NewsDigestEntry] = []
+    fallback_count = 0
+    seen_urls: set = set()
+    deduped_count = 0
+    while True:
         try:
             page_rows, page_total = intelligence_service.repo.list_items(
                 days=max(1, -(-int(lookback_hours) // 24)), page=page, page_size=_FEED_PAGE_SIZE,
@@ -128,35 +143,36 @@ def collect_feed_entries(
         except Exception as exc:  # noqa: BLE001 - 回读失败不致命
             logger.warning("NEWS_DIGEST 资讯池回读失败，按空池处理: %s", exc)
             return [], False, 0
-        rows.extend(page_rows or [])
+        page_rows = list(page_rows or [])
+        read_count += len(page_rows)
         if total is None:
             total = int(page_total or 0)
-        if not page_rows or len(page_rows) < _FEED_PAGE_SIZE or len(rows) >= total:
-            break
+        for row in page_rows:
+            published = parse_published_datetime(getattr(row, "published_at", None))
+            if published is not None and published < published_cutoff:
+                continue  # 旧闻超窗：即使 fetched_at 刚刷新也不进池（e5070d9a）
+            if published is None:
+                fetched = parse_published_datetime(getattr(row, "fetched_at", None))
+                if fetched is not None and fetched < fetched_cutoff:
+                    continue
+                fallback_count += 1  # V5：缺失发布时间，按抓取口径纳入并计数
+            entry = NewsDigestEntry(
+                title=getattr(row, "title", ""), snippet=getattr(row, "summary", ""),
+                url=getattr(row, "url", ""), source=getattr(row, "source", ""),
+                published_at=published,
+            )
+            entries.append(entry)
+            url_key = normalize_url(entry.url)
+            if url_key is None or url_key not in seen_urls:
+                deduped_count += 1  # 与 merge_entries 存活口径一致的去重计数
+            if url_key is not None:
+                seen_urls.add(url_key)
+        if not page_rows or len(page_rows) < _FEED_PAGE_SIZE or read_count >= total:
+            break  # 覆盖 total / 页提前结束
+        if limit is not None and deduped_count >= limit:
+            break  # 去重后摘要额已满（OR-COR-7cf03c1e 第二停止条件）
         page += 1
 
-    # 时区口径（OR-COR-2f1e978e）：池内 published_at 为 UTC 无时区（既有解析链路
-    # 统一转 UTC 落库），fetched_at 为本地无时区（ORM default=datetime.now）。
-    # cutoff 必须分口径对齐，禁止本地 cutoff 与 UTC 发布时间混用。
-    lookback = timedelta(hours=max(1, int(lookback_hours)))
-    published_cutoff = now.astimezone(timezone.utc).replace(tzinfo=None) - lookback
-    fetched_cutoff = now.astimezone().replace(tzinfo=None) - lookback
-    entries: List[NewsDigestEntry] = []
-    fallback_count = 0
-    for row in (rows or []):
-        published = parse_published_datetime(getattr(row, "published_at", None))
-        if published is not None and published < published_cutoff:
-            continue  # 旧闻超窗：即使 fetched_at 刚刷新也不进池（e5070d9a）
-        if published is None:
-            fetched = parse_published_datetime(getattr(row, "fetched_at", None))
-            if fetched is not None and fetched < fetched_cutoff:
-                continue
-            fallback_count += 1  # V5：缺失发布时间，按抓取口径纳入并计数
-        entries.append(NewsDigestEntry(
-            title=getattr(row, "title", ""), snippet=getattr(row, "summary", ""),
-            url=getattr(row, "url", ""), source=getattr(row, "source", ""),
-            published_at=published,
-        ))
     if fallback_count:
         logger.info("NEWS_DIGEST 资讯池 %d 条缺失发布时间，按抓取时间口径纳入", fallback_count)
     return entries, True, fallback_count

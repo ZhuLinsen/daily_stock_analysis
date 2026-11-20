@@ -383,6 +383,73 @@ def test_collect_pages_until_window_covered():
     assert {"后页独家一", "后页独家二"} <= titles, "后页窗口内独立快讯必须进入摘要"
 
 
+def test_collect_pages_beyond_old_fixed_cap_until_total_covered():
+    """OR-COR-7cf03c1e（收窄后遗留）：固定 10 页上限在摘要未满时仍会遗漏后页
+    有效新闻——前 1000 行为 10 篇快讯的高重复收录（去重后仅 10 条 < 摘要上限
+    12），第 11 页的两篇一小时前发布的独立快讯不得被静默丢弃后仍返回成功。"""
+    dup_rows = [
+        _feed_row(f"重复快讯{i % 10}", f"https://f.cn/dup{i % 10}",
+                  published_at=None, fetched_at=TUESDAY_PREMARKET)
+        for i in range(1000)
+    ]
+    tail_rows = [
+        _feed_row("上限后独家一", "https://f.cn/unique1",
+                  published_at=TUESDAY_PREMARKET - timedelta(hours=1)),
+        _feed_row("上限后独家二", "https://f.cn/unique2",
+                  published_at=TUESDAY_PREMARKET - timedelta(hours=2)),
+    ]
+    stub = PaginatedIntelligenceService(rows=dup_rows + tail_rows)
+    entries, feed_ok, fallback = collect_feed_entries(stub, now=TUESDAY_PREMARKET)
+    assert feed_ok is True
+    pages = [call["page"] for call in stub.list_calls]
+    assert pages == list(range(1, 12)), "10 页上限后摘要仍未满，必须继续翻页覆盖 total"
+    deduped = merge_entries(entries, limit=12)
+    assert len(deduped) == 12, "去重后必须凑满 12 条（10 重复收录 + 2 独家）"
+    titles = {entry.title for entry in deduped}
+    assert {"上限后独家一", "上限后独家二"} <= titles, "上限后的有效新闻不得遗漏"
+    assert fallback == 1000, "无发布时间的重复行按抓取口径纳入并计数"
+
+
+def test_collect_stops_early_once_dedup_reaches_digest_limit():
+    """OR-COR-7cf03c1e 第二停止条件：去重后条数已达摘要上限即可停止翻页
+    （仓储按最新优先排序，未读行排序必在已读行之后，提前停止不改变合并
+    结果）；但去重未满时必须继续翻页——包括超过旧固定页数上限的页。"""
+    dup_rows = [
+        _feed_row(f"重复快讯{i % 10}", f"https://f.cn/dup{i % 10}",
+                  published_at=None, fetched_at=TUESDAY_PREMARKET)
+        for i in range(1000)
+    ]
+    tail_rows = [
+        _feed_row("上限后独家一", "https://f.cn/unique1",
+                  published_at=TUESDAY_PREMARKET - timedelta(hours=1)),
+        _feed_row("上限后独家二", "https://f.cn/unique2",
+                  published_at=TUESDAY_PREMARKET - timedelta(hours=2)),
+    ]
+    stub = PaginatedIntelligenceService(rows=dup_rows + tail_rows)
+    entries, feed_ok, _fallback = collect_feed_entries(
+        stub, now=TUESDAY_PREMARKET, digest_limit=12,
+    )
+    assert feed_ok is True
+    pages = [call["page"] for call in stub.list_calls]
+    assert pages == list(range(1, 12)), "去重未满 12 条时必须翻到第 11 页补齐"
+    assert len(merge_entries(entries, limit=12)) == 12
+
+    fresh_rows = [
+        _feed_row(f"充足快讯{i}", f"https://f.cn/fresh{i}",
+                  published_at=TUESDAY_PREMARKET - timedelta(minutes=i + 1))
+        for i in range(250)
+    ]
+    fresh_stub = PaginatedIntelligenceService(rows=fresh_rows)
+    entries_fresh, fresh_ok, _fb = collect_feed_entries(
+        fresh_stub, now=TUESDAY_PREMARKET, digest_limit=12,
+    )
+    assert fresh_ok is True
+    assert [call["page"] for call in fresh_stub.list_calls] == [1], (
+        "首页去重已达摘要上限时无需继续翻页（未读行排序必在已读行之后）"
+    )
+    assert len(merge_entries(entries_fresh, limit=12)) == 12
+
+
 def test_stale_published_excluded_even_if_fetched_now():
     """OR-COR-e5070d9a 回归：一周前发布的旧文，fetched_at 刚刷新 → 不进池。"""
     stale = _feed_row(
@@ -665,6 +732,34 @@ def test_run_once_feed_readback_failure_never_sends_or_claims(tmp_path):
     assert recovered["status"] == "success"
     assert "恢复后的快讯" in recovered["report"]
     assert len(notifier.calls) == 1
+
+
+def test_run_once_pages_beyond_cap_until_digest_full_sends_all_unique(tmp_path):
+    """OR-COR-7cf03c1e 端到端：千行重复池 + 旧 10 页上限后的两篇独家——不得
+    只推 10 条却占用当日名额（否则 claim 命中后正常入口永远无法补齐）。"""
+    config = _config(tmp_path)
+    notifier = StubNotifier()
+    dup_rows = [
+        _feed_row(f"重复快讯{i % 10}", f"https://f.cn/dup{i % 10}",
+                  published_at=None, fetched_at=TUESDAY_PREMARKET)
+        for i in range(1000)
+    ]
+    tail_rows = [
+        _feed_row("上限后独家一", "https://f.cn/unique1",
+                  published_at=TUESDAY_PREMARKET - timedelta(hours=1)),
+        _feed_row("上限后独家二", "https://f.cn/unique2",
+                  published_at=TUESDAY_PREMARKET - timedelta(hours=2)),
+    ]
+    pool = PaginatedIntelligenceService(rows=dup_rows + tail_rows)
+    result = run_news_digest_once(
+        config, now=TUESDAY_PREMARKET, intelligence_service=pool, notifier=notifier,
+    )
+    assert result["status"] == "success"
+    assert result["entries_count"] == 12, "去重后必须凑满 12 条而非停在 10 条"
+    assert len(notifier.calls) == 1
+    report = notifier.calls[0]["content"]
+    assert "上限后独家一" in report and "上限后独家二" in report, "上限后独家必须进入推送"
+    assert _claim_count(config.database_path) == 1
 
 
 def test_run_once_missing_intelligence_service_fails_without_claim(tmp_path):
