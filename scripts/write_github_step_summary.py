@@ -19,6 +19,22 @@ if str(_REPO_ROOT) not in sys.path:
 
 _DEFAULT_MAX_BYTES = 200_000
 _AGGREGATE_REPORT_RE = re.compile(r"^report_\d{8}\.md$")
+_MARKDOWN_AUTHORIZATION_FIELD_PATTERN = re.compile(
+    r"(?P<opening>\*\*|__)(?P<field>(?:proxy[-_ \t]?)?authorization)"
+    r"(?:(?P<closing_before>\*\*|__)(?P<separator_before>[ \t]*(?:=|:))"
+    r"|(?P<separator_inside>[ \t]*(?:=|:))(?P<closing_after>\*\*|__))",
+    re.IGNORECASE,
+)
+
+
+def _normalize_markdown_sensitive_fields(text: str) -> str:
+    """Expose Markdown-emphasized sensitive labels to the diagnostic scrubber."""
+
+    def normalize(match: re.Match[str]) -> str:
+        separator = match.group("separator_before") or match.group("separator_inside")
+        return f"{match.group('field')}{separator}"
+
+    return _MARKDOWN_AUTHORIZATION_FIELD_PATTERN.sub(normalize, text)
 
 
 def _redact_text(text: str) -> Optional[str]:
@@ -26,7 +42,10 @@ def _redact_text(text: str) -> Optional[str]:
     try:
         from src.llm.local_cli_backend import redact_diagnostic_text
 
-        return redact_diagnostic_text(text, limit=sys.maxsize)
+        return redact_diagnostic_text(
+            _normalize_markdown_sensitive_fields(text),
+            limit=sys.maxsize,
+        )
     except Exception:
         return None
 

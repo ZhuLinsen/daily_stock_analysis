@@ -28,7 +28,9 @@ def test_writes_redacted_reports_to_step_summary(tmp_path: Path) -> None:
     reports_dir = tmp_path / "reports"
     reports_dir.mkdir()
     (reports_dir / "report_20261120.md").write_text(
-        "# 决策仪表盘\nAuthorization: Bearer sk-secret-token-123456\n",
+        "# 决策仪表盘\n"
+        "Authorization: Bearer short-bearer-token\n"
+        "**Authorization**: Bearer short-bearer-token\n",
         encoding="utf-8",
     )
     (reports_dir / "market_review_20261120.md").write_text(
@@ -44,7 +46,7 @@ def test_writes_redacted_reports_to_step_summary(tmp_path: Path) -> None:
     written = summary_file.read_text(encoding="utf-8")
     assert "# 决策仪表盘" in written
     assert "# 大盘复盘" in written
-    assert "sk-secret-token-123456" not in written
+    assert "short-bearer-token" not in written
     assert "analysis-reports-*" in written
 
 
