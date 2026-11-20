@@ -1843,8 +1843,8 @@ class Config:
                 invalid_searxng_urls.append(u)
         if invalid_searxng_urls:
             logger.warning(
-                "SEARXNG_BASE_URLS 中存在无效 URL，已忽略: %s",
-                ", ".join(invalid_searxng_urls[:3]),
+                "SEARXNG_BASE_URLS 中存在无效 URL，已忽略（数量: %d）",
+                len(invalid_searxng_urls),
             )
         searxng_public_instances_enabled = parse_env_bool(
             os.getenv('SEARXNG_PUBLIC_INSTANCES_ENABLED'),
@@ -2563,6 +2563,21 @@ class Config:
                 base_url = (
                     os.getenv('ANSPIRE_LLM_BASE_URL') or ANSPIRE_LLM_BASE_URL_DEFAULT
                 ).strip() or None
+            if base_url:
+                parsed_base_url = _safe_urlparse(base_url)
+                if (
+                    parsed_base_url is None
+                    or parsed_base_url.scheme.lower() not in {"http", "https"}
+                    or not parsed_base_url.netloc
+                ):
+                    issues.append(HermesConfigIssue(
+                        f"LLM_{ch_upper}_BASE_URL",
+                        "invalid_base_url",
+                        f"LLM_{ch_upper}_BASE_URL 不是有效的 http:// 或 https:// URL。",
+                    ))
+                    blocks_legacy_fallback = True
+                    _logger.warning("LLM_%s_BASE_URL is invalid; channel skipped", ch_upper)
+                    continue
             protocol_raw = os.getenv(f'LLM_{ch_upper}_PROTOCOL', '').strip()
             if ch_lower == "anspire" and not protocol_raw:
                 protocol_raw = "openai"

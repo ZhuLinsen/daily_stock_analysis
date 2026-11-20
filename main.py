@@ -1742,7 +1742,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             )
 
     # 在配置加载前先初始化 bootstrap 日志，确保早期失败也能落盘
-    if not doctor_json_mode:
+    if not doctor_mode:
         try:
             _setup_bootstrap_logging(debug=args.debug)
         except Exception as exc:
@@ -1755,7 +1755,18 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     # 加载配置（在 bootstrap logging 之后执行，确保异常有日志）
     try:
-        config = get_config()
+        if doctor_mode:
+            # Config construction and validation contain useful operational
+            # warnings, but doctor output must be the only observable output
+            # and must never create a log file or leak a raw URL/token.
+            previous_logging_disable = logging.root.manager.disable
+            logging.disable(logging.CRITICAL)
+            try:
+                config = get_config()
+            finally:
+                logging.disable(previous_logging_disable)
+        else:
+            config = get_config()
     except Exception as exc:
         if doctor_mode:
             from src.llm.local_cli_backend import redact_diagnostic_text
@@ -1781,7 +1792,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         )
 
         try:
-            report = run_doctor_diagnostics(config)
+            previous_logging_disable = logging.root.manager.disable
+            logging.disable(logging.CRITICAL)
+            try:
+                report = run_doctor_diagnostics(config)
+            finally:
+                logging.disable(previous_logging_disable)
         except Exception as exc:
             from src.llm.local_cli_backend import redact_diagnostic_text
 

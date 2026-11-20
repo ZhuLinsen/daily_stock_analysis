@@ -81,6 +81,71 @@ class DoctorCliTestCase(unittest.TestCase):
         self.assertIn("DSA Doctor Diagnostic Status: ERROR", out)
         self.assertIn("[llm] status=error", out)
 
+    def test_doctor_reports_missing_local_cli_executable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = Config(
+                stock_list=["600519"],
+                generation_backend="codex_cli",
+                generation_fallback_backend="",
+                database_path=f"{tmpdir}/stock_analysis.db",
+                log_dir=tmpdir,
+            )
+            with patch("src.llm.local_cli_backend.shutil.which", return_value=None):
+                report = run_doctor_diagnostics(cfg)
+
+        self.assertEqual(report["status"], "error")
+        self.assertEqual(report["checks"]["llm"]["status"], "error")
+        self.assertFalse(report["checks"]["llm"]["ready"])
+        self.assertEqual(report["checks"]["config"]["status"], "error")
+        self.assertTrue(any(
+            item["field"] == "GENERATION_BACKEND"
+            for item in report["checks"]["config"]["errors"]
+        ))
+
+    def test_doctor_rejects_malformed_llm_channel_without_legacy_fallback(self) -> None:
+        env = {
+            "LLM_CHANNELS": "custom",
+            "LLM_CUSTOM_BASE_URL": "http://localhost:bad/v1",
+            "LLM_CUSTOM_API_KEY": "sk-channel-secret-123456789",
+            "LLM_CUSTOM_MODELS": "openai/test-model",
+            "LITELLM_MODEL": "openai/test-model",
+            "STOCK_LIST": "600519",
+        }
+        Config.reset_instance()
+        try:
+            with patch.dict(os.environ, env, clear=True):
+                cfg = Config.get_instance()
+                report = run_doctor_diagnostics(cfg)
+        finally:
+            Config.reset_instance()
+
+        self.assertEqual(report["status"], "error")
+        self.assertFalse(report["checks"]["llm"]["ready"])
+        self.assertTrue(any(
+            item["field"] == "LLM_CUSTOM_BASE_URL"
+            for item in report["checks"]["config"]["errors"]
+        ))
+        rendered = json.dumps(report, ensure_ascii=False)
+        self.assertNotIn("sk-channel-secret-123456789", rendered)
+
+    def test_doctor_promotes_notification_partial_configuration_to_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = Config(
+                stock_list=["600519"],
+                ntfy_token="ntfy-secret-123456789",
+                database_path=f"{tmpdir}/stock_analysis.db",
+                log_dir=tmpdir,
+            )
+            report = run_doctor_diagnostics(cfg)
+
+        self.assertEqual(report["checks"]["notifications"]["status"], "error")
+        self.assertEqual(report["status"], "error")
+        self.assertTrue(any(
+            item["key"] == "NTFY_URL"
+            for item in report["checks"]["notifications"]["errors"]
+        ))
+        self.assertNotIn("ntfy-secret-123456789", json.dumps(report, ensure_ascii=False))
+
     def test_doctor_reflects_primary_model_and_generation_backend_errors_in_llm_check(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             cfg = Config(

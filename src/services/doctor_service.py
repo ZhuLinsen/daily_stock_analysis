@@ -4,13 +4,157 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
 from src.config import Config, get_configured_llm_models
 from src.core.config_registry import _is_sensitive_key, get_field_definition
-from src.llm.local_cli_backend import redact_diagnostic_text
-from src.services.notification_diagnostics import run_notification_diagnostics
-from src.services.system_config_service import check_database_path_usable, check_dir_writable
+from src.llm.backend_registry import (
+    LOCAL_CLI_GENERATION_BACKEND_IDS,
+    SUPPORTED_GENERATION_BACKENDS,
+)
+from src.llm.local_cli_backend import (
+    LocalCliGenerationBackend,
+    redact_diagnostic_text,
+    resolve_local_cli_preset,
+)
+from src.services.notification_diagnostics import (
+    CHANNEL_SPECS,
+    run_notification_diagnostics,
+)
+
+
+def _check_dir_writable(path_value: Any) -> bool:
+    if not path_value:
+        return False
+    try:
+        target = Path(str(path_value)).expanduser()
+        for node in (target, *target.parents):
+            if node.is_symlink() and not node.exists():
+                return False
+            if node.exists():
+                return node.is_dir() and os.access(node, os.W_OK | os.X_OK)
+    except OSError:
+        return False
+    return False
+
+
+def _check_database_path_usable(db_path_value: Any) -> bool:
+    if not db_path_value:
+        return False
+    try:
+        target = Path(str(db_path_value)).expanduser()
+        if target.is_symlink() and not target.exists():
+            return False
+        if target.exists():
+            return target.is_file() and os.access(target, os.R_OK | os.W_OK) and _check_dir_writable(target.parent)
+        return _check_dir_writable(target.parent)
+    except OSError:
+        return False
+
+
+def _config_value_present(config: Config, key: str) -> bool:
+    """Read a notification field without exposing its value in diagnostics."""
+    value = getattr(config, key.lower(), None)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (list, tuple, set, dict)):
+        return bool(value)
+    return value is not None and bool(str(value).strip())
+
+
+_NOTIFICATION_NON_SIGNAL_KEYS = frozenset({
+    # These values have non-empty defaults and do not enable a channel.
+    "WEBHOOK_VERIFY_SSL",
+    "WECHAT_MSG_TYPE",
+    "FEISHU_DOMAIN",
+    "FEISHU_RECEIVE_ID_TYPE",
+    "EMAIL_SENDER_NAME",
+    # Discord interactions are an inbound verification setting, not a
+    # notification delivery route.
+    "DISCORD_INTERACTIONS_PUBLIC_KEY",
+})
+
+
+def _notification_keys() -> frozenset[str]:
+    keys: set[str] = set()
+    for spec in CHANNEL_SPECS:
+        if spec.kind != "configured":
+            continue
+        keys.update(
+            key for key in spec.minimal_keys
+            if key not in _NOTIFICATION_NON_SIGNAL_KEYS
+        )
+        for alternative in spec.alternative_minimal_keys:
+            keys.update(
+                key for key in alternative
+                if key not in _NOTIFICATION_NON_SIGNAL_KEYS
+            )
+        keys.update(
+            key for key in spec.advanced_keys
+            if key not in _NOTIFICATION_NON_SIGNAL_KEYS
+        )
+    return frozenset(keys)
+
+
+_NOTIFICATION_KEYS = _notification_keys()
+
+
+def _partial_notification_issues(config: Config) -> List[Dict[str, str]]:
+    """Return blocking issues for configured channels that cannot send."""
+    issues: List[Dict[str, str]] = []
+    for spec in CHANNEL_SPECS:
+        if spec.kind != "configured":
+            continue
+
+        if (
+            spec.channel == "feishu"
+            and _config_value_present(config, "FEISHU_APP_ID")
+            and _config_value_present(config, "FEISHU_APP_SECRET")
+            and (
+                _config_value_present(config, "FEISHU_FOLDER_TOKEN")
+                or _config_value_present(config, "FEISHU_STREAM_ENABLED")
+            )
+        ):
+            # These are valid Feishu document/event-stream configurations and
+            # do not imply that static outbound notifications were intended.
+            continue
+
+        minimal_groups = (spec.minimal_keys,) + spec.alternative_minimal_keys
+        if any(
+            group and all(_config_value_present(config, key) for key in group)
+            for group in minimal_groups
+        ):
+            continue
+
+        configured_keys = [
+            key
+            for key in _NOTIFICATION_KEYS
+            if key in spec.minimal_keys
+            or key in spec.advanced_keys
+            or any(key in group for group in spec.alternative_minimal_keys)
+        ]
+        if not any(_config_value_present(config, key) for key in configured_keys):
+            continue
+
+        missing_key = next(
+            (
+                key
+                for group in minimal_groups
+                for key in group
+                if not _config_value_present(config, key)
+            ),
+            spec.minimal_keys[0] if spec.minimal_keys else spec.channel.upper(),
+        )
+        issues.append({
+            "code": "partial_channel_config",
+            "key": missing_key,
+            "message": (
+                f"{spec.display_name} 通知配置不完整；请补齐必要配置，"
+                "否则该渠道不会启用。"
+            ),
+        })
+    return issues
 
 
 _EXTRA_SENSITIVE_ATTRS = frozenset({
@@ -111,6 +255,20 @@ def run_doctor_diagnostics(config: Config) -> Dict[str, Any]:
     """Run offline, redacted configuration/LLM/notification/storage diagnostics."""
     secrets = _collect_secret_literals(config)
 
+    generation_backend_raw = str(
+        getattr(config, "generation_backend", "litellm") or "litellm"
+    ).strip().lower()
+    if generation_backend_raw not in SUPPORTED_GENERATION_BACKENDS:
+        # An invalid backend field is user-controlled input, not a safe
+        # diagnostic identifier.  Keep it out of both the report and any
+        # validation message that may echo the configured value.
+        if generation_backend_raw:
+            secrets = sorted(
+                set(secrets) | {generation_backend_raw},
+                key=len,
+                reverse=True,
+            )
+
     config_errors: List[Dict[str, Any]] = []
     config_warnings: List[Dict[str, Any]] = []
     config_info: List[Dict[str, Any]] = []
@@ -141,9 +299,34 @@ def run_doctor_diagnostics(config: Config) -> Dict[str, Any]:
 
     config_status = "error" if config_errors else ("warn" if config_warnings else "ok")
 
-    generation_backend = str(getattr(config, "generation_backend", "litellm") or "litellm").strip().lower()
+    generation_backend = (
+        generation_backend_raw
+        if generation_backend_raw in SUPPORTED_GENERATION_BACKENDS
+        else "invalid"
+    )
     configured_models = get_configured_llm_models(getattr(config, "llm_model_list", []) or [])
     llm_ready = not has_llm_config_error
+
+    if generation_backend_raw in LOCAL_CLI_GENERATION_BACKEND_IDS:
+        try:
+            backend = LocalCliGenerationBackend(
+                config,
+                preset_id=generation_backend_raw,
+                preset=resolve_local_cli_preset(generation_backend_raw),
+            )
+            backend_error = backend.get_config_error()
+        except Exception as exc:
+            backend_error = exc
+        if backend_error:
+            has_llm_config_error = True
+            config_errors.append({
+                "field": "GENERATION_BACKEND",
+                "message": _sanitize_text(
+                    f"本地生成后端不可用: {backend_error}", secrets
+                ),
+            })
+            config_status = "error"
+            llm_ready = False
     llm_status = "ok" if llm_ready else "error"
 
     try:
@@ -173,6 +356,56 @@ def run_doctor_diagnostics(config: Config) -> Dict[str, Any]:
         }]
         notify_warnings = []
 
+    notify_errors.extend(_partial_notification_issues(config))
+
+    # A partially configured channel cannot send notifications.  Doctor is an
+    # actionable health check, so promote these warnings to blocking errors.
+    promoted_notify_warnings = []
+    retained_notify_warnings = []
+    for warning in notify_warnings:
+        if warning.get("code") == "advanced_without_minimal":
+            promoted_notify_warnings.append(warning)
+        else:
+            retained_notify_warnings.append(warning)
+    notify_errors.extend(promoted_notify_warnings)
+    notify_warnings = retained_notify_warnings
+
+    has_any_notification_config = any(
+        _config_value_present(config, key) for key in _NOTIFICATION_KEYS
+    )
+    promoted_config_warnings = []
+    for warning in config_warnings:
+        field = str(warning.get("field") or "").upper()
+        message = str(warning.get("message") or "")
+        if (
+            field in _NOTIFICATION_KEYS
+            and has_any_notification_config
+            and "未配置通知渠道" not in message
+        ):
+            promoted_config_warnings.append({
+                "code": "invalid_notification_config",
+                "key": field,
+                "message": warning["message"],
+            })
+    if promoted_config_warnings:
+        notify_errors.extend(promoted_config_warnings)
+
+    configured_error_keys = {str(item.get("key") or "").upper() for item in notify_errors}
+    channel_key_map = {
+        "WECHAT_WEBHOOK_URL": "wechat", "DINGTALK_WEBHOOK_URL": "dingtalk",
+        "FEISHU_WEBHOOK_URL": "feishu", "FEISHU_APP_ID": "feishu",
+        "FEISHU_APP_SECRET": "feishu", "FEISHU_CHAT_ID": "feishu",
+        "NTFY_URL": "ntfy", "GOTIFY_URL": "gotify", "ASTRBOT_URL": "astrbot",
+        "GOTIFY_TOKEN": "gotify", "DISCORD_WEBHOOK_URL": "discord",
+        "DISCORD_BOT_TOKEN": "discord", "DISCORD_MAIN_CHANNEL_ID": "discord",
+        "SLACK_WEBHOOK_URL": "slack", "SLACK_BOT_TOKEN": "slack",
+        "SLACK_CHANNEL_ID": "slack", "CUSTOM_WEBHOOK_URLS": "custom_webhook",
+    }
+    notify_configured_channels = [
+        channel for channel in notify_configured_channels
+        if not any(channel_key_map.get(key) == channel for key in configured_error_keys)
+    ]
+
     if notify_errors:
         notify_status = "error"
     elif notify_warnings or not notify_configured_channels:
@@ -181,8 +414,8 @@ def run_doctor_diagnostics(config: Config) -> Dict[str, Any]:
         notify_status = "ok"
 
     db_path = getattr(config, "database_path", None)
-    db_writable = check_database_path_usable(db_path)
-    log_writable = check_dir_writable(getattr(config, "log_dir", None))
+    db_writable = _check_database_path_usable(db_path)
+    log_writable = _check_dir_writable(getattr(config, "log_dir", None))
     storage_status = "ok" if (db_writable and log_writable) else "error"
 
     watchlist_count = len(getattr(config, "stock_list", None) or [])
