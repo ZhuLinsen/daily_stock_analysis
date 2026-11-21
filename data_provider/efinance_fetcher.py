@@ -1012,7 +1012,7 @@ class EfinanceFetcher(BaseFetcher):
             logger.error(f"[efinance] 获取指数行情失败: {e}")
             return None
 
-    def get_market_stats(self) -> Optional[Dict[str, Any]]:
+    def get_market_stats(self, *, allow_cache: bool = True) -> Optional[Dict[str, Any]]:
         """
         获取市场涨跌统计 (efinance)
         """
@@ -1024,7 +1024,7 @@ class EfinanceFetcher(BaseFetcher):
 
             current_time = time.time()
             if (
-                _realtime_cache['data'] is not None and
+                allow_cache and _realtime_cache['data'] is not None and
                 current_time - _realtime_cache['timestamp'] < _realtime_cache['ttl']
             ):
                 df = _realtime_cache['data']

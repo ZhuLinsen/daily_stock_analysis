@@ -404,6 +404,17 @@ class AnalysisHistory(Base):
         }
 
 
+class MarketSentimentSnapshot(Base):
+    """One immutable A-share closing sentiment snapshot per trading session."""
+
+    __tablename__ = "market_sentiment_snapshots"
+
+    market = Column(String(16), primary_key=True)
+    trade_date = Column(Date, primary_key=True)
+    payload = Column(Text, nullable=False)
+    created_at = Column(DateTime, nullable=False, default=utc_naive_now)
+
+
 class BacktestResult(Base):
     """单条分析记录的回测结果。"""
 
