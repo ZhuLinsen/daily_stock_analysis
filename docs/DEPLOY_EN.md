@@ -443,7 +443,7 @@ git push
 
 - Actions page shows run history
 - Click specific run record to view detailed logs
-- By default, the run's **Summary** panel shows a redacted report preview; set the repository variable `STEP_SUMMARY_REPORT` to `false` to disable it
+- The run's **Summary** panel shows a redacted report preview by default. Stock summaries and market reviews dated on consecutive local days can appear together when their file modification times are at most two hours apart. Set the repository variable `STEP_SUMMARY_REPORT` to `false` to disable the preview.
 - Analysis reports are saved as Artifacts for 30 days
 
 ### Schedule Details

@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime
+from datetime import date, datetime
 import os
 from pathlib import Path
 import re
@@ -18,54 +18,65 @@ if str(_REPO_ROOT) not in sys.path:
 
 
 _DEFAULT_MAX_BYTES = 200_000
+_CROSS_MIDNIGHT_WINDOW_SECONDS = 2 * 60 * 60
 _AGGREGATE_REPORT_RE = re.compile(r"^report_\d{8}\.md$")
+_REPORT_DATE_RE = re.compile(r"(?:report|market_review)_(\d{8})(?=[_.])")
 _MARKDOWN_FIELD_MARKER = r"[*_`]+"
 _MARKDOWN_VALUE_MARKER = r"""[*_`"']+"""
 _AUTHORIZATION_FIELD = r"(?:proxy[-_ \t]?)?authorization"
+_AUTHORIZATION_SEPARATOR = r"[:=：]"
+_HORIZONTAL_SPACE = r"[^\S\r\n]*"
 _MARKDOWN_AUTHORIZATION_FIELD_PATTERN = re.compile(
     r"(?<![*_`])(?P<attached>(?<=[A-Za-z0-9_-]))?"
     rf"{_MARKDOWN_FIELD_MARKER}[ \t]*(?P<field>{_AUTHORIZATION_FIELD})"
-    rf"(?:[ \t]*{_MARKDOWN_FIELD_MARKER}(?P<separator_before>[ \t]*[:=])"
-    rf"|(?P<separator_inside>[ \t]*[:=])[ \t]*{_MARKDOWN_FIELD_MARKER})",
+    rf"(?:{_HORIZONTAL_SPACE}{_MARKDOWN_FIELD_MARKER}{_HORIZONTAL_SPACE}(?P<separator_before>{_AUTHORIZATION_SEPARATOR})"
+    rf"|{_HORIZONTAL_SPACE}(?P<separator_inside>{_AUTHORIZATION_SEPARATOR}){_HORIZONTAL_SPACE}{_MARKDOWN_FIELD_MARKER})",
     re.IGNORECASE,
 )
-_PADDED_BEARER_CODE_PATTERN = re.compile(
-    rf"(?<![A-Za-z0-9_-])(?P<prefix>{_AUTHORIZATION_FIELD}[ \t]*[:=][ \t]*bearer[ \t]+)"
+_FULLWIDTH_AUTHORIZATION_FIELD_PATTERN = re.compile(
+    rf"""(?<![A-Za-z0-9_-])(?P<label>(?P<quote>["'])?{_AUTHORIZATION_FIELD}(?(quote)(?P=quote))){_HORIZONTAL_SPACE}：""",
+    re.IGNORECASE,
+)
+_PADDED_AUTHORIZATION_CODE_PATTERN = re.compile(
+    rf"(?<![A-Za-z0-9_-])(?P<prefix>{_AUTHORIZATION_FIELD}[ \t]*[:=][ \t]*(?:bearer|basic)[ \t]+)"
     r"[*_]*(?P<backticks>`+)[ \t]+(?P<token>[^`\s]+)[ \t]+(?P=backticks)(?!`)[*_]*",
     re.IGNORECASE,
 )
 _MARKDOWN_AUTHORIZATION_LABEL = (
     rf"(?:{_MARKDOWN_VALUE_MARKER}[ \t]*)?(?P<field>{_AUTHORIZATION_FIELD})"
-    rf"(?:[ \t]*[:=])?(?:[ \t]*{_MARKDOWN_VALUE_MARKER})?(?:[ \t]*[:=])?"
+    rf"(?:[ \t]*{_AUTHORIZATION_SEPARATOR})?(?:[ \t]*{_MARKDOWN_VALUE_MARKER})?"
+    rf"(?:[ \t]*{_AUTHORIZATION_SEPARATOR})?"
 )
 _MARKDOWN_BREAK = r"<br[ \t]*/?>"
-_MARKDOWN_BEARER_SCHEME = rf"(?:{_MARKDOWN_VALUE_MARKER}[ \t]*)?bearer(?:[ \t]*{_MARKDOWN_VALUE_MARKER})?"
-_MARKDOWN_BEARER_PREFIX = rf"{_MARKDOWN_BEARER_SCHEME}(?=[^\S\r\n]|{_MARKDOWN_BREAK})"
+_MARKDOWN_AUTHORIZATION_SCHEME = (
+    rf"(?:{_MARKDOWN_VALUE_MARKER}[ \t]*)?(?P<scheme>bearer|basic)(?:[ \t]*{_MARKDOWN_VALUE_MARKER})?"
+)
+_MARKDOWN_AUTHORIZATION_PREFIX = rf"{_MARKDOWN_AUTHORIZATION_SCHEME}(?=[^\S\r\n]|{_MARKDOWN_BREAK})"
 _MARKDOWN_QUOTE_PREFIX = r"[ \t]*(?:>[ \t]*)*"
 _MARKDOWN_LINE_BREAK = rf"[ \t]*(?:(?:\\[ \t]*)?\r?\n|{_MARKDOWN_BREAK}(?:[ \t]*\r?\n)?)"
 _MARKDOWN_CONTINUATION = rf"{_MARKDOWN_LINE_BREAK}(?:{_MARKDOWN_QUOTE_PREFIX}\r?\n)*{_MARKDOWN_QUOTE_PREFIX}"
-_MARKDOWN_SPLIT_BEARER_PATTERN = re.compile(
+_MARKDOWN_SPLIT_AUTHORIZATION_PATTERN = re.compile(
     rf"(?<![A-Za-z0-9_*`-]){_MARKDOWN_AUTHORIZATION_LABEL}"
     rf"(?:(?<=[:=])[ \t]*|{_MARKDOWN_CONTINUATION})"
-    rf"{_MARKDOWN_BEARER_SCHEME}{_MARKDOWN_CONTINUATION}"
+    rf"{_MARKDOWN_AUTHORIZATION_SCHEME}{_MARKDOWN_CONTINUATION}"
     rf"(?:(?P<token_markers>{_MARKDOWN_VALUE_MARKER})[ \t]*)?"
     # A new diagnostic field must retain its label for the shared scrubber.
-    rf"(?![\w.-]+(?:[ \t]*{_MARKDOWN_VALUE_MARKER})?[ \t]*:|[\w.-]+[ \t]+=)"
-    rf"(?!{_AUTHORIZATION_FIELD}[ \t]*[:=])"
+    rf"(?![\w.-]+(?:[ \t]*{_MARKDOWN_VALUE_MARKER})?[ \t]*[:：]|[\w.-]+[ \t]+=)"
+    rf"(?!{_AUTHORIZATION_FIELD}[ \t]*{_AUTHORIZATION_SEPARATOR})"
     r"""[^\s|`"'*<>#]+(?:[ \t]*(?P=token_markers)|[*`"']*)""",
     re.IGNORECASE,
 )
-_MARKDOWN_MULTILINE_BEARER_PATTERN = re.compile(
+_MARKDOWN_MULTILINE_AUTHORIZATION_PATTERN = re.compile(
     rf"(?<![A-Za-z0-9_*`-]){_MARKDOWN_AUTHORIZATION_LABEL}{_MARKDOWN_CONTINUATION}"
-    rf"{_MARKDOWN_BEARER_PREFIX}[^\r\n]+",
+    rf"{_MARKDOWN_AUTHORIZATION_PREFIX}[^\r\n]+",
     re.IGNORECASE,
 )
 # An escaped pipe belongs to the value cell.
 _MARKDOWN_TABLE_CELL = r"(?:\\[^\r\n]|[^|\\\r\n]|\\(?![^\r\n]))*"
-_MARKDOWN_TABLE_BEARER_PATTERN = re.compile(
-    rf"(?P<indent>(?:^|(?<=\|))[ \t]*){_MARKDOWN_AUTHORIZATION_LABEL}[ \t]*\|[ \t]*"
-    rf"{_MARKDOWN_BEARER_PREFIX}(?P<value>{_MARKDOWN_TABLE_CELL})",
-    re.IGNORECASE | re.MULTILINE,
+_MARKDOWN_AUTHORIZATION_HEADER = (
+    rf"(?P<link>(?:{_MARKDOWN_FIELD_MARKER})?\[)?(?P<label>{_MARKDOWN_AUTHORIZATION_LABEL})"
+    rf"(?(link)(?P<link_tail>\](?:\({_MARKDOWN_TABLE_CELL}\)|\[[^\]|\r\n]*\])?(?:{_MARKDOWN_FIELD_MARKER})?)"
+    rf"(?:{_HORIZONTAL_SPACE}{_AUTHORIZATION_SEPARATOR})?)"
 )
 _MARKDOWN_TABLE_CELL_PATTERN = re.compile(rf"(?:^|(?<=\|)){_MARKDOWN_TABLE_CELL}(?=\||$)")
 _MARKDOWN_TABLE_DELIMITER_PATTERN = re.compile(r":?-+:?")
@@ -73,8 +84,8 @@ _MARKDOWN_TABLE_END_PATTERN = re.compile(
     r"(?:#{1,6}(?:[ \t]|$)|`{3,}|~{3,}|(?:[*+-]|\d+[.)])[ \t]+|(?:[-*_][ \t]*){3,}$)"
 )
 _MARKDOWN_QUOTE_PATTERN = re.compile(_MARKDOWN_QUOTE_PREFIX)
-_MARKDOWN_AUTHORIZATION_LABEL_PATTERN = re.compile(_MARKDOWN_AUTHORIZATION_LABEL, re.IGNORECASE)
-_MARKDOWN_BEARER_PREFIX_PATTERN = re.compile(_MARKDOWN_BEARER_PREFIX, re.IGNORECASE)
+_MARKDOWN_AUTHORIZATION_HEADER_PATTERN = re.compile(_MARKDOWN_AUTHORIZATION_HEADER, re.IGNORECASE)
+_EMPTY_AUTHORIZATION_VALUES = {"", "-", "—", "n/a", "none", "无"}
 
 
 def _markdown_table_cells(line: str) -> list[re.Match[str]]:
@@ -87,7 +98,14 @@ def _markdown_table_cells(line: str) -> list[re.Match[str]]:
     return cells[start:end]
 
 
-def _redact_markdown_authorization_columns(text: str) -> str:
+def _replace_table_cell(line: str, cell: re.Match[str], replacement: str) -> str:
+    value = cell.group()
+    start = cell.end() - len(value.lstrip())
+    end = cell.start() + len(value.rstrip())
+    return f"{line[:start]}{replacement}{line[end:]}"
+
+
+def _redact_markdown_authorization_tables(text: str) -> str:
     lines = text.splitlines(keepends=True)
     authorization_columns: list[int] = []
     table_quote_depth = 0
@@ -107,43 +125,54 @@ def _redact_markdown_authorization_columns(text: str) -> str:
         if authorization_columns:
             # Body rows can omit trailing cells and all pipes in a one-cell row.
             cells = _markdown_table_cells(body)
-            for column in reversed(authorization_columns):
+            for column in authorization_columns:
                 if column >= len(cells):
                     continue
                 cell = cells[column]
-                value = cell.group()
-                if _MARKDOWN_BEARER_PREFIX_PATTERN.match(value.lstrip(" \t")):
-                    start = cell.end() - len(value.lstrip(" \t"))
-                    end = cell.start() + len(value.rstrip(" \t"))
-                    body = f"{body[:start]}`<redacted>`{body[end:]}"
+                if cell.group().strip().casefold() not in _EMPTY_AUTHORIZATION_VALUES:
+                    body = _replace_table_cell(body, cell, "`<redacted>`")
             lines[index] = prefix + body
             continue
 
-        if "authorization" not in body.lower() or index + 1 == len(lines):
+        if "authorization" not in body.lower():
             continue
-        delimiter_line = lines[index + 1]
+        delimiter_line = lines[index + 1] if index + 1 < len(lines) else ""
         delimiter_prefix = _MARKDOWN_QUOTE_PATTERN.match(delimiter_line).group()
         delimiter_body = delimiter_line[len(delimiter_prefix):]
-        if quote_depth != delimiter_prefix.count(">") or ("|" not in body and "|" not in delimiter_body):
+        if "|" not in body and "|" not in delimiter_body:
             continue
         cells = _markdown_table_cells(body)
         delimiter_cells = _markdown_table_cells(delimiter_body)
-        if len(delimiter_cells) != len(cells) or not all(
+        if quote_depth != delimiter_prefix.count(">") or len(delimiter_cells) != len(cells) or not all(
             _MARKDOWN_TABLE_DELIMITER_PATTERN.fullmatch(cell.group().strip()) for cell in delimiter_cells
         ):
+            # Key/value tables store the credential in the cell after the field name.
+            replacements: dict[int, str] = {}
+            for column, (label_cell, value_cell) in enumerate(zip(cells, cells[1:])):
+                header = _MARKDOWN_AUTHORIZATION_HEADER_PATTERN.fullmatch(label_cell.group().strip())
+                if header is None:
+                    continue
+                replacements.setdefault(column, header.group("field"))
+                if value_cell.group().strip().casefold() not in _EMPTY_AUTHORIZATION_VALUES:
+                    replacements[column + 1] = "`<redacted>`"
+            for column in sorted(replacements, reverse=True):
+                body = _replace_table_cell(body, cells[column], replacements[column])
+            lines[index] = prefix + body
             continue
 
-        authorization_columns = [
-            column for column, cell in enumerate(cells)
-            if _MARKDOWN_AUTHORIZATION_LABEL_PATTERN.fullmatch(cell.group().strip())
-        ]
         table_quote_depth = quote_depth
         table_delimiter_index = index + 1
-        # A colon in a header label would make the diagnostic scrubber treat the rest as its value.
-        for column in reversed(authorization_columns):
+        # Edit from right to left to keep cell offsets valid. Strip separators from
+        # the label so the diagnostic scrubber leaves the rest of the header alone.
+        for column in range(len(cells) - 1, -1, -1):
             cell = cells[column]
-            label = cell.group().replace(":", "").replace("=", "")
-            body = f"{body[:cell.start()]}{label}{body[cell.end():]}"
+            header = _MARKDOWN_AUTHORIZATION_HEADER_PATTERN.fullmatch(cell.group().strip())
+            if header is None:
+                continue
+            authorization_columns.append(column)
+            label = re.sub(_AUTHORIZATION_SEPARATOR, "", header.group("label"))
+            normalized_header = f"{header.group('link') or ''}{label}{header.group('link_tail') or ''}"
+            body = _replace_table_cell(body, cell, normalized_header)
         lines[index] = prefix + body
 
     return "".join(lines)
@@ -154,23 +183,19 @@ def _prepare_markdown_authorization(text: str) -> str:
 
     def normalize(match: re.Match[str]) -> str:
         separator = match.group("separator_before") or match.group("separator_inside")
+        separator = separator.replace("：", ":")
         # Preserve the field boundary when emphasis immediately follows a word.
         boundary = " " if match.group("attached") is not None else ""
         return f"{boundary}{match.group('field')}{separator}"
 
-    def redact_table_cell(match: re.Match[str]) -> str:
-        value = match.group("value")
-        padding = value[len(value.rstrip(" \t")):]
-        return f"{match.group('indent')}{match.group('field')} | `<redacted>`{padding}"
-
     # Mask the value cell before normalizing labels that contain a colon.
-    text = _redact_markdown_authorization_columns(text)
-    text = _MARKDOWN_TABLE_BEARER_PATTERN.sub(redact_table_cell, text)
+    text = _redact_markdown_authorization_tables(text)
     normalized = _MARKDOWN_AUTHORIZATION_FIELD_PATTERN.sub(normalize, text)
+    normalized = _FULLWIDTH_AUTHORIZATION_FIELD_PATTERN.sub(r"\g<label>:", normalized)
     # Keep the scheme so the diagnostic scrubber preserves prose after the masked token.
-    normalized = _MARKDOWN_SPLIT_BEARER_PATTERN.sub(r"\g<field>: Bearer <redacted>", normalized)
-    normalized = _MARKDOWN_MULTILINE_BEARER_PATTERN.sub(r"\g<field>: <redacted>", normalized)
-    return _PADDED_BEARER_CODE_PATTERN.sub(r"\g<prefix>\g<token>", normalized)
+    normalized = _MARKDOWN_SPLIT_AUTHORIZATION_PATTERN.sub(r"\g<field>: \g<scheme> <redacted>", normalized)
+    normalized = _MARKDOWN_MULTILINE_AUTHORIZATION_PATTERN.sub(r"\g<field>: <redacted>", normalized)
+    return _PADDED_AUTHORIZATION_CODE_PATTERN.sub(r"\g<prefix>\g<token>", normalized)
 
 
 def _redact_text(text: str) -> Optional[str]:
@@ -194,77 +219,65 @@ def _truncate_utf8_bytes(text: str, max_bytes: int) -> tuple[str, bool]:
     return truncated, True
 
 
-def _mtime_name_key(path: Path) -> tuple[float, str]:
-    return (path.stat().st_mtime, path.name)
-
-
 def _select_report_files(reports_dir: Path, target_date: Optional[str] = None) -> List[Path]:
     if not reports_dir.is_dir():
         return []
 
-    date_token = (target_date or datetime.now().strftime("%Y%m%d")).strip()
-    candidates = [
-        p
-        for p in reports_dir.iterdir()
-        if p.is_file()
-        and p.suffix.lower() == ".md"
-        and (p.name.startswith("report_") or p.name.startswith("market_review_"))
-    ]
-    if not candidates:
+    report_dates: dict[Path, date] = {}
+    mtimes: dict[Path, float] = {}
+    for path in reports_dir.iterdir():
+        if path.suffix.lower() != ".md" or not path.name.startswith(("report_", "market_review_")) or not path.is_file():
+            continue
+        match = _REPORT_DATE_RE.match(path.name)
+        mtime = path.stat().st_mtime
+        try:
+            report_dates[path] = datetime.strptime(match[1], "%Y%m%d").date() if match else datetime.fromtimestamp(mtime).date()
+        except ValueError:
+            continue
+        mtimes[path] = mtime
+    if not report_dates:
         return []
 
-    agg_stock = [p for p in candidates if _AGGREGATE_REPORT_RE.match(p.name)]
-    single_stock = [
-        p for p in candidates if p.name.startswith("report_") and not _AGGREGATE_REPORT_RE.match(p.name)
-    ]
-    market_reviews = [p for p in candidates if p.name.startswith("market_review_")]
+    try:
+        report_date = datetime.strptime(target_date.strip(), "%Y%m%d").date() if target_date else datetime.now().date()
+    except ValueError:
+        return []
 
-    agg_match = [p for p in agg_stock if date_token and date_token in p.name]
-    single_match = [p for p in single_stock if date_token and date_token in p.name]
-    market_match = [p for p in market_reviews if date_token and date_token in p.name]
+    def mtime_name_key(path: Path) -> tuple[float, str]:
+        return mtimes[path], path.name
 
-    chosen_stock: List[Path] = []
-    chosen_market: List[Path] = []
+    if report_date not in report_dates.values():
+        # Keep older artifacts usable even when no report matches today's local date.
+        report_date = report_dates[max(report_dates, key=mtime_name_key)]
 
-    if agg_match:
-        chosen_stock = list(agg_match)
-    elif single_match:
-        chosen_stock = list(single_match)
+    same_day = [path for path, day in report_dates.items() if day == report_date]
+    aggregate = [path for path in same_day if _AGGREGATE_REPORT_RE.fullmatch(path.name)]
+    stock = aggregate or [path for path in same_day if path.name.startswith("report_")]
+    market = [path for path in same_day if path.name.startswith("market_review_")]
 
-    if market_match:
-        chosen_market = list(market_match)
+    def latest_adjacent_report(candidates: Sequence[Path], anchors: Sequence[Path]) -> Optional[Path]:
+        nearby = (
+            path for path in candidates
+            if any(abs(mtimes[path] - mtimes[anchor]) <= _CROSS_MIDNIGHT_WINDOW_SECONDS for anchor in anchors)
+        )
+        return max(nearby, key=mtime_name_key, default=None)
 
-    # Cross-midnight run pairing: the workflow may deliberately wait longer than two
-    # hours between the stock and market phases, so use the latest report from the
-    # other category rather than imposing a shorter, unrelated clock window.
-    if chosen_market and not chosen_stock:
-        if agg_stock:
-            latest_agg = max(agg_stock, key=_mtime_name_key)
-            chosen_stock = [latest_agg]
-        elif single_stock:
-            chosen_stock = [max(single_stock, key=_mtime_name_key)]
+    if not aggregate or not market:
+        adjacent = [path for path, day in report_dates.items() if abs((day - report_date).days) == 1]
+        if market and not aggregate:
+            paired = latest_adjacent_report(
+                [path for path in adjacent if _AGGREGATE_REPORT_RE.fullmatch(path.name)], market
+            )
+            if paired is None and not stock:
+                paired = latest_adjacent_report([path for path in adjacent if path.name.startswith("report_")], market)
+            if paired is not None:
+                stock = [paired]
+        elif not market:
+            paired = latest_adjacent_report([path for path in adjacent if path.name.startswith("market_review_")], stock)
+            if paired is not None:
+                market = [paired]
 
-    if chosen_stock and not chosen_market and market_reviews:
-        chosen_market = [max(market_reviews, key=_mtime_name_key)]
-
-    # When neither category matched date_token (e.g. manual run on older artifacts),
-    # fall back cleanly to the latest aggregate stock report (or singles if absent) + latest market review.
-    if not chosen_stock and not chosen_market:
-        if agg_stock:
-            chosen_stock = [max(agg_stock, key=_mtime_name_key)]
-        elif single_stock:
-            chosen_stock = [max(single_stock, key=_mtime_name_key)]
-        if market_reviews:
-            chosen_market = [max(market_reviews, key=_mtime_name_key)]
-
-    chosen = chosen_stock + chosen_market
-
-    def _sort_key(path: Path) -> tuple[int, float, str]:
-        # Put aggregate/stock reports first, then market review, newest first.
-        group = 0 if path.name.startswith("report_") else 1
-        return (group, -path.stat().st_mtime, path.name)
-
-    return sorted(chosen, key=_sort_key)
+    return sorted(stock, key=mtime_name_key, reverse=True) + sorted(market, key=mtime_name_key, reverse=True)
 
 
 def build_step_summary_markdown(

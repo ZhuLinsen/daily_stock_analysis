@@ -30,7 +30,10 @@ def test_noop_when_github_step_summary_unset(tmp_path: Path) -> None:
     "authorization_line",
     [
         "Authorization: Bearer {credential}",
+        "Authorization　： Bearer {credential}",
         "**Authorization**: Bearer {credential}",
+        "**Authorization**　： Bearer {credential}",
+        "**Authorization：** Bearer {credential}",
         "__Authorization:__ Bearer {credential}",
         "*Authorization*: Bearer {credential}",
         "_Authorization_: Bearer {credential}",
@@ -41,6 +44,7 @@ def test_noop_when_github_step_summary_unset(tmp_path: Path) -> None:
         "HTTP**Authorization**: Bearer {credential}",
         "* `Authorization`: Bearer {credential}",
         "Authorization: Bearer `` {credential} ``",
+        "Authorization： Basic `` {credential} ``",
         "**Authorization:** Bearer `` {credential} ``",
         "Authorization: Bearer **` {credential} `**",
     ],
@@ -82,6 +86,7 @@ def test_writes_redacted_reports_to_step_summary(tmp_path: Path, authorization_l
         ("**Authorization:**<br />`Bearer {credential}`", "Authorization: <redacted>"),
         ("Authorization: Bearer  \n{credential}", "Authorization: <redacted>"),
         ("Authorization: Bearer\n{credential} **继续观察**", "Authorization: <redacted> **继续观察**"),
+        ("> **Authorization：** Basic\n> {credential} **继续观察**", "> Authorization: <redacted> **继续观察**"),
         ("> **Authorization:** Bearer\\\n> `{credential}`\n> 继续观察。", "> Authorization: <redacted>\n> 继续观察。"),
         ("> Authorization: Bearer\n>\n> {credential}\n> 继续观察。", "> Authorization: <redacted>\n> 继续观察。"),
         ("Authorization: `` Bearer ``  \n{credential}", "Authorization: <redacted>"),
@@ -133,6 +138,44 @@ def test_writes_redacted_reports_to_step_summary(tmp_path: Path, authorization_l
             "| A 股 | `<redacted>` | 保留 |\n"
             "| 港股 \\| 港元 | `<redacted>` | 继续观察 |\n"
             "| 美股 | 无 | Bearer bonds also gained. |",
+        ),
+        (
+            "| 市场 | [**Authorization**](https://example.invalid/docs?section=http-headers)： | 备注 |\n"
+            "| --- | --- | --- |\n"
+            "| A 股 | Bearer {credential} | 沪指收涨 0.8% |",
+            "| 市场 | [**Authorization**](https://example.invalid/docs?section=http-headers) | 备注 |\n"
+            "| --- | --- | --- |\n"
+            "| A 股 | `<redacted>` | 沪指收涨 0.8% |",
+        ),
+        (
+            "| 市场 | Authorization | 备注 |\n"
+            "| --- | --- | --- |\n"
+            "| 港股 | Basic {credential} | 恒指反弹 |\n"
+            "| 美股 | 无 | Basic materials gained. |",
+            "| 市场 | Authorization | 备注 |\n"
+            "| --- | --- | --- |\n"
+            "| 港股 | `<redacted>` | 恒指反弹 |\n"
+            "| 美股 | 无 | Basic materials gained. |",
+        ),
+        (
+            "| [Authorization][headers] | 市场 | Proxy-Authorization | 备注 |\n"
+            "| --- | --- | --- | --- |\n"
+            "| {credential} | 港股 | Basic {credential}-proxy | 恒指反弹 |\n\n"
+            "[headers]: https://example.invalid/docs",
+            "| [Authorization][headers] | 市场 | Proxy-Authorization | 备注 |\n"
+            "| --- | --- | --- | --- |\n"
+            "| `<redacted>` | 港股 | `<redacted>` | 恒指反弹 |\n\n"
+            "[headers]: https://example.invalid/docs",
+        ),
+        (
+            "| 字段 | 值 | 备注 |\n"
+            "| --- | --- | --- |\n"
+            "| [Authorization](https://example.invalid/docs) | Basic {credential} | 恒指反弹 |\n"
+            "| Authorization | {credential}-opaque | 继续观察 |",
+            "| 字段 | 值 | 备注 |\n"
+            "| --- | --- | --- |\n"
+            "| Authorization | `<redacted>` | 恒指反弹 |\n"
+            "| Authorization | `<redacted>` | 继续观察 |",
         ),
         (
             "**Proxy-Authorization:** | 市场\n"
@@ -371,7 +414,11 @@ def test_prefers_aggregate_over_per_stock_files_and_preserves_market_review_budg
     assert "单股冗余明细" not in rendered
 
 
-def test_cross_midnight_run_pairs_yesterday_stock_report_with_today_market_review(tmp_path: Path) -> None:
+@pytest.mark.parametrize("target_date", ["20261120", "20261121"])
+@pytest.mark.parametrize("seconds_apart", [120, 7200])
+def test_cross_midnight_run_pairs_yesterday_stock_report_with_today_market_review(
+    tmp_path: Path, target_date: str, seconds_apart: int
+) -> None:
     """Counterexample OR-COR-8f1a9182: 23:59 stock report + 00:01 market review must both appear."""
     reports_dir = tmp_path / "reports"
     reports_dir.mkdir()
@@ -380,28 +427,33 @@ def test_cross_midnight_run_pairs_yesterday_stock_report_with_today_market_revie
     mr = reports_dir / "market_review_20261121.md"
     agg.write_text("# 汇总报告\n贵州茅台看多", encoding="utf-8")
     mr.write_text("# 大盘复盘\n深成指温和反弹", encoding="utf-8")
-    os.utime(agg, (now_ts - 120, now_ts - 120))
+    (reports_dir / "report_20261121_600519.md").write_text("# 单股明细", encoding="utf-8")
+    agg_mtime = now_ts - seconds_apart
+    os.utime(agg, (agg_mtime, agg_mtime))
     os.utime(mr, (now_ts, now_ts))
 
-    rendered = build_step_summary_markdown(reports_dir, target_date="20261121")
+    rendered = build_step_summary_markdown(reports_dir, target_date=target_date)
 
     assert "# 汇总报告" in rendered
     assert "# 大盘复盘" in rendered
+    assert "# 单股明细" not in rendered
 
 
-def test_cross_midnight_run_pairs_reports_after_two_hours(tmp_path: Path) -> None:
-    """The pair is still from one workflow run when the phases are delayed."""
+@pytest.mark.parametrize(("stock_date", "seconds_apart"), [("20261120", 7201), ("20261119", 120)])
+def test_cross_midnight_run_ignores_reports_outside_pairing_window(
+    tmp_path: Path, stock_date: str, seconds_apart: int
+) -> None:
     reports_dir = tmp_path / "reports"
     reports_dir.mkdir()
     now_ts = time.time()
-    agg = reports_dir / "report_20261120.md"
+    agg = reports_dir / f"report_{stock_date}.md"
     mr = reports_dir / "market_review_20261121.md"
     agg.write_text("# 汇总报告\n个股结论", encoding="utf-8")
     mr.write_text("# 大盘复盘\n市场结论", encoding="utf-8")
-    os.utime(agg, (now_ts - 7500, now_ts - 7500))
+    os.utime(agg, (now_ts - seconds_apart, now_ts - seconds_apart))
     os.utime(mr, (now_ts, now_ts))
 
     rendered = build_step_summary_markdown(reports_dir, target_date="20261121")
 
-    assert "# 汇总报告" in rendered
+    assert "# 汇总报告" not in rendered
     assert "# 大盘复盘" in rendered
