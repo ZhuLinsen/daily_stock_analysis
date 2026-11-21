@@ -13,11 +13,15 @@ A股自选股智能分析系统 - AI分析层
 import json
 import logging
 import math
+import os
 import re
 import time
 from dataclasses import dataclass
 from typing import Optional, Dict, Any, List, Tuple, Callable, Union
 
+# Keep module import deterministic in offline CI and first-run environments.
+# Users can still explicitly opt into LiteLLM's remote price-map refresh.
+os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
 import litellm
 from json_repair import repair_json
 from litellm import Router

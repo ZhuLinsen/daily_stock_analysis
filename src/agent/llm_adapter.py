@@ -9,11 +9,15 @@ interface consumed by the AgentExecutor, via LiteLLM.
 import json
 import logging
 import math
+import os
 import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+# Avoid an import-time network request when the application starts offline.
+# An explicit environment setting continues to take precedence.
+os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
 import litellm
 from litellm import Router
 
