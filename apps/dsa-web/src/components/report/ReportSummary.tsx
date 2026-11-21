@@ -69,7 +69,15 @@ export const ReportSummary: React.FC<ReportSummaryProps> = ({
       />
 
       {/* 策略点位区 */}
-      <ReportStrategy strategy={strategy} language={reportLanguage} />
+      <ReportStrategy
+        strategy={strategy}
+        language={reportLanguage}
+        recordId={recordId}
+        stockCode={meta.stockCode}
+        currentPrice={meta.currentPrice}
+        historical={isHistory}
+        reportDate={meta.createdAt}
+      />
 
       {/* 资讯区 */}
       <ReportNews recordId={recordId} limit={8} language={reportLanguage} />

@@ -157,6 +157,7 @@ class AnalysisService:
                 skip_analysis=False,
                 single_stock_notify=send_notification,
                 report_type=rt,
+                force_refresh=force_refresh,
                 analysis_target=analysis_target,
             )
             

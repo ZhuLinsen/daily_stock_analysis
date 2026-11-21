@@ -16,6 +16,7 @@ import re
 from datetime import date, datetime, timedelta
 from typing import Optional, Dict, Any, List, Tuple, TYPE_CHECKING
 
+from data_provider.us_index_mapping import get_us_stock_yf_symbol, normalize_us_hyphen_symbol
 from src.config import get_config, resolve_news_window_days
 from src.formatters import markdown_to_plain_text
 from src.data.stock_index_loader import resolve_index_stock_code
@@ -222,6 +223,11 @@ class HistoryService:
 
         add(raw_canonical)
         add(normalized)
+
+        yahoo_symbol = get_us_stock_yf_symbol(normalized)
+        if yahoo_symbol:
+            add(yahoo_symbol)
+            add(normalize_us_hyphen_symbol(yahoo_symbol) or yahoo_symbol)
 
         if normalized.startswith("HK") and normalized[2:].isdigit():
             add_hk_variants(normalized[2:])

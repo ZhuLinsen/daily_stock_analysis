@@ -386,6 +386,7 @@ class TestSettingsHelpMetadata(unittest.TestCase):
         "AGENT_ORCHESTRATOR_TIMEOUT_S",
         "AGENT_SKILL_CONCURRENCY",
         "AGENT_RISK_OVERRIDE",
+        "AGENT_DEBATE_ENABLED",
         "AGENT_DEEP_RESEARCH_BUDGET",
         "AGENT_DEEP_RESEARCH_TIMEOUT",
         "AGENT_MEMORY_ENABLED",

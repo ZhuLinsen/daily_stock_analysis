@@ -1,4 +1,5 @@
 export * from './ReportSummary';
+export * from './ReportPriceLevelsChart';
 export * from './ReportDiagnostics';
 export * from './AnalysisContextSummary';
 export * from './MarketStructureCard';

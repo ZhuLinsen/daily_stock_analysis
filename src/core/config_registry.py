@@ -1024,6 +1024,32 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         ],
         "warning_codes": [],
     },
+    "CROSS_ASSET_CONTEXT_ENABLED": {
+        "title": "Cross-Asset Context",
+        "description": "Inject a low-sensitivity cross-asset (indices / VIX / US 10Y rates) context summary into stock analysis and calibrate risk appetite. Disabled by default (opt-in): when unset, the main analysis flow has zero behaviour change. Providers fail open to 'unknown' and never interrupt the main analysis.",
+        "category": "data_source",
+        "data_type": "boolean",
+        "ui_control": "switch",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": "false",
+        "options": [],
+        "validation": {},
+        "display_order": 18,
+        "help_key": "settings.data_source.CROSS_ASSET_CONTEXT_ENABLED",
+        "examples": [
+            "CROSS_ASSET_CONTEXT_ENABLED=true",
+            "CROSS_ASSET_CONTEXT_ENABLED=false",
+        ],
+        "docs": [
+            {
+                "label": "Analysis Context Pack（跨资产上下文）",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/analysis-context-pack.md",
+            },
+        ],
+        "warning_codes": [],
+    },
     "SCREENING_ENABLED": {
         "title": "Built-in Stock Screening",
         "description": "Enable DSA's built-in stock screening tab. The implementation is based on AlphaSift and maintained as part of DSA. Disabled by default.",
@@ -4004,13 +4030,13 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "is_sensitive": False,
         "is_required": False,
         "is_editable": True,
-        "default_value": "v1",
+        "default_value": "v1.1",
         "options": [],
         "validation": {},
         "display_order": 40,
         "help_key": "settings.backtest.BACKTEST_ENGINE_VERSION",
         "examples": [
-            "BACKTEST_ENGINE_VERSION=v1",
+            "BACKTEST_ENGINE_VERSION=v1.1",
         ],
         "docs": [
             {
@@ -4343,6 +4369,36 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
             {
                 "label": "完整指南：Agent 配置",
                 "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/full-guide.md#环境变量完整列表",
+            },
+        ],
+        "warning_codes": [],
+    },
+    "AGENT_DEBATE_ENABLED": {
+        "title": "Conditional Bull/Bear Debate",
+        "description": "In multi-agent mode, add an evidence brief and mandatory risk review when opinions disagree on direction or a buy opinion reaches 0.75 confidence.",
+        "category": "agent",
+        "data_type": "boolean",
+        "ui_control": "switch",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": "false",
+        "options": [],
+        "validation": {},
+        "display_order": 76,
+        "help_key": "settings.agent.AGENT_DEBATE_ENABLED",
+        "examples": [
+            "AGENT_DEBATE_ENABLED=false",
+            "AGENT_DEBATE_ENABLED=true",
+        ],
+        "docs": [
+            {
+                "label": "完整指南：Agent 配置",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/full-guide.md#agent_debate_enabled",
+            },
+            {
+                "label": "Agent configuration guide (English)",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/full-guide_EN.md#agent_debate_enabled",
             },
         ],
         "warning_codes": [],

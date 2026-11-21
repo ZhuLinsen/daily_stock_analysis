@@ -102,6 +102,18 @@ class SearchNewsFreshnessTestCase(unittest.TestCase):
         self.assertIn('"影视传媒"', mock_search.call_args.args[0])
         self.assertEqual(mock_search.call_args.kwargs["days"], 3)
 
+    def test_topic_news_checks_quality_before_merging_same_day_titles(self) -> None:
+        today = datetime.now().date().isoformat()
+        service, _ = self._create_service_with_mock_provider(response=_response([
+            _result("影视传媒应用", today, snippet="官方版 安卓版 立即下载 52MB", url="https://example.com/app"),
+            _result("影视传媒动态", today, snippet="官方版 安卓版 立即下载 52MB", url="https://example.com/download"),
+            _result("影视传媒动态", today, snippet="板块近期出现新订单。", url="https://example.com/news"),
+        ]))
+
+        response = service.search_topic_news("影视传媒", max_results=1)
+
+        self.assertEqual([item.url for item in response.results], ["https://example.com/news"])
+
     def test_invalid_profile_falls_back_to_short(self) -> None:
         """Invalid profile should fallback to short (3 days)."""
         service, mock_search = self._create_service_with_mock_provider(
@@ -2420,6 +2432,277 @@ class SearchNewsFreshnessTestCase(unittest.TestCase):
         reasons = "；".join(scored.relevance_reasons or [])
         self.assertIn("摘要命中公司英文别名 Apple", reasons)
         self.assertNotIn("标题命中公司英文别名", reasons)
+
+    def test_search_comprehensive_intel_stock_industry_filters_multi_year_stale_keeps_undated(self) -> None:
+        """Industry intel uses analytical window: drops >180d stale items, keeps undated."""
+        today = datetime.now().date()
+        fresh = today.isoformat()
+        recent_analytical = (today - timedelta(days=30)).isoformat()
+        multi_year_stale = (today - timedelta(days=400)).isoformat()
+        service, mock_search = self._create_service_with_mock_provider(
+            news_max_age_days=3,
+            news_strategy_profile="short",
+        )
+        mock_search.side_effect = [
+            _response([_result("latest_news", fresh)]),
+            _response([_result("market_analysis", None)]),
+            _response([_result("risk_check", fresh)]),
+            _response([_result("announcements", fresh)]),
+            _response([_result("earnings", None)]),
+            _response([
+                _result("stale_industry", multi_year_stale),
+                _result("undated_industry", None),
+                _result("recent_industry", recent_analytical),
+                _result("fresh_industry", fresh),
+            ]),
+        ]
+
+        with patch("src.search_service.time.sleep"):
+            intel = service.search_comprehensive_intel(
+                stock_code="600519",
+                stock_name="贵州茅台",
+                max_searches=6,
+            )
+
+        self.assertEqual(
+            [item.title for item in intel["industry"].results],
+            ["undated_industry", "recent_industry", "fresh_industry"],
+        )
+        formatted = service.format_intel_report({"industry": intel["industry"]}, "贵州茅台")
+        self.assertIn("[日期未知·勿作短期催化]", formatted)
+
+    def test_search_comprehensive_intel_etf_industry_preserves_undated_holdings(self) -> None:
+        """Index ETF industry allocation queries keep undated items for tolerance."""
+        fresh = datetime.now().date().isoformat()
+        service, mock_search = self._create_service_with_mock_provider(
+            news_max_age_days=3,
+            news_strategy_profile="short",
+        )
+        mock_search.side_effect = [
+            _response([_result("latest_news", fresh)]),
+            _response([_result("market_analysis", None)]),
+            _response([_result("risk_check", None)]),
+            _response([_result("announcements", fresh)]),
+            _response([_result("earnings", None)]),
+            _response([
+                _result("沪深300ETF 行业配置权重", None),
+                _result("沪深300ETF 行业配置权重！", None),
+                _result("沪深300ETF 前十大重仓行业", fresh),
+            ]),
+        ]
+
+        with patch("src.search_service.time.sleep"):
+            intel = service.search_comprehensive_intel(
+                stock_code="510300",
+                stock_name="沪深300ETF",
+                max_searches=6,
+            )
+
+        self.assertEqual(
+            [item.title for item in intel["industry"].results],
+            ["沪深300ETF 行业配置权重", "沪深300ETF 前十大重仓行业"],
+        )
+
+    def test_title_dedup_and_format_intel_report_age_labels(self) -> None:
+        """Duplicate titles collapse and formatted intel marks age or unknown-date guard."""
+        today = datetime.now().date()
+        two_days_ago = (today - timedelta(days=2)).isoformat()
+        service, _ = self._create_service_with_mock_provider(
+            news_max_age_days=7,
+            news_strategy_profile="medium",
+        )
+        filtered = service._filter_news_response(
+            _response([
+                _result("贵州茅台 分红预案!", today.isoformat()),
+                _result("贵州茅台分红预案", today.isoformat()),
+                _result("贵州茅台 产能扩建", two_days_ago),
+            ]),
+            search_days=7,
+            max_results=5,
+            log_scope="dedup_test",
+        )
+        self.assertEqual(
+            [item.title for item in filtered.results],
+            ["贵州茅台 分红预案!", "贵州茅台 产能扩建"],
+        )
+
+        normalized = service._normalize_and_limit_response(
+            _response([
+                _result("Same Title", today.isoformat()),
+                _result("same-title!", today.isoformat()),
+                _result("Second Story", None),
+            ]),
+            max_results=2,
+        )
+        self.assertEqual(
+            [item.title for item in normalized.results],
+            ["Same Title", "Second Story"],
+        )
+
+        formatted = service.format_intel_report(
+            {
+                "latest_news": filtered,
+                "market_analysis": normalized,
+            },
+            "贵州茅台",
+        )
+        self.assertIn(f"[{today.isoformat()} · 今日]", formatted)
+        self.assertIn(f"[{two_days_ago} · 2天前]", formatted)
+        self.assertIn("[日期未知·勿作短期催化]", formatted)
+
+        tomorrow = (today + timedelta(days=1)).isoformat()
+        in_three_days = (today + timedelta(days=3)).isoformat()
+        future_resp = _response([
+            _result("明日公告", tomorrow),
+            _result("三天后公告", in_three_days),
+            _result("不可解析日期报道", "N/A"),
+            _result("超出日期范围的报道", "999999999999 days ago"),
+        ])
+        future_formatted = service.format_intel_report({"latest_news": future_resp}, "贵州茅台")
+        self.assertIn(f"[{tomorrow} · 明日]", future_formatted)
+        self.assertNotIn(f"[{tomorrow} · 今日]", future_formatted)
+        self.assertIn(f"[{in_three_days} · 3天后]", future_formatted)
+        self.assertIn("[N/A · 日期未知·勿作短期催化]", future_formatted)
+        self.assertIn("[999999999999 days ago · 日期未知·勿作短期催化]", future_formatted)
+
+    def test_title_dedup_keeps_direction_and_later_official_copy(self) -> None:
+        """Dedup must not merge signed figures or hide a later official page."""
+        service, _ = self._create_service_with_mock_provider()
+        self.assertNotEqual(
+            service._dedup_title_key("贵州茅台 Q3净利同比+5%"),
+            service._dedup_title_key("贵州茅台 Q3净利同比-5%"),
+        )
+
+        today = datetime.now().date().isoformat()
+        response = service._filter_news_response(
+            _response([
+                _result(
+                    "贵州茅台关于回购股份的公告",
+                    today,
+                    snippet="官方版 安卓版 立即下载 52MB",
+                    url="https://example.com/download/app",
+                ),
+                _result(
+                    "贵州茅台关于回购股份的公告！",
+                    today,
+                    snippet="上交所正式公告",
+                    url="https://www.sse.com.cn/disclosure/announcement",
+                ),
+            ]),
+            search_days=7,
+            max_results=1,
+            log_scope="official_copy_after_duplicate",
+        )
+        self.assertEqual(
+            response.results[0].url,
+            "https://www.sse.com.cn/disclosure/announcement",
+        )
+
+    def test_title_dedup_preserves_unicode_direction_and_dated_evidence(self) -> None:
+        service, _ = self._create_service_with_mock_provider()
+        self.assertNotEqual(
+            service._dedup_title_key("贵州茅台净利同比5%"),
+            service._dedup_title_key("贵州茅台净利同比−5%"),
+        )
+
+        today = datetime.now().date()
+        response = service._deduplicate_news_response(
+            _response([
+                _result("白酒行业周报", (today - timedelta(days=7)).isoformat()),
+                _result("白酒行业周报！", today.isoformat()),
+                _result(
+                    "白酒行业周报",
+                    None,
+                    source="上交所",
+                    url="https://www.sse.com.cn/disclosure/announcement",
+                ),
+            ]),
+            max_results=5,
+        )
+        self.assertEqual(
+            [item.published_date for item in response.results],
+            [(today - timedelta(days=7)).isoformat(), today.isoformat()],
+        )
+
+    def test_industry_admits_relevant_copies_before_title_dedup(self) -> None:
+        today = datetime.now().date().isoformat()
+        news = _response([
+            _result("白酒销量观察", None, snippet="贵州茅台销量继续增长", url="https://example.com/sales"),
+            _result("白酒销量观察", today, snippet="今天天气晴朗", url="https://example.com/weather"),
+            _result("贵州茅台产品销售公告", today),
+        ])
+        service, mock_search = self._create_service_with_mock_provider(response=news)
+        with patch("src.search_service.time.sleep"):
+            industry = service.search_comprehensive_intel("600519", "贵州茅台", max_searches=6)["industry"]
+
+        self.assertIn("https://example.com/sales", [item.url for item in industry.results])
+        self.assertNotIn("https://example.com/weather", [item.url for item in industry.results])
+        self.assertEqual(mock_search.call_args.kwargs["days"], service.ANALYTICAL_INTEL_LOOKBACK_DAYS)
+
+    def test_stock_news_admits_related_copy_before_merging_same_day_titles(self) -> None:
+        today = datetime.now().date().isoformat()
+        service, _ = self._create_service_with_mock_provider(response=_response([
+            _result("销量观察", today, snippet="今天天气晴朗", url="https://example.com/weather"),
+            _result("销量观察", today, snippet="贵州茅台 600519 销量增长", url="https://example.com/sales"),
+        ]))
+
+        response = service.search_stock_news("600519", "贵州茅台")
+
+        self.assertEqual([item.url for item in response.results], ["https://example.com/sales"])
+
+    def test_generic_notice_matches_issuer_before_preferring_official_source(self) -> None:
+        title = "关于股票交易异常波动的公告"
+        today = datetime.now().date().isoformat()
+        media_url = "https://example.invalid/news"
+        official_url = "https://www.cninfo.com.cn/announcement"
+        for snippet, expected in (
+            ("万科Ａ 000002 发布公告。", media_url),
+            ("证券代码：000002。对比标的贵州茅台 600519。", media_url),
+            ("交易波动提示。", media_url),
+            ("证券代码：600519，贵州茅台。", official_url),
+            ("证券代码：６００５１９。", official_url),
+        ):
+            with self.subTest(snippet=snippet):
+                service, _ = self._create_service_with_mock_provider(response=_response([
+                    _result(title, today, snippet="贵州茅台 600519 发布公告。", url=media_url),
+                    _result(title, today, snippet=snippet, url=official_url),
+                ]))
+                news = service.search_stock_news("600519", "贵州茅台")
+                with patch("src.search_service.time.sleep"):
+                    intel = service.search_comprehensive_intel("600519", "贵州茅台", max_searches=4)
+
+                self.assertEqual([item.url for item in news.results], [expected])
+                self.assertEqual([item.url for item in intel["announcements"].results], [expected])
+
+        service, _ = self._create_service_with_mock_provider(response=_response([
+            _result(title, today, snippet="万科Ａ发布公告。", url=official_url),
+            _result(title, today, snippet="股票代码：000002。与贵州茅台对比。", url=media_url),
+        ]))
+        self.assertEqual(service.search_stock_news("600519", "贵州茅台").results, [])
+
+    def test_industry_keeps_all_dated_editions_when_intermediate_copies_repeat(self) -> None:
+        today = datetime.now().date()
+        dates = [(today - timedelta(days=days)).isoformat() for days in (90, 30, 0)]
+        news = _response([
+            _result("贵州茅台白酒行业周报", dates[edition], url=f"https://example.com/report/{index}")
+            for index, edition in enumerate([0, *([1] * 12), 2])
+        ])
+        service, _ = self._create_service_with_mock_provider(response=news)
+        with patch("src.search_service.time.sleep"):
+            industry = service.search_comprehensive_intel("600519", "贵州茅台", max_searches=6)["industry"]
+
+        self.assertEqual([item.published_date for item in industry.results], dates)
+
+    def test_comprehensive_intel_keeps_spaced_unicode_minus(self) -> None:
+        titles = ["贵州茅台 Q3净利同比5%", "贵州茅台 Q3净利同比− 5%", "贵州茅台 Q3净利同比−5%"]
+        today = datetime.now().date().isoformat()
+        news = _response([_result(title, today) for title in titles])
+        service, _ = self._create_service_with_mock_provider(response=news)
+        with patch("src.search_service.time.sleep"):
+            industry = service.search_comprehensive_intel("600519", "贵州茅台", max_searches=6)["industry"]
+
+        self.assertEqual([item.title for item in industry.results], titles[:2])
+
 
 if __name__ == "__main__":
     unittest.main()

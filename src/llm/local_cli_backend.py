@@ -9,10 +9,11 @@ model output; the Codex CLI preset reads its final answer from
 
 from __future__ import annotations
 
+from concurrent.futures import CancelledError
 from dataclasses import dataclass
 import hashlib
 from contextlib import ExitStack, contextmanager
-from functools import lru_cache
+from functools import lru_cache, partial
 import json
 import os
 from pathlib import Path
@@ -26,6 +27,7 @@ import time
 from typing import Any, Callable, Dict, Iterator, Mapping, Optional, Sequence, Tuple
 from urllib.parse import parse_qsl, urlsplit
 
+from src.core.stock_execution_context import get_current_stock_cancellation
 from src.llm.backend_registry import (
     CLAUDE_CODE_CLI_BACKEND_ID,
     CODEX_CLI_BACKEND_ID,
@@ -2192,7 +2194,8 @@ class LocalCliGenerationBackend(GenerationBackend):
                             )
                         stdout_handle = stack.enter_context(stdout_path.open("wb"))
                         stderr_handle = stack.enter_context(stderr_path.open("wb"))
-                        process = subprocess.Popen(
+                        start_process = partial(
+                            subprocess.Popen,
                             [executable, *command_argv],
                             stdin=stdin_handle,
                             stdout=stdout_handle,
@@ -2203,9 +2206,19 @@ class LocalCliGenerationBackend(GenerationBackend):
                             shell=False,
                             **_popen_session_kwargs(),
                         )
+                        cancel_token = get_current_stock_cancellation()
+                        if cancel_token is not None:
+                            process = cancel_token.start_with_cleanup(
+                                start_process, partial(self._terminate_process_group, force=True)
+                            )
+                        else:
+                            process = start_process()
                         self._emit_progress(stream_progress_callback, 1)
                         deadline = time.monotonic() + timeout_seconds
                         while True:
+                            if cancel_token is not None and cancel_token.is_cancelled():
+                                cancel_token.cancel()
+                                raise CancelledError()
                             stdout_handle.flush()
                             stderr_handle.flush()
                             try:
@@ -2373,6 +2386,14 @@ class LocalCliGenerationBackend(GenerationBackend):
                             )
                         diagnostics["output_source"] = "stdout"
                         text = (stdout or "").strip()
+            except CancelledError as exc:
+                raise self._error(
+                    GenerationErrorCode.TIMEOUT,
+                    stage="execution",
+                    retryable=False,
+                    fallbackable=False,
+                    details={**diagnostics, "reason": "stock_analysis_cancelled"},
+                ) from exc
             except OSError as exc:
                 if _is_command_not_executable_error(exc):
                     raise self._error(
@@ -2776,7 +2797,7 @@ class LocalCliGenerationBackend(GenerationBackend):
             return
 
     @staticmethod
-    def _terminate_process_group(process: subprocess.Popen[str]) -> None:
+    def _terminate_process_group(process: subprocess.Popen[str], *, force: bool = False) -> None:
         if process.poll() is not None:
             return
         if os.name == "nt":
@@ -2804,6 +2825,18 @@ class LocalCliGenerationBackend(GenerationBackend):
                 except subprocess.TimeoutExpired:
                     return
             return
+        if force:
+            # The stock batch may exit as soon as cleanup returns. Kill the
+            # entire group even if only a descendant would ignore SIGTERM.
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except OSError:
+                process.kill()
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                pass
+            return
         try:
             os.killpg(process.pid, signal.SIGTERM)
         except Exception:
@@ -2825,8 +2858,15 @@ class LocalCliGenerationBackend(GenerationBackend):
 def _local_cli_concurrency_slot(limit: int):
     global _CONCURRENCY_ACTIVE
     normalized_limit = max(1, int(limit or 1))
+    token = get_current_stock_cancellation()
     with _CONCURRENCY_CONDITION:
-        _CONCURRENCY_CONDITION.wait_for(lambda: _CONCURRENCY_ACTIVE < normalized_limit)
+        if token is None:
+            _CONCURRENCY_CONDITION.wait_for(lambda: _CONCURRENCY_ACTIVE < normalized_limit)
+        else:
+            while _CONCURRENCY_ACTIVE >= normalized_limit and not token.is_cancelled():
+                _CONCURRENCY_CONDITION.wait(timeout=0.05)
+            if token.is_cancelled():
+                raise CancelledError("Stock analysis cancelled")
         _CONCURRENCY_ACTIVE += 1
     try:
         yield

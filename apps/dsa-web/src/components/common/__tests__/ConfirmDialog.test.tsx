@@ -50,4 +50,27 @@ describe('ConfirmDialog', () => {
     expect(onConfirm).toHaveBeenCalledTimes(1);
     expect(onCancel).toHaveBeenCalledTimes(1);
   });
+
+  it('keeps keyboard focus inside the modal', () => {
+    const backgroundButton = document.createElement('button');
+    backgroundButton.textContent = '后台操作';
+    document.body.appendChild(backgroundButton);
+    renderDialog();
+
+    const cancel = screen.getByRole('button', { name: '取消' });
+    const confirm = screen.getByRole('button', { name: '确定' });
+    expect(document.activeElement).toBe(cancel);
+
+    confirm.focus();
+    fireEvent.keyDown(document, { key: 'Tab' });
+    expect(document.activeElement).toBe(cancel);
+
+    cancel.focus();
+    fireEvent.keyDown(document, { key: 'Tab', shiftKey: true });
+    expect(document.activeElement).toBe(confirm);
+
+    backgroundButton.focus();
+    expect(document.activeElement).toBe(cancel);
+    backgroundButton.remove();
+  });
 });

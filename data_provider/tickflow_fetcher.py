@@ -1052,8 +1052,8 @@ class TickFlowFetcher(BaseFetcher):
 
         return results or None
 
-    def get_market_stats(self) -> Optional[Dict[str, Any]]:
-        """Calculate A-share market breadth from TickFlow universe quotes."""
+    def get_market_stats(self, *, allow_cache: bool = True) -> Optional[Dict[str, Any]]:
+        """Calculate A-share market breadth from a new TickFlow universe quote request."""
         client = self._get_client()
         if client is None:
             return None
