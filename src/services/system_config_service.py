@@ -557,6 +557,10 @@ class SystemConfigService:
             "config_version": config_version,
             "mask_token": mask_token,
             "items": items,
+            # raw_value_exists only describes persistence in .env. The Web UI
+            # also needs to know whether a process-injected YAML path is the
+            # active LiteLLM source before hiding the generic runtime fields.
+            "llm_yaml_active": self._uses_litellm_yaml(config_map),
             "llm_model_providers": sorted(get_litellm_model_providers()),
             "updated_at": updated_at,
         }
@@ -5232,11 +5236,11 @@ class SystemConfigService:
 
     @staticmethod
     def _uses_litellm_yaml(effective_map: Dict[str, str]) -> bool:
-        """Return True when a valid LiteLLM YAML config takes precedence over channels."""
+        """Return True when a usable LiteLLM YAML route takes precedence over channels."""
         config_path = (effective_map.get("LITELLM_CONFIG") or "").strip()
         if not config_path:
             return False
-        return bool(Config._parse_litellm_yaml(config_path))
+        return bool(get_configured_llm_models(Config._parse_litellm_yaml(config_path)))
 
     @staticmethod
     def _collect_yaml_models_from_map(effective_map: Dict[str, str]) -> List[str]:

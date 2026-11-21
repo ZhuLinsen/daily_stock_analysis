@@ -38,6 +38,7 @@ from src.config import (
     get_explicit_llm_channel_model_provider,
     resolve_news_window_days,
 )
+from src.core.stock_execution_context import is_current_stock_cancelled, raise_if_stock_cancelled
 from src.llm.hermes import (
     HERMES_CHANNEL_NAME,
     build_hermes_redaction_values,
@@ -95,7 +96,7 @@ from src.report_language import (
     localize_trend_prediction,
     normalize_report_language,
 )
-from src.schemas.decision_action import build_action_fields
+from src.schemas.decision_action import build_action_fields, normalize_decision_action
 from src.schemas.decision_scale import (
     CANONICAL_DECISION_SCALE_PROMPT_EN,
     CANONICAL_DECISION_SCALE_PROMPT_ZH,
@@ -1052,6 +1053,256 @@ def fill_price_position_if_needed(
             logger.info("[price_position] Filled placeholder fields from computed data")
     except Exception as e:
         logger.warning("[price_position] Fill failed, skipping: %s", e)
+
+
+def _extract_positive_finite_float(value: Any) -> Optional[float]:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        try:
+            parsed = float(value)
+        except OverflowError:
+            return None
+        return parsed if math.isfinite(parsed) and parsed > 0 else None
+    from src.utils.sniper_points import parse_sniper_value
+
+    parsed = parse_sniper_value(value)
+    return parsed if parsed is not None and math.isfinite(parsed) and parsed > 0 else None
+
+
+_SNIPER_NUMBER = r"[+-]?(?:\d+(?:\.\d+)?|\.\d+)"
+_SNIPER_GROUPED_NUMBER = re.compile(r"(?<![\d.,，])\d{1,3}(?:[,，]\d{3})+(?!\d)")
+_SNIPER_CURRENCY_PRICE = re.compile(
+    rf"(?:(?<![-\d.])[$¥￥₩€£]\s*({_SNIPER_NUMBER})|"
+    rf"(?<![A-Za-z\d_.+-])({_SNIPER_NUMBER})\s*"
+    r"(?:(?:USD|HKD|TWD|CNY|JPY|KRW|EUR|GBP)\b|US\$|HK\$|NT\$|元|¥|￥|円|₩))",
+    re.IGNORECASE,
+)
+_SNIPER_PRICE_REFERENCE = r"MA\s*\d+\b|\b(?:spot(?: price)?|current price)\b|现价|当前价"
+_SNIPER_PRICE_LABEL = re.compile(
+    r"^(?:stop[-\s]loss|(?:ideal|secondary)\s+(?:entry|buy(?:\s+point)?)|(?:take[-\s]profit|target))\s*[:：]\s*",
+    re.IGNORECASE,
+)
+
+
+def _extract_raw_sniper_points(result: "AnalysisResult") -> Dict[str, Any]:
+    """Return raw sniper-point strings/numbers without stripping percentage signs."""
+    from collections.abc import Mapping
+    from src.utils.sniper_points import find_sniper_points
+
+    raw_points: Mapping[str, Any] = {}
+    if hasattr(result, "get_sniper_points"):
+        try:
+            candidate = result.get_sniper_points() or {}
+        except (AttributeError, TypeError):
+            candidate = {}
+        if isinstance(candidate, Mapping):
+            raw_points = candidate
+    if not raw_points or not any(raw_points.get(k) not in (None, "") for k in ("ideal_buy", "secondary_buy", "stop_loss", "take_profit")):
+        dashboard = getattr(result, "dashboard", None)
+        if isinstance(dashboard, Mapping):
+            raw_points = find_sniper_points(dashboard) or raw_points
+    if not raw_points or not any(raw_points.get(k) not in (None, "") for k in ("ideal_buy", "secondary_buy", "stop_loss", "take_profit")):
+        raw_response = getattr(result, "raw_response", None)
+        if isinstance(raw_response, Mapping):
+            raw_points = find_sniper_points(raw_response) or raw_points
+    return dict(raw_points)
+
+
+def _extract_sniper_price_only(
+    raw_value: Any, price_references: Dict[str, Optional[float]]
+) -> Optional[float]:
+    """Resolve absolute prices and percentages with a recognized reference."""
+    if isinstance(raw_value, str):
+        text = _SNIPER_GROUPED_NUMBER.sub(
+            lambda match: match.group().replace(",", "").replace("，", ""), raw_value.strip()
+        )
+        percent_match = re.search(rf"({_SNIPER_NUMBER})\s*[%％]", text)
+        if percent_match:
+            pre_paren = re.split(r"[(（]", text, maxsplit=1)[0].strip()
+            pre_paren = _SNIPER_PRICE_LABEL.sub("", pre_paren)
+            price_match = _SNIPER_CURRENCY_PRICE.search(pre_paren)
+            if price_match:
+                return _extract_positive_finite_float(price_match.group(1) or price_match.group(2))
+            bare_price = re.match(rf"^({_SNIPER_NUMBER})(?:\s*[,，;；]|$)", pre_paren)
+            if bare_price:
+                return _extract_positive_finite_float(bare_price.group(1))
+
+            relative = re.search(
+                rf"(\b(?:below|above)\b|低于|高于)\s*(?:the\s+)?({_SNIPER_PRICE_REFERENCE})",
+                pre_paren,
+                re.IGNORECASE,
+            )
+            if relative:
+                direction, reference_name = relative.groups()
+            else:
+                relative = re.search(
+                    rf"({_SNIPER_PRICE_REFERENCE})\s*(?:的)?(下方|低位|上方|高位)", pre_paren, re.IGNORECASE,
+                )
+                if not relative:
+                    return None
+                reference_name, direction = relative.groups()
+            reference_key = re.sub(r"\s+", "", reference_name.casefold())
+            reference = price_references.get(reference_key if reference_key.startswith("ma") else "spot")
+            percent = float(percent_match.group(1)) / 100
+            if reference is None or percent < 0:
+                return None
+            if direction.casefold() in {"below", "低于", "下方", "低位"}:
+                percent = -percent
+            return _extract_positive_finite_float(reference + reference * percent)
+    return _extract_positive_finite_float(raw_value)
+
+
+def _build_sniper_inverted_warning(report_language: Any) -> str:
+    """Keep warning <= 36 chars so compact notification & share-image exits preserve it verbatim."""
+    lang = normalize_report_language(report_language)
+    if lang == "en":
+        return "Price check: stop/target inverted"
+    if lang == "ko":
+        return "가격 점검: 손절/목표가 역전, 재확인 필요"
+    return "点位校验：止损/目标与买入价倒挂，请复核"
+
+
+def validate_sniper_price_sanity(
+    result: "AnalysisResult",
+    context: Optional[Dict[str, Any]] = None,
+    *,
+    emit_log: bool = True,
+) -> List[str]:
+    """Check deterministic ordering and R:R bounds on LLM sniper points.
+
+    Additive-only guardrail: records diagnostic metadata under
+    ``dashboard["data_perspective"]["price_sanity"]`` without failing report
+    generation or altering legacy fields. When a buy report contains inverted
+    sniper points, prepends a concise warning to ``risk_alerts`` and
+    ``risk_warning`` so compact notification/share-image exits always surface it.
+    """
+    if not result:
+        return []
+
+    ctx = context if isinstance(context, dict) else {}
+    realtime = ctx.get("realtime") if isinstance(ctx.get("realtime"), dict) else {}
+    realtime_quote = ctx.get("realtime_quote") if isinstance(ctx.get("realtime_quote"), dict) else {}
+    today = ctx.get("today") if isinstance(ctx.get("today"), dict) else {}
+    trend_ctx = ctx.get("trend_result") if isinstance(ctx.get("trend_result"), dict) else {}
+    trend_analysis = ctx.get("trend_analysis") if isinstance(ctx.get("trend_analysis"), dict) else {}
+    snapshot = result.market_snapshot if isinstance(getattr(result, "market_snapshot", None), dict) else {}
+    dash = result.dashboard if isinstance(getattr(result, "dashboard", None), dict) else None
+    dp = dash.get("data_perspective") if isinstance(dash, dict) and isinstance(dash.get("data_perspective"), dict) else {}
+    pp = dp.get("price_position") if isinstance(dp.get("price_position"), dict) else {}
+
+    current_price = None
+    for candidate in (
+        getattr(result, "current_price", None),
+        realtime.get("price"),
+        realtime_quote.get("price"),
+        today.get("close"),
+        trend_ctx.get("current_price"),
+        trend_analysis.get("current_price"),
+        ctx.get("current_price"),
+        snapshot.get("current_price"),
+        snapshot.get("price"),
+        snapshot.get("close"),
+        pp.get("current_price"),
+    ):
+        current_price = _extract_positive_finite_float(candidate)
+        if current_price is not None:
+            break
+
+    price_references = {"spot": current_price}
+    for key in ("ma5", "ma10", "ma20", "ma60"):
+        for source in (trend_ctx, trend_analysis, today, ctx, snapshot, pp):
+            value = _extract_positive_finite_float(source.get(key))
+            if value is not None:
+                price_references[key] = value
+                break
+
+    raw_points = _extract_raw_sniper_points(result)
+    ideal_buy = _extract_sniper_price_only(raw_points.get("ideal_buy"), price_references)
+    secondary_buy = _extract_sniper_price_only(raw_points.get("secondary_buy"), price_references)
+    stop_loss = _extract_sniper_price_only(raw_points.get("stop_loss"), price_references)
+    take_profit = _extract_sniper_price_only(raw_points.get("take_profit"), price_references)
+
+    decision_type = str(getattr(result, "decision_type", None) or "").strip().lower()
+    final_action = normalize_decision_action(getattr(result, "action", None))
+    is_buy = final_action in {"buy", "add"} or (
+        final_action is None and decision_type == "buy"
+    )
+
+    warnings: List[str] = []
+    inverted = False
+    if is_buy:
+        entries = [("ideal_buy", ideal_buy), ("secondary_buy", secondary_buy)]
+        for entry_name, entry in entries:
+            if entry is None:
+                continue
+            if stop_loss is not None and stop_loss >= entry:
+                warnings.append(f"stop_loss_above_{entry_name}")
+                inverted = True
+            if take_profit is not None and take_profit <= entry:
+                warnings.append(f"take_profit_below_{entry_name}")
+                inverted = True
+
+        ref_entry = ideal_buy or secondary_buy
+        if (
+            ref_entry is not None
+            and stop_loss is not None
+            and take_profit is not None
+            and stop_loss < ref_entry < take_profit
+        ):
+            reward_risk = (take_profit - ref_entry) / (ref_entry - stop_loss)
+            if reward_risk < 1.0:
+                warnings.append("reward_risk_below_1")
+
+    if inverted and dash is None:
+        result.dashboard = {}
+        dash = result.dashboard
+
+    if isinstance(dash, dict):
+        dp_target = dash.get("data_perspective")
+        if dp_target is None or isinstance(dp_target, dict):
+            if dp_target is None:
+                dp_target = {}
+                dash["data_perspective"] = dp_target
+            dp_target["price_sanity"] = {
+                "status": "warn" if warnings else "ok",
+                "warnings": list(warnings),
+                "inverted": inverted,
+                "current_price": current_price,
+                "ideal_buy": ideal_buy,
+                "secondary_buy": secondary_buy,
+                "stop_loss": stop_loss,
+                "take_profit": take_profit,
+            }
+
+    if inverted:
+        warning_text = _build_sniper_inverted_warning(getattr(result, "report_language", "zh"))
+        if isinstance(dash, dict):
+            intel = dash.get("intelligence")
+            if not isinstance(intel, dict):
+                intel = {}
+                dash["intelligence"] = intel
+            existing_alerts = _normalize_risk_warning_values(intel.get("risk_alerts"))
+            deduped_alerts = [warning_text] + [
+                item for item in existing_alerts if item != warning_text
+            ]
+            intel["risk_alerts"] = deduped_alerts
+
+        existing_rw = str(getattr(result, "risk_warning", None) or "").strip()
+        if not existing_rw:
+            result.risk_warning = warning_text
+        elif warning_text not in existing_rw:
+            sep = "；" if any("\u4e00" <= ch <= "\u9fff" for ch in existing_rw + warning_text) else "; "
+            result.risk_warning = f"{warning_text}{sep}{existing_rw}"
+
+    if warnings and emit_log:
+        logger.warning(
+            "[price_sanity] %s(%s) sniper point sanity warnings: %s",
+            getattr(result, "name", ""),
+            getattr(result, "code", ""),
+            ",".join(warnings),
+        )
+    return warnings
 
 
 def stabilize_decision_with_structure(
@@ -3528,6 +3779,7 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
         return_generation_result: bool = False,
     ) -> Union[Tuple[str, str, Dict[str, Any]], GenerationResult]:
         """Compatibility wrapper around the configured generation backend."""
+        raise_if_stock_cancelled()
         preflight_error = self.get_generation_backend_config_error()
         if preflight_error is not None and not self._can_use_generation_fallback(preflight_error):
             raise preflight_error
@@ -3544,7 +3796,7 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                 audit_context=audit_context,
             )
         except GenerationError as exc:
-            if not exc.fallbackable or not fallback_backend_id:
+            if is_current_stock_cancelled() or not exc.fallbackable or not fallback_backend_id:
                 raise
             try:
                 fallback_backend = self._get_generation_backend(fallback_backend_id)
@@ -3568,6 +3820,7 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                     },
                 ) from fallback_exc
             try:
+                raise_if_stock_cancelled()
                 result = fallback_backend.generate(
                     prompt,
                     generation_config,
@@ -3688,6 +3941,7 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
         effective_system_prompt = system_prompt or self.TEXT_SYSTEM_PROMPT
         router_model_names = set(get_configured_llm_models(config.llm_model_list))
         for model in models_to_try:
+            raise_if_stock_cancelled()
             last_model = model
             origins = route_deployment_origins(config.llm_model_list, model)
             model_stream = bool(stream and not origins.has_hermes)
@@ -3894,6 +4148,7 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                 raise ValueError("LLM returned empty response")
 
             except Exception as e:
+                raise_if_stock_cancelled()
                 if uses_router:
                     router_model, router_provider = self._resolve_router_failure_identity(
                         e,

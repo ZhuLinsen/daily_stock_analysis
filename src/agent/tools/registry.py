@@ -14,6 +14,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
+from src.core.stock_execution_context import raise_if_stock_cancelled
+
 logger = logging.getLogger(__name__)
 
 SUPPORTED_TOOL_SURFACE_SCOPE_DIMENSIONS = frozenset({"stock"})
@@ -315,6 +317,7 @@ class ToolRegistry:
         if tool_def is None:
             raise KeyError(f"Tool '{name}' not found in registry. Available: {self.list_names()}")
 
+        raise_if_stock_cancelled()
         return tool_def.handler(**kwargs)
 
 

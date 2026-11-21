@@ -6,6 +6,7 @@ from __future__ import annotations
 import re
 from typing import Any, Callable, Dict, List, Optional
 
+from src.core.stock_execution_context import get_current_stock_cancellation, raise_if_stock_cancelled
 from src.llm.generation_params import (
     GenerationParamRecovery,
     apply_litellm_param_recovery,
@@ -123,9 +124,26 @@ def call_litellm_with_param_recovery(
     log_label: str = "[LiteLLM]",
 ) -> Any:
     """Call LiteLLM once, then retry once for explicit generation-parameter errors."""
+    def invoke(kwargs: Dict[str, Any]) -> Any:
+        raise_if_stock_cancelled()
+        token = get_current_stock_cancellation()
+        remaining = token.remaining_seconds() if token is not None else None
+        if remaining is None:
+            return call(kwargs)
+        if remaining <= 0:
+            raise_if_stock_cancelled()
+        timeout = kwargs.get("timeout")
+        if isinstance(timeout, (int, float)) and timeout > 0:
+            remaining = min(remaining, timeout)
+        # Keep the Router's same-model deployment retries. The stock executor
+        # enforces the batch deadline even if the SDK is still retrying.
+        response = call({**kwargs, "timeout": remaining})
+        raise_if_stock_cancelled()
+        return response
+
     effective_kwargs = dict(call_kwargs)
     try:
-        return call(effective_kwargs)
+        return invoke(effective_kwargs)
     except Exception as exc:
         recovery = classify_litellm_generation_param_error(exc)
         if recovery is None:
@@ -140,7 +158,7 @@ def call_litellm_with_param_recovery(
                 model,
                 recovery.reason,
             )
-        response = call(retry_kwargs)
+        response = invoke(retry_kwargs)
         if cache_recovery:
             remember_litellm_generation_param_recovery(
                 model,

@@ -1,9 +1,10 @@
 import type React from 'react';
 import { useEffect, useState } from 'react';
-import { Menu } from 'lucide-react';
+import { Menu, Search } from 'lucide-react';
 import { Outlet } from 'react-router-dom';
 import { Drawer } from '../common/Drawer';
 import { SidebarNav } from './SidebarNav';
+import { CommandPalette } from './CommandPalette';
 import { DesktopUpdateIndicator } from './DesktopUpdateIndicator';
 import { cn } from '../../utils/cn';
 import { ThemeToggle } from '../theme/ThemeToggle';
@@ -16,6 +17,7 @@ type ShellProps = {
 
 export const Shell: React.FC<ShellProps> = ({ children }) => {
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
   const collapsed = false;
   const { t } = useUiLanguage();
 
@@ -37,7 +39,12 @@ export const Shell: React.FC<ShellProps> = ({ children }) => {
   }, [mobileOpen]);
 
   return (
-    <div className="min-h-screen bg-background text-foreground">
+    <div>
+      <div
+        className="min-h-screen bg-background text-foreground"
+        aria-hidden={paletteOpen ? true : undefined}
+        inert={paletteOpen || undefined}
+      >
       <div className="pointer-events-none fixed inset-x-0 top-3 z-40 flex items-start justify-between px-3">
         <button
           type="button"
@@ -48,6 +55,18 @@ export const Shell: React.FC<ShellProps> = ({ children }) => {
           <Menu className="h-5 w-5" />
         </button>
         <div className="pointer-events-auto ml-auto flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setPaletteOpen(true)}
+            aria-label={t('palette.open')}
+            className="hidden sm:inline-flex items-center gap-1.5 rounded-xl border border-border/70 bg-card/85 px-2.5 py-1.5 text-xs font-medium text-secondary-text shadow-soft-card backdrop-blur-md transition-colors hover:bg-hover hover:text-foreground"
+          >
+            <Search className="h-3.5 w-3.5" aria-hidden="true" />
+            <span>{t('palette.triggerLabel')}</span>
+            <kbd className="rounded border border-border/70 bg-background/70 px-1 py-0.5 font-mono text-[10px] text-muted-text">
+              ⌘K
+            </kbd>
+          </button>
           <DesktopUpdateIndicator />
           <div className="flex items-center gap-2 lg:hidden">
             <UiLanguageToggle />
@@ -68,7 +87,7 @@ export const Shell: React.FC<ShellProps> = ({ children }) => {
           <SidebarNav collapsed={collapsed} variant="rail" onNavigate={() => setMobileOpen(false)} />
         </aside>
 
-        <main className="min-h-0 min-w-0 flex-1 pt-14 lg:pl-3 lg:pt-0 touch-pan-y">
+        <main className="min-h-0 min-w-0 flex-1 pt-14 lg:pl-3 lg:pt-10 touch-pan-y">
           {children ?? <Outlet />}
         </main>
       </div>
@@ -83,6 +102,14 @@ export const Shell: React.FC<ShellProps> = ({ children }) => {
       >
         <SidebarNav onNavigate={() => setMobileOpen(false)} />
       </Drawer>
+
+      </div>
+
+      <CommandPalette
+        isOpen={paletteOpen}
+        onClose={() => setPaletteOpen(false)}
+        onToggle={() => setPaletteOpen((prev) => !prev)}
+      />
     </div>
   );
 };

@@ -2237,6 +2237,7 @@ class TestAnalyzeWithAgentStockName(unittest.TestCase):
 
     def test_analyze_with_agent_explains_daily_market_softening_before_risk(self):
         """A partial result produced before risk must retain its Pipeline start signal."""
+        factory = importlib.import_module('src.agent.factory')
         with patch('src.core.pipeline.get_config') as mock_config, \
              patch('src.core.pipeline.get_db'), \
              patch('src.core.pipeline.DataFetcherManager'), \
@@ -2244,7 +2245,7 @@ class TestAnalyzeWithAgentStockName(unittest.TestCase):
              patch('src.core.pipeline.NotificationService'), \
              patch('src.core.pipeline.SearchService'), \
              patch('src.core.pipeline.stabilize_decision_with_structure'), \
-             patch('src.agent.factory.build_agent_executor') as mock_build_executor:
+             patch.object(factory, 'build_agent_executor') as mock_build_executor:
 
             mock_cfg = MagicMock()
             mock_cfg.max_workers = 2
@@ -2338,6 +2339,7 @@ class TestAnalyzeWithAgentStockName(unittest.TestCase):
                 ),
             )
 
+            mock_executor.run.assert_called_once()
             self.assertIsNotNone(result)
             explanation = result.dashboard["agent_disagreement_explanation"]
             self.assertEqual(result.decision_type, "hold")
