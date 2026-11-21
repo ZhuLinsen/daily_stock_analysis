@@ -13,9 +13,12 @@ export interface PriceChartDatum {
 const INDICATOR_PREFIX_RE = /(?:MA|BOLL|RSI|KDJ|MACD|WR|BIAS|T\+)\s*(?:\d+\s*\/\s*)*$/i;
 const NON_PRICE_UNIT_RE = /^(?:%|日|周|週|月|年|天|个交易日|倍|거래일|일|주|개월|년|배|(?:[-‐‑–]\s*)?(?:(?:trading\s+)?(?:days?|sessions?|periods?)|weeks?|months?|years?|times?|x|d)\b)/i;
 const MOVING_AVERAGE_PERIOD_LIST_RE = /\b\d+(?:\.\d+)?(?:(?:\s*[-‐‑–—/,]+\s*(?:(?:and|or|to|&)\s+)?|\s+(?:and|or|to|&)\s+)\d+(?:\.\d+)?){1,}\s*(?:[-‐‑–—]\s*)?(?:(?:trading\s+)?(?:days?|sessions?|periods?|weeks?|months?|years?|d)|日|周|週|月|年|天|거래일|일|주|개월|년|배|MA|moving\s+averages?)\b/gi;
+const CURRENT_PRICE_CONTEXT_RE = /(?:current|latest|last|market)\s+price(?:\s+(?:is|of|at))?\s*[:：]?\s*(?:[$¥₩]|(?:USD|CNY|HKD|TWD|KRW|JPY)\s*)?$/i;
+const CJK_CURRENT_PRICE_CONTEXT_RE = /(?:当前价(?:格)?|目前价(?:格)?|现价)\s*(?:是|为|在|约)?\s*(?:[$¥₩]|(?:USD|CNY|HKD|TWD|KRW|JPY)\s*)?$/iu;
+const KOREAN_CURRENT_PRICE_CONTEXT_RE = /(?:현재\s*가격?|시세)\s*(?:는|이|가)?\s*[:：]?\s*(?:[$¥₩]|(?:USD|CNY|HKD|TWD|KRW|JPY)\s*)?$/iu;
 
 function isRatioCandidate(segment: string, start: number, end: number): boolean {
-  for (const match of segment.matchAll(/\d+(?:\.\d+)?\s*:\s*\d+(?:\.\d+)?/g)) {
+  for (const match of segment.matchAll(/\d+(?:\.\d+)?\s*[:：∶︓﹕꞉]\s*\d+(?:\.\d+)?/g)) {
     const matchStart = match.index ?? 0;
     if (start >= matchStart && end <= matchStart + match[0].length) {
       return true;
@@ -26,7 +29,7 @@ function isRatioCandidate(segment: string, start: number, end: number): boolean 
 
 function isMovingAveragePeriod(segment: string, start: number, end: number): boolean {
   const prefix = segment.slice(0, start);
-  const suffix = segment.slice(end);
+  const suffix = segment.slice(end).trimStart();
   if (INDICATOR_PREFIX_RE.test(prefix) || NON_PRICE_UNIT_RE.test(suffix)) {
     return true;
   }
@@ -40,7 +43,13 @@ function isMovingAveragePeriod(segment: string, start: number, end: number): boo
 
 function isOrdinalCandidate(prefix: string, suffix: string): boolean {
   return /第\s*$/u.test(prefix)
-    || /^(?:st|nd|rd|th|차|번째|个)(?=\s|$|[^\p{L}\p{N}_])/iu.test(suffix);
+    || /^(?:st|nd|rd|th|차|번째|个)/iu.test(suffix);
+}
+
+function isCurrentPriceCandidate(prefix: string): boolean {
+  return CURRENT_PRICE_CONTEXT_RE.test(prefix)
+    || CJK_CURRENT_PRICE_CONTEXT_RE.test(prefix)
+    || KOREAN_CURRENT_PRICE_CONTEXT_RE.test(prefix);
 }
 
 function extractFirstPriceToken(segment: string): number | null {
@@ -49,18 +58,15 @@ function extractFirstPriceToken(segment: string): number | null {
     const end = start + match[0].length;
     const prefix = segment.slice(0, start);
     const suffix = segment.slice(end).trimStart();
-    const explicitCurrency = /(?:[$¥₩]|(?:USD|CNY|KRW|JPY)\s*)$/i.test(prefix)
-      || /^(?:[元円원]|(?:USD|CNY|KRW|JPY)\b)/i.test(suffix);
-    return { match, start, end, suffix, explicitCurrency };
-  }).filter(({ start, end, suffix }) => (
+    return { match, start, end, prefix, suffix };
+  }).filter(({ start, end, prefix, suffix }) => (
     !isMovingAveragePeriod(segment, start, end)
     && !isRatioCandidate(segment, start, end)
-    && !isOrdinalCandidate(segment.slice(0, start), suffix)
+    && !isOrdinalCandidate(prefix, suffix)
+    && !isCurrentPriceCandidate(prefix)
   ));
 
-  // An explicitly currency-marked candidate is a price even when an ordinal,
-  // target number, or risk/reward ratio appears earlier in the sentence.
-  for (const { match } of [...candidates.filter((candidate) => candidate.explicitCurrency), ...candidates]) {
+  for (const { match } of candidates) {
     const value = Number(match[0]);
     if (Number.isFinite(value) && value > 0) {
       return value;
