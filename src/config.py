@@ -1338,6 +1338,7 @@ class Config:
     
     # === 系统配置 ===
     max_workers: int = 3  # 低并发防封禁
+    per_stock_timeout_seconds: int = 300  # 单股超时隔离上限（秒，0 表示不限时）
     debug: bool = False
     http_proxy: Optional[str] = None  # HTTP 代理 (例如: http://127.0.0.1:10809)
     https_proxy: Optional[str] = None # HTTPS 代理
@@ -2350,6 +2351,12 @@ class Config:
             log_dir=os.getenv('LOG_DIR', './logs'),
             log_level=os.getenv('LOG_LEVEL', 'INFO'),
             max_workers=parse_env_int(os.getenv('MAX_WORKERS'), 3, field_name='MAX_WORKERS', minimum=1),
+            per_stock_timeout_seconds=parse_env_int(
+                os.getenv('PER_STOCK_TIMEOUT_SECONDS'),
+                300,
+                field_name='PER_STOCK_TIMEOUT_SECONDS',
+                minimum=0,
+            ),
             debug=os.getenv('DEBUG', 'false').lower() == 'true',
             config_validate_mode=os.getenv('CONFIG_VALIDATE_MODE', 'warn').lower(),
             http_proxy=os.getenv('HTTP_PROXY'),

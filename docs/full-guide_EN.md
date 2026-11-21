@@ -431,6 +431,7 @@ For the notification baseline, diagnostics, and deployment notes, see [Notificat
 |--------|------|--------|
 | `STOCK_LIST` | Watchlist codes (comma-separated) | - |
 | `MAX_WORKERS` | Concurrent threads | `3` |
+| `PER_STOCK_TIMEOUT_SECONDS` | Per-stock deadline for batch analysis, in seconds. At that deadline the analysis is cancelled and later results are discarded. The slot becomes available after the associated workers exit. Set to `0` to disable the limit. | `300` |
 | `GUARD_ENABLED` | Enable the optional [fastapi-guard](https://github.com/Guard-Core/fastapi-guard) security middleware: per-IP rate limiting, IP allow/block list, path/query/header screening (every detection category except `ssrf`, because browsers send the page address as `Referer` and guard-core 4.4.0 flags localhost and LAN addresses in it) and automatic scanner bans. It complements (does not replace) the login failure limiter. State is in process memory, no Redis needed; restart after changing. CORS stays with the existing CORS middleware, which wraps the guard, so 429/403 responses carry CORS headers. Needs the `fastapi-guard` package (listed in `requirements.txt`; enabling without it fails at startup with a clear error) | `false` |
 | `GUARD_RATE_LIMIT` / `GUARD_RATE_LIMIT_WINDOW` | Max requests per IP per window (seconds); static assets and health checks count, and a cold WebUI page load is 14 to 34 requests | `300` / `60` |
 | `GUARD_WHITELIST` / `GUARD_BLACKLIST` | IP allow/block list (comma separated, CIDR ok). When the allowlist is set, every other IP gets 403; listed IPs are exempt from the rate limit | empty |
@@ -451,6 +452,16 @@ For the notification baseline, diagnostics, and deployment notes, see [Notificat
 | `RUN_IMMEDIATELY` | Run once immediately for non-scheduler startup; also acts as the legacy fallback when `SCHEDULE_RUN_IMMEDIATELY` is unset | `true` |
 | `LOG_DIR` | Log directory | `./logs` |
 | `SAVE_CONTEXT_SNAPSHOT` | Persist analysis-history `context_snapshot`. When false, new history records do not save enhanced_context, market_phase_summary, AnalysisContextPack overview, or diagnostic snapshots, but current-run prompt summaries remain enabled | `true` |
+
+`PER_STOCK_TIMEOUT_SECONDS` applies to batch runs from the CLI, daily GitHub Actions, scheduled analysis, and Bot batch commands. Interactive Web and Desktop requests run individual analyses through the API task queue.
+
+Within the same process, a stock analysis that reaches its per-stock time limit holds its slot until its worker and any in-flight calls exit. Later batches share that capacity. Prefetching uses the same time limit and is skipped when all slots are busy. Other running stocks can finish within their own time limits. If all remaining stocks are queued, the batch skips them after waiting one per-stock timeout for a free slot. Cancellation cleans up local generation processes and is checked again after in-flight requests return. Setting `0` disables batch timeout isolation. Revert the corresponding code to undo changes to price checks, news handling, and risk summaries.
+
+If an Agent tool, efinance request, or fundamentals call times out first and the stock analysis still finishes on time, its slot is available for reuse immediately. In-flight requests may continue until the service responds or the network request times out. Report history and news writes check for cancellation again after acquiring the database write lock and before committing.
+
+When timeout isolation is enabled, the LiteLLM request timeout is capped by the remaining per-stock budget, and [Router retries within the same model group](https://docs.litellm.ai/docs/routing) remain enabled. Model fallback and parameter retries check the deadline before sending a request. SDK retries can outlast the stock deadline, and the batch executor discards late results.
+
+The GitHub Actions daily analysis workflow reads the Variable first and then the Secret of the same name. Either source accepts `0` to disable isolation.
 
 > Timeout partial-delivery ops: a notification-channel exception is logged (`Partial timeout notification failed`) and skipped; it is not re-raised and cannot keep `status().running` true (notify runs on a daemon thread after the analysis lock is released). Storage import / collect failures also fail open: `status().last_error` may stay at the baseline `timed out after Ns` string, or be enriched to `completed=0`, which is indistinguishable from “nothing was saved”. Grep `Failed to collect completed analyses after timeout`, `Timeout partial delivery failed open`, and `Partial timeout notification failed`. After the first release, watch notification volume; set `DSA_TIMEOUT_PARTIAL_NOTIFY=false` to disable pushes.
 
@@ -1781,6 +1792,8 @@ A: Check if Actions is enabled, and if cron expression is correct (note it's UTC
 - Stock news search now applies a domain-agnostic admission filter after relevance ranking: obvious download/install/app-rating pages and adult/escort spam pages are removed, and zero-score filler results are dropped when the same batch already has direct-stock or scored sector/market candidates. This is not a hard-coded website blocklist.
 - This admission-filter change is isolated to retrieval post-filtering and does not alter model names, provider settings, Base URL, LiteLLM route semantics, or runtime config migration/cleanup behavior.
 - `get_realtime_quote` does not use `stock_daily` as a realtime-quote cache and does not write intraday quotes into the daily-bar table; realtime quote caching should use a dedicated realtime store if needed.
+
+Industry intelligence requests a 180-day window from the search provider. Actual recall depends on how the provider handles that request. The application applies its own date filter and relevance checks before merging copies with the same title and publication date. Undated results are marked as unsuitable for short-term catalyst evidence.
 
 ## Agent Event Monitor
 

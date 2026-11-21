@@ -29,7 +29,6 @@ import inspect
 import logging
 import re
 import time
-from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
 from dataclasses import dataclass, field
 from math import ceil
@@ -43,6 +42,7 @@ from src.agent.disagreement import (
     should_trigger_evidence_debate,
 )
 from src.agent.llm_adapter import LLMToolAdapter
+from src.core.stock_execution_context import raise_if_stock_cancelled, stock_child_thread_pool
 from src.agent.protocols import (
     AgentContext,
     AgentRunStats,
@@ -435,6 +435,7 @@ class AgentOrchestrator:
         timeout_seconds: Optional[float] = None,
     ) -> StageResult:
         """Run a stage agent while preserving compatibility with older call signatures."""
+        raise_if_stock_cancelled()
         # Clamp by per-agent limit when configured.
         # When pipeline budget is disabled (timeout_seconds is None),
         # the sub-agent's own limit still applies as a standalone cap.
@@ -1118,7 +1119,7 @@ class AgentOrchestrator:
                     message=f"Starting {agent.agent_name} analysis...",
                 ))
 
-        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="dsa-wave1") as pool:
+        with stock_child_thread_pool(2, "dsa-wave1") as pool:
             tech_future = pool.submit(
                 copy_context().run,
                 self._run_stage_agent,

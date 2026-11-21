@@ -526,3 +526,316 @@ class TestIntegrityRetryPrompt(unittest.TestCase):
         self.assertIn("原始提示", prompt)
         self.assertIn('{"analysis_summary": "已有内容"}', prompt)
         self.assertIn("dashboard.core_conclusion.one_sentence", prompt)
+
+
+class TestSniperPriceSanityChecks(unittest.TestCase):
+    """Deterministic sniper-point sanity checks and full downstream exit visibility."""
+
+    @staticmethod
+    def _make_buy_result(
+        *,
+        ideal_buy: str,
+        stop_loss: str,
+        take_profit: str,
+        current_price: float = 100.0,
+        risk_alerts=None,
+        risk_warning: str = "既有风险提示",
+        report_language: str = "zh",
+    ) -> AnalysisResult:
+        if risk_alerts is None:
+            risk_alerts = [
+                "既有风险1：短期获利盘回吐压力",
+                "既有风险2：大宗商品价格波动",
+                "既有风险3：行业估值处于历史偏高区间",
+            ]
+        return AnalysisResult(
+            code="600519",
+            name="贵州茅台",
+            sentiment_score=80,
+            trend_prediction="看多",
+            operation_advice="买入",
+            decision_type="buy",
+            confidence_level="高",
+            current_price=current_price,
+            change_pct=1.2,
+            report_language=report_language,
+            risk_warning=risk_warning,
+            dashboard={
+                "core_conclusion": {
+                    "one_sentence": "均线多头排列，可按纪律低吸",
+                    "position_advice": {
+                        "no_position": "分批建仓",
+                        "has_position": "持有观察",
+                    },
+                },
+                "intelligence": {
+                    "sentiment_summary": "市场情绪偏积极",
+                    "risk_alerts": list(risk_alerts),
+                    "positive_catalysts": ["业绩稳健增长"],
+                },
+                "battle_plan": {
+                    "sniper_points": {
+                        "ideal_buy": ideal_buy,
+                        "secondary_buy": "99元",
+                        "stop_loss": stop_loss,
+                        "take_profit": take_profit,
+                    }
+                },
+                "data_perspective": {
+                    "price_position": {
+                        "current_price": current_price,
+                        "ma5": 98.0,
+                        "ma10": 96.0,
+                        "ma20": 93.0,
+                        "bias_ma5": 2.04,
+                    }
+                },
+            },
+        )
+
+    @staticmethod
+    def _dummy_config(*, report_renderer_enabled: bool = False):
+        from src.config import Config
+
+        return Config(
+            report_renderer_enabled=report_renderer_enabled,
+            report_type="simple",
+            report_summary_only=False,
+            report_language="zh",
+        )
+
+    def test_valid_buy_passes_cleanly(self) -> None:
+        from src.analyzer import validate_sniper_price_sanity
+
+        result = self._make_buy_result(
+            ideal_buy="98元",
+            stop_loss="94元",
+            take_profit="112元",
+            current_price=100.0,
+        )
+        warnings = validate_sniper_price_sanity(result, emit_log=False)
+
+        self.assertEqual(warnings, [])
+        sanity = result.dashboard["data_perspective"]["price_sanity"]
+        self.assertEqual(sanity["status"], "ok")
+        self.assertFalse(sanity["inverted"])
+        self.assertNotIn("atr14", sanity)
+        self.assertEqual(len(result.dashboard["intelligence"]["risk_alerts"]), 3)
+
+    def test_breakout_buy_and_percentage_sniper_text_do_not_false_trigger(self) -> None:
+        """Breakout buy above current_price and % strings must not trigger inversion."""
+        from src.analyzer import validate_sniper_price_sanity
+
+        breakout = self._make_buy_result(
+            ideal_buy="105元",
+            stop_loss="102元",
+            take_profit="115元",
+            current_price=100.0,
+        )
+        warnings = validate_sniper_price_sanity(breakout, emit_log=False)
+        self.assertIn("stop_loss_above_secondary_buy", warnings)
+        self.assertTrue(breakout.dashboard["data_perspective"]["price_sanity"]["inverted"])
+
+        pct_text = self._make_buy_result(
+            ideal_buy="回踩确认",
+            stop_loss="跌破 -5%",
+            take_profit="上涨 15% 止盈",
+            current_price=100.0,
+        )
+        pct_warnings = validate_sniper_price_sanity(pct_text, emit_log=False)
+        self.assertEqual(pct_warnings, [])
+        self.assertFalse(pct_text.dashboard["data_perspective"]["price_sanity"]["inverted"])
+
+    def test_inverted_sniper_points_surface_across_all_report_exits(self) -> None:
+        """Counterexample from PR #2561 review: 3 existing risks + inverted points.
+
+        Must survive truncation in simple single-stock report (risks[:3]),
+        WeChat dashboard (risks[:2], plain & Jinja), and share image
+        (_merge_compact_list limit_items=2, limit_chars=36), and must not
+        duplicate inside DecisionSignal risk_summary.
+        """
+        from datetime import date
+        from src.analyzer import validate_sniper_price_sanity
+        from src.notification import NotificationService
+        from src.services.decision_signal_extractor import build_decision_signal_payload_from_report
+        from src.share_image import _stock_data_from_payload
+
+        result = self._make_buy_result(
+            ideal_buy="110元",
+            stop_loss="95元",
+            take_profit="105元",
+            current_price=100.0,
+        )
+        warnings = validate_sniper_price_sanity(result, emit_log=False)
+
+        self.assertIn("take_profit_below_ideal_buy", warnings)
+        sanity = result.dashboard["data_perspective"]["price_sanity"]
+        self.assertEqual(sanity["status"], "warn")
+        self.assertTrue(sanity["inverted"])
+
+        expected_warning = "点位校验：止损/目标与买入价倒挂，请复核"
+        self.assertLessEqual(len(expected_warning), 36)
+        self.assertEqual(result.dashboard["intelligence"]["risk_alerts"][0], expected_warning)
+        self.assertTrue(result.risk_warning.startswith(expected_warning))
+
+        with patch("src.notification.get_config", return_value=self._dummy_config(report_renderer_enabled=False)):
+            service = NotificationService()
+            single_report = service.generate_single_stock_report(result)
+            self.assertIn(expected_warning, single_report)
+
+            wechat_plain = service.generate_wechat_dashboard([result])
+            self.assertIn(expected_warning, wechat_plain)
+
+        with patch("src.notification.get_config", return_value=self._dummy_config(report_renderer_enabled=True)):
+            service_jinja = NotificationService()
+            wechat_jinja = service_jinja.generate_wechat_dashboard([result])
+            self.assertIn(expected_warning, wechat_jinja)
+
+        poster = _stock_data_from_payload(
+            result.to_dict(),
+            single_report,
+            date(2026, 11, 20),
+        )
+        self.assertIn(expected_warning, poster.risks)
+
+        signal_payload = build_decision_signal_payload_from_report(
+            result,
+            trace_id="trace-sanity-1",
+            query_source="manual",
+            report_type="detailed",
+            profile_source="auto_default",
+        )
+        assert signal_payload is not None
+        risk_summary = signal_payload.get("risk_summary") or []
+        hits = sum(1 for item in risk_summary if expected_warning in item)
+        self.assertEqual(hits, 1)
+
+    def test_non_buy_skips_buy_inversion_alert_and_is_idempotent(self) -> None:
+        from src.analyzer import validate_sniper_price_sanity
+
+        watch_result = self._make_buy_result(
+            ideal_buy="110元",
+            stop_loss="95元",
+            take_profit="105元",
+            current_price=100.0,
+        )
+        watch_result.decision_type = "hold"
+        watch_result.action = "watch"
+        watch_result.operation_advice = "观望"
+
+        warnings = validate_sniper_price_sanity(watch_result, emit_log=False)
+        self.assertEqual(warnings, [])
+        self.assertFalse(watch_result.dashboard["data_perspective"]["price_sanity"]["inverted"])
+        self.assertEqual(len(watch_result.dashboard["intelligence"]["risk_alerts"]), 3)
+
+        buy_result = self._make_buy_result(
+            ideal_buy="100元",
+            stop_loss="102元",
+            take_profit="120元",
+            current_price=100.0,
+        )
+        first = validate_sniper_price_sanity(buy_result, emit_log=False)
+        second = validate_sniper_price_sanity(buy_result, emit_log=False)
+        self.assertIn("stop_loss_above_ideal_buy", first)
+        self.assertEqual(first, second)
+        self.assertEqual(
+            buy_result.dashboard["intelligence"]["risk_alerts"].count(
+                "点位校验：止损/目标与买入价倒挂，请复核"
+            ),
+            1,
+        )
+        self.assertEqual(
+            buy_result.risk_warning.count("点位校验：止损/目标与买入价倒挂，请复核"),
+            1,
+        )
+
+        no_ideal_result = self._make_buy_result(
+            ideal_buy="-",
+            stop_loss="102元",
+            take_profit="120元",
+            current_price=100.0,
+        )
+        no_ideal_warnings = validate_sniper_price_sanity(no_ideal_result, emit_log=False)
+        self.assertIn("stop_loss_above_secondary_buy", no_ideal_warnings)
+
+    def test_absolute_price_is_extracted_when_percentage_is_also_present(self) -> None:
+        from src.analyzer import validate_sniper_price_sanity
+
+        result = self._make_buy_result(
+            ideal_buy="10% above spot at 110 USD",
+            stop_loss="95 USD",
+            take_profit="105 USD",
+            current_price=100.0,
+        )
+        warnings = validate_sniper_price_sanity(result, emit_log=False)
+        self.assertIn("take_profit_below_ideal_buy", warnings)
+        self.assertEqual(
+            result.dashboard["data_perspective"]["price_sanity"]["ideal_buy"],
+            110.0,
+        )
+
+    def test_english_stop_loss_label_with_percentage_detects_inversion(self) -> None:
+        from src.analyzer import validate_sniper_price_sanity
+
+        result = self._make_buy_result(
+            ideal_buy="100", stop_loss="Stop-loss: 105 (break below MA20 or 5%)",
+            take_profit="115", report_language="en",
+        )
+
+        warnings = validate_sniper_price_sanity(result, emit_log=False)
+
+        self.assertIn("stop_loss_above_ideal_buy", warnings)
+        self.assertEqual(result.dashboard["data_perspective"]["price_sanity"]["stop_loss"], 105)
+        self.assertIn("Price check: stop/target inverted", result.dashboard["intelligence"]["risk_alerts"])
+
+    def test_grouped_currency_price_with_percentage_uses_full_amount(self) -> None:
+        from src.analyzer import validate_sniper_price_sanity
+
+        for ideal in (
+            "1,100 USD, 10% above spot",
+            "$1,100 (10% above spot)",
+            "1,100 (10% above spot)",
+            "1,100, 10% above spot",
+        ):
+            with self.subTest(ideal=ideal):
+                result = self._make_buy_result(
+                    ideal_buy=ideal, stop_loss="900 USD", take_profit="1,050 USD",
+                    current_price=950,
+                )
+                result.dashboard["battle_plan"]["sniper_points"]["secondary_buy"] = None
+                warnings = validate_sniper_price_sanity(result, emit_log=False)
+                sanity = result.dashboard["data_perspective"]["price_sanity"]
+                self.assertEqual(sanity["ideal_buy"], 1_100)
+                self.assertEqual(warnings, ["take_profit_below_ideal_buy"])
+
+    def test_sniper_price_overflow_keeps_validation_available(self) -> None:
+        from src.analyzer import validate_sniper_price_sanity
+
+        result = self._make_buy_result(ideal_buy=10 ** 400, stop_loss=90, take_profit=120)
+        result.dashboard["battle_plan"]["sniper_points"]["secondary_buy"] = 85
+
+        warnings = validate_sniper_price_sanity(result, emit_log=False)
+
+        self.assertEqual(warnings, ["stop_loss_above_secondary_buy"])
+        self.assertIsNone(result.dashboard["data_perspective"]["price_sanity"]["ideal_buy"])
+
+    def test_relative_sniper_price_uses_named_reference(self) -> None:
+        from src.analyzer import validate_sniper_price_sanity
+
+        for expression, expected in (
+            ("10% above MA20", 99.0),
+            ("10% above spot, MA20 nearby", 110.0),
+            ("10% below spot", 90.0),
+            ("MA20 下方 1%", 89.1),
+            ("10% above MA60", None),
+            ("10% above resistance, spot nearby", None),
+        ):
+            with self.subTest(expression=expression):
+                result = self._make_buy_result(
+                    ideal_buy=expression, stop_loss="89 USD", take_profit="105 USD",
+                    current_price=100,
+                )
+                validate_sniper_price_sanity(result, {"trend_result": {"ma20": 90}}, emit_log=False)
+                sanity = result.dashboard["data_perspective"]["price_sanity"]
+                self.assertEqual(sanity["ideal_buy"], expected)
+                self.assertEqual(sanity["inverted"], expected == 110.0)
