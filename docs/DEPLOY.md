@@ -136,6 +136,8 @@ cd /opt/stock-analyzer
 pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 ```
 
+从源码使用 `npm ci` 构建 WebUI 需要 **Node.js `^20.19.0 || ^22.12.0 || >=24.0.0 <27`** 和 **npm 10 或以上版本**。
+
 ### 3. 配置环境变量
 
 ```bash
@@ -348,9 +350,8 @@ deploy:
   ```
   构建完成后刷新浏览器缓存（`Ctrl+Shift+R`）再访问。
 
-- **直接部署（pip + python）**：先构建前端，再启动服务：
+- **直接部署（pip + python）**需满足 [Node.js 和 npm 版本要求](#2-安装依赖)。先构建前端，再启动服务。
   ```bash
-  # 安装 Node.js 18+（推荐 20+，如尚未安装）
   # 构建前端
   cd apps/dsa-web
   npm ci

@@ -76,6 +76,8 @@
 
 ## 🚀 快速開始
 
+[桌面客戶端下載](https://github.com/ZhuLinsen/daily_stock_analysis/releases) · [小白安裝教程](./beginner-client-setup.md) · [Docker 部署](./DEPLOY.md) · [文檔中心](./INDEX.md)
+
 ### 方式一：[GitHub Actions（推薦）](https://www.bilibili.com/video/BV11FEb66EXG/)
 
 > 5 分鐘完成部署，零成本，無需伺服器。
@@ -104,7 +106,7 @@
 
 > Ollama 更適合本地 / Docker 部署，GitHub Actions 推薦使用雲端 API。
 
-**通知渠道配置（至少配置一個）**
+**通知渠道配置（可選）**
 
 | Secret 名稱 | 說明 |
 |-------------|------|
@@ -117,11 +119,11 @@
 
 更多渠道、簽名校驗、分組郵件、Markdown 轉圖片等配置見 [通知渠道詳細配置](./full-guide.md#通知渠道详细配置)。
 
-**自選股配置（必填）**
+**自選股配置（可選，預設 `600519`）**
 
 | Secret 名稱 | 說明 | 必填 |
 |-------------|------|:----:|
-| `STOCK_LIST` | 自選股代碼，如 `600519,hk00700,AAPL,7203.T,005930.KS,2330.TW`；已登記指數顯式代碼（如 `sh000016`、`930606.CSI`）經一次性 `--stocks` 或 GitHub Actions 入口支持，規則見 [指數自選股配置](./full-guide.md#指数自选股配置) | ✅ |
+| `STOCK_LIST` | 自選股代碼，如 `600519,hk00700,AAPL,7203.T,005930.KS,2330.TW`；已登記指數顯式代碼（如 `sh000016`、`930606.CSI`）經一次性 `--stocks` 或 GitHub Actions 入口支持，規則見 [指數自選股配置](./full-guide.md#指数自选股配置) | 可選 |
 
 **新聞源配置（推薦）**
 
@@ -147,7 +149,7 @@
 | Secret 名稱 | 適用市場 | 說明 |
 |-------------|:--------:|------|
 | `TUSHARE_TOKEN` | A 股 | 提升歷史行情穩定性 |
-| `LONGBRIDGE_OAUTH_CLIENT_ID` + `LONGBRIDGE_OAUTH_TOKEN_CACHE_B64` | 港股/美股 | 補齊量比、換手率、PE 等欄位 |
+| `LONGBRIDGE_OAUTH_CLIENT_ID` + `LONGBRIDGE_OAUTH_TOKEN_CACHE_B64` | 港股/美股 | 補齊量比、換手率、PE 等欄位（預設 Actions 需用 Legacy 三項憑據，見完整指南） |
 
 > 詳見 [數據源配置](./full-guide.md#数据源配置)。
 
@@ -188,6 +190,7 @@ python main.py --stocks 600519,hk00700,AAPL,2330.TW
 python main.py --market-review
 python main.py --schedule
 python main.py --serve-only
+python main.py --doctor
 ```
 
 > Docker 部署、定時任務、雲端伺服器訪問請參考 [完整指南](./full-guide.md)；桌面客戶端打包請參考 [桌面端打包說明](./desktop-package.md)。

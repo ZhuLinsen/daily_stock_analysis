@@ -132,6 +132,8 @@ cd /opt/stock-analyzer
 pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 ```
 
+Building the WebUI from source with `npm ci` requires **Node.js `^20.19.0 || ^22.12.0 || >=24.0.0 <27`** and **npm 10 or later**.
+
 ### 3. Configure Environment Variables
 
 ```bash

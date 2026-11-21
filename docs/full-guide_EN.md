@@ -55,19 +55,18 @@ Go to your forked repo → `Settings` → `Secrets and variables` → `Actions` 
 
 #### AI Model Configuration (Configure at Least One)
 
-| Secret Name | Description | Required |
-|------------|------|:----:|
-| `MODELFLARE_KEY` | [Modelflare](https://modelflare.dev/sign-up?utm_source=github&utm_campaign=daily_stock_analysis) API key; supplies the default endpoint and model automatically | Recommended |
-| `LLM_X6AI_API_KEY` | [x6.ai](https://console.x6pro.io/register?code=zJ2qSdns) API key for affordable access to 100+ models, including Claude and GPT | Recommended |
-| `AIHUBMIX_KEY` | AIHubMix API key, one key for multiple model families and a 10% top-up discount for this project | Optional |
-| `GEMINI_API_KEY` | Get free key from [Google AI Studio](https://aistudio.google.com/) | Optional |
-| `ANTHROPIC_API_KEY` | Anthropic Claude API Key | Optional |
-| `OPENAI_API_KEY` | OpenAI-compatible API Key (supports DeepSeek, Qwen, etc.) | Optional |
-| `OPENAI_BASE_URL` | OpenAI-compatible API endpoint (e.g., `https://api.deepseek.com`) | Optional |
-| `OPENAI_MODEL` | Model name (e.g., `deepseek-v4-flash`) | Optional |
-| `ANSPIRE_API_KEYS` | [Anspire](https://open.anspire.cn/dsa?share_code=QFBC0FYC) API key (optional; shared by LLM and search; availability depends on account permissions) | Optional |
+Choose one setup below. Add API keys under Actions **Secrets**. Use **Variables** for endpoints, model names, and channel names.
 
-> *Note: Configure at least one model key or channel. For Modelflare, set only `MODELFLARE_KEY`, with an optional `LITELLM_MODEL` override (single-channel default: `openai/gpt-6.1-sol`); the endpoint defaults to `https://modelflare.dev/v1`; see the complete [LLM Config Guide example](LLM_CONFIG_GUIDE_EN.md#example-modelflare). Available models depend on your account. Startup validation reports a clear error when no usable AI model key or model channel is configured.
+| Setup | Secrets | Related Variables |
+| --- | --- | --- |
+| [Modelflare](https://modelflare.dev/sign-up?utm_source=github&utm_campaign=daily_stock_analysis) (recommended, one secret) | `MODELFLARE_KEY` | Uses the default endpoint and model |
+| [AIHubMix](https://inferera.com/?aff=CfMq) (one secret) | `AIHUBMIX_KEY` | Uses the default endpoint and model. Project users receive a 10% top-up discount |
+| Gemini, Anthropic, or the official OpenAI API (one secret) | `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, or `OPENAI_API_KEY` | Uses the project's default model for the selected provider |
+| [x6.ai](https://console.x6pro.io/register?code=zJ2qSdns) (explicit channel) | `LLM_X6AI_API_KEY` | `LLM_CHANNELS=x6ai`, `LLM_X6AI_PROTOCOL=openai`, `LLM_X6AI_BASE_URL`, and `LLM_X6AI_MODELS`. See the [x6.ai channel guide (Chinese)](llm-providers.md#x6ai-聚合平台) |
+| OpenAI-compatible provider (such as DeepSeek or Qwen) | `OPENAI_API_KEY` (issued by that provider) | Set `OPENAI_BASE_URL` and `OPENAI_MODEL` to that provider's endpoint and model |
+| [Anspire](https://open.anspire.cn/dsa?share_code=QFBC0FYC) | `ANSPIRE_API_KEYS` | The same key can serve model and search requests, subject to account permissions |
+
+**Modelflare defaults** to `https://modelflare.dev/v1` and `openai/gpt-6.1-sol`. Set `LITELLM_MODEL` to choose a different model your account can access. See the [complete Modelflare example](LLM_CONFIG_GUIDE_EN.md#example-modelflare).
 
 #### Notification Channels (Multiple can be configured, all will receive notifications)
 
@@ -107,7 +106,7 @@ Go to your forked repo → `Settings` → `Secrets and variables` → `Actions` 
 | `CUSTOM_WEBHOOK_BODY_TEMPLATE` | Custom Webhook JSON body template for AstrBot, NapCat, or self-hosted services with special payloads | Optional |
 | `WEBHOOK_VERIFY_SSL` | HTTPS certificate verification for webhook-style notification requests that read this setting (default true). Set to false for self-signed certs. WARNING: Disabling has serious security risk (MITM), use only on trusted internal networks | Optional |
 
-> *Note: Configure at least one channel; multiple channels will all receive notifications. Startup validation reports missing paired Telegram / email fields and common Webhook URLs that do not start with `http://` or `https://`.
+> *Note: Configure a channel if you want notifications. You can also download the report from the workflow's artifacts. Startup validation reports missing paired Telegram / email fields and common Webhook URLs that do not start with `http://` or `https://`.
 >
 > The default `00-daily-analysis.yml` in this repository only exports fixed Secret / Variable names. Arbitrary numbered env vars such as `STOCK_GROUP_1` and `EMAIL_GROUP_1` are not auto-injected into the job, so grouped email routing is not available in the stock workflow unless you explicitly extend the workflow's `env:` mapping in your own fork. Actions now maps `CUSTOM_WEBHOOK_BODY_TEMPLATE`, `WEBHOOK_VERIFY_SSL`, `FEISHU_WEBHOOK_SECRET`, `FEISHU_WEBHOOK_KEYWORD`, `PUSHPLUS_TOPIC`, `NTFY_URL`, `NTFY_TOKEN`, `GOTIFY_URL`, `GOTIFY_TOKEN`, the P3 notification route keys, and the P4 notification noise-control keys; `MARKDOWN_TO_IMAGE_CHANNELS` and `MERGE_EMAIL_NOTIFICATION` remain behavior toggles outside the default workflow mapping.
 
@@ -153,7 +152,7 @@ Go to your forked repo → `Settings` → `Secrets and variables` → `Actions` 
 
 | Secret Name | Description | Required |
 |------------|------|:----:|
-| `STOCK_LIST` | Watchlist codes, e.g., `600519,300750,002594,7203.T,005930.KS`; English commas are recommended, while pasted Chinese commas, enumeration commas, semicolons, spaces, and newlines are recognized and normalized to English commas | ✅ |
+| `STOCK_LIST` | Watchlist codes, e.g., `600519,300750,002594,7203.T,005930.KS`. English commas are recommended, while pasted Chinese commas, enumeration commas, semicolons, spaces, and newlines are recognized and normalized to English commas | Optional (defaults to `600519`) |
 | `SERPAPI_API_KEYS` | [SerpAPI](https://serpapi.com/github-daily-stock-analysis) search-engine results for realtime financial news | Recommended |
 | `ANSPIRE_API_KEYS` | [Anspire](https://open.anspire.cn/dsa?share_code=QFBC0FYC) API key (optional; shared by LLM and search; availability depends on account permissions) | Optional |
 | `TAVILY_API_KEYS` | [Tavily](https://tavily.com/) Search API (for news search) | Optional |
@@ -174,20 +173,15 @@ MiaoXiang chip/flow methods share a network-admission lock across instances in o
 
 MiaoXiang capital flow uses explicit main net-inflow amount metrics only; closing prices, ratios, and missing amounts are never substituted as currency values. A missing latest-day amount stays unknown, and a 5/10-day window with missing amounts emits no total rather than backfilling earlier dates.
 
-> **GitHub Actions:** The bundled `00-daily-analysis.yml` maps `TUSHARE_TOKEN`, `TICKFLOW_API_KEY` / `TICKFLOW_*`, and the documented `LONGBRIDGE_*` variables into the job environment. Store `TICKFLOW_API_KEY` in **Secrets**; non-sensitive TickFlow priority, adjustment, and batch switches can live in **Variables** or **Secrets**. Longbridge OAuth still requires a client id plus `LONGBRIDGE_OAUTH_TOKEN_CACHE_B64` for headless Actions runs, while the legacy `LONGBRIDGE_APP_KEY` / `LONGBRIDGE_APP_SECRET` / `LONGBRIDGE_ACCESS_TOKEN` triplet remains supported.
+> **GitHub Actions** maps `TUSHARE_TOKEN`, `TICKFLOW_API_KEY`, the supported `TICKFLOW_*` options, and Longbridge credentials into the job. Store the TickFlow API key in **Secrets**. Priority, adjustment, and batch settings can live in **Variables** or **Secrets**.
+>
+> The bundled `00-daily-analysis.yml` uses Python 3.11 on Linux, so the dependency rules install Longbridge 0.2.74, which lacks OAuth support. Use the legacy `LONGBRIDGE_APP_KEY`, `LONGBRIDGE_APP_SECRET`, and `LONGBRIDGE_ACCESS_TOKEN` in the default workflow. For a custom environment with OAuth support, configure the client ID and set `LONGBRIDGE_OAUTH_TOKEN_CACHE_B64` from the local token cache. See [Longbridge setup](#longbridge).
 
 > **`TUSHARE_HTTP_URL` mapping in the daily workflow:** `00-daily-analysis.yml` maps `TUSHARE_HTTP_URL` with `vars.TUSHARE_HTTP_URL || secrets.TUSHARE_HTTP_URL` — the same vars-first precedence used for `TICKFLOW_PRIORITY` and other non-sensitive knobs. The endpoint is an "address" rather than a credential, so **Variables** is preferred for team review and audit visibility. Note that the real precedence is "vars wins when non-empty": a **Secrets** entry with the same name is **not** a tamper fallback that overrides a non-empty Variable — Secrets is only selected when the Variable is empty. Build your threat model on that actual semantics. GitHub exposes Variables and Secrets as two independent write-permission models: anyone (human or automation) with write access to repository Variables can set a non-empty Variable and silently reroute the runtime endpoint — including `TUSHARE_TOKEN` and the full request body to an attacker-controlled URL — without reading or modifying any Secret. Secrets only protect value confidentiality; they do **not** provide "endpoint integrity" or "priority override" guarantees. If you need stronger access control over the endpoint, use GitHub Environment protection rules, CODEOWNERS, branch protection, or a dedicated deployment approval flow — **do not treat "put it in Secrets and leave Variables empty" as a tamper guard**. Leaving it unset or empty preserves the default `http://api.tushare.pro` endpoint — the fetcher does not error when this variable is missing.
 
 #### ✅ Minimum Configuration Example
 
-To get started quickly, you need at minimum:
-
-1. **AI Model**: Follow the [Modelflare Channels example](LLM_CONFIG_GUIDE_EN.md#example-modelflare), or use `AIHUBMIX_KEY` (one key for multiple model families), `GEMINI_API_KEY`, or `OPENAI_API_KEY`
-2. **Notification Channel**: At least one, e.g., `WECHAT_WEBHOOK_URL` or `EMAIL_SENDER` + `EMAIL_PASSWORD`
-3. **Stock List**: `STOCK_LIST` (required)
-4. **Search API**: `SERPAPI_API_KEYS` or `TAVILY_API_KEYS`; `ANSPIRE_API_KEYS` remains optional
-
-> Configure these 4 items and you're ready to go!
+Add one working model key, for example `MODELFLARE_KEY` from the table above. The workflow uses `600519` when no `STOCK_LIST` is set. Add a notification channel to receive reports and a search API key to include news when you need those features.
 
 ### 3. Enable Actions
 
@@ -198,14 +192,14 @@ To get started quickly, you need at minimum:
 ### 4. Manual Test
 
 1. Go to `Actions` tab
-2. Select `Daily Stock Analysis` workflow on the left
+2. Select `每日股票分析` (Daily Stock Analysis) on the left
 3. Click `Run workflow` button on the right
-4. Select run mode
+4. Choose a run mode. For a test on a non-trading day, enable `强制运行（跳过交易日检查）` (force run)
 5. Click green `Run workflow` to confirm
 
 ### 5. Done!
 
-Default schedule: Every weekday at **18:00 (Beijing Time)** automatic execution.
+When the run finishes, download the `analysis-reports-*` artifact from the run details. The workflow runs every weekday at **18:00 Beijing time** by default.
 
 ---
 
@@ -667,15 +661,19 @@ docker run -d \
 
 ### Install Dependencies
 
+For a source build of the WebUI, check the [Node.js and npm requirements](DEPLOY_EN.md#2-install-dependencies).
+
 ```bash
-# Python 3.10+ recommended
-pip install -r requirements.txt
+# Use Python 3.10 or later
+python -m pip install -r requirements.txt
 
 # Or use conda
 conda create -n stock python=3.10
 conda activate stock
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 ```
+
+To use the official OpenAI Chat Completions default model `gpt-6.1-sol`, run `python -m pip install -r requirements.txt "litellm>=1.98.1"` with Python 3.11+. On Python 3.10, use `gpt-5` if your account has access. Set it in the WebUI channel's model list or as `OPENAI_MODEL=gpt-5` when configuring OpenAI with `OPENAI_API_KEY`. For an OpenAI-compatible provider, set its key, `OPENAI_BASE_URL`, and `OPENAI_MODEL` together.
 
 On Windows PowerShell, if Python or pip still uses the system default code page, enable UTF-8 before the first dependency install or environment check. This keeps terminal output and third-party tooling from failing on non-ASCII text:
 
@@ -696,7 +694,7 @@ python main.py --etf-rotation         # ETF rotation signal + rule backtest (no 
 python main.py --no-market-review     # Stock analysis only
 python main.py --stocks 600519,300750 # Specify stocks
 python main.py --portfolio futu       # Use real Futu LONG stock holdings (overrides --stocks/STOCK_LIST)
-python main.py --dry-run              # Fetch data only, no AI analysis
+python main.py --dry-run              # Fetch market data without stock AI analysis (add --no-market-review to skip market review)
 python main.py --no-notify            # Don't send notifications
 python main.py --schedule             # Scheduled task mode
 python main.py --debug                # Debug mode (verbose logging)
@@ -1313,8 +1311,8 @@ System defaults to AkShare (free), also supports other data sources:
 ### Longbridge
 - Optional fallback for US/HK stocks, mainly used to supplement fields that YFinance may miss
 - New integrations should use Longbridge OAuth 2.0: the client id is read from `LONGBRIDGE_OAUTH_CLIENT_ID`, or from `LONGBRIDGE_APP_KEY` when no Legacy Access Token is configured; run `python scripts/generate_longbridge_oauth_token.py --client-id <client_id>` once on an interactive machine to generate the SDK token cache
-- For GitHub Actions / Docker headless runs, base64 the local `~/.longbridge/openapi/tokens/<client_id>` file and store it as `LONGBRIDGE_OAUTH_TOKEN_CACHE_B64`
-- OAuth runtime support requires SDK APIs `OAuthBuilder` and `Config.from_oauth`; if a Linux/Docker environment can only install the older SDK, the app logs a clear warning and skips Longbridge while keeping YFinance / AkShare fallback available
+- In an OAuth-capable headless environment, base64-encode the local `~/.longbridge/openapi/tokens/<client_id>` file and set `LONGBRIDGE_OAUTH_TOKEN_CACHE_B64` so the analysis job can reuse the authorized cache.
+- OAuth requires the SDK's `OAuthBuilder` and `Config.from_oauth` APIs. Source installs use Longbridge 0.2.74 on Linux with Python 3.10 or 3.11 and 4.x in other supported environments. If an OAuth-capable SDK cannot be installed, the app logs a warning and market data can still fall back to sources such as YFinance or AkShare.
 - Legacy API Key remains supported with `LONGBRIDGE_APP_KEY`, `LONGBRIDGE_APP_SECRET`, and `LONGBRIDGE_ACCESS_TOKEN`; this Access Token is the legacy API-key credential, not an OAuth access token
 - Optional knobs: `LONGBRIDGE_STATIC_INFO_TTL_SECONDS` (default `86400`) and `LONGBRIDGE_CONNECTION_COOLDOWN_SECONDS` (default `15`)
 - If credentials are absent, the optional Longbridge fetcher is not instantiated

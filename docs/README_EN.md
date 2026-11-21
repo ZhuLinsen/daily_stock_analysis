@@ -76,6 +76,8 @@ English | [简体中文](../README.md) | [繁體中文](README_CHT.md)
 
 ## 🚀 Quick Start
 
+[Desktop App](https://github.com/ZhuLinsen/daily_stock_analysis/releases) · [Beginner Setup](./beginner-client-setup.md) · [Docker Deploy](./DEPLOY_EN.md) · [Docs Index](./INDEX_EN.md)
+
 ### Option 1: GitHub Actions (Recommended)
 
 > Deploy in about 5 minutes, with no server and no infrastructure cost.
@@ -104,7 +106,7 @@ Start with one provider and one API key. For multi-model routing, image recognit
 
 > Ollama is better suited for local or Docker deployment. GitHub Actions is usually smoother with a cloud API.
 
-**Notification channels (configure at least one)**
+**Notification channels (optional)**
 
 | Secret Name | Description |
 |-------------|-------------|
@@ -117,11 +119,11 @@ Start with one provider and one API key. For multi-model routing, image recognit
 
 More channels, signatures, email groups, and Markdown-to-image settings are in [Notification Configuration](./full-guide_EN.md#notification-channel-configuration).
 
-**Watchlist (required)**
+**Watchlist (optional, defaults to `600519`)**
 
 | Secret Name | Description | Required |
 |-------------|-------------|:--------:|
-| `STOCK_LIST` | Watchlist codes, such as `600519,hk00700,AAPL,7203.T,005930.KS,2330.TW`; registered-index explicit codes (e.g. `sh000016`, `930606.CSI`) are supported via the one-shot `--stocks` argument or the GitHub Actions entry — see [Index watchlist configuration](./full-guide_EN.md#index-watchlist-configuration) | ✅ |
+| `STOCK_LIST` | Watchlist codes, such as `600519,hk00700,AAPL,7203.T,005930.KS,2330.TW`; registered-index explicit codes (e.g. `sh000016`, `930606.CSI`) are supported via the one-shot `--stocks` argument or the GitHub Actions entry — see [Index watchlist configuration](./full-guide_EN.md#index-watchlist-configuration) | Optional |
 
 **News sources (recommended)**
 
@@ -148,7 +150,7 @@ More search providers, social sentiment, and fallback behavior are in [Search Co
 |-------------|:------:|-------------|
 | `TICKPLUS_API_KEY` | A-shares / ETFs | [TickPlus (Recommended)](http://www.tickplus.org/register?reg=5433cf922395): daily bars, realtime indicators and names |
 | `TUSHARE_TOKEN` | A-shares | Improves historical data stability |
-| `LONGBRIDGE_OAUTH_CLIENT_ID` + `LONGBRIDGE_OAUTH_TOKEN_CACHE_B64` | HK/US stocks | Fills in volume ratio, turnover rate, P/E, and other fields |
+| `LONGBRIDGE_OAUTH_CLIENT_ID` + `LONGBRIDGE_OAUTH_TOKEN_CACHE_B64` | HK/US stocks | Fills in volume ratio, turnover rate, P/E, and other fields (default Actions uses Legacy 3-key credentials; see Full Guide) |
 
 > See [Data Source Configuration](./full-guide_EN.md#data-source-configuration).
 
@@ -189,6 +191,7 @@ python main.py --stocks 600519,hk00700,AAPL,2330.TW
 python main.py --market-review
 python main.py --schedule
 python main.py --serve-only
+python main.py --doctor
 ```
 
 > Docker deployment, scheduling, and cloud-server WebUI access are documented in the [Full Guide](./full-guide_EN.md).
