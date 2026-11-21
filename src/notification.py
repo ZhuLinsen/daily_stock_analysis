@@ -17,6 +17,7 @@ A股自选股智能分析系统 - 通知层
 from __future__ import annotations
 
 import logging
+import re
 import tempfile
 import time
 from dataclasses import dataclass, field
@@ -93,15 +94,16 @@ logger = logging.getLogger(__name__)
 
 
 def _report_file_prefix(content: str) -> Optional[str]:
-    """Choose a non-colliding local filename for Feishu report attachments."""
-    # Cloud-document notifications are links, not report attachments.  Keeping
-    # them out of reports/ prevents a link from replacing the stock aggregate.
-    if "复盘文档创建成功:" in content or "复盘文档创建成功：" in content:
+    """Return a Feishu attachment prefix, or None for a standalone document link."""
+    if re.fullmatch(
+        r"(?:\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}\][ \t]+)?复盘文档创建成功[:：][ \t]*https?://\S+",
+        content.strip(),
+    ):
         return None
-    if "[dsa-market-region]" in content:
-        return "market_review"
     if "# 🚀 个股决策仪表盘" in content and "# 📈 大盘复盘" in content:
         return "dashboard"
+    if "[dsa-market-region]" in content:
+        return "market_review"
     if any(
         heading in content
         for heading in (

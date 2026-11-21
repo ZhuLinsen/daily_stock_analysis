@@ -576,7 +576,10 @@ class TestNotificationServiceSendToMethods(unittest.TestCase):
         )
         mock_get_config.return_value = cfg
         service = NotificationService()
-        content = "# 📈 大盘复盘\n\n复盘正文\n\n---\n\n# 🚀 个股决策仪表盘\n\n汇总正文"
+        content = (
+            "# 📈 大盘复盘\n\n[dsa-market-region]: # (cn,us)\n\n复盘正文\n\n"
+            "---\n\n# 🚀 个股决策仪表盘\n\n汇总正文"
+        )
 
         with mock.patch.object(service, "save_and_send_feishu_file", return_value=True) as mock_attachment:
             result = service.send_with_results(content, route_type="report")
@@ -641,6 +644,23 @@ class TestNotificationServiceSendToMethods(unittest.TestCase):
         )
         mock_file.assert_not_called()
         mock_attachment.assert_not_called()
+
+    @mock.patch("src.notification.get_config")
+    def test_feishu_report_that_mentions_document_creation_still_sends_attachment(self, mock_get_config):
+        mock_get_config.return_value = _make_config(
+            feishu_webhook_url="https://feishu.example/hook",
+            feishu_send_as_file=True,
+        )
+        service = NotificationService()
+        content = "# 市场复盘\n\n复盘文档创建成功: https://feishu.example/docx/abc\n\n沪指收涨。"
+
+        with mock.patch.object(service, "save_and_send_feishu_file", return_value=True) as mock_attachment, \
+             mock.patch.object(service, "send_to_feishu", return_value=True) as mock_text:
+            result = service.send_with_results(content, route_type="report")
+
+        self.assertTrue(result.success)
+        mock_attachment.assert_called_once_with(content, filename=mock.ANY, temporary=True)
+        mock_text.assert_not_called()
 
     @mock.patch("src.notification.get_config")
     def test_feishu_send_as_file_route_alert_calls_send_to_feishu(self, mock_get_config):

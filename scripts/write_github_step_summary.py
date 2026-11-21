@@ -20,6 +20,7 @@ if str(_REPO_ROOT) not in sys.path:
 _DEFAULT_MAX_BYTES = 200_000
 _AGGREGATE_REPORT_RE = re.compile(r"^report_\d{8}\.md$")
 _MARKDOWN_FIELD_MARKER = r"[*_`]+"
+_MARKDOWN_VALUE_MARKER = r"""[*_`"']+"""
 _AUTHORIZATION_FIELD = r"(?:proxy[-_ \t]?)?authorization"
 _MARKDOWN_AUTHORIZATION_FIELD_PATTERN = re.compile(
     r"(?<![*_`])(?P<attached>(?<=[A-Za-z0-9_-]))?"
@@ -34,28 +35,118 @@ _PADDED_BEARER_CODE_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _MARKDOWN_AUTHORIZATION_LABEL = (
-    rf"(?:{_MARKDOWN_FIELD_MARKER}[ \t]*)?(?P<field>{_AUTHORIZATION_FIELD})"
-    rf"(?:[ \t]*[:=])?(?:[ \t]*{_MARKDOWN_FIELD_MARKER})?(?:[ \t]*[:=])?"
+    rf"(?:{_MARKDOWN_VALUE_MARKER}[ \t]*)?(?P<field>{_AUTHORIZATION_FIELD})"
+    rf"(?:[ \t]*[:=])?(?:[ \t]*{_MARKDOWN_VALUE_MARKER})?(?:[ \t]*[:=])?"
 )
 _MARKDOWN_BREAK = r"<br[ \t]*/?>"
-_MARKDOWN_BEARER_PREFIX = (
-    r"""(?:[*_`"']+[ \t]*)?bearer[*_`"']*"""
-    rf"(?=[^\S\r\n]|{_MARKDOWN_BREAK})"
-)
+_MARKDOWN_BEARER_SCHEME = rf"(?:{_MARKDOWN_VALUE_MARKER}[ \t]*)?bearer(?:[ \t]*{_MARKDOWN_VALUE_MARKER})?"
+_MARKDOWN_BEARER_PREFIX = rf"{_MARKDOWN_BEARER_SCHEME}(?=[^\S\r\n]|{_MARKDOWN_BREAK})"
 _MARKDOWN_QUOTE_PREFIX = r"[ \t]*(?:>[ \t]*)*"
+_MARKDOWN_LINE_BREAK = rf"[ \t]*(?:(?:\\[ \t]*)?\r?\n|{_MARKDOWN_BREAK}(?:[ \t]*\r?\n)?)"
+_MARKDOWN_CONTINUATION = rf"{_MARKDOWN_LINE_BREAK}(?:{_MARKDOWN_QUOTE_PREFIX}\r?\n)*{_MARKDOWN_QUOTE_PREFIX}"
+_MARKDOWN_SPLIT_BEARER_PATTERN = re.compile(
+    rf"(?<![A-Za-z0-9_*`-]){_MARKDOWN_AUTHORIZATION_LABEL}"
+    rf"(?:(?<=[:=])[ \t]*|{_MARKDOWN_CONTINUATION})"
+    rf"{_MARKDOWN_BEARER_SCHEME}{_MARKDOWN_CONTINUATION}"
+    rf"(?:(?P<token_markers>{_MARKDOWN_VALUE_MARKER})[ \t]*)?"
+    # A new diagnostic field must retain its label for the shared scrubber.
+    rf"(?![\w.-]+(?:[ \t]*{_MARKDOWN_VALUE_MARKER})?[ \t]*:|[\w.-]+[ \t]+=)"
+    rf"(?!{_AUTHORIZATION_FIELD}[ \t]*[:=])"
+    r"""[^\s|`"'*<>#]+(?:[ \t]*(?P=token_markers)|[*`"']*)""",
+    re.IGNORECASE,
+)
 _MARKDOWN_MULTILINE_BEARER_PATTERN = re.compile(
-    rf"(?<![A-Za-z0-9_*`-]){_MARKDOWN_AUTHORIZATION_LABEL}[ \t]*"
-    rf"(?:(?:\\[ \t]*)?\r?\n|{_MARKDOWN_BREAK}(?:[ \t]*\r?\n)?)"
-    rf"(?:{_MARKDOWN_QUOTE_PREFIX}\r?\n)*{_MARKDOWN_QUOTE_PREFIX}"
+    rf"(?<![A-Za-z0-9_*`-]){_MARKDOWN_AUTHORIZATION_LABEL}{_MARKDOWN_CONTINUATION}"
     rf"{_MARKDOWN_BEARER_PREFIX}[^\r\n]+",
     re.IGNORECASE,
 )
+# An escaped pipe belongs to the value cell.
+_MARKDOWN_TABLE_CELL = r"(?:\\[^\r\n]|[^|\\\r\n]|\\(?![^\r\n]))*"
 _MARKDOWN_TABLE_BEARER_PATTERN = re.compile(
     rf"(?P<indent>(?:^|(?<=\|))[ \t]*){_MARKDOWN_AUTHORIZATION_LABEL}[ \t]*\|[ \t]*"
-    # An escaped pipe belongs to the value cell.
-    rf"{_MARKDOWN_BEARER_PREFIX}(?P<value>(?:\\[^\r\n]|[^|\\\r\n]|\\(?![^\r\n]))*)",
+    rf"{_MARKDOWN_BEARER_PREFIX}(?P<value>{_MARKDOWN_TABLE_CELL})",
     re.IGNORECASE | re.MULTILINE,
 )
+_MARKDOWN_TABLE_CELL_PATTERN = re.compile(rf"(?:^|(?<=\|)){_MARKDOWN_TABLE_CELL}(?=\||$)")
+_MARKDOWN_TABLE_DELIMITER_PATTERN = re.compile(r":?-+:?")
+_MARKDOWN_TABLE_END_PATTERN = re.compile(
+    r"(?:#{1,6}(?:[ \t]|$)|`{3,}|~{3,}|(?:[*+-]|\d+[.)])[ \t]+|(?:[-*_][ \t]*){3,}$)"
+)
+_MARKDOWN_QUOTE_PATTERN = re.compile(_MARKDOWN_QUOTE_PREFIX)
+_MARKDOWN_AUTHORIZATION_LABEL_PATTERN = re.compile(_MARKDOWN_AUTHORIZATION_LABEL, re.IGNORECASE)
+_MARKDOWN_BEARER_PREFIX_PATTERN = re.compile(_MARKDOWN_BEARER_PREFIX, re.IGNORECASE)
+
+
+def _markdown_table_cells(line: str) -> list[re.Match[str]]:
+    cells = list(_MARKDOWN_TABLE_CELL_PATTERN.finditer(line.rstrip("\r\n")))
+    if len(cells) < 2:
+        return cells
+    # Ignore optional outer pipes and keep empty interior cells at their column index.
+    start = 0 if cells[0].group().strip() else 1
+    end = len(cells) if cells[-1].group().strip() else len(cells) - 1
+    return cells[start:end]
+
+
+def _redact_markdown_authorization_columns(text: str) -> str:
+    lines = text.splitlines(keepends=True)
+    authorization_columns: list[int] = []
+    table_quote_depth = 0
+    table_delimiter_index = -1
+    for index, line in enumerate(lines):
+        if index == table_delimiter_index:
+            continue
+        prefix = _MARKDOWN_QUOTE_PATTERN.match(line).group()
+        body = line[len(prefix):]
+        quote_depth = prefix.count(">")
+        if quote_depth != table_quote_depth or _MARKDOWN_TABLE_END_PATTERN.match(body):
+            authorization_columns = []
+        if not body.strip():
+            authorization_columns = []
+            continue
+
+        if authorization_columns:
+            # Body rows can omit trailing cells and all pipes in a one-cell row.
+            cells = _markdown_table_cells(body)
+            for column in reversed(authorization_columns):
+                if column >= len(cells):
+                    continue
+                cell = cells[column]
+                value = cell.group()
+                if _MARKDOWN_BEARER_PREFIX_PATTERN.match(value.lstrip(" \t")):
+                    start = cell.end() - len(value.lstrip(" \t"))
+                    end = cell.start() + len(value.rstrip(" \t"))
+                    body = f"{body[:start]}`<redacted>`{body[end:]}"
+            lines[index] = prefix + body
+            continue
+
+        if "authorization" not in body.lower() or index + 1 == len(lines):
+            continue
+        delimiter_line = lines[index + 1]
+        delimiter_prefix = _MARKDOWN_QUOTE_PATTERN.match(delimiter_line).group()
+        delimiter_body = delimiter_line[len(delimiter_prefix):]
+        if quote_depth != delimiter_prefix.count(">") or ("|" not in body and "|" not in delimiter_body):
+            continue
+        cells = _markdown_table_cells(body)
+        delimiter_cells = _markdown_table_cells(delimiter_body)
+        if len(delimiter_cells) != len(cells) or not all(
+            _MARKDOWN_TABLE_DELIMITER_PATTERN.fullmatch(cell.group().strip()) for cell in delimiter_cells
+        ):
+            continue
+
+        authorization_columns = [
+            column for column, cell in enumerate(cells)
+            if _MARKDOWN_AUTHORIZATION_LABEL_PATTERN.fullmatch(cell.group().strip())
+        ]
+        table_quote_depth = quote_depth
+        table_delimiter_index = index + 1
+        # A colon in a header label would make the diagnostic scrubber treat the rest as its value.
+        for column in reversed(authorization_columns):
+            cell = cells[column]
+            label = cell.group().replace(":", "").replace("=", "")
+            body = f"{body[:cell.start()]}{label}{body[cell.end():]}"
+        lines[index] = prefix + body
+
+    return "".join(lines)
 
 
 def _prepare_markdown_authorization(text: str) -> str:
@@ -73,8 +164,11 @@ def _prepare_markdown_authorization(text: str) -> str:
         return f"{match.group('indent')}{match.group('field')} | `<redacted>`{padding}"
 
     # Mask the value cell before normalizing labels that contain a colon.
+    text = _redact_markdown_authorization_columns(text)
     text = _MARKDOWN_TABLE_BEARER_PATTERN.sub(redact_table_cell, text)
     normalized = _MARKDOWN_AUTHORIZATION_FIELD_PATTERN.sub(normalize, text)
+    # Keep the scheme so the diagnostic scrubber preserves prose after the masked token.
+    normalized = _MARKDOWN_SPLIT_BEARER_PATTERN.sub(r"\g<field>: Bearer <redacted>", normalized)
     normalized = _MARKDOWN_MULTILINE_BEARER_PATTERN.sub(r"\g<field>: <redacted>", normalized)
     return _PADDED_BEARER_CODE_PATTERN.sub(r"\g<prefix>\g<token>", normalized)
 

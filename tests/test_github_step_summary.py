@@ -80,6 +80,24 @@ def test_writes_redacted_reports_to_step_summary(tmp_path: Path, authorization_l
         ("> **Authorization:**\n>\n> `Bearer {credential}`", "> Authorization: <redacted>"),
         ("**Authorization:**<br>\nBearer {credential}", "Authorization: <redacted>"),
         ("**Authorization:**<br />`Bearer {credential}`", "Authorization: <redacted>"),
+        ("Authorization: Bearer  \n{credential}", "Authorization: <redacted>"),
+        ("Authorization: Bearer\n{credential} **继续观察**", "Authorization: <redacted> **继续观察**"),
+        ("> **Authorization:** Bearer\\\n> `{credential}`\n> 继续观察。", "> Authorization: <redacted>\n> 继续观察。"),
+        ("> Authorization: Bearer\n>\n> {credential}\n> 继续观察。", "> Authorization: <redacted>\n> 继续观察。"),
+        ("Authorization: `` Bearer ``  \n{credential}", "Authorization: <redacted>"),
+        (
+            "Authorization: Bearer\n**Authorization:** Bearer {credential}",
+            "Authorization: <redacted>\nAuthorization: <redacted>",
+        ),
+        (
+            'Authorization: Bearer\n"Authorization": Bearer {credential}',
+            'Authorization: <redacted>\n"Authorization": <redacted>',
+        ),
+        (
+            "Authorization: Bearer\napi_key: {credential}",
+            "Authorization: <redacted>\napi_key: <redacted>",
+        ),
+        ("**Authorization:**<br>\nBearer<br />` {credential} `", "Authorization: <redacted>"),
         (
             "| `Authorization` | Bearer {credential} | 保留 |",
             "| Authorization | `<redacted>` | 保留 |",
@@ -104,6 +122,54 @@ def test_writes_redacted_reports_to_step_summary(tmp_path: Path, authorization_l
             "| `Authorization` | Bearer<br>{credential} | 保留 |",
             "| Authorization | `<redacted>` | 保留 |",
         ),
+        (
+            "| 市场 | Authorization | 备注 |\n"
+            "| :--- | --- | ---: |\n"
+            "| A 股 | Bearer {credential} | 保留 |\n"
+            "| 港股 \\| 港元 | `Bearer {credential}-hk` | 继续观察 |\n"
+            "| 美股 | 无 | Bearer bonds also gained. |",
+            "| 市场 | Authorization | 备注 |\n"
+            "| :--- | --- | ---: |\n"
+            "| A 股 | `<redacted>` | 保留 |\n"
+            "| 港股 \\| 港元 | `<redacted>` | 继续观察 |\n"
+            "| 美股 | 无 | Bearer bonds also gained. |",
+        ),
+        (
+            "**Proxy-Authorization:** | 市场\n"
+            "--- | ---\n"
+            "**Bearer**<br>{credential} | 沪指",
+            "**Proxy-Authorization** | 市场\n"
+            "--- | ---\n"
+            "`<redacted>` | 沪指",
+        ),
+        (
+            '> | 市场 | "Authorization" | 备注 |\n'
+            "> | --- | --- | --- |\n"
+            "> | A 股 | Bearer {credential} | 保留 |",
+            '> | 市场 | "Authorization" | 备注 |\n'
+            "> | --- | --- | --- |\n"
+            "> | A 股 | `<redacted>` | 保留 |",
+        ),
+        (
+            "| Authorization |\n| --- |\nBearer {credential}",
+            "| Authorization |\n| --- |\n`<redacted>`",
+        ),
+        (
+            "市场 | Authorization\n"
+            "--- | ---\n"
+            "A 股\n"
+            "港股 | Bearer {credential}",
+            "市场 | Authorization\n"
+            "--- | ---\n"
+            "A 股\n"
+            "港股 | `<redacted>`",
+        ),
+        (
+            "| Authorization | 市场 |\n| --- | --- |\n| 无 | A 股 |\n"
+            "## 港股\n| 市场 | Authorization |\n| --- | --- |\n| 港股 | Bearer {credential} |",
+            "| Authorization | 市场 |\n| --- | --- |\n| 无 | A 股 |\n"
+            "## 港股\n| 市场 | Authorization |\n| --- | --- |\n| 港股 | `<redacted>` |",
+        ),
     ],
 )
 def test_writes_redacted_multiline_and_table_authorization(
@@ -115,7 +181,7 @@ def test_writes_redacted_multiline_and_table_authorization(
     reports_dir.mkdir()
     credential = "short-bearer-token"
     table_header = "| 字段 | 值 | 备注 |\n| --- | --- | --- |\n"
-    if not authorization_markdown.startswith("|"):
+    if not authorization_markdown.startswith("|") or "\n" in authorization_markdown:
         table_header = ""
     market_notes = "沪指收涨。\n\nBearer bonds also gained."
     report = f"# 大盘复盘\n\n{table_header}{authorization_markdown.format(credential=credential)}\n\n{market_notes}"
@@ -219,10 +285,10 @@ def test_script_entrypoint_redacts_without_pythonpath(tmp_path: Path) -> None:
     reports_dir = tmp_path / "reports"
     reports_dir.mkdir()
     (reports_dir / "report_20261120.md").write_text(
-        "# 个股汇总\n**Authorization**:  \nBearer short-stock-token\n", encoding="utf-8"
+        "# 个股汇总\n**Authorization**: Bearer  \nshort-stock-token\n", encoding="utf-8"
     )
     (reports_dir / "market_review_20261120.md").write_text(
-        "# 大盘复盘\n\n| 字段 | 值 |\n| --- | --- |\n| `Authorization` | `Bearer short-market-token` |\n",
+        "# 大盘复盘\n\n| Authorization | 市场 |\n| --- | --- |\n| `Bearer short-market-token` | 沪指 |\n",
         encoding="utf-8",
     )
     summary_file = tmp_path / "step_summary.md"
@@ -243,6 +309,7 @@ def test_script_entrypoint_redacts_without_pythonpath(tmp_path: Path) -> None:
     assert "# 大盘复盘" in written
     assert "short-stock-token" not in written
     assert "short-market-token" not in written
+    assert "| `<redacted>` | 沪指 |" in written
 
 
 def test_redaction_preserves_report_beyond_diagnostic_preview_limit(tmp_path: Path) -> None:
