@@ -752,17 +752,13 @@ python main.py --no-market-review     # 仅个股分析
 python main.py --etf-rotation         # ETF 轮动信号 + 规则回测（不调用 LLM，见 docs/etf-rotation.md）
 python main.py --stocks 600519,300750 # 指定股票
 python main.py --portfolio futu       # 使用 Futu 真实 LONG 正股持仓（覆盖 --stocks/STOCK_LIST）
-BACKTEST_ENABLED=false python main.py --dry-run --no-market-review --force-run --stocks 600519  # 行情试跑（Bash）
+python main.py --dry-run              # 仅获取数据，不执行个股 AI 分析（跳过大盘复盘可加 --no-market-review）
 python main.py --no-notify            # 不发送推送
 python main.py --schedule             # 定时任务模式
 python main.py --force-run            # 非交易日也强制执行（Issue #373）
 python main.py --debug                # 调试模式（详细日志）
 python main.py --workers 5            # 指定并发数
 ```
-
-自动回测默认开启，干跑也可能对已有报告执行回测。Bash 命令前的 `BACKTEST_ENABLED=false` 仅为本次试跑关闭自动回测。已有行情会从本地缓存读取，新拉取的行情会写入缓存。
-
-使用现有部署的 `.env` 时，可在试跑命令前加上 `SCHEDULE_ENABLED=false WEBUI_ENABLED=false RUN_IMMEDIATELY=true`，以单次命令行模式运行。
 
 > **`--doctor` 语义说明**：`python main.py --doctor` 与 `python main.py --doctor --json` 仅运行离线只读脱敏检查（不写入日志或数据库文件）。退出码约定：`0` 表示通过或仅存在警告（例如未配置通知渠道仅作为警告不阻断）；`1` 表示存在配置、LLM、存储可写性或半配置通知渠道错误；`2` 表示参数误用（`--json` 必须配合 `--doctor` 使用）。
 

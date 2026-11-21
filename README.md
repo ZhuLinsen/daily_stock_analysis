@@ -21,7 +21,7 @@
   </a>
 </p>
 
-> 🤖 基于 AI 大模型的自选股分析系统，覆盖 A 股、港股、美股、日股、韩股和台股，支持决策报告、策略问股、回测、持仓风险跟踪和多渠道推送。
+> 🤖 基于 AI 大模型的 A 股/港股/美股/日股/韩股/台股自选股智能分析系统，每日自动生成「决策仪表盘」并支持策略问股、回测、持仓风控与多渠道推送。
 
 [**产品预览**](#-产品预览) · [**功能特性**](#-功能特性) · [**快速开始**](#-快速开始) · [**推送效果**](#-推送效果) · [**文档中心**](docs/INDEX.md) · [**完整指南**](docs/full-guide.md)
 
@@ -42,7 +42,7 @@
 
 <p align="center">
   <a href="docs/assets/readme_workspace_tour_20260510.gif"><img src="docs/assets/readme_workspace_preview.gif" alt="DSA Web 工作台演示" width="640"></a><br>
-  <sub>点击动图查看完整工作台演示（涵盖个股分析、智能选股、决策信号、持仓风控、回测与 Agent 问股）</sub>
+  <sub>点击动图查看完整工作台演示</sub>
 </p>
 
 > [!TIP]
@@ -50,76 +50,48 @@
 
 ## ✨ 功能特性
 
-| 阶段 | 核心能力与 Web 工作台模块 | 专题文档 |
+| 阶段 | 核心能力与主要入口 | 专题文档 |
 |------|------|------|
-| **发现** | 多因子与自然语言智能选股（`/screening`）、市场热点雷达、规则化 ETF 双动量轮动（`--etf-rotation`） | [选股引擎](docs/screening-engine.md) · [ETF 轮动](docs/etf-rotation.md) |
-| **分析** | 6 市场「决策仪表盘」报告（`/`）、大盘复盘、15 种内置策略的多轮 Agent 策略问股（`/chat`） | [完整指南](docs/full-guide.md) · [市场边界](docs/market-support.md) |
-| **验证** | 决策信号池（`/decision-signals`）、历史胜率与方向回测（`/backtest`）、运行诊断可观测与数据源健康体检 | [决策信号](docs/decision-signals.md) · [数据中心](docs/data-center-diagnostics.md) |
-| **跟踪** | 持仓账本与风险暴露看板（`/portfolio`，支持 CSV 导入；CLI 支持只读富途持仓选股 `--portfolio futu`）、实时异动告警（`/alerts`）、Token 统计（`/usage`） | [组合风控](docs/portfolio-risk-exposure-dashboard.md) · [告警中心](docs/alerts.md) |
+| **发现** | 多因子与自然语言智能选股（`/screening`）、市场热点、ETF 双动量轮动（`--etf-rotation`） | [选股引擎](docs/screening-engine.md) · [ETF 轮动](docs/etf-rotation.md) |
+| **分析** | 6 市场「决策仪表盘」报告（`/`）、大盘复盘、15 种内置策略多轮 Agent 问股（`/chat`）<a name="-agent-策略问股"></a> | [完整指南](docs/full-guide.md) · [市场边界](docs/market-support.md) |
+| **验证** | 决策信号池（`/decision-signals`）、历史胜率回测（`/backtest`）、运行诊断与数据源体检 | [决策信号](docs/decision-signals.md) · [数据中心](docs/data-center-diagnostics.md) |
+| **跟踪** | 持仓账本与风险暴露（`/portfolio`，支持 CSV 导入；CLI 支持 `--portfolio futu`）、实时告警（`/alerts`）、Token 统计（`/usage`） | [组合风控](docs/portfolio-risk-exposure-dashboard.md) · [告警中心](docs/alerts.md) |
 | **触达** | GitHub Actions 零服务器定时任务、Electron 桌面端、企业微信 / 飞书 / Telegram / Discord / Slack / 邮件推送 | [通知配置](docs/notifications.md) · [Bot 接入](docs/bot-command.md) |
-
-<a name="-agent-策略问股"></a>
-
-在 Web 或桌面工作台使用 [策略问股](docs/full-guide.md#本地-webui-管理界面)。
 
 ## 🚀 快速开始
 
 <a name="-配置说明"></a>
 
-[通知配置](docs/notifications.md) · [LLM 配置指南](docs/LLM_CONFIG_GUIDE.md) · [完整配置与部署指南](docs/full-guide.md)
-
-| 上手方式 | 适合人群 | 所需前置 | 入口 |
-|------|------|------|------|
-| **桌面客户端** | 不想折腾命令行的个人投资者 | 1 个 AI API Key | [Releases 下载](https://github.com/ZhuLinsen/daily_stock_analysis/releases) · [小白教程](docs/beginner-client-setup.md) |
-| **GitHub Actions** | 零服务器每日自动分析（推荐） | **仅 1 个 AI 模型 Secret** | [下方 4 步配置](#方式一github-actions推荐) |
-| **本地命令行 / WebUI** | 跑通首份报告或本地私有部署 | Git、Python（WebUI 另需 Node.js） | [下方本地命令](#方式二客户端配置教程--本地运行--docker-部署) |
-| **Docker 部署** | 服务器常驻 Web 工作台与定时任务 | Docker、1 个 AI Key | [部署指南](docs/DEPLOY.md) |
+| 方式 | 适合人群 | 入口 |
+|------|------|------|
+| **桌面客户端** | 不折腾命令行，开箱即用 | [Releases 下载](https://github.com/ZhuLinsen/daily_stock_analysis/releases) · [小白教程](docs/beginner-client-setup.md) |
+| **GitHub Actions** | 零服务器每日定时推送（推荐） | [下方 4 步配置](#方式一github-actions推荐) |
+| **本地运行 / WebUI** | 本地命令行或私有 Web 工作台 | [下方本地命令](#方式二客户端配置教程--本地运行--docker-部署) |
+| **Docker 部署** | 服务器常驻部署 | [部署指南](docs/DEPLOY.md) |
 
 ### 方式一：[GitHub Actions（推荐）](https://www.bilibili.com/video/BV11FEb66EXG/)
 
-> 无需自备服务器，AI 模型调用按所选渠道计费。首次跑通**只需配置 1 个 AI 模型 Secret**，`STOCK_LIST` 默认兜底 `600519`，通知渠道可选。
+> 无需服务器，首次跑通只需配置 **1 个 AI 模型 Secret**（`STOCK_LIST` 默认 `600519`，通知与搜索源均可选）。
 
 1. <a name="1-fork-本仓库"></a>**Fork 本仓库**：点击右上角 `Fork`。
-2. <a name="2-配置-secrets"></a>前往 `Settings` → `Secrets and variables` → `Actions` → `New repository secret`，选择一个模型服务商并添加对应的 Key。
-   - **推荐** [注册 Modelflare](https://modelflare.dev/sign-up?utm_source=github&utm_campaign=daily_stock_analysis)，仅需添加 `MODELFLARE_KEY`。
-   - **推荐** [注册 x6.ai](https://console.x6pro.io/register?code=zJ2qSdns)，将 `LLM_X6AI_API_KEY` 添加到 Secrets，再按 [x6.ai 显式渠道配置](docs/llm-providers.md#x6ai-聚合平台) 设置 `LLM_CHANNELS=x6ai` 等 Variables。
-   - [AIHubMix](https://inferera.com/?aff=CfMq) 使用 `AIHUBMIX_KEY`，本项目用户可享 10% 充值优惠。也可使用 `GEMINI_API_KEY`、`ANTHROPIC_API_KEY` 或官方 `OPENAI_API_KEY`。其他兼容服务见 [模型配置表](docs/full-guide.md#ai-模型配置至少配置一个)。
-3. <a name="3-启用-actions"></a>**启用 Actions**：进入 Fork 仓库的 `Actions` 标签 → 点击 `I understand my workflows, go ahead and enable them`。
-4. <a name="完成"></a><a name="4-手动测试"></a>**手动测试与查看结果**：`Actions` → `每日股票分析` → `Run workflow`，运行结束后可在推送通知渠道查看结果或下载 `analysis-reports-*` 产物。之后每个工作日 **18:00（北京时间）** 自动执行（非交易日跳过及断点续传规则见 [定时任务配置](docs/full-guide.md#定时任务配置)）。非交易日试跑时，可在手动触发界面勾选强制运行。
-
-按需配置自选股、资讯来源、行情源和通知渠道，参见 [完整指南](docs/full-guide.md#github-actions-详细配置)。
+2. <a name="2-配置-secrets"></a>**添加模型 Secret**：进入 `Settings` → `Secrets and variables` → `Actions` → `New repository secret`，填写任意已支持的模型 Key（如 `GEMINI_API_KEY`、`OPENAI_API_KEY`、`ANTHROPIC_API_KEY` 或聚合渠道 Key；完整变量表见 [GitHub Actions 配置](docs/full-guide.md#github-actions-详细配置)）。
+3. <a name="3-启用-actions"></a>**启用 Actions**：进入 `Actions` 标签 → 点击 `I understand my workflows, go ahead and enable them`。
+4. <a name="完成"></a><a name="4-手动测试"></a>**手动测试**：进入 `Actions` → `每日股票分析` → `Run workflow`，结束后可查看推送或下载报告产物。之后每个工作日 **18:00（北京时间）** 自动运行（非交易日试跑可勾选强制运行）。
 
 ### 方式二：[客户端配置教程](https://www.bilibili.com/video/BV11FEb66Eyr/) / 本地运行 / Docker 部署
 
 <a name="-web-界面"></a>
 
-先确认 [Python 与模型依赖](docs/full-guide.md#安装依赖)，再下载源码、安装依赖。
-
 ```bash
-git clone --depth 1 https://github.com/ZhuLinsen/daily_stock_analysis.git
-cd daily_stock_analysis
+git clone --depth 1 https://github.com/ZhuLinsen/daily_stock_analysis.git && cd daily_stock_analysis
 python -m pip install -r requirements.txt
+cp .env.example .env   # 填入 1 个 AI 模型 Key 和 STOCK_LIST
+
+python main.py               # 运行一次分析
+python main.py --serve-only  # 启动本地 Web 工作台（需先在 apps/dsa-web 构建前端）
 ```
 
-**Web 工作台**需满足 [Node.js 和 npm 版本要求](docs/DEPLOY.md#2-安装依赖)。启动后打开 `http://127.0.0.1:8000`，在「设置」填写 AI Key 和自选股。
-
-```bash
-(cd apps/dsa-web && npm ci && npm run build) && python main.py --serve-only
-```
-
-**命令行生成报告**前，复制 `.env.example` 为 `.env`，填写一个 AI Key 和 `STOCK_LIST`。
-
-```bash
-python main.py --no-market-review --no-notify --force-run
-```
-
-**行情试跑**可在 Bash 中指定一只股票，按需拉取并缓存行情，跳过 AI 分析、大盘复盘和本次自动回测。
-
-```bash
-BACKTEST_ENABLED=false python main.py --dry-run --no-market-review --force-run --stocks 600519
-```
-
-Docker Compose 见 [部署指南](docs/DEPLOY.md)。
+> 完整依赖版本要求、WebUI 构建命令、Docker Compose 与全部 CLI 参数见 [完整指南](docs/full-guide.md#本地运行详细配置) 和 [部署指南](docs/DEPLOY.md)。
 
 ### 📱 推送效果
 
@@ -157,7 +129,7 @@ Docker Compose 见 [部署指南](docs/DEPLOY.md)。
 | **应用** | Python / FastAPI, React / Vite, Electron |
 | **AI 模型** | [Modelflare](https://modelflare.dev/sign-up?utm_source=github&utm_campaign=daily_stock_analysis)、[x6.ai](https://console.x6pro.io/register?code=zJ2qSdns)、AIHubMix、Gemini、OpenAI 兼容、DeepSeek、通义千问、Claude、Ollama 本地模型等 |
 | **行情数据** | [TickPlus（推荐）](http://www.tickplus.org/register?reg=5433cf922395)、AkShare、Tushare、Pytdx、Baostock、YFinance、Longbridge（内置免费源零配置可跑，批量/稳定建议配合 Token 源） |
-| **新闻与舆情** | [SerpAPI](https://serpapi.com/github-daily-stock-analysis)、Anspire、Tavily、Bocha、Brave、MiniMax、SearXNG。美股可选 Stock Sentiment API（Reddit / X / Polymarket） |
+| **新闻与舆情** | [SerpAPI](https://serpapi.com/github-daily-stock-analysis)、Anspire、Tavily、Bocha、Brave、MiniMax、SearXNG；美股可选 Stock Sentiment API |
 
 ## 📬 联系与合作
 

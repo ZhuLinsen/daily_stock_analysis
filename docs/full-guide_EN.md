@@ -694,16 +694,12 @@ python main.py --etf-rotation         # ETF rotation signal + rule backtest (no 
 python main.py --no-market-review     # Stock analysis only
 python main.py --stocks 600519,300750 # Specify stocks
 python main.py --portfolio futu       # Use real Futu LONG stock holdings (overrides --stocks/STOCK_LIST)
-BACKTEST_ENABLED=false python main.py --dry-run --no-market-review --force-run --stocks 600519  # Market-data dry run (Bash)
+python main.py --dry-run              # Fetch market data without stock AI analysis (add --no-market-review to skip market review)
 python main.py --no-notify            # Don't send notifications
 python main.py --schedule             # Scheduled task mode
 python main.py --debug                # Debug mode (verbose logging)
 python main.py --workers 5            # Specify concurrency
 ```
-
-Automatic backtesting is enabled by default and may evaluate existing reports even during a dry run. In Bash, prefixing the command with `BACKTEST_ENABLED=false` disables automatic backtesting for that run. The dry run reuses cached market data and stores newly fetched data locally.
-
-With an existing deployment's `.env`, you can add `SCHEDULE_ENABLED=false WEBUI_ENABLED=false RUN_IMMEDIATELY=true` before the dry-run command to run it once from the CLI.
 
 > **`--doctor` semantics**: Both `python main.py --doctor` and `python main.py --doctor --json` run read-only offline diagnostics with secrets redacted (without creating log or database files). Exit codes: `0` when healthy or warnings only (e.g., having no notification channels configured is a warning, not a blocking error); `1` on blocking configuration, LLM, storage, or half-configured notification errors; `2` on flag misuse (`--json` requires `--doctor`).
 
