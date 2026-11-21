@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 - [文档] 在 `AGENTS.md`、中英文贡献指南、PR 模板与 `analyze-pr` 规范中确立“产品做减法、只做必要高价值改动、把核心功能做简单可靠”的演进与审查原则。
+- [新功能] 将分析报告组装逻辑下沉至共享服务层（`src/services/report_builder_service.py`），并新增可选的只读 stdio MCP 服务（`python -m src.mcp_server`，可选依赖 `mcp>=1.0.0,<2`，默认关闭持仓与配置写入且分析默认不推送）；文档补充分析会消耗模型额度并可能更新本地缓存的提示。
 - [新功能] Web 与桌面端已保存个股报告的策略点位区新增按需价格点位图，展示近 60 个交易日、MA5/MA20 及可解析的狙击点位参考线。
 - [修复] 数据源超时但个股按时完成时复用分析槽位，取消后跳过迟到的报告和新闻写入，保留 LiteLLM 同模型部署重试。识别英文止损点位倒挂，按发行人筛选同名公告，并保留复合风险警报。
 - [chore] 仓库协作 skill 迁至 `.agents/skills/` 并保留 `.claude/skills/` 同步副本兼容 Claude Code，重构 `analyze-pr` 审查规范（文件覆盖账本、14 维影响面清单与不可逆变更约束），精简 `AGENTS.md`、PR 模板与 `ai-governance` 校验脚本，本地审查产物默认直接对话输出（可选 `.reviews/`）。

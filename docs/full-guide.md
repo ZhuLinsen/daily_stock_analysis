@@ -2030,3 +2030,29 @@ worker 会把 `triggered`、`skipped`、`degraded`、`failed` 写入 `alert_trig
 - Agent 可通过 `get_portfolio_snapshot` 获取面向账户的紧凑持仓摘要，默认包含精简风险块，适合控制 Token 开销。
 - 可选参数包括 `account_id`、`cost_method`、`as_of`、`include_positions`、`include_risk`。
 - 若风险块生成失败，快照仍会返回；若当前环境未启用持仓模块，工具会返回结构化 `not_supported`。
+
+
+---
+
+## 只读 MCP Stdio 服务（可选）
+
+外部 AI 客户端（如 Claude Code、Cursor、Codex、Gemini CLI）可通过可选的只读 stdio MCP 服务接入 DSA 的行情、历史报告和异步分析能力。
+
+1. 安装可选依赖（不影响核心运行与 Docker 镜像体积）：
+
+   ```bash
+   pip install "mcp>=1.0.0,<2"
+   ```
+
+2. 在客户端 MCP 配置中启动：
+
+   ```bash
+   python -m src.mcp_server
+   ```
+
+   如需额外暴露宏观工具（`fxmacrodata_*`），可追加 `--include-macro`。
+
+默认安全边界：
+- 仅开放 `ToolSurface` 中声明为 `read_only=True` 的工具，以及 `resolve_stock`、`start_stock_analysis`、`get_analysis_status`、`get_latest_report`。
+- 默认关闭 `get_portfolio_snapshot` 与所有写配置能力；`start_stock_analysis` 默认 `notify=False`，避免外部 Agent 自动触发群推送。
+- `start_stock_analysis` 会消耗模型调用额度并保存本地分析报告；部分行情与检索工具可能更新本地缓存。
