@@ -1,24 +1,99 @@
 ---
 name: analyze-pr
-description: 评估 PR 的实际改动、用户价值、兼容性、可视证据与合入条件。也用于解释单个 PR 或比较一组候选。
+description: 审查 daily_stock_analysis 仓库的 GitHub PR，基于完整 diff 输出前因后果、函数级改动、改前改后行为、14 维影响面清单（环境变量/配置/API/Web/桌面/报告/通知等）、描述与实现差异、问题清单与合入判定。用户给出 PR 号或链接并要求分析、审查、评估能否合入时使用。
 ---
 
-# 分析 PR
+# Analyze PR
 
-以仓库根目录 `AGENTS.md` 为准。围绕维护者的问题交付结果。解释一个修复时，用具体例子；批量筛选时，给每个 PR 的价值、当前阻碍和下一步。
+规则真源：仓库根目录 [`AGENTS.md`](../../../AGENTS.md)（基线同步与阻断标准见 §7，此处不重复原文）。
 
-## 核对当前改动
+- 原则：**检查从严、输出从简**。内部必须逐文件、全维度核查，对外只呈现高信息密度事实，不刷空表和套话。
+- 输出语言：简洁中文；**默认直接在对话中输出**，仅当用户明确要求存档时写入 `.reviews/prs/pr-<number>.md`。
 
-1. 按 AGENTS.md 第 8 节同步基线，记录 base、Head SHA。用 `gh pr view <n> --comments`、`gh pr diff <n>`、`gh pr checks <n>` 检查当前版本、改动、历史意见和 CI。评审意见要与对应的提交核对。
-2. 按可独立交付的行为拆解 diff，沿实际入口查调用者和消费方。报告哪些文件不在可读 diff 中，哪些结论只来自作者或旧审查。对 fix 核对反例、根因、修复路径和能覆盖原问题的测试。
-3. 查 PR 正文、讨论附件和当前 Head 的 Actions 产物。若 `web-gate` 运行，可在该运行的 `web-ui-evidence-<head SHA>` 中找具体页面。检查时打开实际画面，将截图与发生变化的页面、报告或通知状态对应起来。
+## 硬约束
 
-## 给维护者的判断
+1. **必须读完所有改动文件**：内部逐文件核对（已读文件数 == `changedFiles`）前，不得给出合入结论。
+2. **每条结论必须带证据**：标注 `path:line`、diff 片段、命令输出或 CI 链接；无证据写“未核实”并说明缺什么。
+3. **14 维影响面必须全部核查**：输出时只展开**命中**的维度，未命中项合并为一行说明依据（不得跳过检查）。
+4. **禁止空泛套话**：不得出现无具体触发条件与对象的「风险较低」「影响可控」「建议充分测试」「注意兼容性」「可能会影响」，以及在无不可逆变更时写「回滚：revert 本 PR」。
+5. **不污染工作树**：不执行 `gh pr checkout`、不切换当前分支、不在仓库内建 worktree；需看完整上下文用 `git fetch origin pull/<n>/head:refs/remotes/pr/<n>` + `git show`。
 
-- **改了什么、为何有价值。** 每项用「谁在什么操作下遇到什么 → 改后会怎样」说明。写清默认是否启用、受益范围与代价，区分实测问题、预防性改进和仍需证实的假设。可独立合入的改动分别判断保留、拆分或延后。
-- **用户影响。** 明确回答 Web 页面和交互、Desktop 共用界面或原生能力、报告内容与版式、通知展示是否受影响。顺着调用链说明相关 CLI 参数/输出、API 字段、配置默认值、迁移或部署影响。将无影响的入口合并说明依据；不确定处标出验证缺口。
-- 例如，搜索缓存优化可以用同一批查询的排序与耗时说明价值；后端工具状态字段被问股页面消费时，则要核对失败步骤在页面上如何显示。
-- **截图。** 有展示变化时给具体页面/状态、证据链接和核验结果。区分「已查看当前版本」「有链接但未查看/过期」「缺证据」。无法截图时核对原因和可复现的替代证据；纯内部变更说明截图不适用的具体原因。单独的 CI 绿灯或测试文件名无法说明画面符合预期。
-- **合入条件。** 引用当前 Head 的 CI、合并状态、验证缺口及回滚方式。把正确性或兼容性反例定位到代码或测试，说明用户后果。给出“可合入 / 处理指定问题后可合入 / 建议拆分或暂缓”及原因。存在冲突或关键证据待核时，分别说明代码价值与平台状态。
+## 内部检查步骤（必须全部执行，不直接照搬成冗长输出）
 
-完整审查记录在 `.claude/reviews/prs/pr-<number>.md`，附基线、证据、未验证项。对用户的回复直接给上述判断。发表评论、批准、合入或关闭以用户当次授权为准。
+1. **采集事实**：按 `AGENTS.md` §7 同步基线后拉取 PR 元数据、完整 diff、普通评论、行内 review 线程、CI 状态及关联 Issue：
+   ```bash
+   gh pr view <n> --repo ZhuLinsen/daily_stock_analysis --json number,title,body,author,baseRefName,headRefName,headRefOid,mergeable,isDraft,additions,deletions,changedFiles,closingIssuesReferences,commits
+   gh pr diff <n> --repo ZhuLinsen/daily_stock_analysis --name-only
+   gh pr diff <n> --repo ZhuLinsen/daily_stock_analysis
+   gh pr view <n> --repo ZhuLinsen/daily_stock_analysis --comments
+   gh api repos/ZhuLinsen/daily_stock_analysis/pulls/<n>/comments --paginate
+   gh pr checks <n> --repo ZhuLinsen/daily_stock_analysis
+   ```
+   - diff 超长时按文件分页拉取：`gh api repos/ZhuLinsen/daily_stock_analysis/pulls/<n>/files --paginate`。
+   - 有失败 CI 时先看 `gh run view <run_id> --log-failed`，并核对 CI 对应 SHA 是否等于当前 `headRefOid`。
+2. **文件覆盖核对**：确认已读完 `changedFiles` 中的每一个文件（lockfile/快照等生成文件可标“生成文件”），区分**新增文件**与**修改的既有运行时文件**。
+3. **14 维影响面检索**（按路径与关键字逐项判定）：
+   - `环境变量 / 配置`：`src/config.py`、`config_registry.py`、`config_manager.py`、`.env.example`、`docker-compose*.yml`、`00-daily-analysis.yml` env 段，或新增 `os.getenv`/`os.environ`
+   - `Web 设置页`：`settingsHelp.ts`、`components/settings/**`、`systemConfigI18n.ts`
+   - `Web UI`：`apps/dsa-web/src/{pages,components}/**`（非测试）
+   - `API / Schema`：`api/**`、`src/schemas/**` 及前端 `src/api/**`、`src/types/**` 消费方
+   - `Desktop`：`apps/dsa-desktop/**`、`scripts/build-*`、`scripts/run-desktop.ps1`
+   - `报告结构 / 渲染`：`src/reports/**`、报告模板、Markdown/图表渲染组件
+   - `通知`：`src/notification*.py`、`src/notification_sender/**`、`bot/**`
+   - `Prompt / LLM`：`src/llm/**`、`src/agent/**`、prompt 常量、`EXTRACT_PROMPT`
+   - `数据源 / fallback`：`data_provider/**`
+   - `存储 / 持久化`：`src/storage.py`、`src/repositories/**`、ORM 模型、迁移脚本、本地缓存格式
+   - `CLI / 调度`：`main.py` 参数、`--schedule`
+   - `依赖`：`requirements*.txt`、`apps/*/package.json`
+   - `CI / Docker / 发布`：`.github/**`、`docker/**`、`scripts/**`
+   - `文档`：`docs/**`、`docs/CHANGELOG.md`、`README.md`、中英对照文档
+4. **因果链与同语义排查**：核实问题现象 → 触发条件 → 根因（`path:line`）；对被改函数/配置键/字段做 `git grep`，查清 CLI / API / Bot / Web / Desktop / Scheduler 中未覆盖的同类入口。
+5. **必要性与减法评估（产品取舍建议，非硬阻断）+ 声明 vs 事实 & 测试质量**：
+   - 对照 `AGENTS.md` §0 评估改动是否聚焦核心痛点，还是在叠加低频开关、平行入口或重复模板；若存在明显冗余，在建议项中提示维护者可瘦身或关闭，但**不单凭主观范围直接判为合入阻断**，以免误伤正常的 Bug 修复与低耦合实用改进。
+   - 对照 PR 描述与实际 diff（标出声明未兑现 / 未声明改动）；检查测试是否打到真实风险层（而非把被改模块 mock 掉）以及是否覆盖行内 review 提出的反例。
+
+## 输出格式（固定 5 段，紧凑清晰）
+
+```markdown
+# PR #<number> <title>
+
+## 1. 结论
+- **判定**：`可合入` / `需修改后合入` / `不建议合入` —— <一句话核心理由>
+- **基线与 CI**：`<base>@<sha7>` ← `<head>@<sha7>`（已读 N/N 文件）| 冲突：无/有 | CI：全绿/失败（附链接，核对 SHA 一致）| 本地同步：<HEAD 说明>
+
+## 2. 前因、改了什么 & 改前改后
+- **前因（解决什么问题）**：<关联 Issue / 现象 / 触发条件 / 根因 `path:line`>
+- **新增文件**：<概要>
+- **修改的既有运行时文件**：<函数/字段/配置键级，带 `path:line`>
+- **改前 vs 改后**：
+| 场景 / 输入 | 改前行为 | 改后行为 | 谁会感知 |
+|---|---|---|---|
+
+## 3. 影响面（14 维核查，仅展开命中项）
+- **命中维度**：逐项写出具体内容与证据；若命中以下三类须附对应明细：
+  - **配置 / 环境变量**：键名 | 增/改/删 | 默认值 | 不配置时行为 | `.env.example` / docs / Web 设置页 / Actions 是否同步
+  - **API / Schema / CLI**：接口或参数变化 | Web / Desktop 消费方是否同步
+  - **UI / 报告 / 通知可视变化**：受影响页面或渠道 | 截图或替代可视证据状态（已核对当前 Head 画面 / 仅有链接未看 / 缺失）
+- **未命中维度**：其余 N 维均未命中（依据：<diff 路径范围与关键字检索为空>）。
+
+## 4. 问题清单、描述差异 & 验证证据
+- **阻断项 / 建议项**：`[阻断|建议] path:line` — 触发条件 → 后果 → 修改建议（无则写“无”）
+- **未覆盖同语义入口 / 描述与 diff 差异**：<无，或逐条列出>
+- **验证证据**：CI 结果、测试是否覆盖真实风险层、本地补验（如有）
+
+## 5. 不可逆变更
+- 仅当存在数据库/持久化格式变更、运行时配置自动改写/迁移、外部状态写入（自选/账本/通知）、或发布策略变化时展开旧数据/配置处理与恢复路径；否则只写：`无`。
+```
+
+> **评审评论草稿**：默认不输出，仅在用户要求“给评论草稿”时附在末尾。
+
+## 输出前自检
+
+- [ ] 已读文件数 == `changedFiles`
+- [ ] 14 维影响面均已核查（命中项有明细，未命中项有依据）
+- [ ] 每条问题有 `path:line` 与触发条件，全文无禁用套话
+- [ ] 已核对 CI 对应 SHA == `headRefOid`
+
+## 需用户确认的动作
+
+发布评论、Approve、Request changes、Merge、关闭 PR 前必须先征得用户确认。

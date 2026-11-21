@@ -17,6 +17,7 @@ from src.agent.protocols import (
     AgentContext,
     AgentOpinion,
     StageFailureReason,
+    StageStatus,
     normalize_stage_failure_reason,
 )
 
@@ -103,16 +104,27 @@ class AgentRuntimeFacts:
     degraded_events: Tuple[DegradedEvent, ...] = ()
     pipeline_termination: Optional[PipelineTerminationFact] = None
     risk_override_application: Optional[RiskOverrideApplication] = None
+    evidence_debate_trigger_reason: Optional[str] = None
+    risk_review_required: bool = False
+    risk_review_status: Optional[StageStatus] = None
 
 
 def build_agent_runtime_facts(ctx: AgentContext) -> AgentRuntimeFacts:
     """Build a validated low-sensitivity snapshot from an Agent context."""
+    brief = ctx.meta.get("evidence_debate_brief")
+    trigger_reason = brief.get("trigger_reason") if isinstance(brief, dict) else None
+    review_status = ctx.meta.get("risk_review_status")
     return AgentRuntimeFacts(
         base_agent_opinions=tuple(_iter_base_agent_opinions(ctx)),
         skill_opinions=tuple(_iter_skill_opinions(ctx)),
         degraded_events=tuple(_iter_degraded_events(ctx)),
         pipeline_termination=_pipeline_termination(ctx),
         risk_override_application=_risk_override_application(ctx),
+        evidence_debate_trigger_reason=trigger_reason if trigger_reason in (
+            "mixed_directional_signals", "high_conviction_buy"
+        ) else None,
+        risk_review_required=ctx.meta.get("risk_review_required") is True,
+        risk_review_status=review_status if isinstance(review_status, StageStatus) else None,
     )
 
 

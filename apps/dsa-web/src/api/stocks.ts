@@ -1,4 +1,5 @@
 import apiClient from './index';
+import { toCamelCase } from './utils';
 
 export type ExtractItem = {
   code?: string | null;
@@ -10,6 +11,24 @@ export type ExtractFromImageResponse = {
   codes: string[];
   items?: ExtractItem[];
   rawText?: string;
+};
+
+export type StockKLineItem = {
+  date: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume?: number | null;
+  amount?: number | null;
+  changePercent?: number | null;
+};
+
+export type StockHistoryResponse = {
+  stockCode: string;
+  stockName?: string | null;
+  period: string;
+  data: StockKLineItem[];
 };
 
 export const stocksApi = {
@@ -50,5 +69,17 @@ export const stocksApi = {
       return { codes: data.codes ?? [], items: data.items };
     }
     throw new Error('请提供文件或粘贴文本');
+  },
+
+  async getHistory(
+    stockCode: string,
+    days = 60,
+    period: 'daily' | 'weekly' | 'monthly' = 'daily',
+  ): Promise<StockHistoryResponse> {
+    const response = await apiClient.get<Record<string, unknown>>(
+      `/api/v1/stocks/${encodeURIComponent(stockCode)}/history`,
+      { params: { period, days } },
+    );
+    return toCamelCase<StockHistoryResponse>(response.data);
   },
 };

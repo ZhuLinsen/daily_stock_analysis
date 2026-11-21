@@ -80,7 +80,7 @@ docs: update README deployment section
 
 After opening a PR, CI will automatically run the following PR checks:
 
-PRs that only change ordinary `docs/**`, non-governance Markdown, or `LICENSE` keep lightweight change detection, governance validation, and gate summarization, while skipping the three backend test shards, Docker, Web, and desktop packaging. Contract documentation, static API specifications, and Markdown fixtures read directly by offline tests still trigger backend tests. Governance assets such as `AGENTS.md`, `.github/instructions/**`, and `.claude/skills/**` are still validated by `ai-governance`; runtime-affecting text files such as configuration, dependency, and workflow files still run their corresponding full checks.
+PRs that only change ordinary `docs/**`, non-governance Markdown, or `LICENSE` keep lightweight change detection, governance validation, and gate summarization, while skipping the three backend test shards, Docker, Web, and desktop packaging. Contract documentation, static API specifications, and Markdown fixtures read directly by offline tests still trigger backend tests. Governance assets such as `AGENTS.md`, `.github/instructions/**`, and `.agents/skills/**` are still validated by `ai-governance`; runtime-affecting text files such as configuration, dependency, and workflow files still run their corresponding full checks.
 
 | Check | Description | Required |
 |-------|-------------|:--------:|
@@ -109,13 +109,17 @@ npm run build
 
 When modifying a Chinese-language core document (e.g., `docs/full-guide.md`), your PR description **must state** whether the corresponding English document has been updated. If not updated, explain why.
 
-## 📋 Priority Areas for Contribution
+## 📋 Product Direction & Priority Areas for Contribution
 
-- 🔔 New notification channels (e.g., Slack, Matrix)
-- 🤖 New AI model integrations
-- 📊 New data source adapters
-- 🐛 Bug fixes and performance improvements
-- 📖 Documentation improvements and translations
+The project already has a complete end-to-end workflow and follows a **"do less, better"** principle: prioritize subtraction, simplicity, and core reliability over adding niche features, duplicate config templates, parallel entry points, or low-frequency toggles. **Before developing a substantial new feature, we recommend opening an Issue first to align on necessity and scope; regular bug fixes, UX improvements, and small focused enhancements can be submitted directly as PRs.**
+
+Priority areas (ordered by priority; see [README](../README.md) for core entry points):
+
+- 🐛 **Core bug fixes & reliability** (data ingestion, analysis quality, timeout/fallback isolation, notification delivery)
+- ✨ **Simplification & subtraction** (streamlining config/UX, removing redundant paths, improving diagnostics)
+- ⚡ **Performance & deterministic tests** (covering real risk paths)
+- 📖 **Accurate, concise documentation** (aligned with executable code without duplicating guides)
+- 🧩 **High-value core capabilities aligned in an Issue first** (clear, frequent user value without adding unnecessary complexity)
 
 ## ❓ Questions
 

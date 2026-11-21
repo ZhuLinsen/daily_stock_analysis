@@ -78,10 +78,12 @@ run.sh
 
 verify_*.py
 
-# ignore Claude workspace artifacts, but keep shared repo skills versioned
+# ignore local AI workspace artifacts, but keep the Claude compatibility skill entry versioned
 .claude/*
+!.claude/skills
 !.claude/skills/
 !.claude/skills/**
+.reviews/
 
 # ignore static files
 static/

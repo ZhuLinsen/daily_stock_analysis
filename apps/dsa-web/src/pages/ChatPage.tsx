@@ -27,9 +27,9 @@ import {
 import { isNearBottom } from '../utils/chatScroll';
 import { getReportText } from '../utils/reportLanguage';
 import {
-  findMatchingStockCode,
   includesStockCode,
   resolveRegisteredIndexCanonical,
+  toAssetAwareCodeKey,
 } from '../utils/stockCode';
 import { useStockIndex } from '../hooks/useStockIndex';
 import { useUiLanguage } from '../contexts/UiLanguageContext';
@@ -173,8 +173,12 @@ const ChatPage: React.FC = () => {
   }, [loadWatchlist]);
 
   const stockInWatchlist = useCallback(
-    (stockCode: string) => includesStockCode(watchlistCodes, stockCode),
-    [watchlistCodes],
+    (stockCode: string) => includesStockCode(
+      watchlistCodes,
+      stockCode,
+      (code) => resolveRegisteredIndexCanonical(stockIndex, code) ?? toAssetAwareCodeKey(code, 'stock'),
+    ),
+    [stockIndex, watchlistCodes],
   );
 
   const handleToggleWatchlist = useCallback(
@@ -183,9 +187,8 @@ const ChatPage: React.FC = () => {
       setIsWatchlistActioning(true);
       setWatchlistMessage(null);
       try {
-        const existingStockCode = findMatchingStockCode(watchlistCodes, stockCode);
-        if (existingStockCode) {
-          const codes = await systemConfigApi.removeFromWatchlist(existingStockCode);
+        if (stockInWatchlist(stockCode)) {
+          const codes = await systemConfigApi.removeFromWatchlist(stockCode);
           if (isMountedRef.current) {
             setWatchlistCodes(codes);
             setWatchlistMessage(`已从自选中移除 ${stockCode}`);
@@ -215,7 +218,7 @@ const ChatPage: React.FC = () => {
         }
       }
     },
-    [isWatchlistActioning, watchlistCodes],
+    [isWatchlistActioning, stockInWatchlist],
   );
 
   const {
@@ -1470,6 +1473,7 @@ const ChatPage: React.FC = () => {
                   variant="secondary"
                   size="xsm"
                   isLoading={isWatchlistActioning}
+                  disabled={stockIndexLoading}
                   onClick={() => void handleToggleWatchlist(activeStockCode)}
                   className="text-[11px]"
                 >

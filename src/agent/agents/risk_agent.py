@@ -100,6 +100,11 @@ from your search results. Do NOT invent risks.
         if ctx.get_data("intel_opinion"):
             parts.append(f"\n[Existing intel data]\n{json.dumps(ctx.get_data('intel_opinion'), ensure_ascii=False, default=str)}")
 
+        brief = ctx.meta.get("evidence_debate_brief")
+        if brief:
+            parts.append("Review the risks raised by these upstream opinions and verify material claims against available evidence.")
+            parts.append(json.dumps(brief, ensure_ascii=False))
+
         return "\n".join(parts)
 
     def post_process(self, ctx: AgentContext, raw_text: str) -> Optional[AgentOpinion]:
@@ -108,16 +113,11 @@ from your search results. Do NOT invent risks.
             logger.warning("[RiskAgent] failed to parse risk JSON")
             return None
 
-        # Propagate structured risk flags to context
-        for flag in parsed.get("flags", []):
-            if isinstance(flag, dict):
-                ctx.add_risk_flag(
-                    category=flag.get("category", "unknown"),
-                    description=flag.get("description", ""),
-                    severity=flag.get("severity", "medium"),
-                )
+        if ctx.meta.get("risk_review_required") and not is_complete_risk_review(parsed):
+            logger.warning("[RiskAgent] mandatory risk assessment is incomplete or invalid")
+            return None
 
-        return AgentOpinion(
+        opinion = AgentOpinion(
             agent_name=self.agent_name,
             signal=_risk_to_signal(parsed.get("risk_level", "none")),
             confidence=float(parsed.get("risk_score", 50)) / 100.0,
@@ -125,14 +125,48 @@ from your search results. Do NOT invent risks.
             raw_data=parsed,
         )
 
+        # Propagate structured risk flags to context
+        for flag in parsed.get("flags", []):
+            if isinstance(flag, dict):
+                ctx.add_risk_flag(
+                    category=flag.get("category", "unknown"),
+                    description=flag.get("description", ""),
+                    severity=flag.get("severity", "medium"),
+                    source=flag.get("source"),
+                )
+
+        return opinion
+
+
+_RISK_SIGNALS = {"none": "buy", "low": "hold", "medium": "sell", "high": "strong_sell"}
+
+
+def is_complete_risk_review(assessment: object) -> bool:
+    """Require a usable assessment before clearing the mandatory review."""
+    if not isinstance(assessment, dict):
+        return False
+    level = assessment.get("risk_level")
+    score = assessment.get("risk_score")
+    reasoning = assessment.get("reasoning")
+    flags = assessment.get("flags")
+    if (
+        not isinstance(level, str) or level not in _RISK_SIGNALS
+        or type(score) not in (int, float) or not 0 <= score <= 100
+        or not isinstance(reasoning, str) or not reasoning.strip()
+        or not isinstance(flags, list)
+        or not isinstance(assessment.get("veto_buy"), bool)
+        or assessment.get("signal_adjustment") not in ("none", "downgrade_one", "downgrade_two", "veto")
+    ):
+        return False
+    return all(
+        isinstance(flag, dict)
+        and flag.get("severity") in ("high", "medium", "low")
+        and isinstance(flag.get("description"), str) and flag["description"].strip()
+        for flag in flags
+    )
+
 
 def _risk_to_signal(risk_level: str) -> str:
     """Map risk level to a trading signal (inverted)."""
-    mapping = {
-        "none": "buy",
-        "low": "hold",
-        "medium": "sell",
-        "high": "strong_sell",
-    }
-    return mapping.get(risk_level, "hold")
+    return _RISK_SIGNALS.get(risk_level, "hold")
 

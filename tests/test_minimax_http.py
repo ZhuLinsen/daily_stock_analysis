@@ -160,6 +160,141 @@ def run_transport_contract():
                 assert analyzer.generate_text("Analyze the current market.") == "Market analysis complete."
                 assert len(requests) == 3
 
+    # Verify YAML deployment extra_body (e.g. OpenRouter provider routing & privacy)
+    # is preserved and merged with reasoning_effort=low across Agent, Analyzer,
+    # explicit user overrides, and multi-deployment Router retries.
+    openrouter_url = "https://openrouter.ai/api/v1"
+    openrouter_model = "openai/minimax/minimax-m3.1-flash"
+    provider_policy = {
+        "only": ["minimax"],
+        "allow_fallbacks": False,
+        "data_collection": "deny",
+    }
+    openrouter_requests = []
+    openrouter_errors = []
+
+    def handle_openrouter(_transport, request):
+        assert str(request.url) == openrouter_url + "/chat/completions"
+        body = json.loads(request.read())
+        auth = request.headers["authorization"]
+        openrouter_requests.append((auth, body))
+        if auth == "Bearer key-fail-once":
+            return httpx.Response(500, request=request, json={"error": {"message": "transient upstream error"}})
+        return httpx.Response(200, request=request, json={
+            "id": "chatcmpl-or", "object": "chat.completion", "created": 1,
+            "model": body["model"], "choices": [{"index": 0, "finish_reason": "stop",
+                "message": {"role": "assistant", "content": "OpenRouter response ok."}}],
+        })
+
+    def send_openrouter(client, request, **_kwargs):
+        try:
+            return handle_openrouter(client, request)
+        except Exception:
+            openrouter_errors.append(traceback.format_exc())
+            raise
+
+    yaml_model_list = [
+        {
+            "model_name": openrouter_model,
+            "litellm_params": {
+                "model": openrouter_model,
+                "api_base": openrouter_url,
+                "api_key": "test-only",
+                "extra_body": {"provider": dict(provider_policy)},
+            },
+        }
+    ]
+    override_model_list = [
+        {
+            "model_name": openrouter_model,
+            "litellm_params": {
+                "model": openrouter_model,
+                "api_base": openrouter_url,
+                "api_key": "test-override",
+                "extra_body": {
+                    "provider": dict(provider_policy),
+                    "reasoning_effort": "high",
+                },
+            },
+        }
+    ]
+    retry_model_list = [
+        {
+            "model_name": openrouter_model,
+            "litellm_params": {
+                "model": openrouter_model,
+                "api_base": openrouter_url,
+                "api_key": "key-fail-once",
+                "extra_body": {"provider": {"only": ["minimax-primary"], "allow_fallbacks": False}},
+            },
+        },
+        {
+            "model_name": openrouter_model,
+            "litellm_params": {
+                "model": openrouter_model,
+                "api_base": openrouter_url,
+                "api_key": "key-backup",
+                "extra_body": {"provider": {"only": ["minimax-backup"], "data_collection": "deny"}},
+            },
+        },
+    ]
+
+    with patch.object(SyncAPIClient, "_send_request", send_openrouter), \
+            patch("socket.socket.connect", side_effect=AssertionError("Unexpected network access")):
+        from src.analyzer import GeminiAnalyzer
+
+        yaml_cfg = Config(
+            stock_list=[],
+            litellm_model=openrouter_model,
+            llm_model_list=yaml_model_list,
+        )
+        or_adapter = LLMToolAdapter(yaml_cfg)
+        assert or_adapter.call_text([{"role": "user", "content": "Hello"}]).content == "OpenRouter response ok."
+        assert or_adapter.call_with_tools([{"role": "user", "content": "Hello"}], tools).content == "OpenRouter response ok."
+        or_analyzer = GeminiAnalyzer(config=yaml_cfg)
+        assert or_analyzer.generate_text("Analyze OpenRouter.") == "OpenRouter response ok."
+        assert not openrouter_errors, "\n".join(openrouter_errors)
+        assert len(openrouter_requests) == 3
+        for _auth, body in openrouter_requests:
+            assert body.get("provider") == provider_policy, body
+            assert body.get("reasoning_effort") == "low", body
+
+        openrouter_requests.clear()
+        override_cfg = Config(
+            stock_list=[],
+            litellm_model=openrouter_model,
+            llm_model_list=override_model_list,
+        )
+        assert LLMToolAdapter(override_cfg).call_text([{"role": "user", "content": "Hi"}]).content == "OpenRouter response ok."
+        assert GeminiAnalyzer(config=override_cfg).generate_text("Hi") == "OpenRouter response ok."
+        assert not openrouter_errors, "\n".join(openrouter_errors)
+        assert len(openrouter_requests) == 2
+        for _auth, body in openrouter_requests:
+            assert body.get("provider") == provider_policy, body
+            assert body.get("reasoning_effort") == "high", body
+
+        openrouter_requests.clear()
+        retry_cfg = Config(
+            stock_list=[],
+            litellm_model=openrouter_model,
+            llm_model_list=retry_model_list,
+        )
+        retry_adapter = LLMToolAdapter(retry_cfg)
+        with patch.object(
+            retry_adapter._router,
+            "get_available_deployment",
+            side_effect=[retry_adapter._router.model_list[0], retry_adapter._router.model_list[1]],
+        ):
+            assert retry_adapter.call_text([{"role": "user", "content": "Retry"}]).content == "OpenRouter response ok."
+        assert not openrouter_errors, "\n".join(openrouter_errors)
+        assert len(openrouter_requests) == 2
+        assert openrouter_requests[0][0] == "Bearer key-fail-once"
+        assert openrouter_requests[0][1].get("provider") == {"only": ["minimax-primary"], "allow_fallbacks": False}
+        assert openrouter_requests[0][1].get("reasoning_effort") == "low"
+        assert openrouter_requests[1][0] == "Bearer key-backup"
+        assert openrouter_requests[1][1].get("provider") == {"only": ["minimax-backup"], "data_collection": "deny"}
+        assert openrouter_requests[1][1].get("reasoning_effort") == "low"
+
     # The real SDK's registry must expose the capacities used for token budgeting.
     register_fallback_model_pricing(["openai/MiniMax-M3.1-Flash"])
     info = litellm.model_cost["MiniMax-M3.1-Flash"]
@@ -170,7 +305,7 @@ def run_transport_contract():
     assert info["input_cost_per_token"] == 0.00000015
     assert info["output_cost_per_token"] == 0.0000006
     assert info["cache_read_input_token_cost"] == 0.000000015
-    print("Real SDK HTTP: 7 cases, 15 requests; tools, reasoning replay, URL/data images, models/base URLs preserved")
+    print("Real SDK HTTP: 7 cases + OpenRouter extra_body preservation/override/retry verified")
 
 
 if __name__ == "__main__":

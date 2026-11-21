@@ -1,6 +1,13 @@
 import type React from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { BarChart3, Check, SlidersHorizontal, X } from 'lucide-react';
+import {
+  BarChart3,
+  Check,
+  FileText,
+  SlidersHorizontal,
+  Sparkles,
+  X,
+} from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { getParsedApiError, type ParsedApiError } from '../api/error';
 import { analysisApi, DuplicateTaskError } from '../api/analysis';
@@ -28,6 +35,7 @@ import { useDashboardLifecycle, useHomeDashboardState } from '../hooks';
 import { useWatchlist } from '../hooks/useWatchlist';
 import { useUiLanguage } from '../contexts/UiLanguageContext';
 import type { SetupStatusResponse } from '../types/systemConfig';
+import { getSampleAnalysisReport } from '../data/sampleReport';
 import { normalizeReportLanguage } from '../utils/reportLanguage';
 import type {
   AnalyzeAsyncResponse,
@@ -38,7 +46,7 @@ import type {
   TaskInfo,
 } from '../types/analysis';
 import type { RunFlowSnapshotSource } from '../types/runFlow';
-import { getTodayInShanghai } from '../utils/format';
+import { getTodayInShanghai, shiftDateKey } from '../utils/format';
 import { useStockIndex } from '../hooks/useStockIndex';
 import { resolveRegisteredIndexCanonical, toAssetAwareCodeKey, type AssetAwareAssetType } from '../utils/stockCode';
 
@@ -136,12 +144,6 @@ function getShanghaiTimeValue(value?: string | null): number {
     : trimmed;
   const date = new Date(normalized);
   return Number.isNaN(date.getTime()) ? 0 : date.getTime();
-}
-
-function shiftDateKey(dateKey: string, days: number): string {
-  const date = new Date(`${dateKey}T12:00:00Z`);
-  date.setUTCDate(date.getUTCDate() + days);
-  return date.toISOString().slice(0, 10);
 }
 
 function getStockCodeKey(code?: string | null, assetType?: AssetAwareAssetType | null): string {
@@ -262,11 +264,8 @@ const HomePage: React.FC = () => {
   // (load failure), which keeps the existing fail-open stock semantics.
   const isStockIndexReady = isStockIndexLoaded || isStockIndexFallback;
 
-  // PR #2312: raw watchlist strings carry no asset type — only an exact
-  // canonical/display/alias hit on a loaded ``assetType=index`` registry row
-  // buckets the code as an index; anything else keeps the legacy stock
-  // normalization (fail-open). Backend-tagged items/tasks/reports never touch
-  // the registry — they use their explicit asset type directly.
+  // Raw watchlist strings use the index registry, then fall back to stock
+  // normalization. Backend-tagged items already carry an explicit asset type.
   const getWatchlistCodeIdentity = useCallback(
     (code: string | null | undefined): { key: string; assetType: AssetAwareAssetType } => {
       const trimmed = (code ?? '').trim();
@@ -288,6 +287,7 @@ const HomePage: React.FC = () => {
   );
 
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [samplePreviewOpen, setSamplePreviewOpen] = useState(false);
   const [isSubmittingMarketReview, setIsSubmittingMarketReview] = useState(false);
   const [marketReviewNotice, setMarketReviewNotice] = useState<MarketReviewNotice>(null);
   const [marketReviewError, setMarketReviewError] = useState<ParsedApiError | null>(null);
@@ -628,6 +628,8 @@ const HomePage: React.FC = () => {
     }
   }, [closeStrategyMenu, focusStrategyItem, strategyOptions.length]);
   const setupNeedsAction = setupStatus ? !setupStatus.isComplete : false;
+  const sampleReport = useMemo(() => getSampleAnalysisReport(uiLanguage), [uiLanguage]);
+  const showSamplePreview = samplePreviewOpen && !selectedReport && !marketReviewReport;
   const setupMissingLabels = useMemo(() => {
     if (!setupStatus) {
       return '';
@@ -708,7 +710,7 @@ const HomePage: React.FC = () => {
     }
   }, [isLoadingStockBar, stockBarItems.length]);
 
-  const watchlistState = useWatchlist();
+  const watchlistState = useWatchlist(getWatchlistCodeKey);
   const refreshWatchlist = watchlistState.refresh;
   const watchlistCodesByNormalized = useMemo(() => {
     const codesByNormalized = new Map<string, string>();
@@ -837,6 +839,7 @@ const HomePage: React.FC = () => {
   }, [stopMarketReviewPolling]);
 
   const handleHistoryItemClick = useCallback((recordId: number) => {
+    setSamplePreviewOpen(false);
     clearMarketReviewState();
     void selectHistoryItem(recordId);
     setSidebarOpen(false);
@@ -874,11 +877,13 @@ const HomePage: React.FC = () => {
       stockName?: string,
       selectionSource?: 'manual' | 'autocomplete' | 'import' | 'image',
       analysisSkills?: string[],
+      originalQueryOverride?: string,
     ) => {
+      setSamplePreviewOpen(false);
       void submitAnalysis({
         stockCode,
         stockName,
-        originalQuery: query,
+        originalQuery: originalQueryOverride ?? (query.trim() ? query : (stockCode ?? '')),
         selectionSource: selectionSource ?? 'manual',
         skills: analysisSkills ?? selectedAnalysisSkills,
       });
@@ -888,7 +893,9 @@ const HomePage: React.FC = () => {
 
   useEffect(() => {
     const state = location.state as StockAnalysisNavigationState | null;
-    const stockCode = typeof state?.stockCode === 'string' ? state.stockCode.trim() : '';
+    const stateCode = typeof state?.stockCode === 'string' ? state.stockCode.trim() : '';
+    const queryCode = !stateCode ? (new URLSearchParams(location.search).get('stock') || '').trim() : '';
+    const stockCode = stateCode || queryCode;
     if (!stockCode) {
       return;
     }
@@ -898,7 +905,7 @@ const HomePage: React.FC = () => {
     if (state?.autoAnalyze) {
       handleSubmitAnalysis(stockCode, stockName || undefined, 'import', state.skills);
     }
-  }, [handleSubmitAnalysis, location.pathname, location.state, navigate, setQuery]);
+  }, [handleSubmitAnalysis, location.pathname, location.search, location.state, navigate, setQuery]);
 
   const handleAskFollowUp = useCallback(() => {
     if (selectedReport?.meta.id === undefined || selectedReport.meta.reportType === 'market_review') {
@@ -1070,6 +1077,7 @@ const HomePage: React.FC = () => {
   );
 
   const handleTriggerMarketReview = useCallback(async () => {
+    setSamplePreviewOpen(false);
     setIsSubmittingMarketReview(true);
     setMarketReviewNotice(null);
     setMarketReviewError(null);
@@ -1866,11 +1874,43 @@ const HomePage: React.FC = () => {
                   />
                 )}
               </div>
+            ) : !marketReviewReport && showSamplePreview ? (
+              <div className="max-w-4xl space-y-4 pb-8">
+                <InlineAlert
+                  variant="info"
+                  title={t('home.sampleBannerTitle')}
+                  message={t('home.sampleBannerMessage')}
+                  action={(
+                    <div className="flex flex-wrap items-center gap-2">
+                      {setupNeedsAction ? (
+                        <Button
+                          type="button"
+                          variant="primary"
+                          size="sm"
+                          onClick={() => navigate('/settings')}
+                        >
+                          {t('home.openSettings')}
+                        </Button>
+                      ) : null}
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => setSamplePreviewOpen(false)}
+                      >
+                        {t('home.closeSamplePreview')}
+                      </Button>
+                    </div>
+                  )}
+                  className="rounded-xl px-3 py-2 text-xs shadow-none"
+                />
+                <ReportSummary data={sampleReport} />
+              </div>
             ) : !marketReviewReport ? (
-              <div className="flex h-full items-center justify-center">
+              <div className="flex min-h-full flex-col items-center justify-center gap-6 py-6">
                 <EmptyState
                   title={t('home.startAnalysisTitle')}
-                  description={t('home.startAnalysisDescription')}
+                  description={setupNeedsAction ? t('home.setupEmptyHint') : t('home.startAnalysisDescription')}
                   className="max-w-xl border-dashed"
                   icon={(
                     <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1878,6 +1918,70 @@ const HomePage: React.FC = () => {
                     </svg>
                   )}
                 />
+                {setupNeedsAction ? (
+                  <div className="flex flex-wrap items-center justify-center gap-3">
+                    <Button
+                      type="button"
+                      variant="primary"
+                      size="md"
+                      onClick={() => navigate('/settings')}
+                    >
+                      {t('home.openSettings')}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="md"
+                      onClick={() => setSamplePreviewOpen(true)}
+                    >
+                      <FileText className="h-4 w-4" aria-hidden="true" />
+                      {t('home.previewSampleReport')}
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="w-full max-w-2xl space-y-4">
+                    {mergedStockBarItems.length === 0 ? (
+                      <div className="flex flex-wrap items-center justify-center gap-2">
+                        <span className="inline-flex items-center gap-1 text-xs text-muted-text">
+                          <Sparkles className="h-3.5 w-3.5 text-primary" aria-hidden="true" />
+                          {t('home.quickTryLabel')}
+                        </span>
+                        {[
+                          { code: '600519', label: t('home.quickTryMoutai') },
+                          { code: 'hk00700', label: t('home.quickTryTencent') },
+                          { code: 'AAPL', label: t('home.quickTryApple') },
+                          { code: '2330.TW', label: t('home.quickTryTsmc') },
+                        ].map((chip) => (
+                          <button
+                            key={chip.code}
+                            type="button"
+                            aria-label={`${chip.code} ${chip.label}`}
+                            disabled={isAnalyzing}
+                            onClick={() => {
+                              setQuery(chip.code);
+                              handleSubmitAnalysis(chip.code, chip.label, 'manual', undefined, chip.code);
+                            }}
+                            className="inline-flex items-center gap-1.5 rounded-full border border-subtle bg-surface/70 px-3 py-1 text-xs font-medium text-foreground transition-colors hover:border-primary/50 hover:bg-primary/10 hover:text-primary disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            <span className="num font-mono">{chip.code}</span>
+                            <span className="text-muted-text">{chip.label}</span>
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
+                    <div className="flex justify-center">
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => setSamplePreviewOpen(true)}
+                      >
+                        <FileText className="h-3.5 w-3.5" aria-hidden="true" />
+                        {t('home.previewSampleReport')}
+                      </Button>
+                    </div>
+                  </div>
+                )}
               </div>
             ) : null}
           </section>
