@@ -135,8 +135,11 @@ def call_litellm_with_param_recovery(
         timeout = kwargs.get("timeout")
         if isinstance(timeout, (int, float)) and timeout > 0:
             remaining = min(remaining, timeout)
-        # Keep retries in the cancellation-aware model and parameter recovery loops.
-        return call({**kwargs, "timeout": remaining, "num_retries": 0})
+        # Keep the Router's same-model deployment retries. The stock executor
+        # enforces the batch deadline even if the SDK is still retrying.
+        response = call({**kwargs, "timeout": remaining})
+        raise_if_stock_cancelled()
+        return response
 
     effective_kwargs = dict(call_kwargs)
     try:

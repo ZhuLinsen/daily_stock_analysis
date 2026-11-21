@@ -453,11 +453,13 @@ For the notification baseline, diagnostics, and deployment notes, see [Notificat
 | `LOG_DIR` | Log directory | `./logs` |
 | `SAVE_CONTEXT_SNAPSHOT` | Persist analysis-history `context_snapshot`. When false, new history records do not save enhanced_context, market_phase_summary, AnalysisContextPack overview, or diagnostic snapshots, but current-run prompt summaries remain enabled | `true` |
 
+`PER_STOCK_TIMEOUT_SECONDS` applies to batch runs from the CLI, daily GitHub Actions, scheduled analysis, and Bot batch commands. Interactive Web and Desktop requests run individual analyses through the API task queue.
+
 Within the same process, a stock analysis that reaches its per-stock time limit holds its slot until its worker and any in-flight calls exit. Later batches share that capacity. Prefetching uses the same time limit and is skipped when all slots are busy. Other running stocks can finish within their own time limits. If all remaining stocks are queued, the batch skips them after waiting one per-stock timeout for a free slot. Cancellation cleans up local generation processes and is checked again after in-flight requests return. Setting `0` disables batch timeout isolation. Revert the corresponding code to undo changes to price checks, news handling, and risk summaries.
 
-If only an Agent tool reaches its own deadline, the stock slot is available for reuse once the analysis completes within its per-stock limit. Tool cancellation is cooperative, so in-flight requests may continue until the service responds or the network request times out.
+If an Agent tool, efinance request, or fundamentals call times out first and the stock analysis still finishes on time, its slot is available for reuse immediately. In-flight requests may continue until the service responds or the network request times out. Report history and news writes check for cancellation again after acquiring the database write lock and before committing.
 
-When timeout isolation is enabled, LiteLLM requests use the remaining per-stock budget. Model fallback and parameter retries check the deadline before sending a request.
+When timeout isolation is enabled, the LiteLLM request timeout is capped by the remaining per-stock budget, and [Router retries within the same model group](https://docs.litellm.ai/docs/routing) remain enabled. Model fallback and parameter retries check the deadline before sending a request. SDK retries can outlast the stock deadline, and the batch executor discards late results.
 
 The GitHub Actions daily analysis workflow reads the Variable first and then the Secret of the same name. Either source accepts `0` to disable isolation.
 

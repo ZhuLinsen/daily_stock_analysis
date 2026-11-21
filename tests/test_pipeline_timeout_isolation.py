@@ -7,7 +7,7 @@ import subprocess
 import sys
 import threading
 import time
-from concurrent.futures import CancelledError
+from concurrent.futures import CancelledError, TimeoutError
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -287,7 +287,8 @@ def test_litellm_parameter_recovery_respects_stock_deadline():
     try:
         with pytest.raises(CancelledError):
             call_litellm_with_param_recovery(
-                completion, model="fixture", call_kwargs={"temperature": 0.2, "timeout": 30},
+                completion, model="fixture",
+                call_kwargs={"temperature": 0.2, "timeout": 30, "num_retries": 2},
             )
     finally:
         set_current_stock_cancellation(previous)
@@ -295,7 +296,44 @@ def test_litellm_parameter_recovery_respects_stock_deadline():
     completion.assert_called_once()
     kwargs = completion.call_args.args[0]
     assert 0 < kwargs["timeout"] <= 10
-    assert kwargs["num_retries"] == 0
+    assert kwargs["num_retries"] == 2
+
+
+def test_litellm_router_retries_same_model_deployment_with_stock_deadline():
+    # Agent unit tests can install a process-wide LiteLLM stub.
+    script = """
+import os
+import time
+from unittest.mock import patch
+
+os.environ["LITELLM_LOCAL_MODEL_COST_MAP"] = "True"
+import litellm
+from src.core.stock_execution_context import StockCancellationToken, set_current_stock_cancellation
+from src.llm.errors import call_litellm_with_param_recovery
+
+deployments = [
+    {"model_name": "fixture", "litellm_params": {"model": "openai/gpt-4o", "api_key": key}}
+    for key in ("sk-primary", "sk-backup")
+]
+router = litellm.Router(model_list=deployments, num_retries=2)
+available = router.get_model_list(model_name="fixture")
+response = litellm.ModelResponse(choices=[{"message": {"role": "assistant", "content": "recovered"}}])
+failure = litellm.RateLimitError(message="fixture limit", llm_provider="openai", model="gpt-4o")
+set_current_stock_cancellation(StockCancellationToken(time.monotonic() + 10))
+with patch.object(router, "get_available_deployment", side_effect=available):
+    with patch.object(litellm, "completion", side_effect=[failure, response]) as completion:
+        result = call_litellm_with_param_recovery(
+            lambda kwargs: router.completion(**kwargs),
+            model="fixture",
+            call_kwargs={"model": "fixture", "messages": [{"role": "user", "content": "test"}]},
+        )
+
+assert result.choices[0].message.content == "recovered"
+assert [call.kwargs["api_key"] for call in completion.call_args_list] == ["sk-primary", "sk-backup"]
+assert all(0 < call.kwargs["timeout"] <= 10 for call in completion.call_args_list)
+"""
+    completed = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=20)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
 
 
 def test_shutdown_cancels_queued_stock_before_releasing_running_slot():
@@ -507,6 +545,139 @@ def test_pipeline_reuses_completed_stock_slot_after_agent_tool_timeout(monkeypat
 
     assert search_cancellation == [(True, False)]
     db.save_news_intel.assert_not_called()
+
+
+@pytest.mark.parametrize("provider", ["efinance", "fundamental"])
+def test_completed_stock_releases_slot_after_provider_timeout(provider):
+    from data_provider.base import DataFetcherManager
+    from data_provider.efinance_fetcher import _ef_call_with_timeout
+    from src.core.stock_execution_context import is_current_stock_cancelled
+
+    expired = threading.Event()
+    checked = threading.Event()
+    release = threading.Event()
+    worker_threads = []
+    observed = []
+
+    def hung_provider():
+        worker_threads.append(threading.current_thread())
+        if expired.wait(timeout=4):
+            observed.append(is_current_stock_cancelled())
+            checked.set()
+        release.wait(timeout=4)
+
+    def process(code):
+        if code == "600519":
+            if provider == "efinance":
+                with pytest.raises(TimeoutError):
+                    _ef_call_with_timeout(hung_provider, timeout=0.1)
+            else:
+                manager = DataFetcherManager()
+                result, error, _ = manager._run_with_timeout(hung_provider, 0.1, "fixture")
+                assert result is None and error == "fixture timeout"
+            expired.set()
+            assert checked.wait(timeout=2)
+            assert not is_current_stock_cancelled()
+        else:
+            assert worker_threads[0].is_alive()
+        return code
+
+    executor = _DaemonThreadStockExecutor(timeout_seconds=3, max_workers=1)
+    try:
+        first = executor.submit(process, "600519")
+        second = executor.submit(process, "AAPL")
+        assert first.result(timeout=4) == "600519"
+        assert second.result(timeout=2) == "AAPL"
+        assert observed == [True]
+    finally:
+        expired.set()
+        release.set()
+        executor.shutdown(wait=True, cancel_futures=True)
+        for worker in worker_threads:
+            worker.join(timeout=3)
+
+
+@pytest.mark.parametrize("entrypoint,lock_type", [
+    ("history", "writer"),
+    ("history", "reader"),
+    ("history", "retry"),
+    ("agent_news", "writer"),
+])
+def test_cancelled_save_does_not_write_after_sqlite_lock_released(tmp_path, monkeypatch, entrypoint, lock_type):
+    from concurrent.futures import ThreadPoolExecutor
+
+    from sqlalchemy import event
+
+    from src.agent.tools import search_tools
+    from src.agent.tools.execution import TOOL_CANCEL_EVENT
+    from src.analyzer import AnalysisResult
+    from src.search_service import SearchResponse, SearchResult
+    from src.storage import DatabaseManager
+
+    if lock_type == "reader":
+        monkeypatch.setattr("src.storage.get_config", lambda: Config(sqlite_wal_enabled=False))
+    elif lock_type == "retry":
+        config = Config(sqlite_busy_timeout_ms=50, sqlite_write_retry_max=5, sqlite_write_retry_base_delay=0.1)
+        monkeypatch.setattr("src.storage.get_config", lambda: config)
+    db = DatabaseManager(db_url=f"sqlite:///{tmp_path / 'locked.db'}")
+    monkeypatch.setattr(search_tools, "_get_db", lambda: db)
+    waiting_for_lock = threading.Event()
+    write_attempts = []
+    tool_cancelled = threading.Event()
+    code = "600519"
+
+    @event.listens_for(db._engine, "before_cursor_execute")
+    def observe_write(_conn, _cursor, statement, *_args):
+        if statement in ("BEGIN IMMEDIATE", "BEGIN EXCLUSIVE"):
+            write_attempts.append(statement)
+            if lock_type != "retry" or len(write_attempts) >= 2:
+                waiting_for_lock.set()
+
+    def save_report(stock_code):
+        result = AnalysisResult(
+            code=stock_code, name="贵州茅台", sentiment_score=50,
+            trend_prediction="未知", operation_advice="观望",
+        )
+        return db.save_analysis_history(result, "fixture-report", "simple", None)
+
+    def save_agent_news():
+        context = TOOL_CANCEL_EVENT.set(tool_cancelled)
+        try:
+            response = SearchResponse("news", [
+                SearchResult("公告", "贵州茅台公告", "https://example.invalid/news", "fixture"),
+            ], "fixture")
+            search_tools._persist_news_response(
+                stock_code=code, stock_name="贵州茅台", dimension="latest_news", response=response,
+            )
+        finally:
+            TOOL_CANCEL_EVENT.reset(context)
+
+    executor = _DaemonThreadStockExecutor(timeout_seconds=1) if entrypoint == "history" else ThreadPoolExecutor(1)
+    try:
+        with db._engine.connect() as blocker:
+            if lock_type == "reader":
+                blocker.exec_driver_sql("BEGIN")
+                blocker.exec_driver_sql("SELECT id FROM analysis_history").all()
+            else:
+                blocker.exec_driver_sql("BEGIN IMMEDIATE")
+            waiting_for_lock.clear()
+            if entrypoint == "history":
+                future = executor.submit(save_report, code)
+                assert waiting_for_lock.wait(timeout=2)
+                assert future.result(timeout=3) is None
+            else:
+                future = executor.submit(save_agent_news)
+                assert waiting_for_lock.wait(timeout=2)
+                tool_cancelled.set()
+            blocker.rollback()
+        assert future.result(timeout=3) is None
+        executor.shutdown(wait=True)
+        assert db.get_analysis_history(query_id="fixture-report") == []
+        assert db.get_recent_news(code) == []
+        assert save_report(code) > 0
+    finally:
+        executor.shutdown(wait=True, cancel_futures=True)
+        DatabaseManager.reset_instance()
 
 
 @pytest.mark.parametrize("entrypoint", ["tool", "discovery", "efinance"])

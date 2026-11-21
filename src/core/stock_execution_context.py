@@ -120,7 +120,10 @@ class _StockChildThreadPool(Executor):
                 worker = threading.Thread(target=self._run, name=self._name, daemon=True)
                 self._token.start_worker(worker, abandon_when=self._abandon_workers_when)
                 self._workers.append(worker)
-            self._tasks.put((future, copy_context(), fn, args, kwargs))
+            context = copy_context()
+            if self._abandon_workers_when is not None:
+                context.run(track_stock_worker_abandonment, self._abandon_workers_when)
+            self._tasks.put((future, context, fn, args, kwargs))
             return future
 
     def _run(self) -> None:

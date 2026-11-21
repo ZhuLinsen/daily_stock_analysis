@@ -1079,6 +1079,10 @@ _SNIPER_CURRENCY_PRICE = re.compile(
     re.IGNORECASE,
 )
 _SNIPER_PRICE_REFERENCE = r"MA\s*\d+\b|\b(?:spot(?: price)?|current price)\b|现价|当前价"
+_SNIPER_PRICE_LABEL = re.compile(
+    r"^(?:stop[-\s]loss|(?:ideal|secondary)\s+(?:entry|buy(?:\s+point)?)|(?:take[-\s]profit|target))\s*[:：]\s*",
+    re.IGNORECASE,
+)
 
 
 def _extract_raw_sniper_points(result: "AnalysisResult") -> Dict[str, Any]:
@@ -1116,6 +1120,7 @@ def _extract_sniper_price_only(
         percent_match = re.search(rf"({_SNIPER_NUMBER})\s*[%％]", text)
         if percent_match:
             pre_paren = re.split(r"[(（]", text, maxsplit=1)[0].strip()
+            pre_paren = _SNIPER_PRICE_LABEL.sub("", pre_paren)
             price_match = _SNIPER_CURRENCY_PRICE.search(pre_paren)
             if price_match:
                 return _extract_positive_finite_float(price_match.group(1) or price_match.group(2))

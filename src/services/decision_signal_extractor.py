@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import logging
 import math
-import re
 from typing import Any, Dict, Literal, Mapping, Optional
 
 from data_provider.base import normalize_stock_code
@@ -462,58 +461,26 @@ def _extract_holding_state(portfolio_context: Optional[Mapping[str, Any]]) -> st
 
 
 def _risk_summary(result: AnalysisResult, dashboard: Mapping[str, Any]) -> Optional[Any]:
+    def risk_key(text: str) -> str:
+        return text.strip().rstrip("。.!！").rstrip()
+
     risks: list[str] = []
-    seen: list[str] = []
-    risk_warning = str(getattr(result, "risk_warning", None) or "").strip()
-    if risk_warning:
-        risks.append(risk_warning)
-        seen.append(risk_warning)
+    seen: set[str] = set()
+    items = [getattr(result, "risk_warning", None)]
     intelligence = _as_mapping(dashboard.get("intelligence"))
     risk_alerts = intelligence.get("risk_alerts")
     if isinstance(risk_alerts, list):
-        for item in risk_alerts:
-            text = str(item or "").strip()
-            if not text:
-                continue
-            if any(_risk_items_duplicate(text, prev) for prev in seen):
-                continue
-            risks.append(text)
-            seen.append(text)
+        items.extend(risk_alerts)
+    for item in items:
+        text = str(item or "").strip()
+        if not text or risk_key(text) in seen:
+            continue
+        risks.append(text)
+        seen.add(risk_key(text))
+        # Skip exact copies of separately listed clauses, such as the price
+        # sanity alert prepended to risk_warning with a semicolon.
+        seen.update(risk_key(clause) for clause in text.replace("；", ";").split(";"))
     return risks[:5] or None
-
-
-def _risk_items_duplicate(current: str, previous: str) -> bool:
-    """Deduplicate expanded copies while preserving opposite risk polarity."""
-    if current == previous:
-        return True
-    shorter, longer = sorted((current, previous), key=len)
-    if len(shorter) < 4 or shorter not in longer:
-        return False
-
-    # A negated warning and the positive alert are distinct evidence.  Keep
-    # both when the shared phrase is qualified by negation or conditional wording.
-    start = longer.find(shorter)
-    prefix = longer[:start].lower()
-    suffix = longer[start + len(shorter):].lower()
-    negations = (
-        "无", "没有", "不存在", "未见", "未发现", "暂无", "不构成", "不具备",
-        "no ", "not ", "without ", "none",
-    )
-    qualifiers = ("若", "如", "如果", "一旦", "若有", "如有", "若出现", "如出现")
-    resolving_terms = ("解除", "已消除", "不存在", "没有", "无")
-    if any(negation in prefix for negation in negations) or any(
-        qualifier in prefix for qualifier in qualifiers
-    ) or re.search(
-        r"\b(?:if|unless|provided that|in case of)\b", prefix,
-    ) or any(
-        term in suffix for term in resolving_terms
-    ) or re.search(
-        r"^[\s:—–-]*(?:(?:has been|had been|is|was)\s+)?(?:(?:fully|already)\s+)?"
-        r"(?:resolved|eliminated|removed|lifted|cleared|ruled out|no longer (?:present|exists|applies))\b",
-        suffix,
-    ):
-        return False
-    return True
 
 
 def _catalyst_summary(dashboard: Mapping[str, Any]) -> Optional[Any]:

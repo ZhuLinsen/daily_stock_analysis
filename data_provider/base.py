@@ -17,7 +17,7 @@
 import logging
 import random
 import time
-from threading import BoundedSemaphore, RLock, Thread
+from threading import BoundedSemaphore, Event, RLock, Thread
 from abc import ABC, abstractmethod
 from contextvars import copy_context
 from datetime import datetime, timezone
@@ -29,6 +29,7 @@ from src.core.stock_execution_context import (
     get_current_stock_cancellation,
     is_current_stock_cancelled,
     raise_if_stock_cancelled,
+    track_stock_worker_abandonment,
 )
 from src.data.stock_index_loader import get_index_stock_name
 from src.data.stock_mapping import STOCK_NAME_MAP, is_meaningful_stock_name
@@ -3523,22 +3524,25 @@ class DataFetcherManager:
                     slots.release()
 
         stock_token = get_current_stock_cancellation()
+        abandoned = Event()
         target = runner
         if stock_token is not None:
             context = copy_context()
+            context.run(track_stock_worker_abandonment, abandoned)
             target = lambda: context.run(runner)
         worker = Thread(target=target, daemon=True, name=f"fundamental-{task_name}")
         try:
             if stock_token is None:
                 worker.start()
             else:
-                stock_token.start_worker(worker)
+                stock_token.start_worker(worker, abandon_when=abandoned)
         except Exception as exc:
             slots.release()
             return None, str(exc), int((time.monotonic() - start) * 1000)
         worker.join(timeout=timeout_value)
         with self._fundamental_timeout_lock:
             if not state["completed"]:
+                abandoned.set()
                 if quarantine_key is not None:
                     state["timed_out"] = True
                     self._fundamental_timed_out_workers[quarantine_key] = (

@@ -35,6 +35,13 @@ def test_risk_summary_preserves_negated_substring_alerts() -> None:
     assert _risk_summary(result, dashboard) == ["无退市风险", "退市风险"]
 
 
+def test_risk_summary_preserves_additional_risks_in_compound_alert() -> None:
+    result = _result(risk_warning="流动性风险")
+    dashboard = {"intelligence": {"risk_alerts": ["流动性风险。", "流动性风险与退市风险"]}}
+
+    assert _risk_summary(result, dashboard) == ["流动性风险", "流动性风险与退市风险"]
+
+
 @pytest.mark.parametrize("resolved, alert", [
     ("目前不存在重大的退市风险", "退市风险"),
     ("退市风险已解除", "退市风险"),

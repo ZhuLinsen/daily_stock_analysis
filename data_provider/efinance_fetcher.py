@@ -28,6 +28,7 @@ import time
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 from dataclasses import dataclass, field
 from datetime import datetime
+from threading import Event
 from typing import Optional, Dict, Any, List, Tuple
 
 import pandas as pd
@@ -206,10 +207,14 @@ def _ef_call_with_timeout(func, *args, timeout=None, **kwargs):
         timeout = _EF_CALL_TIMEOUT
     # Do NOT use 'with ThreadPoolExecutor(...)' here: the context manager calls
     # shutdown(wait=True) on __exit__, which would re-block on the hung thread.
-    executor = stock_child_thread_pool(1, "efinance")
+    abandoned = Event()
+    executor = stock_child_thread_pool(1, "efinance", abandon_workers_when=abandoned)
     try:
         future = executor.submit(func, *args, **kwargs)
         return future.result(timeout=timeout)
+    except FuturesTimeoutError:
+        abandoned.set()
+        raise
     finally:
         # wait=False: calling thread returns immediately; worker cleans up later
         executor.shutdown(wait=False)

@@ -2292,6 +2292,10 @@ class SearchService:
         "earnings", "revenue", "profit", "guidance", "filing", "buyback",
         "dividend", "lawsuit", "merger", "acquisition",
     )
+    _MAINLAND_ISSUER_CODE = (
+        r"(?<![A-Za-z0-9.])(?:00|20|30|43|60|68|81|82|83|87|88|90|92)\d{4}(?![A-Za-z0-9])"
+    )
+    _LABELED_ISSUER_CODE = re.compile(rf"(?:证券|股票)代码\s*[:：]?\s*({_MAINLAND_ISSUER_CODE})")
     _COMPANY_EVENT_TERMS = (
         "公告", "披露", "发布", "收购", "回购", "减持", "增持", "诉讼", "处罚",
         "业绩", "财报", "营收", "净利润", "分红", "董事会", "股东大会", "订单",
@@ -3197,8 +3201,8 @@ class SearchService:
         stock_name: str,
     ) -> SearchResult:
         """Attach conservative, explainable relevance metadata to one news item."""
-        title = item.title or ""
-        snippet = item.snippet or ""
+        title = unicodedata.normalize("NFKC", item.title or "")
+        snippet = unicodedata.normalize("NFKC", item.snippet or "")
         url = item.url or ""
         source = item.source or ""
         full_text = " ".join([title, snippet, url, source])
@@ -3381,10 +3385,27 @@ class SearchService:
         if not response.success or not response.results:
             return response
 
-        scored_results = [
-            cls._score_news_relevance(item, stock_code=stock_code, stock_name=stock_name)
-            for item in response.results
-        ]
+        mainland_codes = {
+            term for term in cls._stock_code_identity_terms(stock_code)
+            if re.fullmatch(cls._MAINLAND_ISSUER_CODE, term)
+        }
+        scored_results = []
+        for item in response.results:
+            scored = cls._score_news_relevance(item, stock_code=stock_code, stock_name=stock_name)
+            title = unicodedata.normalize("NFKC", item.title or "").strip()
+            if mainland_codes and "公告" in title:
+                notice = f"{title} {unicodedata.normalize('NFKC', item.snippet or '')}"
+                issuer_codes = set(cls._LABELED_ISSUER_CODE.findall(notice))
+                if issuer_codes and mainland_codes.isdisjoint(issuer_codes):
+                    continue
+                generic_notice = title.lstrip("《").startswith("关于") or "交易异常波动" in title
+                if generic_notice and not issuer_codes and cls._is_trusted_official_news_source(item):
+                    mentioned_codes = set(re.findall(cls._MAINLAND_ISSUER_CODE, notice))
+                    if mentioned_codes and mainland_codes.isdisjoint(mentioned_codes):
+                        continue
+                    if scored.relevance_category != cls._DIRECT_NEWS_CATEGORY:
+                        continue
+            scored_results.append(scored)
 
         indexed_results = list(enumerate(scored_results))
 
@@ -3766,14 +3787,17 @@ class SearchService:
             )
             previous_score = previous.relevance_score or 0
             current_score = item.relevance_score or 0
-            if current_bad and not previous_bad:
-                current_wins = False
+            if current_bad != previous_bad:
+                current_wins = not current_bad
+            elif previous.relevance_category != item.relevance_category and self._DIRECT_NEWS_CATEGORY in (
+                previous.relevance_category, item.relevance_category,
+            ):
+                current_wins = item.relevance_category == self._DIRECT_NEWS_CATEGORY
             elif previous_date is None and current_date is not None:
                 current_wins = not current_bad
             else:
                 current_wins = (
-                    (previous_bad and not current_bad)
-                    or (not previous_official and current_official)
+                    (not previous_official and current_official)
                     or (
                         previous_score == 0
                         and current_score > 0

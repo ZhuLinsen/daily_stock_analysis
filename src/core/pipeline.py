@@ -229,7 +229,7 @@ class _DaemonThreadStockExecutor:
                 if completed_in_time:
                     future.set_result(result)
                     self._condition.notify_all()
-            # A stock that completes on time can leave cancelled tools to drain.
+            # A stock that completes on time can leave abandoned calls to drain.
             # A stock that timed out keeps its slot until all its workers exit.
             token.join_workers(include_abandoned=not completed_in_time)
             with self._condition:

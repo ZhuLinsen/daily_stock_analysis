@@ -12,6 +12,7 @@ A股自选股智能分析系统 - 存储层
 """
 
 import atexit
+from concurrent.futures import CancelledError
 from contextlib import contextmanager
 import hashlib
 import json
@@ -58,7 +59,9 @@ from sqlalchemy.orm import (
 from sqlalchemy.exc import IntegrityError, OperationalError
 
 from src.agent.provider_trace import PROVIDER_TRACE_RETENTION_LIMIT
+from src.agent.tools.execution import TOOL_CANCEL_EVENT, is_tool_cancellation_requested
 from src.config import get_config
+from src.core.stock_execution_context import get_current_stock_cancellation, is_current_stock_cancelled
 from src.schemas.decision_profile import extract_legacy_decision_profile
 from src.utils.sniper_points import extract_sniper_points, parse_sniper_value
 
@@ -2374,22 +2377,37 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         self,
         operation_name: str,
         write_operation: Callable[[Session], T],
+        *,
+        is_cancelled: Optional[Callable[[], bool]] = None,
     ) -> T:
         max_retries = self._sqlite_write_retry_max if self._is_sqlite_engine else 0
 
+        def check_cancelled() -> None:
+            if is_cancelled is not None and is_cancelled():
+                raise CancelledError(operation_name)
+
         for attempt in range(max_retries + 1):
+            check_cancelled()
             session = self.get_session()
             try:
                 if self._is_sqlite_engine:
                     # Acquire the SQLite writer lock before any reads inside
                     # `write_operation()` so pre-write existence checks and the
                     # later upsert share one consistent write window.
-                    session.connection().exec_driver_sql("BEGIN IMMEDIATE")
+                    # For cancellable writes, also acquire any reader-blocked
+                    # lock here so COMMIT cannot wait and publish stale data.
+                    begin = "BEGIN EXCLUSIVE" if is_cancelled is not None else "BEGIN IMMEDIATE"
+                    session.connection().exec_driver_sql(begin)
+                check_cancelled()
                 result = write_operation(session)
+                if is_cancelled is not None:
+                    session.flush()
+                    check_cancelled()
                 session.commit()
                 return result
             except OperationalError as exc:
                 session.rollback()
+                check_cancelled()
                 if (
                     self._is_sqlite_engine
                     and self._is_sqlite_locked_error(exc)
@@ -2654,11 +2672,19 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             return local_saved_count
 
         try:
+            is_cancelled = None
+            if TOOL_CANCEL_EVENT.get() is not None:
+                is_cancelled = lambda: is_tool_cancellation_requested() or is_current_stock_cancelled()
+            elif get_current_stock_cancellation() is not None:
+                is_cancelled = is_current_stock_cancelled
             saved_count = self._run_write_transaction(
                 f"save_news_intel[{code}]",
                 _write,
+                is_cancelled=is_cancelled,
             )
             logger.info(f"保存新闻情报成功: {code}, 新增 {saved_count} 条")
+        except CancelledError:
+            return 0
         except Exception as e:
             logger.error(f"保存新闻情报失败: {e}")
             raise
@@ -3012,7 +3038,10 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             return self._run_write_transaction(
                 f"save_analysis_history[{result.code}]",
                 _write,
+                is_cancelled=is_current_stock_cancelled if get_current_stock_cancellation() is not None else None,
             )
+        except CancelledError:
+            return 0
         except Exception as e:
             logger.error(f"保存分析历史失败: {e}")
             return 0

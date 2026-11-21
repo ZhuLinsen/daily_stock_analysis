@@ -774,6 +774,20 @@ class TestSniperPriceSanityChecks(unittest.TestCase):
             110.0,
         )
 
+    def test_english_stop_loss_label_with_percentage_detects_inversion(self) -> None:
+        from src.analyzer import validate_sniper_price_sanity
+
+        result = self._make_buy_result(
+            ideal_buy="100", stop_loss="Stop-loss: 105 (break below MA20 or 5%)",
+            take_profit="115", report_language="en",
+        )
+
+        warnings = validate_sniper_price_sanity(result, emit_log=False)
+
+        self.assertIn("stop_loss_above_ideal_buy", warnings)
+        self.assertEqual(result.dashboard["data_perspective"]["price_sanity"]["stop_loss"], 105)
+        self.assertIn("Price check: stop/target inverted", result.dashboard["intelligence"]["risk_alerts"])
+
     def test_grouped_currency_price_with_percentage_uses_full_amount(self) -> None:
         from src.analyzer import validate_sniper_price_sanity
 

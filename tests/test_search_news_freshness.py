@@ -2650,6 +2650,36 @@ class SearchNewsFreshnessTestCase(unittest.TestCase):
 
         self.assertEqual([item.url for item in response.results], ["https://example.com/sales"])
 
+    def test_generic_notice_matches_issuer_before_preferring_official_source(self) -> None:
+        title = "关于股票交易异常波动的公告"
+        today = datetime.now().date().isoformat()
+        media_url = "https://example.invalid/news"
+        official_url = "https://www.cninfo.com.cn/announcement"
+        for snippet, expected in (
+            ("万科Ａ 000002 发布公告。", media_url),
+            ("证券代码：000002。对比标的贵州茅台 600519。", media_url),
+            ("交易波动提示。", media_url),
+            ("证券代码：600519，贵州茅台。", official_url),
+            ("证券代码：６００５１９。", official_url),
+        ):
+            with self.subTest(snippet=snippet):
+                service, _ = self._create_service_with_mock_provider(response=_response([
+                    _result(title, today, snippet="贵州茅台 600519 发布公告。", url=media_url),
+                    _result(title, today, snippet=snippet, url=official_url),
+                ]))
+                news = service.search_stock_news("600519", "贵州茅台")
+                with patch("src.search_service.time.sleep"):
+                    intel = service.search_comprehensive_intel("600519", "贵州茅台", max_searches=4)
+
+                self.assertEqual([item.url for item in news.results], [expected])
+                self.assertEqual([item.url for item in intel["announcements"].results], [expected])
+
+        service, _ = self._create_service_with_mock_provider(response=_response([
+            _result(title, today, snippet="万科Ａ发布公告。", url=official_url),
+            _result(title, today, snippet="股票代码：000002。与贵州茅台对比。", url=media_url),
+        ]))
+        self.assertEqual(service.search_stock_news("600519", "贵州茅台").results, [])
+
     def test_industry_keeps_all_dated_editions_when_intermediate_copies_repeat(self) -> None:
         today = datetime.now().date()
         dates = [(today - timedelta(days=days)).isoformat() for days in (90, 30, 0)]
