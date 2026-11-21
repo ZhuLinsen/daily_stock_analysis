@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [新功能] 企业微信智能机器人 Phase 1：WebSocket 长连接客户端基建与对话最小闭环（#755）。新增 `bot/platforms/wecom_aibot.py` 长连接适配器（`aibot_subscribe` 认证、30s 心跳、断线指数退避重连、单机器人单连接互斥、msgid 排重、会话级限流），收到文本消息复用 `bot/dispatcher` 命令分发与 `AnalyzeCommand`（一次性分析、不改自选股），分析完成后经 source-context 链路以 `aibot_send_msg` 回推企微来源会话，回复经 `aibot_respond_msg` 帧（透传回调 req_id；`reply_stream` 可选、默认关）；出站回复/推送执行双窗口会话配额（30 条/分钟 + 1000 条/小时）。引入可选依赖 `wecom-aibot-python-sdk>=1.0.2`，SDK 缺失时模块可导入、功能自动关闭。新增配置 `WECOM_AIBOT_ENABLED` / `WECOM_AIBOT_BOT_ID` / `WECOM_AIBOT_SECRET` / `WECOM_AIBOT_REPLY_STREAM`（全部默认关，不改变现有用户行为）；既有企业微信群 Webhook 推送通道行为零变化。
 - [修复] 问股页「发送到通知渠道」区分未配置渠道、降噪跳过和全部发送失败，并修正并发命中共享冷却时的提示语，避免把不同会话的冷却跳过误报为“同一通知正在发送中”。
 - [新功能] 新增 A 股收盘情绪快照后端，支持手动提交后台任务、查看规则指标及按实际交易日查询历史趋势。
 - [新功能] 新增可选跨资产上下文通道（cross-asset-v1，Issue #1910 一期，默认关闭）：显式开启 `CROSS_ASSET_CONTEXT_ENABLED=true` 后，个股分析 Prompt 注入“外围环境与跨资产”低敏摘要（一期数据源为 yfinance：港/美/日/韩/台指数 + 富时A50 尽力而为 + VIX + 美债10Y），`risk_appetite` 由确定性投票规则生成，四级 fail-open 降级不中断主分析；Prompt 段落带 UNTRUSTED 哨兵、限行与数值溢出守卫，不配置时主流程零行为差异（Refs #1910）。

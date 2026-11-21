@@ -1186,6 +1186,19 @@ crontab -e
 2. 复制 Webhook URL
 3. 设置 `WECHAT_WEBHOOK_URL`
 
+**企业微信智能机器人（对话式长连接，可选，默认关）：**
+
+除上面的群 Webhook 单向推送外，系统还支持通过企业微信"智能机器人"进行对话（发送 `/analyze 600519` 等命令并接收回复）。该通道走官方 WebSocket 长连接（`wss://openws.work.weixin.qq.com`），无需公网 IP；本系统不提供回调 URL 模式。与群 Webhook 推送相互独立，互不影响：
+
+```env
+WECOM_AIBOT_ENABLED=false          # 默认关；开启前先完成下面两项
+WECOM_AIBOT_BOT_ID=                # 企业微信后台智能机器人的 Bot ID
+WECOM_AIBOT_SECRET=                # 长连接专用 Secret（与群机器人 Token/EncodingAESKey 是不同凭据）
+WECOM_AIBOT_REPLY_STREAM=false     # 可选：用 stream 流式回复（默认一次性 markdown 回复）
+```
+
+依赖 `wecom-aibot-python-sdk>=1.0.2`（`pip install -r requirements.txt` 已包含；缺失时模块可正常导入、功能自动关闭并提示安装命令）。限制：单机器人仅一条有效长连接（系统已内置互斥与重连风暴防护）；单会话回复上限 30 条/分钟；非超管创建的机器人收到的用户 `userid` 为密文（官方协议限制）。
+
 ### 飞书
 
 Webhook 和 App Bot 交互卡片可附带 Web 工作台按钮。优先读取 `FEISHU_CARD_WEB_URL`，留空时读取 `DSA_WEB_URL`。填写收件人可访问的 `http://` 或 `https://` 地址，两项均清空即可停用按钮。`FEISHU_MAX_BYTES` 控制每页正文预算。分页还会检查完整 JSON 请求体，Webhook 限为 20,000 字节，App Bot 限为 30,000 字节。若工作台 URL 过长导致卡片无法分页，发送时会省略按钮。[飞书自定义机器人指南](https://open.feishu.cn/document/client-docs/bot-v3/add-custom-bot) · [飞书消息 API](https://open.feishu.cn/document/server-docs/im-v1/message/create)
