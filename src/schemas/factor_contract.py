@@ -159,6 +159,61 @@ class CandidateFactorScore(_FactorContractModel):
     )
 
 
+class FactorScoreMap(dict[str, CandidateFactorScore]):
+    """A ``FactorSnapshot.scores`` mapping that refuses desyncing writes.
+
+    ``scores`` is keyed by ``factor_id`` and the field validator only
+    runs on construction or whole replacement, so an in-place
+    ``snapshot.scores[key] = score`` with a mismatched id used to
+    desync the snapshot and break its own JSON round-trip
+    (OR-COR-2f8b65a1). This mapping enforces the key/id invariant on
+    every mutating write; reads behave like a plain dict.
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        data = dict(*args, **kwargs)
+        for key, score in data.items():
+            self._check(key, score)
+        super().__init__(data)
+
+    @staticmethod
+    def _check(key: str, score: CandidateFactorScore) -> None:
+        if key != score.factor_id:
+            raise ValueError(
+                f"scores key {key!r} does not match "
+                f"factor_id {score.factor_id!r}"
+            )
+
+    def __setitem__(self, key: str, score: CandidateFactorScore) -> None:
+        self._check(key, score)
+        super().__setitem__(key, score)
+
+    def update(self, *args: Any, **kwargs: Any) -> None:
+        # Check every pair first so a rejected update applies nothing.
+        data = dict(*args, **kwargs)
+        for key, score in data.items():
+            self._check(key, score)
+        super().update(data)
+
+    def setdefault(
+        self, key: str, default: CandidateFactorScore | None = None
+    ) -> CandidateFactorScore | None:
+        if key in self:
+            return self[key]
+        if default is None:
+            raise ValueError(f"scores key {key!r} cannot hold a None score")
+        self._check(key, default)
+        super().__setitem__(key, default)
+        return default
+
+    def __ior__(self, other: Any) -> "FactorScoreMap":
+        data = dict(other)
+        for key, score in data.items():
+            self._check(key, score)
+        super().__ior__(data)
+        return self
+
+
 class FactorSnapshot(_FactorContractModel):
     """All factor scores for one candidate in one run.
 
@@ -193,14 +248,17 @@ class FactorSnapshot(_FactorContractModel):
         # field is already set, so a rejected assignment left the
         # invalid scores in place (and the dumped snapshot failed its
         # own round-trip). Validating the field value first means a
-        # rejected assignment never mutates the snapshot.
+        # rejected assignment never mutates the snapshot. The value is
+        # returned as a FactorScoreMap so later in-place writes
+        # (``snapshot.scores[key] = score``) keep enforcing the same
+        # invariant — the validator never runs for those.
         for key, score in scores.items():
             if key != score.factor_id:
                 raise ValueError(
                     f"scores key {key!r} does not match "
                     f"factor_id {score.factor_id!r}"
                 )
-        return scores
+        return FactorScoreMap(scores)
 
     def to_safe_dict(self) -> dict[str, Any]:
         """Return a JSON-safe dict with sensitive mapping values redacted."""

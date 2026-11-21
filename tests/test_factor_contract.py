@@ -806,6 +806,39 @@ def test_snapshot_nested_factor_id_assignment_is_rejected() -> None:
 
 
 @pytest.mark.unit
+def test_snapshot_scores_item_assignment_is_rejected() -> None:
+    """Regression for OR-COR-2f8b65a1 (second half): replacing a
+    scores entry in place must fail — freezing the score fixed direct
+    ``factor_id`` edits, but ``snapshot.scores[key] = other`` never
+    ran the field validator, so a mismatched entry desynced the key
+    from the id and the dumped snapshot failed its own JSON
+    round-trip."""
+    snapshot = FactorSnapshot(
+        candidate_pool_run_id="a1b2c3d4e5f6",
+        code="600519",
+        scores={
+            "value": CandidateFactorScore(factor_id="value", value=80.0),
+            "momentum": CandidateFactorScore(
+                factor_id="momentum", value=70.0
+            ),
+        },
+    )
+    with pytest.raises(ValueError, match="does not match factor_id"):
+        snapshot.scores["value"] = snapshot.scores["momentum"]
+    assert list(snapshot.scores) == ["value", "momentum"]
+    assert snapshot.scores["value"].factor_id == "value"
+    FactorSnapshot.model_validate_json(snapshot.model_dump_json())
+
+    # The same guard applies to the other mutating dict writes.
+    with pytest.raises(ValueError, match="does not match factor_id"):
+        snapshot.scores.update(
+            {"value": CandidateFactorScore(factor_id="momentum", value=70.0)}
+        )
+    assert snapshot.scores["value"].factor_id == "value"
+    FactorSnapshot.model_validate_json(snapshot.model_dump_json())
+
+
+@pytest.mark.unit
 def test_identifiers_must_be_non_empty_and_counts_non_negative() -> None:
     with pytest.raises(ValidationError):
         CandidatePoolRun(run_id="", strategy="balanced_alpha", market="cn")

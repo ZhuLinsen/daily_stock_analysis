@@ -85,7 +85,7 @@
 | `code` / `name` | `str` / `str \| None` | `Pick.code` / `Pick.name`；`code` 非空 |
 | `rank` | `int \| None` | 候选股在候选池中的整体排名，来自 `Pick.rank`（1 起）；未知时为 `None`，永不为 0 |
 | `factor_set_version` | `str` | `FACTOR_SET_VERSION` |
-| `scores` | `dict[str, CandidateFactorScore]` | 按 `factor_id` 索引；仅含 `Pick.factor_scores` 中存在的因子；键必须与条目的 `factor_id` 一致 |
+| `scores` | `dict[str, CandidateFactorScore]` | 按 `factor_id` 索引；仅含 `Pick.factor_scores` 中存在的因子；键必须与条目的 `factor_id` 一致；原地写入（`scores[key] = ...`）同样拒绝键与 `factor_id` 不一致的条目 |
 | `screen_score` | `float \| None` | `Pick.screen_score`，只读追溯字段；非有限值拒绝 |
 | `quality` | `FactorDataQuality` | 聚合质量：`coverage` = 存在的已知因子数 / 9 |
 | `source` | `str` | `screening.pipeline` |
