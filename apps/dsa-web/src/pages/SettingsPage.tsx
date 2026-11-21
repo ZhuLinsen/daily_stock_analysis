@@ -1449,7 +1449,7 @@ const SettingsPage: React.FC = () => {
                 onChange={(event) => setSearchQuery(event.target.value)}
                 placeholder={t('settings.searchPlaceholder')}
                 aria-label={t('settings.searchPlaceholder')}
-                className="w-full rounded-md border border-[var(--settings-border)] bg-[var(--settings-surface)] py-1.5 pl-8 pr-8 text-xs text-foreground placeholder:text-muted-text focus:border-[hsl(var(--primary))] focus:outline-none"
+                className="w-full rounded-md border border-[var(--settings-border)] bg-[var(--settings-surface)] py-1.5 pl-8 pr-8 text-xs text-foreground placeholder:text-muted-text focus:border-[hsl(var(--primary))] focus:outline-none [&::-webkit-search-cancel-button]:appearance-none [&::-webkit-search-decoration]:appearance-none"
               />
               {searchQuery ? (
                 <button
