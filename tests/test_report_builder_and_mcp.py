@@ -5,13 +5,14 @@ from __future__ import annotations
 
 import builtins
 import io
+import asyncio
 import unittest
 from contextlib import redirect_stderr
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from src.config import Config
-from src.mcp_server import McpReadOnlySurface, main as mcp_main
+from src.mcp_server import McpReadOnlySurface, build_mcp_server, main as mcp_main
 from src.services.report_builder_service import build_analysis_report_payload
 
 
@@ -141,6 +142,14 @@ class McpReadOnlySurfaceTestCase(unittest.TestCase):
         self.assertEqual(started["task_id"], "task-mcp-1")
         self.assertFalse(fake_queue.submit_tasks_batch.call_args.kwargs["notify"])
 
+        index_queue = MagicMock()
+        index_queue.submit_tasks_batch.return_value = ([fake_task], [])
+        with patch("src.services.task_queue.get_task_queue", return_value=index_queue):
+            surface.call_tool("start_stock_analysis", {"stock_code": "sh000016"})
+        target = index_queue.submit_tasks_batch.call_args.kwargs["analysis_targets"][0]
+        self.assertEqual(target.asset_type, "index")
+        self.assertEqual(target.canonical_id, "sh000016")
+
     def test_mcp_start_analysis_handles_duplicate_and_rejected_submissions(self) -> None:
         cfg = Config(stock_list=["600519"])
         surface = McpReadOnlySurface(config=cfg)
@@ -197,6 +206,42 @@ class McpReadOnlySurfaceTestCase(unittest.TestCase):
         self.assertEqual(latest["report"]["meta"]["stock_code"], "600519")
         self.assertNotIn("sk-report-secret-1234567890", str(latest))
 
+    def test_mcp_latest_report_uses_canonical_builder_for_persisted_detail(self) -> None:
+        from src.services import report_builder_service
+
+        record = SimpleNamespace(id=9)
+        detail = {
+            "id": 9,
+            "query_id": "q-9",
+            "storage_stock_code": "600519",
+            "stock_code": "600519",
+            "stock_name": "贵州茅台",
+            "report_type": "detailed",
+            "raw_result": {"action": "buy", "report_language": "en"},
+            "analysis_summary": "summary",
+            "operation_advice": "买入",
+            "action": "buy",
+            "trend_prediction": "看多",
+            "sentiment_score": 80,
+            "sentiment_label": "乐观",
+            "ideal_buy": 1400,
+            "context_snapshot": {},
+        }
+        fake_db = MagicMock()
+        fake_db.get_analysis_history_paginated.return_value = ([record], 1)
+        fake_db.get_latest_fundamental_snapshot.return_value = None
+        fake_history = MagicMock()
+        fake_history._history_code_filter_candidates.return_value = ["600519", "600519.SH"]
+        fake_history.get_history_detail_by_id.return_value = detail
+        with patch("src.storage.DatabaseManager.get_instance", return_value=fake_db), \
+             patch("src.services.history_service.HistoryService", return_value=fake_history):
+            payload = report_builder_service.get_latest_analysis_report_payload("600519")
+        self.assertEqual(payload["meta"]["stock_code"], "600519")
+        self.assertEqual(payload["meta"]["report_language"], "en")
+        self.assertIn("summary", payload)
+        self.assertIn("details", payload)
+        self.assertEqual(payload["summary"]["action"], "buy")
+
     def test_mcp_cli_reports_install_hint_when_optional_mcp_missing(self) -> None:
         real_import = builtins.__import__
 
@@ -210,7 +255,53 @@ class McpReadOnlySurfaceTestCase(unittest.TestCase):
             exit_code = mcp_main([])
 
         self.assertEqual(exit_code, 2)
-        self.assertIn('pip install "mcp>=1.0.0"', err_buf.getvalue())
+        self.assertIn('pip install "mcp>=1.0.0,<2"', err_buf.getvalue())
+
+    def test_mcp_sdk_build_maps_business_failure_to_protocol_error(self) -> None:
+        try:
+            import mcp.types as types
+        except ImportError:
+            self.skipTest("optional mcp SDK is not installed")
+
+        surface = MagicMock()
+        surface.list_tools.return_value = []
+        surface.call_tool.return_value = {"ok": False, "error": "not_found"}
+        server, _ = build_mcp_server(surface)
+
+        async def invoke() -> bool:
+            await server.request_handlers[types.ListToolsRequest](types.ListToolsRequest())
+            response = await server.request_handlers[types.CallToolRequest](
+                types.CallToolRequest(
+                    params=types.CallToolRequestParams(name="missing", arguments={}),
+                )
+            )
+            return bool(response.root.isError)
+
+        self.assertTrue(asyncio.run(invoke()))
+
+    def test_mcp_sdk_build_maps_wrapped_tool_failure_to_protocol_error(self) -> None:
+        try:
+            import mcp.types as types
+        except ImportError:
+            self.skipTest("optional mcp SDK is not installed")
+
+        surface = MagicMock()
+        surface.list_tools.return_value = []
+        surface.call_tool.return_value = {
+            "ok": True,
+            "result": {"error": "No realtime quote available for 600519"},
+        }
+        server, _ = build_mcp_server(surface)
+
+        async def invoke() -> bool:
+            response = await server.request_handlers[types.CallToolRequest](
+                types.CallToolRequest(
+                    params=types.CallToolRequestParams(name="get_realtime_quote", arguments={}),
+                )
+            )
+            return bool(response.root.isError)
+
+        self.assertTrue(asyncio.run(invoke()))
 
 
 if __name__ == "__main__":

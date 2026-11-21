@@ -146,9 +146,20 @@ def build_analysis_report_payload(
     details_data = report_data.get("details") if isinstance(report_data.get("details"), dict) else {}
 
     ctx_dict = context_snapshot if isinstance(context_snapshot, dict) else {}
+    raw_result_for_metadata = details_data.get("raw_result")
+    if not isinstance(raw_result_for_metadata, dict) and isinstance(fallback_raw_result_payload, dict):
+        if isinstance(fallback_raw_result_payload.get("raw_result"), dict):
+            raw_result_for_metadata = fallback_raw_result_payload["raw_result"]
+        elif _looks_like_raw_result_payload(fallback_raw_result_payload):
+            raw_result_for_metadata = fallback_raw_result_payload
     report_language = normalize_report_language(
         meta_data.get("report_language")
         or ctx_dict.get("report_language")
+        or (
+            raw_result_for_metadata.get("report_language")
+            if isinstance(raw_result_for_metadata, dict)
+            else None
+        )
         or getattr(Config.get_instance(), "report_language", "zh")
     )
     raw_stock_code = meta_data.get("stock_code", stock_code)
@@ -330,15 +341,60 @@ def get_latest_analysis_report_payload(stock_code: str) -> Optional[Dict[str, An
     from src.storage import DatabaseManager
 
     db = DatabaseManager.get_instance()
-    records = db.get_analysis_history(code=stock_code, limit=1)
+    history_service = HistoryService()
+    candidates = history_service._history_code_filter_candidates(stock_code)
+    records, _ = db.get_analysis_history_paginated(code=candidates, limit=1)
     if not records:
         return None
     record = records[0]
     record_id = getattr(record, "id", None)
-    if record_id is not None:
-        detail = HistoryService().get_history_detail_by_id(int(record_id))
-        if isinstance(detail, dict):
-            return detail
+    detail = history_service.get_history_detail_by_id(int(record_id)) if record_id is not None else None
+    if isinstance(detail, dict):
+        report_data = {
+            "meta": {
+                "id": detail.get("id"),
+                "query_id": detail.get("query_id", ""),
+                "stock_code": detail.get("storage_stock_code") or detail.get("stock_code", stock_code),
+                "stock_name": detail.get("stock_name"),
+                "report_type": detail.get("report_type", "detailed"),
+                "created_at": detail.get("created_at"),
+                "model_used": detail.get("model_used"),
+            },
+            "summary": {
+                "analysis_summary": detail.get("analysis_summary"),
+                "operation_advice": detail.get("operation_advice"),
+                "action": detail.get("action"),
+                "trend_prediction": detail.get("trend_prediction"),
+                "sentiment_score": detail.get("sentiment_score"),
+                "sentiment_label": detail.get("sentiment_label"),
+            },
+            "strategy": {
+                "ideal_buy": detail.get("ideal_buy"),
+                "secondary_buy": detail.get("secondary_buy"),
+                "stop_loss": detail.get("stop_loss"),
+                "take_profit": detail.get("take_profit"),
+            },
+            "details": {
+                "news_content": detail.get("news_content"),
+                "empty_news_disclosure": detail.get("empty_news_disclosure"),
+                "raw_result": detail.get("raw_result"),
+            },
+        }
+        storage_code = str(detail.get("storage_stock_code") or detail.get("stock_code") or stock_code)
+        fallback_fundamental = db.get_latest_fundamental_snapshot(
+            query_id=str(detail.get("query_id") or ""),
+            code=storage_code,
+        )
+        return build_analysis_report_payload(
+            report_data=report_data,
+            query_id=str(detail.get("query_id") or ""),
+            stock_code=storage_code,
+            stock_name=detail.get("stock_name"),
+            context_snapshot=detail.get("context_snapshot"),
+            fallback_fundamental_payload=fallback_fundamental,
+            fallback_raw_result_payload=detail.get("raw_result"),
+            record_id=record_id,
+        )
 
     raw_result = parse_json_field(getattr(record, "raw_result", None)) or {}
     context_snapshot = parse_json_field(getattr(record, "context_snapshot", None))

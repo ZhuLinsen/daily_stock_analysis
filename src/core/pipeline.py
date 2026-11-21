@@ -3612,6 +3612,7 @@ class StockAnalysisPipeline:
         report_type: ReportType = ReportType.SIMPLE,
         analysis_query_id: Optional[str] = None,
         current_time: Optional[datetime] = None,
+        force_refresh: bool = False,
         analysis_target: Optional[AnalysisTarget] = None,
     ) -> Optional[AnalysisResult]:
         """
@@ -3632,6 +3633,7 @@ class StockAnalysisPipeline:
             single_stock_notify: 是否启用单股推送模式（每分析完一只立即推送）
             report_type: 报告类型枚举（从配置读取，Issue #119）
             current_time: 本轮运行冻结的参考时间，用于统一断点续传目标交易日判断
+            force_refresh: 是否忽略可复用的本地行情缓存并重新获取
             analysis_target: 结构化分析目标（指数目标用于推导 market=cn 与能力矩阵）
 
         Returns:
@@ -3658,7 +3660,10 @@ class StockAnalysisPipeline:
             self._emit_progress(12, f"{code}：正在准备分析任务")
             # Step 1: 获取并保存数据
             success, error = self.fetch_and_save_stock_data(
-                code, current_time=current_time, analysis_target=analysis_target
+                code,
+                force_refresh=force_refresh,
+                current_time=current_time,
+                analysis_target=analysis_target,
             )
             if _is_current_stock_cancelled():
                 logger.warning("[%s] 已超时取消，跳过后续分析", code)

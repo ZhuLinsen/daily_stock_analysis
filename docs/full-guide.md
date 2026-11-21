@@ -2041,7 +2041,7 @@ worker 会把 `triggered`、`skipped`、`degraded`、`failed` 写入 `alert_trig
 1. 安装可选依赖（不影响核心运行与 Docker 镜像体积）：
 
    ```bash
-   pip install "mcp>=1.0.0"
+   pip install "mcp>=1.0.0,<2"
    ```
 
 2. 在客户端 MCP 配置中启动：
@@ -2055,3 +2055,4 @@ worker 会把 `triggered`、`skipped`、`degraded`、`failed` 写入 `alert_trig
 默认安全边界：
 - 仅开放 `ToolSurface` 中声明为 `read_only=True` 的工具，以及 `resolve_stock`、`start_stock_analysis`、`get_analysis_status`、`get_latest_report`。
 - 默认关闭 `get_portfolio_snapshot` 与所有写配置能力；`start_stock_analysis` 默认 `notify=False`，避免外部 Agent 自动触发群推送。
+- `start_stock_analysis` 会消耗模型调用额度并保存本地分析报告；部分行情与检索工具可能更新本地缓存。

@@ -1840,7 +1840,7 @@ External AI clients (such as Claude Code, Cursor, Codex, and Gemini CLI) can con
 1. Install the optional dependency (kept out of core `requirements.txt`):
 
    ```bash
-   pip install "mcp>=1.0.0"
+   pip install "mcp>=1.0.0,<2"
    ```
 
 2. Configure your MCP client to run:
@@ -1854,6 +1854,7 @@ External AI clients (such as Claude Code, Cursor, Codex, and Gemini CLI) can con
 Default safety boundaries:
 - Exposes only `ToolSurface` tools marked `read_only=True`, plus `resolve_stock`, `start_stock_analysis`, `get_analysis_status`, and `get_latest_report`.
 - Keeps `get_portfolio_snapshot` and all config-write tools disabled; `start_stock_analysis` defaults to `notify=False` so automated clients do not trigger chat broadcasts.
+- `start_stock_analysis` consumes model-call quota and saves a local report; some quote and search tools may update local caches.
 
 ---
 

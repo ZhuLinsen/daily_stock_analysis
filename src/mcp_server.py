@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Read-only MCP stdio server over DSA's internal ``ToolSurface``.
 
-Optional dependency: install ``mcp>=1.0.0`` and run::
+Optional dependency: install ``mcp>=1.0.0,<2`` and run::
 
     python -m src.mcp_server
 """
@@ -15,6 +15,7 @@ import logging
 import os
 import sys
 from contextlib import redirect_stdout
+from importlib.metadata import PackageNotFoundError, version as package_version
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from src.agent.factory import get_tool_registry
@@ -109,6 +110,23 @@ def _redact_structured_payload(payload: Any) -> Any:
         return redacted_json
 
 
+def _mcp_tool_result_is_error(result: Any) -> bool:
+    """Map both adapter and wrapped tool failures to MCP ``isError``."""
+    if not isinstance(result, dict):
+        return False
+    if result.get("ok") is False:
+        return True
+
+    # ToolSurface deliberately wraps handler values in ``ok=True``. Several
+    # existing read-only handlers signal a provider/business failure with an
+    # inner ``{"error": ...}`` payload instead of raising, so the protocol
+    # adapter must inspect the public result as well.
+    nested_result = result.get("result")
+    if isinstance(nested_result, dict):
+        return nested_result.get("ok") is False or bool(nested_result.get("error"))
+    return bool(result.get("error"))
+
+
 def _configure_stderr_logging() -> None:
     """Route all Python logging to stderr so stdout stays dedicated to JSON-RPC."""
     root = logging.getLogger()
@@ -168,6 +186,18 @@ def resolve_stock_query(query: str) -> Dict[str, Any]:
         "error": "unresolved_stock",
         "message": f"Could not resolve stock or index: {text}",
     }
+
+
+def _resolve_analysis_target(query: str, resolved: Optional[Dict[str, Any]] = None) -> Any:
+    """Return the parser target used to preserve index identity in the queue."""
+    from src.services.stock_list_parser import parse_analysis_target
+
+    target = parse_analysis_target(query)
+    if getattr(target, "asset_type", None) == "index":
+        return target
+    if resolved and resolved.get("ok"):
+        return parse_analysis_target(str(resolved.get("stock_code") or query))
+    return target
 
 
 def _build_stock_scope_for_code(stock_code: str) -> Any:
@@ -280,6 +310,7 @@ class McpReadOnlySurface:
         force_refresh = bool(args.get("force_refresh", False))
         resolved = resolve_stock_query(raw_code)
         target_code = resolved["stock_code"] if resolved.get("ok") else raw_code
+        analysis_target = _resolve_analysis_target(raw_code, resolved)
 
         from src.services.task_queue import get_task_queue
 
@@ -292,6 +323,7 @@ class McpReadOnlySurface:
             report_type=report_type,
             force_refresh=force_refresh,
             notify=False,
+            analysis_targets=[analysis_target] if getattr(analysis_target, "asset_type", None) == "index" else None,
         )
         if duplicates:
             dup = duplicates[0]
@@ -361,8 +393,17 @@ def _import_mcp_sdk() -> Tuple[Any, Any, Any]:
     except ImportError as exc:
         raise RuntimeError(
             "Optional dependency 'mcp' is required for the MCP stdio server. "
-            "Install it with: pip install \"mcp>=1.0.0\""
+            "Install it with: pip install \"mcp>=1.0.0,<2\""
         ) from exc
+    try:
+        installed_version = package_version("mcp")
+    except PackageNotFoundError:
+        installed_version = ""
+    if installed_version.split(".", 1)[0] == "2":
+        raise RuntimeError(
+            f"Installed MCP SDK {installed_version} is unsupported; "
+            "install a 1.x release with: pip install \"mcp>=1.0.0,<2\""
+        )
     return Server, stdio_server, types
 
 
@@ -383,14 +424,17 @@ def build_mcp_server(surface: McpReadOnlySurface) -> Tuple[Any, Any]:
         ]
 
     @server.call_tool()
-    async def handle_call_tool(name: str, arguments: Optional[Dict[str, Any]]) -> List[Any]:
+    async def handle_call_tool(name: str, arguments: Optional[Dict[str, Any]]) -> Any:
         result = await asyncio.to_thread(surface.call_tool, name, arguments)
-        return [
-            types.TextContent(
-                type="text",
-                text=json.dumps(result, ensure_ascii=False, default=str),
-            )
-        ]
+        return types.CallToolResult(
+            content=[
+                types.TextContent(
+                    type="text",
+                    text=json.dumps(result, ensure_ascii=False, default=str),
+                )
+            ],
+            isError=_mcp_tool_result_is_error(result),
+        )
 
     return server, types
 
@@ -434,7 +478,7 @@ def run_mcp_stdio_server(*, include_macro: bool = False) -> int:
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m src.mcp_server",
-        description="Run Daily Stock Analysis read-only MCP stdio server (requires optional mcp>=1.0.0).",
+        description="Run Daily Stock Analysis read-only MCP stdio server (requires optional mcp>=1.0.0,<2).",
     )
     parser.add_argument(
         "--include-macro",
