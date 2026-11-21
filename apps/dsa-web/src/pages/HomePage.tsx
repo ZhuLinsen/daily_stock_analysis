@@ -288,6 +288,9 @@ const HomePage: React.FC = () => {
   );
 
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  // issue #1661（OR-COR-278fd558）：手机上点行会关闭并卸载历史抽屉，日期必须
+  // 寄存在本组件（不随抽屉卸载），重开抽屉才能回到所选日期。
+  const [dailyHistoryDate, setDailyHistoryDate] = useState(() => getTodayInShanghai());
   const [isSubmittingMarketReview, setIsSubmittingMarketReview] = useState(false);
   const [marketReviewNotice, setMarketReviewNotice] = useState<MarketReviewNotice>(null);
   const [marketReviewError, setMarketReviewError] = useState<ParsedApiError | null>(null);
@@ -850,23 +853,8 @@ const HomePage: React.FC = () => {
     setWatchlistHistoryRetryVersion((version) => version + 1);
   }, [refreshStockBar, refreshWatchlist]);
 
-  const [isDeletingStock, setIsDeletingStock] = useState(false);
-  const handleDeleteStock = useCallback(async (stockCode: string) => {
-    if (isDeletingStock) return;
-    setIsDeletingStock(true);
-    try {
-      await historyApi.deleteByCode(stockCode);
-      await refreshStockBar();
-      await refreshHistory(true);
-      if (stockCode === 'MARKET') {
-        await refreshMarketReviewHistory(false);
-      }
-    } catch {
-      // error silently ignored
-    } finally {
-      setIsDeletingStock(false);
-    }
-  }, [isDeletingStock, refreshMarketReviewHistory, refreshStockBar, refreshHistory]);
+  // issue #1661（维护者 spec 2）：按日回看为只读视图，「删除该股票全部历史」
+  // 的批量删除入口不再挂在历史区列表上（后端 deleteByCode API 保持向后兼容）。
 
   const handleSubmitAnalysis = useCallback(
     (
@@ -1417,32 +1405,19 @@ const HomePage: React.FC = () => {
     watchlistState.watchlistCodes,
   ]);
 
-  const mergedStockBarItems = useMemo<StockBarItem[]>(() => {
+  // issue #1661（OR-COM-91cc3feb）：旧个股栏把最近一份大盘复盘注入历史区
+  // （MARKET 行），按日列表替换后由日期回看面板固定入口承接，入口不丢。
+  const marketReviewEntry = useMemo(() => {
     const latestMarketReview = marketReviewHistoryItems[0];
-    const stockItems = stockBarItems.filter((item) => item.stockCode !== 'MARKET');
     if (!latestMarketReview) {
-      return stockItems;
+      return null;
     }
-
-    const marketReviewItem: StockBarItem = {
+    return {
       id: latestMarketReview.id,
-      stockCode: 'MARKET',
-      stockName: latestMarketReview.stockName || t('home.marketReview'),
-      reportType: 'market_review',
-      sentimentScore: latestMarketReview.sentimentScore,
-      operationAdvice: latestMarketReview.operationAdvice,
-      analysisCount: Math.max(marketReviewHistoryItems.length, 1),
-      lastAnalysisTime: latestMarketReview.createdAt,
-      modelUsed: latestMarketReview.modelUsed,
-      marketPhaseSummary: latestMarketReview.marketPhaseSummary,
+      name: latestMarketReview.stockName || t('home.marketReview'),
+      createdAt: latestMarketReview.createdAt,
     };
-
-    return [marketReviewItem, ...stockItems].sort((left, right) => {
-      const leftTime = left.lastAnalysisTime ? Date.parse(left.lastAnalysisTime) : 0;
-      const rightTime = right.lastAnalysisTime ? Date.parse(right.lastAnalysisTime) : 0;
-      return rightTime - leftTime;
-    });
-  }, [marketReviewHistoryItems, stockBarItems, t]);
+  }, [marketReviewHistoryItems, t]);
 
   const sidebarContent = useMemo(
     () => (
@@ -1470,14 +1445,13 @@ const HomePage: React.FC = () => {
           isLoadingTodayItems={isLoadingTodayAnalysisItems}
           todayLoadError={todayAnalysisLoadFailed}
           watchlistAnalyzedTodayCount={watchlistAnalyzedTodayCount}
-          historyItems={mergedStockBarItems}
-          isLoadingHistory={isLoadingStockBar}
           selectedStockCode={selectedReport?.meta.stockCode}
           selectedAssetType={selectedReport?.meta.assetType ?? null}
           selectedRecordId={selectedReport?.meta.id}
           onHistoryItemClick={handleHistoryItemClick}
-          onDeleteStock={handleDeleteStock}
-          isDeleting={isDeletingStock}
+          dailyHistoryDate={dailyHistoryDate}
+          onDailyHistoryDateChange={setDailyHistoryDate}
+          marketReviewEntry={marketReviewEntry}
           className="flex-1"
         />
       </div>
@@ -1485,19 +1459,17 @@ const HomePage: React.FC = () => {
     [
       activeTasks,
       batchAnalyzeStatus,
+      dailyHistoryDate,
       handleAnalyzeWatchlist,
-      handleDeleteStock,
       handleHistoryItemClick,
       handleRefreshWatchlist,
       handleTaskPanelCollapsedChange,
       isBatchAnalyzingWatchlist,
-      isDeletingStock,
-      isLoadingStockBar,
       isLoadingTodayAnalysisItems,
       isStockIndexReady,
       isTaskPanelCollapsed,
+      marketReviewEntry,
       todayAnalysisLoadFailed,
-      mergedStockBarItems,
       openTaskRunFlow,
       selectedReport?.meta.id,
       selectedReport?.meta.assetType,
