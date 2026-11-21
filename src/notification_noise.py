@@ -336,7 +336,7 @@ def _evaluate_notification_noise(
             return NotificationNoiseDecision(
                 should_send=False,
                 reason_code="cooldown_inflight",
-                message="同一通知正在发送中，已跳过静态通知渠道。",
+                message="已有通知正在发送且触发冷却限制，本次发送已跳过，请稍后重试。",
                 dedup_key=dedup_state_key,
                 cooldown_key=cooldown_state_key,
                 **decision_base,
