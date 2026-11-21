@@ -276,6 +276,14 @@ const settingsHelpZhCN: SettingsHelpMap = {
     impact: ['影响部分 A 股基础数据、股票列表和相关增强数据获取。'],
     notes: ['不要把 token 提交到仓库或公开日志。'],
   },
+  'settings.data_source.CROSS_ASSET_CONTEXT_ENABLED': {
+    title: 'Cross-Asset Context',
+    summary: '是否注入跨资产外围（指数/VIX/美债10Y）低敏上下文摘要，用于风险偏好校准。',
+    usage: '默认关闭（opt-in）；不配置时主分析流程零行为差异。显式开启后，数据源失败自动降级为 unknown 最小上下文，不中断主分析。',
+    valueNotes: ['仅注入低敏背景摘要做风险偏好校准，不直接生成买卖规则。'],
+    impact: ['开启后每次个股分析增加少量外部行情请求。'],
+    notes: ['关闭后分析不包含跨资产背景信息。'],
+  },
   'settings.data_source.TICKPLUS_API_KEY': {
     title: 'TickPlus API Key（推荐）',
     summary: '首选推荐 A 股 / ETF 日 K、实时指标、名称查询；ETF 轮动使用前复权实例。',
@@ -1535,6 +1543,14 @@ const settingsHelpEnUS: SettingsHelpMap = {
     valueNotes: ['Available APIs depend on your Tushare permission level.'],
     impact: ['Affects some A-share base data, stock lists, and enrichment data.'],
     notes: ['Do not commit the token or print it in public logs.'],
+  },
+  'settings.data_source.CROSS_ASSET_CONTEXT_ENABLED': {
+    title: 'Cross-Asset Context',
+    summary: 'Inject a low-sensitivity cross-asset summary (indices / VIX / US 10Y) into stock analysis for risk appetite calibration.',
+    usage: 'Disabled by default (opt-in) with zero behavior change when unset. When enabled, provider failures fail open to an unknown minimal context without interrupting analysis.',
+    valueNotes: ['Provides low-sensitivity risk appetite calibration only; never creates direct buy/sell rules.'],
+    impact: ['Adds a small number of external market-data requests per stock analysis when enabled.'],
+    notes: ['When disabled, stock analysis omits cross-asset context.'],
   },
   'settings.data_source.TICKPLUS_API_KEY': {
     title: 'TickPlus API Key (Recommended)',
