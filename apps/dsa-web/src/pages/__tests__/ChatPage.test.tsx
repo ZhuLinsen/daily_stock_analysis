@@ -117,6 +117,10 @@ vi.mock('../../api/agent', () => ({
   agentApi: {
     getSkills: mockGetSkills,
     getStatus: mockGetStatus,
+    getChatSessionMessages: async (session_id: string, opts: { chatgpt_connection_id: string }) => ({
+      session_id, chatgpt_preview: { connection_id: opts.chatgpt_connection_id, snapshot_id: 'preview-' + opts.chatgpt_connection_id,
+        account_label: 'Account ' + opts.chatgpt_connection_id, messages: [{ message_id: '61', role: 'assistant', content: '已收盘，成交量下降。' }], stock: null },
+    }),
     deleteChatSession: mockDeleteChatSession,
     sendChat: mockSendChat,
   },
@@ -1137,33 +1141,38 @@ describe('ChatPage', () => {
     const catalog = [{ slug: 'model', display_name: 'Model' }];
     const models = vi.spyOn(chatgptApi, 'models').mockResolvedValue(catalog);
     try {
+      mockGetStatus.mockImplementation(async source => ({ backend: source?.provider ?? 'litellm', available: true }));
       useChatGPTStore.setState({ status: account, models: catalog, model: 'model' });
       mockGetSkills.mockResolvedValue({
         skills: [{ id: 'chan_theory', name: '缠论', description: '结构分析' }],
         default_skill_id: 'chan_theory',
       });
-      render(<MemoryRouter><ChatPage /></MemoryRouter>);
+      const page = render(<MemoryRouter><ChatPage /></MemoryRouter>);
       await act(async () => {
         fireEvent.change(screen.getByRole('combobox', { name: '模型来源' }), { target: { value: 'chatgpt' } });
       });
-      fireEvent.click(await screen.findByRole('button', { name: /使用 Account A 并发送/ }));
+      expect(await screen.findByText(/向 Account A 发送/)).toBeVisible();
       await act(async () => {
         useChatGPTStore.setState({ status: { ...account, connection_id: 'B', account_label: 'Account B' }, model: 'model' });
       });
-      const confirmation = await screen.findByRole('button', { name: /使用 Account B 并发送/ });
+      expect(await screen.findByText(/向 Account B 发送/)).toBeVisible();
+      expect(await screen.findByRole('heading', { level: 1 })).toHaveTextContent(/问股.*ChatGPT 授权/);
+      expect(screen.getByText(/已收盘，成交量下降/)).toBeVisible();
       const input = screen.getByPlaceholderText(/分析 600519/);
       const quickQuestion = screen.getByRole('button', { name: '用缠论分析茅台' });
       await waitFor(() => expect(quickQuestion).toBeEnabled());
       fireEvent.change(input, { target: { value: '怎么看' } });
-      fireEvent.keyDown(input, { key: 'Enter' });
       fireEvent.click(quickQuestion);
       expect(mockStartStream).not.toHaveBeenCalled();
-      fireEvent.click(confirmation);
+      await waitFor(() => expect(screen.getByRole('button', {name:'确认并发送'})).toBeEnabled());
       fireEvent.keyDown(input, { key: 'Enter' });
       await waitFor(() => expect(mockStartStream).toHaveBeenCalledWith(expect.objectContaining({
         session_id: 'session-1',
-        model_source: { provider: 'chatgpt_siwc', connection_id: 'B', model: 'model' },
+        model_source: { provider: 'chatgpt_siwc', connection_id: 'B', model: 'model' }, snapshot_id: 'preview-B',
       }), expect.anything()));
+      mockStoreState.messages = [{ id: '61', role: 'assistant', content: '已有一条回复。' }];
+      page.rerender(<MemoryRouter><ChatPage /></MemoryRouter>);
+      expect(screen.getByRole('button', { name: '发送到已配置的通知机器人/邮箱' })).toHaveTextContent(/^发送$/);
     } finally {
       status.mockRestore();
       models.mockRestore();

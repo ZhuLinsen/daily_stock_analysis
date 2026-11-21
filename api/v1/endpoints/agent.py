@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, ValidationError
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from api.deps import get_agent_chat_session_service, require_chatgpt_access
 from api.v1.schemas.system_config import AgentBackendStatusResponse
@@ -51,6 +51,7 @@ class ChatRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     model_source: ChatGPTModelSourceInput
+    snapshot_id: Optional[str] = Field(default=None, min_length=1, max_length=64)
     message: str
     session_id: Optional[str] = None
     session_generation: Optional[str] = Field(default=None, min_length=1, max_length=36)
@@ -60,6 +61,12 @@ class ChatRequest(BaseModel):
         validation_alias=AliasChoices("skills", "strategies"),
     )
     context: Optional[Dict[str, Any]] = None  # Previous analysis context for data reuse
+
+    @model_validator(mode="after")
+    def require_chatgpt_snapshot(self):
+        if self.model_source is not None and not (self.session_id and self.snapshot_id):
+            raise ValueError("ChatGPT chat requires a session_id and snapshot_id")
+        return self
 
     @property
     def effective_skills(self) -> Optional[List[str]]:
@@ -123,6 +130,10 @@ def _prepare_chat_request(request, config, session_id, session_service):
         context=_build_agent_chat_context(request, config, None),
         expected_generation=request.session_generation,
     )
+    return _accept_chat_request(request, config, session_id, session_service, resolved)
+
+
+def _accept_chat_request(request, config, session_id, session_service, resolved):
     if resolved.clarification is not None:
         accepted = session_service.commit_user_turn(resolved)
         return None, None, accepted, resolved.clarification
@@ -136,6 +147,22 @@ def _prepare_chat_request(request, config, session_id, session_service):
         resolved_turn=resolved, session_service=session_service,
     )
     return executor, turn, turn.accepted_snapshot, None
+
+
+def _prepare_confirmed_request(request, config, session_id, session_service):
+    from src.services.chatgpt_oauth_service import get_chatgpt_service
+
+    service = get_chatgpt_service()
+    connection_id = request.model_source.connection_id
+    backend_id = _select_agent_chat_backend(config, model_source=request.model_source)
+    with service.lock:
+        if service.status()["connection_id"] != connection_id:
+            raise HTTPException(409, detail={"error": "chatgpt_target_changed", "message": "ChatGPT connection changed"})
+        try:
+            resolved = session_service.prepare_chatgpt_turn(config, request, session_id)
+            return backend_id, _accept_chat_request(request, config, session_id, session_service, resolved)
+        except ChatSessionStateConflict as exc:
+            raise HTTPException(409, detail={"error": exc.code, "message": str(exc)}) from exc
 
 
 def _clarification_result(session_service, accepted, content, backend_id):
@@ -281,16 +308,18 @@ async def agent_chat(
 ):
     """Chat with the AI Agent without progress events."""
     config = get_config()
+    session_id = request.session_id or str(uuid.uuid4())
+    confirmed = None
     if request.model_source is None:
         backend_id = _select_agent_chat_backend(config)
     else:
         require_chatgpt_access(http_request)
-        backend_id = await asyncio.to_thread(_select_agent_chat_backend, config, model_source=request.model_source)
-
-    session_id = request.session_id or str(uuid.uuid4())
+        backend_id, confirmed = await asyncio.to_thread(
+            _prepare_confirmed_request, request, config, session_id, session_service,
+        )
     
     try:
-        executor, turn, accepted, clarification = await asyncio.to_thread(
+        executor, turn, accepted, clarification = confirmed or await asyncio.to_thread(
             _prepare_chat_request, request, config, session_id, session_service,
         )
         if clarification is not None:
@@ -328,6 +357,7 @@ class SessionsResponse(BaseModel):
 
 class SessionMessagesResponse(BaseModel):
     session_id: str
+    chatgpt_preview: Optional[Dict[str, Any]] = None
     messages: List[Dict[str, Any]]
     session_state: SessionStateResponse
     active_stock_context: Optional[ActiveStockContextResponse]
@@ -355,18 +385,29 @@ async def list_chat_sessions(
     return SessionsResponse(sessions=sessions)
 
 
-@router.get("/chat/sessions/{session_id}", response_model=SessionMessagesResponse)
+@router.get("/chat/sessions/{session_id}", response_model=SessionMessagesResponse, response_model_exclude_unset=True)
 async def get_chat_session_messages(
-    session_id: str,
-    limit: int = 100,
+    session_id: str, http_request: Request,
+    limit: int = 100, chatgpt_connection_id: Optional[str] = None,
+    stock_code: Optional[str] = None, stock_name: Optional[str] = None,
     session_service: AgentChatSessionService = Depends(get_agent_chat_session_service),
 ):
-    """获取单个会话的完整消息"""
-    detail = session_service.get_session_detail(
-        session_id,
-        limit,
-    )
+    preview = None
+    if chatgpt_connection_id is not None:
+        from src.services.chatgpt_oauth_service import get_chatgpt_service
+        require_chatgpt_access(http_request)
+        status = await asyncio.to_thread(get_chatgpt_service().status)
+        if status["connection_id"] != chatgpt_connection_id:
+            raise HTTPException(409, detail={"error": "chatgpt_target_changed", "message": "ChatGPT connection changed"})
+        snapshot = session_service.db.read_chat_session_snapshot(session_id)
+        hint = {"stock_code": stock_code, "stock_name": stock_name} if stock_code else None
+        preview = session_service.chatgpt_preview(snapshot, chatgpt_connection_id, hint)
+        preview["account_label"] = status["account_label"]
+        detail = session_service.get_session_detail(session_id, limit, snapshot=snapshot)
+    else:
+        detail = session_service.get_session_detail(session_id, limit)
     return SessionMessagesResponse(
+        **({"chatgpt_preview": preview} if preview is not None else {}),
         session_id=session_id,
         messages=detail.messages,
         **_public_chat_state(
@@ -437,9 +478,9 @@ def _select_agent_chat_backend(config, *, model_source=None) -> str:
     evaluation = evaluate_agent_backend_config(config, model_source=model_source)
     if not evaluation["available"]:
         raise HTTPException(
-            status_code=400,
+            status_code=409 if evaluation["error_code"] == "chatgpt_connection_inactive" else 400,
             detail={
-                "error": evaluation["error_code"],
+                "error": "chatgpt_target_changed" if evaluation["error_code"] == "chatgpt_connection_inactive" else evaluation["error_code"],
                 "message": evaluation["message"],
             },
         )
@@ -562,13 +603,15 @@ async def agent_chat_stream(
       - error: error occurred, contains 'message'
     """
     config = get_config()
+    session_id = request.session_id or str(uuid.uuid4())
+    confirmed = None
     if request.model_source is None:
         backend_id = _select_agent_chat_backend(config)
     else:
         require_chatgpt_access(http_request)
-        backend_id = await asyncio.to_thread(_select_agent_chat_backend, config, model_source=request.model_source)
-
-    session_id = request.session_id or str(uuid.uuid4())
+        backend_id, confirmed = await asyncio.to_thread(
+            _prepare_confirmed_request, request, config, session_id, session_service,
+        )
     loop = asyncio.get_running_loop()
     queue: asyncio.Queue = asyncio.Queue()
     request_id = request.request_id or str(uuid.uuid4())
@@ -614,7 +657,7 @@ async def agent_chat_stream(
         fut = None
         try:
             try:
-                executor, turn, accepted, clarification = await asyncio.to_thread(
+                executor, turn, accepted, clarification = confirmed or await asyncio.to_thread(
                     _prepare_chat_request, request, config, session_id, session_service,
                 )
             except asyncio.CancelledError:

@@ -10,7 +10,7 @@ import { agentApi } from '../api/agent';
 import { systemConfigApi } from '../api/systemConfig';
 import { ApiErrorAlert, Badge, Button, ConfirmDialog, EmptyState, InlineAlert, ScrollArea, Tooltip } from '../components/common';
 import { createParsedApiError, getParsedApiError } from '../api/error';
-import type { AgentStatusResponse, SkillInfo } from '../api/agent';
+import type { AgentStatusResponse, ChatGPTPreview, SkillInfo } from '../api/agent';
 import { DashboardStateBlock } from '../components/dashboard';
 import {
   useAgentChatStore,
@@ -328,13 +328,35 @@ const ChatPage: React.FC = () => {
   }, []);
 
   const connectionId = chatgptStatus?.connected ? chatgptStatus.connection_id : undefined;
-  const consentTarget = useChatGPT && connectionId ? JSON.stringify([sessionId, connectionId]) : '';
-  const [confirmedTarget, setConfirmedTarget] = useState('');
-  if (confirmedTarget && confirmedTarget !== consentTarget) setConfirmedTarget('');
-  const chatgptHistoryConfirmed = !!consentTarget && confirmedTarget === consentTarget;
-  const chatgptLabel = chatgptStatus?.accounts && chatgptStatus.accounts.length > 1
-    ? `${chatgptStatus.account_label} (${chatgptStatus.registration_id})`
-    : chatgptStatus?.account_label || 'ChatGPT';
+  const [previewEpoch, setPreviewEpoch] = useState(0);
+  const [stockHint, setStockHint] = useState<{ session: string; stock: ActiveStockContext } | null>(null);
+  const hint = stockHint?.session === sessionId ? stockHint.stock : null;
+  const stockCode = hint?.stock_code;
+  const stockName = hint?.stock_name ?? undefined;
+  const sessionGeneration = useAgentChatStore(state => state.sessionGeneration);
+  const previewKey = JSON.stringify([useChatGPT, sessionId, sessionGeneration, connectionId, stockCode, stockName, previewEpoch]);
+  const [previewRead, setPreviewRead] = useState<{ key: string; value?: ChatGPTPreview; error?: string }>();
+  const preview = previewRead?.key === previewKey ? previewRead.value : undefined;
+  useEffect(() => {
+    if (!useChatGPT || !connectionId || loading) return;
+    let current = true;
+    agentApi.getChatSessionMessages(sessionId, { chatgpt_connection_id: connectionId, stock_code: stockCode, stock_name: stockName })
+      .then(detail => {
+        if (!current) return;
+        if (detail.session_id === sessionId && detail.chatgpt_preview?.connection_id === connectionId) {
+          setPreviewRead({ key: previewKey, value: detail.chatgpt_preview });
+        } else {
+          setPreviewRead({ key: previewKey, error: t('chat.noSnapshot') });
+        }
+      })
+      .catch(error => {
+        if (!current) return;
+        const parsed = getParsedApiError(error);
+        setPreviewRead({ key: previewKey, error: parsed.message });
+        if (parsed.status === 409) void refreshChatGPT();
+      });
+    return () => { current = false; };
+  }, [connectionId, loading, previewKey, refreshChatGPT, sessionId, stockCode, stockName, t, useChatGPT]);
   const sourceKey = useChatGPT ? JSON.stringify([connectionId, chatgptModel]) : 'default';
   const [checkedSource, setCheckedSource] = useState('');
   const loadAgentStatus = useCallback(async () => {
@@ -558,6 +580,7 @@ const ChatPage: React.FC = () => {
 
     const hydrationToken = ++followUpHydrationTokenRef.current;
     setInput(buildFollowUpPrompt(stock, name));
+    setStockHint({ session: sessionId, stock: { stock_code: stock, stock_name: name } });
     followUpContextRef.current = {
       stock_code: stock,
       stock_name: name,
@@ -581,7 +604,7 @@ const ChatPage: React.FC = () => {
       }
     });
     setSearchParams({}, { replace: true });
-  }, [searchParams, setSearchParams, stockIndex, stockIndexLoading, agentStatusChecking]);
+  }, [searchParams, setSearchParams, stockIndex, stockIndexLoading, agentStatusChecking, sessionId]);
 
   const handleSend = useCallback(
     async (
@@ -592,11 +615,11 @@ const ChatPage: React.FC = () => {
       const msgText = (overrideMessage ?? input).trim();
       if (!msgText || loading || !agentAvailable || !agentStatus) return;
       const modelSource = useChatGPT ? currentChatGPTSource(chatgptStatus, chatgptModel) : undefined;
-      if (useChatGPT && (!modelSource || !chatgptHistoryConfirmed)) return;
+      if (useChatGPT && (!modelSource || !preview)) return;
       if (overrideMessage !== undefined) {
         setInput(msgText);
       }
-      const requestedSkillIds = overrideSkillIds ?? sessionSelectedSkillIds;
+      const requestedSkillIds = overrideSkillIds ?? (useChatGPT ? selectedSkillIds : sessionSelectedSkillIds);
       const usedSkillIds = normalizeSelectedSkillIds(
         requestedSkillIds ?? selectedSkillIds,
       );
@@ -607,13 +630,14 @@ const ChatPage: React.FC = () => {
 
       const payload = {
         message: msgText,
-        ...(modelSource && { model_source: modelSource }),
+        ...(modelSource && { model_source: modelSource, snapshot_id: preview?.snapshot_id }),
         session_id: sessionId,
         ...(requestedSkillIds !== null
           ? { skills: normalizeSelectedSkillIds(requestedSkillIds) }
           : {}),
-        context: contextForSend ?? undefined,
+        context: useChatGPT ? hint ?? undefined : contextForSend ?? undefined,
       };
+      if (useChatGPT) setPreviewEpoch(value => value + 1);
       await startStream(payload, {
         skillNames: usedSkillNames,
         skillName: usedSkillNames.join('、'),
@@ -621,13 +645,19 @@ const ChatPage: React.FC = () => {
           followUpHydrationTokenRef.current += 1;
           followUpContextRef.current = null;
           setIsFollowUpContextLoading(false);
+          setStockHint(null);
           setInput('');
           setMobileSkillPickerOpen(false);
           requestScrollToBottom('smooth');
         },
       });
+      if (useChatGPT) {
+        const error = useAgentChatStore.getState().chatError;
+        if (error?.code === 'session_state_conflict') await refreshSession();
+        else if (error?.status === 409) await refreshChatGPT();
+      }
     },
-    [agentAvailable, agentStatus, chatgptHistoryConfirmed, chatgptModel, chatgptStatus, getSkillNames, input, loading, normalizeSelectedSkillIds, requestScrollToBottom, selectedSkillIds, sessionId, sessionSelectedSkillIds, startStream, useChatGPT],
+    [agentAvailable, agentStatus, preview, hint, refreshChatGPT, refreshSession, chatgptModel, chatgptStatus, getSkillNames, input, loading, normalizeSelectedSkillIds, requestScrollToBottom, selectedSkillIds, sessionId, sessionSelectedSkillIds, startStream, useChatGPT],
   );
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -639,7 +669,12 @@ const ChatPage: React.FC = () => {
 
   const handleQuickQuestion = (q: (typeof QUICK_QUESTIONS)[0]) => {
     setSelectedSkillIds([q.skill]);
-    handleSend(q.label, [q.skill], q.stockContext);
+    if (useChatGPT) {
+      setInput(q.label);
+      setStockHint(q.stockContext ? { session: sessionId, stock: q.stockContext } : null);
+    } else {
+      handleSend(q.label, [q.skill], q.stockContext);
+    }
   };
 
   const showSendFeedback = useCallback((nextToast: { type: 'success' | 'error'; message: string }, durationMs: number) => {
@@ -999,7 +1034,8 @@ const ChatPage: React.FC = () => {
                   variant={agentStatus.errorCode === 'backend_removed' ? 'warning' : 'history'}
                   size="sm"
                 >
-                  {t(agentStatus.errorCode === 'backend_removed' ? 'settings.agentBackendRemovedLabel' : 'chat.defaultBackendBadge')}
+                  {t(agentStatus.errorCode === 'backend_removed' ? 'settings.agentBackendRemovedLabel'
+                    : agentStatus.backend === 'chatgpt_siwc' ? 'chat.chatgptBackendBadge' : 'chat.defaultBackendBadge')}
                 </Badge>
               ) : null}
             </h1>
@@ -1511,16 +1547,20 @@ const ChatPage: React.FC = () => {
             )}
 
               <ModelSourceSelect selected={useChatGPT} onChange={setUseChatGPT} />
-              {consentTarget && !chatgptHistoryConfirmed && (
-                <button type="button" className="self-start rounded-lg border border-subtle px-3 py-1.5 text-xs text-secondary-text"
-                  onClick={() => setConfirmedTarget(consentTarget)}>
-                  {t('chat.confirmChatGPTAccountHistory', {
-                    account: chatgptLabel,
-                  })}
-                </button>
-              )}
-              {chatgptHistoryConfirmed && (
-                <span className="text-xs text-secondary-text">{t('chat.chatGPTAccount', { account: chatgptLabel })}</span>
+              {useChatGPT && connectionId && (
+                <section aria-label={t('chat.snapshotTitle')} className="max-h-56 overflow-y-auto text-sm">
+                  {preview ? <>
+                    <p>{t('chat.snapshotAccount', { account: preview.account_label })}</p>
+                    {preview.stock && <p>{preview.stock.stock_name} {preview.stock.stock_code}</p>}
+                    {preview.messages.length === 0 ? <p>{t('chat.emptySnapshot')}</p> :
+                      <ol>{preview.messages.map(row => <li key={row.message_id} className="whitespace-pre-wrap break-words">
+                        <strong>{row.role === 'user' ? t('chat.snapshotUser') : t('chat.snapshotAssistant')}</strong> {row.content}
+                      </li>)}</ol>}
+                  </> : previewRead?.key === previewKey && previewRead.error ? <>
+                    <p role="status">{previewRead.error}</p>
+                    <button type="button" onClick={() => setPreviewEpoch(value => value + 1)}>{t('chat.reloadSnapshot')}</button>
+                  </> : <p role="status">{t('chat.loadingSnapshot')}</p>}
+                </section>
               )}
               <div className="flex items-end gap-3">
                 <textarea
@@ -1541,11 +1581,11 @@ const ChatPage: React.FC = () => {
                   <Button
                     variant="primary"
                     onClick={() => handleSend()}
-                    disabled={!input.trim() || loading || !agentAvailable || (useChatGPT && !chatgptHistoryConfirmed)}
+                    disabled={!input.trim() || loading || !agentAvailable || (useChatGPT && !preview)}
                     isLoading={loading}
                     className="btn-primary flex-shrink-0"
                   >
-                    发送
+                    {useChatGPT ? t('chat.confirmAndSend') : '发送'}
                   </Button>
 
               </div>

@@ -1079,11 +1079,18 @@ def test_mixed_chat_answer_sources_survive_session_reload(actual_chat_api, monke
     monkeypatch.setattr("src.auth.is_auth_enabled", lambda: True)
     monkeypatch.setattr("src.auth.verify_session", lambda cookie: cookie == "fixture")
     monkeypatch.setattr("src.services.agent_backend_status_service.get_chatgpt_service", lambda: Mock())
+    from threading import RLock
+    from types import SimpleNamespace
+    oauth = SimpleNamespace(lock=RLock(), status=lambda: {"connection_id": "fixture", "account_label": "Fixture"})
+    monkeypatch.setattr("src.services.chatgpt_oauth_service.get_chatgpt_service", lambda: oauth)
     session_id = "mixed-provenance"
     payload = {"session_id": session_id, "message": "分析600519"}
     source = {"provider": "chatgpt_siwc", "model": "fixture", "connection_id": "fixture"}
     results = []
     for message in [{"message": "风险呢", "context": {"stock_code": "600519"}}, {}, {"model_source": source}]:
+        if "model_source" in message:
+            detail = client.get(f"/api/v1/agent/chat/sessions/{session_id}", params={"chatgpt_connection_id": "fixture"})
+            message["snapshot_id"] = detail.json()["chatgpt_preview"]["snapshot_id"]
         response = client.post("/api/v1/agent/chat/stream", headers={"Origin": origin}, json={**payload, **message})
         events = [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data: ")]
         assert events[-1]["type"] == "done" and events[-1]["success"]

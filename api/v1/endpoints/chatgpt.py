@@ -1,5 +1,6 @@
 """Manage the local ChatGPT connection without exposing model credentials."""
 import asyncio
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -13,12 +14,13 @@ router = APIRouter()
 
 class ConnectRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    mode: Literal["new"] | None = None
     registration_id: str | None = Field(default=None, min_length=1)
     retry_id: str | None = Field(default=None, min_length=1)
 
     @model_validator(mode="after")
     def one_target(self):
-        if self.registration_id and self.retry_id:
+        if sum(value is not None for value in (self.registration_id, self.retry_id, self.mode)) > 1:
             raise ValueError("Choose a saved ChatGPT account or retry an authorization")
         return self
 
@@ -41,6 +43,8 @@ def _operation(request, action, *args, **kwargs):
         return getattr(get_chatgpt_service(), action)(*args, **kwargs)
     except ChatGPTError as exc:
         status = 409 if exc.code in {"chatgpt_connection_busy", "chatgpt_target_changed"} else 400
+        if exc.code == "chatgpt_store_unavailable":
+            status = 503
         raise HTTPException(status, detail={"error": exc.code, "message": str(exc)}) from None
     except OSError:
         raise HTTPException(503, detail={

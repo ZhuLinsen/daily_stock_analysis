@@ -101,6 +101,8 @@ class AgentChatExecutor:
                 "scope_resolution": StockScopeResolution(resolved_turn.effective_context, resolved_turn.stock_scope),
                 "db_manager": session_service.db,
                 "source_snapshot": resolved_turn.snapshot,
+                **({"confirmed_history": resolved_turn.chatgpt_preview["messages"]}
+                   if resolved_turn.chatgpt_preview is not None else {}),
             }
         else:
             db, snapshot = conversation_manager.prepare_turn(session_id)

@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
 from src.config import get_config
-from src.agent.chat_context import build_agent_chat_context_bundle, build_visible_chat_history
+from src.agent.chat_context import build_agent_chat_context_bundle
 from src.agent.llm_adapter import LLMToolAdapter
 from src.agent.provider_trace import persist_provider_trace_turns
 from src.agent.runner import run_agent_loop, parse_dashboard_json
@@ -521,6 +521,7 @@ def prepare_agent_chat(
     include_provider_trace: bool,
     strict_initial_stock_scope: bool = False,
     scope_resolution: Optional[StockScopeResolution] = None,
+    confirmed_history: Optional[List[Dict[str, Any]]] = None,
     db_manager=None,
     source_snapshot: Optional[Dict[str, Any]] = None,
 ) -> PreparedAgentChat:
@@ -553,25 +554,22 @@ def prepare_agent_chat(
         language_section=_build_language_section(report_language, chat_mode=True),
     )
 
-    if include_provider_trace:
-        history_messages = list(
-            build_agent_chat_context_bundle(
-                session_id, context_llm_adapter, config,
-                **({"db_manager": db_manager, "source_snapshot": source_snapshot}
-                   if source_snapshot is not None else {}),
-            ).context_messages
-        )
-    else:
-        history_messages = list(
-            build_visible_chat_history(
-                session_id,
-                context_llm_adapter,
-                config,
-                allow_llm_compression=False,
-                **({"db_manager": db_manager, "source_snapshot": source_snapshot}
-                   if source_snapshot is not None else {}),
-            )
-        )
+    if confirmed_history is not None:
+        history_messages = [{"role": row["role"], "content": row["content"]} for row in confirmed_history]
+        if stock_code:
+            system_prompt += "\n" + json.dumps({"stock_code": stock_code, "stock_name": effective_context.get("stock_name")},
+                                                ensure_ascii=False)
+        return PreparedAgentChat(system_prompt, history_messages, scope_resolution.stock_scope)
+
+    if not include_provider_trace:
+        raise ValueError("ChatGPT chat requires a confirmed conversation preview")
+    history_messages = list(
+        build_agent_chat_context_bundle(
+            session_id, context_llm_adapter, config,
+            **({"db_manager": db_manager, "source_snapshot": source_snapshot}
+               if source_snapshot is not None else {}),
+        ).context_messages
+    )
 
     if effective_context:
         context_parts = []

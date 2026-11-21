@@ -3,7 +3,7 @@
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import json
-from threading import Event
+from threading import Event, RLock
 from types import SimpleNamespace
 from unittest.mock import Mock
 from urllib.parse import parse_qs, urlsplit
@@ -47,7 +47,7 @@ def token_body(scope="offline_access resource.invoke chatgpt.tokens.use.direct")
 
 
 def begin(service):
-    service._save({"registration": REGISTRATION})
+    service._save({**service.data, "current_registration": "issued", "registrations": {"issued": REGISTRATION}})
     attempt = {"id": "attempt", "loop": None, "registration": REGISTRATION, "expected_client_id": "issued",
                "nonce": "nonce", "verifier": "pkce", "redirect_uri": "redirect"}
     service.pending = attempt
@@ -55,8 +55,8 @@ def begin(service):
 
 
 def expire_connection(service):
-    service._save({"registration": REGISTRATION, "connection": {
-        "active": True, "id": SOURCE.connection_id, "expires_at": 0, "access_token": "access-old",
+    service._save({**service.data, "current_registration": "issued", "registrations": {"issued": REGISTRATION}, "connection": {
+        "generation": "first", "id": SOURCE.connection_id, "expires_at": 0, "access_token": "access-old",
         "scopes": token_body()["scope"].split(), "refresh_token": "refresh-old",
     }})
     service.models_cache = (SOURCE.connection_id, ({"slug": SOURCE.model},))
@@ -78,21 +78,24 @@ async def disconnect_in_worker(service, **target):
     return await asyncio.to_thread(service.disconnect, asyncio.get_running_loop(), **(target or {"connection_id": SOURCE.connection_id}))
 
 
-@pytest.mark.parametrize("subject,scope,error", [
-    ("different", "openid", "chatgpt_invalid_identity"),
-    ("account", "openid", "chatgpt_plan_permission_required"),
+@pytest.mark.parametrize("subject,fields,error", [
+    ("different", {"expires_in": 0}, "chatgpt_invalid_identity"),
+    ("account", {"expires_in": 0}, "chatgpt_protocol_error"),
+    ("account", {"scope": "openid"}, "chatgpt_plan_permission_required"),
 ])
-def test_identity_binding_and_incomplete_consent(oauth, monkeypatch, subject, scope, error):
+def test_exchange_retirement_uses_verified_identity(oauth, monkeypatch, subject, fields, error):
     attempt = begin(oauth)
-    monkeypatch.setattr(oauth, "_grant_request", Mock(return_value=token_body(scope)))
-    monkeypatch.setattr(oauth, "_revoke_before", Mock(return_value=True))
+    monkeypatch.setattr(oauth, "_grant_request", Mock(return_value={**token_body(), **fields}))
+    monkeypatch.setattr(oauth, "_revoke_before", Mock(return_value=False))
     identity = Mock(return_value={"sub": subject})
     monkeypatch.setattr(oauth, "_identity", identity)
     oauth._complete(attempt, {"code": ["code"]})
     identity.assert_called_once_with(attempt, "identity", "issued", "nonce")
     assert oauth.status()["error"] == error
+    assert oauth.status()["revocations"][0]["owner_kind"] == ("registered" if subject == "account" else "unverified")
+    assert set(oauth._load()["unknown"]) == ({"issued"} if subject == "account" else {""})
     assert not oauth.status()["connected"]
-    assert oauth.data["registration"]["client_id"] == "issued"
+    assert oauth.data["current_registration"] == "issued"
 
 
 @pytest.mark.parametrize("has_refresh", [True, False])
@@ -122,7 +125,9 @@ def test_cancel_while_token_exchange_is_in_flight(oauth, monkeypatch, has_refres
             finish.set()
         callback.result(timeout=5)
     assert not oauth.status()["connected"]
-    assert oauth.status()["revocation_unconfirmed"] is (not has_refresh)
+    with pytest.raises(ChatGPTError, match="chatgpt_target_changed"):
+        oauth.disconnect(None, attempt_id="attempt")
+    assert bool(oauth.status()["revocations"]) is (not has_refresh)
     if has_refresh:
         assert revoke.call_args.args[1:3] == ("issued", "refresh-new")
     else:
@@ -159,10 +164,10 @@ def test_refresh_uses_existing_credentials_only_for_omitted_fields(
         assert stored["access_token"] == "access-new"
     if error == "chatgpt_plan_permission_required":
         assert revoke.call_args.args[1:3] == ("issued", "refresh-new")
-        assert not oauth.status()["revocation_unconfirmed"]
+        assert not bool(oauth.status()["revocations"])
     else:
         revoke.assert_not_called()
-        assert oauth.status()["revocation_unconfirmed"] is bool(error)
+        assert bool(oauth.status()["revocations"]) is bool(error)
 
 
 def test_refresh_and_disconnect_serialize_and_reconnect_changes_reference(oauth, monkeypatch):
@@ -181,7 +186,7 @@ def test_refresh_and_disconnect_serialize_and_reconnect_changes_reference(oauth,
     def revoke(request):
         stored = json.loads((oauth.directory / "connection.json").read_text())
         assert stored["connection"] is None
-        assert stored["registration"] == REGISTRATION
+        assert stored["registrations"]["issued"] == REGISTRATION
         if request.method == "GET":
             return httpx.Response(200, json={
                 "issuer": chatgpt_oauth_service.ISSUER,
@@ -267,7 +272,7 @@ def test_dynamic_registration_retry_keeps_issued_id_without_an_account(oauth, mo
     oauth._complete(first_attempt, {"code": ["expired"], "client_id": ["new-issued"]})
     first_attempt["thread"].join(2)
     assert oauth.status()["retry_id"] == first["attempt_id"]
-    assert not oauth.status()["pending"] and oauth.status()["accounts"] == []
+    assert not oauth.status()["pending"] and not oauth._registrations()
 
     retried = oauth.connect(None, retry_id=first["attempt_id"])
     retry_attempt = oauth.pending
@@ -286,50 +291,63 @@ def test_dynamic_registration_retry_keeps_issued_id_without_an_account(oauth, mo
     retry_attempt["thread"].join(2)
     assert grant.call_args.kwargs["data"]["client_id"] == "new-issued"
     assert grant.call_args.kwargs["data"]["code"] == "fresh"
-    assert oauth.status()["registration_id"] == "new-issued"
+    assert oauth.data["current_registration"] == "new-issued"
     assert oauth.status()["retry_id"] is None
 
 
-@pytest.mark.parametrize("restart", [False, True])
-def test_ambiguous_refresh_never_confirms_revocation_of_only_old_token(oauth, monkeypatch, restart):
+def test_refresh_pending_must_be_durable_before_network(oauth, monkeypatch):
     expire_connection(oauth)
-    revoked = Mock(return_value=True)
-    oauth.http.close()
-    oauth.http = httpx.Client(transport=httpx.MockTransport(lambda req: httpx.Response(503)), trust_env=False)
-    with pytest.raises(ChatGPTError, match="HTTP 503"):
-        oauth.models(SOURCE.connection_id, refresh=True)
-    assert oauth.status()["connected"]
-    # _load reads the same credential record a new instance would use.
-    if restart:
-        oauth.data = oauth._load()
-    monkeypatch.setattr(oauth, "_revoke_before", revoked)
-    assert oauth.disconnect(None, connection_id=SOURCE.connection_id) == {
-        "disconnected": True, "revocation_confirmed": False,
-    }
-    revoked.assert_called_once()
-    assert revoked.call_args.args[1:3] == ("issued", "refresh-old")
-    assert oauth.status()["revocation_unconfirmed"]
-    assert oauth.status()["revocation_account_label"] == REGISTRATION["label"]
-    oauth.data = oauth._load()
-    assert oauth.status()["revocation_unconfirmed"]
-
-
-def test_rotated_grant_write_failure_stops_the_old_connection(oauth, monkeypatch):
-    expire_connection(oauth)
-    save = oauth._save
-    monkeypatch.setattr(oauth, "_json", Mock(return_value=token_body()))
+    request, dispatch = Mock(), Mock()
+    monkeypatch.setattr(oauth, "_json", request)
     monkeypatch.setattr(oauth, "_save", Mock(side_effect=OSError("fixture")))
-    revoke, dispatch = Mock(return_value=True), Mock()
-    monkeypatch.setattr(oauth, "_revoke_before", revoke)
     with pytest.raises(OSError):
         oauth.start_request(SOURCE, dispatch)
-    assert not oauth.status()["connected"]
-    assert oauth.status()["error"] == "chatgpt_store_unavailable"
-    assert revoke.call_args.args[1:3] == ("issued", "refresh-new")
-    save({**oauth.data, "host_id": "fixture-host"})
-    with pytest.raises(ChatGPTError, match="chatgpt_connection_inactive"):
-        oauth.start_request(SOURCE, dispatch)
+    request.assert_not_called()
     dispatch.assert_not_called()
+
+
+@pytest.mark.parametrize("renamed", [False, True], ids=["prior-file", "pending-file"])
+def test_uncertain_refresh_write_blocks_second_request_until_reconciled(oauth, monkeypatch, renamed):
+    expire_connection(oauth)
+    replace = oauth._replace_file
+    record = oauth.directory / "connection.json"
+    grant = Mock(return_value=token_body())
+    dispatch = Mock()
+    monkeypatch.setattr(oauth, "_json", grant)
+
+    def interrupted(data):
+        if renamed:
+            replace(data)
+        raise OSError("fixture write interruption")
+
+    with monkeypatch.context() as fault:
+        fault.setattr(oauth, "_replace_file", interrupted)
+        fault.setattr(oauth, "_load", Mock(side_effect=OSError("fixture unreadable")))
+        with pytest.raises(OSError):
+            oauth.start_request(SOURCE, dispatch)
+        after_failure = record.read_bytes()
+        status = oauth.status()
+        assert not status["connected"] and status["error"] == "chatgpt_store_unavailable"
+        with pytest.raises(ChatGPTError, match="chatgpt_store_unavailable"):
+            oauth.start_request(SOURCE, dispatch)
+        assert record.read_bytes() == after_failure
+        grant.assert_not_called()
+        dispatch.assert_not_called()
+
+    status = oauth.status()
+    if renamed:
+        assert not status["connected"] and status["revocations"][0]["state"] == "unknown"
+        assert oauth._load()["revision"] == json.loads(after_failure)["revision"] + 1
+        with pytest.raises(ChatGPTError, match="chatgpt_connection_inactive"):
+            oauth.start_request(SOURCE, dispatch)
+        grant.assert_not_called()
+        dispatch.assert_not_called()
+    else:
+        assert status["connected"] and record.read_bytes() == after_failure
+        # Reconciliation invalidates the catalog cache; use the account's catalog fixture.
+        grant.side_effect = [token_body(), {"models": [{"slug": SOURCE.model, "visibility": "list"}]}]
+        oauth.start_request(SOURCE, dispatch)
+        dispatch.assert_called_once_with("access-new")
 
 
 @pytest.fixture
@@ -353,7 +371,7 @@ def test_stale_disconnect_cannot_replace_failed_refresh_retirement(oauth, chatgp
             return httpx.Response(200, content=b"invalid JSON")
         if revocation == "refresh-rejected":
             return httpx.Response(400, json={"error": "invalid_grant"})
-        return httpx.Response(200, json=token_body())
+        return httpx.Response(200, json=token_body("offline_access"))
 
     async def verify():
         loop = asyncio.get_running_loop()
@@ -388,7 +406,12 @@ def test_stale_disconnect_cannot_replace_failed_refresh_retirement(oauth, chatgp
             oauth.http = httpx.Client(transport=httpx.MockTransport(refresh), trust_env=False)
             try:
                 with monkeypatch.context() as failed:
-                    failed.setattr(oauth, "_save", Mock(side_effect=OSError("fixture")))
+                    save = oauth._save
+                    def fail_after_pending(data):
+                        if data.get("grant_pending"):
+                            return save(data)
+                        raise OSError("fixture")
+                    failed.setattr(oauth, "_save", fail_after_pending)
                     result = await client.get("/models", params={**target, "refresh": True})
                 assert result.status_code == 503
                 if revocation == "exiting":
@@ -396,9 +419,9 @@ def test_stale_disconnect_cannot_replace_failed_refresh_retirement(oauth, chatgp
                     assert not oauth.revoking["issued"].done()
                 status = (await client.get("/status")).json()
                 assert not status["connected"]
-                assert status["revocation_unconfirmed"] == (revocation != "refresh-rejected")
+                assert bool(status["revocations"]) == (revocation != "refresh-rejected")
                 assert status["disconnect_retry_connection_id"] is None
-                before = json.dumps(oauth.data.get("last_session_end"))
+                before = status["revocations"]
                 record = oauth.directory / "connection.json"
                 previous_file = record.read_bytes()
 
@@ -406,7 +429,7 @@ def test_stale_disconnect_cannot_replace_failed_refresh_retirement(oauth, chatgp
                 assert stale.status_code == 409 and stale.json()["detail"]["error"] == "chatgpt_target_changed"
                 assert revoked == (["refresh-new"] if revocation in {"refused", "exiting"} else [])
                 assert record.read_bytes() == previous_file
-                assert json.dumps(oauth.data.get("last_session_end")) == before
+                assert oauth.status()["revocations"] == before
                 assert (await client.get("/status")).json() == status
             finally:
                 release.set()
@@ -415,13 +438,24 @@ def test_stale_disconnect_cannot_replace_failed_refresh_retirement(oauth, chatgp
                     await asyncio.to_thread(finished.result, 2)
 
     asyncio.run(verify())
+    directory = oauth.directory
+    oauth.close()
+    restarted = ChatGPTOAuthService(directory)
+    try:
+        assert not restarted.status()["connected"]
+        # Even an explicit invalid_grant was only observed in memory; disk still contains the pending refresh.
+        assert restarted.status()["revocations"][0]["state"] == "unknown"
+        with pytest.raises(ChatGPTError, match="chatgpt_target_changed"):
+            restarted.disconnect(None, connection_id=SOURCE.connection_id)
+    finally:
+        restarted.close()
 
 
 def test_disconnect_write_failure_keeps_the_original_api_target_until_detached(oauth, chatgpt_routes, monkeypatch):
     expire_connection(oauth)
     target = {"connection_id": SOURCE.connection_id}
-    previous_end = {"operation_id": "earlier", "result": "unconfirmed", "registration_id": "issued"}
-    oauth._save({**oauth.data, "last_session_end": previous_end})
+    previous_end = {"earlier": {"owner": "earlier", "label": "Earlier"}}
+    oauth._save({**oauth.data, "unknown": previous_end})
     revoked = []
 
     def upstream(request):
@@ -441,7 +475,7 @@ def test_disconnect_write_failure_keeps_the_original_api_target_until_detached(o
     status = client.get("/status").json()
     assert not status["connected"] and status["connection_id"] is None
     assert status["disconnect_retry_connection_id"] == SOURCE.connection_id
-    assert revoked == [] and oauth.data["last_session_end"] == previous_end and status["revocation_unconfirmed"]
+    assert revoked == [] and oauth.data["unknown"] == previous_end and status["revocations"]
     assert client.get("/models", params=target).json()["detail"]["error"] == "chatgpt_connection_inactive"
     connect = client.post("/connect", json={})
     assert connect.status_code == 409 and connect.json()["detail"]["error"] == "chatgpt_connection_busy"
@@ -449,7 +483,7 @@ def test_disconnect_write_failure_keeps_the_original_api_target_until_detached(o
 
     assert client.post("/disconnect", json=target).json() == {"disconnected": True, "revocation_confirmed": True}
     status = client.get("/status").json()
-    assert status["disconnect_retry_connection_id"] is None and not status["revocation_unconfirmed"]
+    assert status["disconnect_retry_connection_id"] is None and status["revocations"][0]["label"] == "Earlier"
     record = oauth.directory / "connection.json"
     after = record.read_bytes()
     stale = client.post("/disconnect", json=target)
@@ -464,7 +498,7 @@ def test_second_write_failure_preserves_local_disconnect_and_live_result(oauth, 
     original_save = oauth._save
 
     def save(data):
-        if data["last_session_end"]["result"] == "confirmed":
+        if not data.get("revocations"):
             raise OSError("fixture")
         original_save(data)
 
@@ -472,9 +506,9 @@ def test_second_write_failure_preserves_local_disconnect_and_live_result(oauth, 
     monkeypatch.setattr(oauth, "_revoke_before", Mock(return_value=True))
     result = oauth.disconnect(None, connection_id=SOURCE.connection_id)
     assert result["disconnected"] and result["revocation_confirmed"]
-    assert not oauth.status()["connected"] and not oauth.status()["revocation_unconfirmed"]
+    assert not oauth.status()["connected"] and not bool(oauth.status()["revocations"])
     oauth.data = oauth._load()
-    assert not oauth.status()["connected"] and oauth.status()["revocation_unconfirmed"]
+    assert not oauth.status()["connected"] and bool(oauth.status()["revocations"])
 
 
 def test_same_registration_waits_for_revocation_task_exit(oauth, monkeypatch):
@@ -500,7 +534,7 @@ def test_same_registration_waits_for_revocation_task_exit(oauth, monkeypatch):
             assert await asyncio.to_thread(finishing.wait, 1)
             with pytest.raises(ChatGPTError, match="chatgpt_connection_busy"):
                 await asyncio.to_thread(oauth.connect, loop, registration_id="issued")
-            different = await asyncio.to_thread(oauth.connect, loop)
+            different = await asyncio.to_thread(oauth.connect, loop, mode="new")
             assert parse_qs(urlsplit(different["authorization_url"]).query)["client_id"] == ["dynamic_agent_client"]
             dynamic = oauth.pending
             exchange = Mock()
@@ -513,7 +547,7 @@ def test_same_registration_waits_for_revocation_task_exit(oauth, monkeypatch):
             release.set()
         assert await asyncio.to_thread(oauth.revoking["issued"].result, 1) is False
         await asyncio.to_thread(oauth.connect, loop, registration_id="issued")
-        assert oauth.status()["revocation_unconfirmed"]
+        assert bool(oauth.status()["revocations"])
 
     asyncio.run(verify())
 
@@ -525,7 +559,8 @@ def test_revoke_timeout_before_scheduling_does_not_strand_registration(oauth, mo
     loop.call_soon_threadsafe.side_effect = callbacks.append
     revoke = Mock()
     monkeypatch.setattr(oauth, "_revoke", revoke)
-    assert not oauth._revoke_before(loop, "issued", "fixture", chatgpt_oauth_service.time.monotonic() + 0.02)
+    with oauth.lock:
+        assert not oauth._revoke_before(loop, "issued", "fixture", chatgpt_oauth_service.time.monotonic() + 0.02)
     with pytest.raises(ChatGPTError, match="chatgpt_connection_busy"):
         oauth._check_revoking("issued")
     for callback in callbacks:
@@ -850,7 +885,8 @@ def test_chat_explicit_source_uses_real_status_factory_and_persists_failure(tmp_
     monkeypatch.setattr("src.auth.is_auth_enabled", lambda: True)
     monkeypatch.setattr("src.auth.verify_session", lambda cookie: cookie == "valid")
     monkeypatch.setattr(agent, "get_config", lambda: Config())
-    service = SimpleNamespace(validate=Mock())
+    service = SimpleNamespace(validate=Mock(), lock=RLock(), status=lambda: {"connection_id": SOURCE.connection_id, "account_label": "Fixture"})
+    monkeypatch.setattr(chatgpt_oauth_service, "get_chatgpt_service", lambda: service)
     monkeypatch.setattr("src.services.agent_backend_status_service.get_chatgpt_service", lambda: service)
     monkeypatch.setattr("src.agent.chatgpt_adapter.get_chatgpt_service", lambda: service)
     upstream = Mock(side_effect=ChatGPTError("chatgpt_timeout", "request timed out"))
@@ -859,8 +895,9 @@ def test_chat_explicit_source_uses_real_status_factory_and_persists_failure(tmp_
     client.cookies.set(COOKIE_NAME, "valid")
     assert client.get("/status", params=SOURCE.model_dump()).json()["available"]
     endpoint = "/chat/stream" if stream else "/chat"
+    preview = client.get("/chat/sessions/siwc-failed-chat", params={"chatgpt_connection_id": SOURCE.connection_id}).json()["chatgpt_preview"]
     response = client.post(endpoint, headers={"Origin": origin}, json={
-        "message": "你好", "session_id": "siwc-failed-chat", "model_source": SOURCE.model_dump(),
+        "snapshot_id": preview["snapshot_id"], "message": "你好", "session_id": "siwc-failed-chat", "model_source": SOURCE.model_dump(),
     })
     assert response.status_code == 200
     assert "chatgpt_timeout" in response.text
@@ -901,7 +938,7 @@ def test_newest_successful_catalog_owns_validation(oauth, monkeypatch):
 
 
 def test_switching_saved_accounts_reuses_registration_and_host(oauth, monkeypatch):
-    oauth._save({"registration": REGISTRATION, "host_id": "original-host"})
+    oauth._save({"current_registration": "issued", "registrations": {"issued": REGISTRATION}, "host_id": "original-host"})
     grants = [token_body("openid"), token_body(), token_body()]
     monkeypatch.setattr(oauth, "_grant_request", Mock(side_effect=grants))
     monkeypatch.setattr(oauth, "_revoke_before", Mock(return_value=True))
@@ -910,7 +947,7 @@ def test_switching_saved_accounts_reuses_registration_and_host(oauth, monkeypatc
     })
 
     def authorize(registration_id, issued):
-        started = oauth.connect(None, registration_id=registration_id)
+        started = oauth.connect(None, registration_id=registration_id, mode=None if registration_id else "new")
         params = parse_qs(urlsplit(started["authorization_url"]).query)
         attempt = oauth.pending
         oauth._complete(attempt, {"client_id": [issued], "code": ["fixture"]})
@@ -921,12 +958,13 @@ def test_switching_saved_accounts_reuses_registration_and_host(oauth, monkeypatc
     assert oauth.status()["error"] == "chatgpt_plan_permission_required"
     authorize(None, "other-client")
     status = oauth.status()
-    assert {a["id"] for a in status["accounts"]} == {"issued", "other-client"}
+    assert set(oauth._registrations()) == {"issued", "other-client"}
+    assert [a["kind"] for a in status["actions"]] == ["disconnect"]
     oauth.disconnect(None, connection_id=status["connection_id"])
     params = authorize("issued", "issued")
     assert params["prompt"] == ["consent"]
     assert params["client_id"] == ["issued"] and params["ext_agent_host_id"] == ["original-host"]
-    assert oauth.status()["connected"] and oauth.status()["registration_id"] == "issued"
+    assert oauth.status()["connected"] and oauth.data["current_registration"] == "issued"
 
 
 @pytest.mark.parametrize("failure", ["save", "malformed"])
@@ -936,7 +974,12 @@ def test_failed_activation_never_publishes_credentials(oauth, monkeypatch, failu
     if failure == "malformed":
         body["refresh_token"] = {"invalid": True}
     else:
-        monkeypatch.setattr(oauth, "_save", Mock(side_effect=OSError("fixture")))
+        save = oauth._save
+        def fail_activation(data):
+            if data.get("connection"):
+                raise OSError("fixture")
+            save(data)
+        monkeypatch.setattr(oauth, "_save", fail_activation)
     monkeypatch.setattr(oauth, "_grant_request", Mock(return_value=body))
     monkeypatch.setattr(oauth, "_identity", lambda *_: {"sub": "account"})
     revoke = Mock(return_value=True)
@@ -948,6 +991,37 @@ def test_failed_activation_never_publishes_credentials(oauth, monkeypatch, failu
     else:
         assert oauth.status()["error"] == "chatgpt_protocol_error"
         revoke.assert_not_called()
+
+
+@pytest.mark.parametrize("renamed", [False, True], ids=["pending-exchange", "active-connection"])
+def test_reconcile_activation_uses_file_before_treating_issued_token_as_unused(oauth, monkeypatch, renamed):
+    attempt = begin(oauth)
+    replace = oauth._replace_file
+    revoke = Mock()
+    monkeypatch.setattr(oauth, "_grant_request", Mock(return_value=token_body()))
+    monkeypatch.setattr(oauth, "_identity", Mock(return_value={"sub": REGISTRATION["sub"]}))
+    monkeypatch.setattr(oauth, "_revoke_before", revoke)
+
+    def interrupt_activation(data):
+        if not data.get("connection"):
+            return replace(data)
+        if renamed:
+            replace(data)
+        raise OSError("fixture ambiguous activation")
+
+    with monkeypatch.context() as fault:
+        fault.setattr(oauth, "_replace_file", interrupt_activation)
+        fault.setattr(oauth, "_load", Mock(side_effect=OSError("fixture unreadable")))
+        oauth._complete(attempt, {"code": ["fixture"]})
+        assert not oauth.status()["connected"]
+    status = oauth.status()
+    revoke.assert_not_called()
+    assert status["connected"] is renamed
+    if renamed:
+        assert not status["revocations"] and oauth._load()["connection"]["id"] == status["connection_id"]
+    else:
+        assert status["revocations"][0]["label"] == "Test account (issued)"
+        assert oauth._load()["connection"] is None
 
 
 def test_completed_calls_reach_ledger_before_local_validation(monkeypatch, tmp_path):
@@ -986,3 +1060,184 @@ def test_completed_calls_reach_ledger_before_local_validation(monkeypatch, tmp_p
             ("analysis", "600519", 13), ("analysis", "600519", 21), ("analysis", "600519", 8), ("agent", None, 34),
         ]
         assert all(r.cache_observation is None for r in rows)
+
+
+@pytest.mark.parametrize("timeout_a", [False, True], ids=["valid-old-revision", "expired"])
+def test_revocation_updates_only_its_registration_across_new_revision(oauth, monkeypatch, timeout_a):
+    expire_connection(oauth)
+    monkeypatch.setattr(oauth, "_grant_request", Mock(return_value=token_body()))
+    monkeypatch.setattr(oauth, "_identity", Mock(return_value={"sub": "b", "name": "Account B"}))
+    monkeypatch.setattr(chatgpt_oauth_service, "DISCONNECT_TIMEOUT", 1 if timeout_a else 10)
+
+    async def verify():
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def issuer(request):
+            if request.method == "GET":
+                return httpx.Response(200, json={
+                    "issuer": chatgpt_oauth_service.ISSUER, "revocation_endpoint": chatgpt_oauth_service.ISSUER + "/revoke",
+                })
+            if parse_qs(request.content.decode())["client_id"] == ["issued"]:
+                entered.set()
+                try:
+                    await release.wait()
+                except asyncio.CancelledError:
+                    await release.wait()
+            return httpx.Response(200)
+
+        mock_revocation_transport(monkeypatch, issuer)
+        a = asyncio.create_task(disconnect_in_worker(oauth))
+        try:
+            await asyncio.wait_for(entered.wait(), 3)
+            pending = oauth._load()
+            assert "refresh-old" not in json.dumps(pending)
+            assert oauth.status()["revocations"][0]["state"] == "pending"
+            loop = asyncio.get_running_loop()
+            await asyncio.to_thread(oauth.connect, loop, mode="new")
+            attempt = oauth.pending
+            await asyncio.to_thread(oauth._complete, attempt, {"code": ["fixture"], "client_id": ["registered-b"]})
+            b = oauth.status()
+            assert b["connected"] and b["account_label"].startswith("Account B")
+            ended = await disconnect_in_worker(oauth, connection_id=b["connection_id"])
+            assert ended["revocation_confirmed"] and oauth._load()["revision"] > pending["revision"]
+            if not timeout_a:
+                release.set()
+            assert (await a)["revocation_confirmed"] is (not timeout_a)
+        finally:
+            release.set()
+            await a
+
+    asyncio.run(verify())
+    oauth.close()
+    restarted = ChatGPTOAuthService(oauth.directory)
+    try:
+        warnings = restarted.status()["revocations"]
+        assert warnings == ([{"state": "unknown", "operation_id": None, "owner_kind": "registered",
+                              "label": "Test account (issued)"}] if timeout_a else [])
+        assert restarted.data["current_registration"] == "registered-b" and not restarted.status()["connected"]
+    finally:
+        restarted.close()
+
+
+def test_legacy_import_discards_tokens_and_preserves_registration_and_warning(tmp_path, monkeypatch):
+    folder = tmp_path / "private"
+    folder.mkdir(mode=0o700)
+    path = folder / "connection.json"
+    path.write_text(json.dumps({
+        "registration": {**REGISTRATION, "needs_consent": True},
+        "host_id": "host", "other_registrations": {"b": {"client_id": "b", "sub": "b", "label": "B"}},
+        "last_session_end": {"result": "unconfirmed", "registration_id": "b"},
+        "connection": {"id": "old", "active": True, "refresh_token": "fixture-secret", "refresh_ambiguous": True},
+    }))
+    path.chmod(0o600)
+    original = path.read_bytes()
+    with monkeypatch.context() as failure:
+        failure.setattr(ChatGPTOAuthService, "_replace_file", Mock(side_effect=OSError("fixture read only")))
+        readonly = ChatGPTOAuthService(folder)
+        try:
+            status = readonly.status()
+            assert not status["connected"] and status["error"] == "chatgpt_store_unavailable"
+            assert status["revocations"] and path.read_bytes() == original
+        finally:
+            readonly.close()
+    service = ChatGPTOAuthService(folder)
+    try:
+        status = service.status()
+        assert status["reauth_reason"] == "scope_required" and not status["connected"]
+        assert {row["label"] for row in status["revocations"]} == {"Test account (issued)", "B (b)"}
+        assert {a["target"]["registration_id"] for a in status["actions"] if a["kind"] == "reauth"} == {"b", "issued"}
+        assert service.data["host_id"] == "host" and service.data["revision"] == 1
+        assert "fixture-secret" not in path.read_text()
+    finally:
+        service.close()
+
+
+def test_chatgpt_preview_matches_sdk_payload_and_conflicts_before_accept(oauth, tmp_path, monkeypatch):
+    from api.v1.endpoints import agent
+    from src.auth import COOKIE_NAME
+    from src.services.agent_chat_session_service import AgentChatSessionService
+    from src.storage import DatabaseManager
+
+    expire_connection(oauth)
+    oauth._save({**oauth.data, "connection": {**oauth.data["connection"], "expires_at": 9999999999}})
+    origin = "http://127.0.0.1:8765"
+    app = FastAPI()
+    app.state.chatgpt_origin = origin
+    app.include_router(agent.router)
+    db = DatabaseManager(f"sqlite:///{tmp_path / 'preview.db'}")
+    session_id = "long-session"
+    for n in range(120):
+        db.save_conversation_message(session_id, "user" if n % 2 == 0 else "assistant", f"history-{n}")
+    app.dependency_overrides[agent.get_agent_chat_session_service] = lambda: AgentChatSessionService(db)
+    monkeypatch.setattr("src.auth.is_auth_enabled", lambda: True)
+    monkeypatch.setattr("src.auth.verify_session", lambda cookie: cookie == "fixture")
+    monkeypatch.setattr(agent, "get_config", lambda: Config())
+    monkeypatch.setattr(chatgpt_oauth_service, "get_chatgpt_service", lambda: oauth)
+    monkeypatch.setattr("src.services.agent_backend_status_service.get_chatgpt_service", lambda: oauth)
+    monkeypatch.setattr("src.agent.chatgpt_adapter.get_chatgpt_service", lambda: oauth)
+    client = TestClient(app, base_url=origin)
+    client.cookies.set(COOKIE_NAME, "fixture")
+    calls = []
+
+    def upstream(request):
+        calls.append(json.loads(request.content))
+        event = {"type": "response.completed", "sequence_number": 1, "response": {
+            "id": "fixture-preview", "status": "completed", "model": SOURCE.model,
+            "output": [item("fixture visible reply")],
+        }}
+        return httpx.Response(200, headers={"Content-Type": "text/event-stream"},
+                              content=f"data: {json.dumps(event)}\n\n")
+
+    class FixtureClient(httpx.Client):
+        def __init__(self, **kwargs):
+            super().__init__(transport=httpx.MockTransport(upstream), **kwargs)
+
+    monkeypatch.setattr("src.llm.chatgpt_responses.httpx.Client", FixtureClient)
+
+    def read():
+        return client.get("/chat/sessions/" + session_id, params={"chatgpt_connection_id": SOURCE.connection_id}).json()["chatgpt_preview"]
+
+    def send(preview, endpoint="/chat"):
+        return client.post(endpoint, headers={"Origin": origin}, json={
+            "message": "你好", "session_id": session_id, "snapshot_id": preview["snapshot_id"],
+            "model_source": SOURCE.model_dump(), "context": {"previous_analysis_summary": "NOT_APPROVED"},
+        })
+
+    preview = read()
+    assert [m["content"] for m in preview["messages"]] == [f"history-{n}" for n in range(100, 120)]
+    for role in ("assistant", "user"):
+        db.save_conversation_message(session_id, role, "other tab")
+        size = len(db.read_chat_session_snapshot(session_id)["messages"])
+        assert send(preview, "/chat/stream").status_code == 409
+        assert send(preview).status_code == 409
+        assert len(db.read_chat_session_snapshot(session_id)["messages"]) == size and not calls
+        preview = read()
+    # Insert a reply after preflight and before the actual SQLite accept transaction.
+    commit = db.commit_chat_user_turn
+
+    def accept_after_reply(*args, **kwargs):
+        db.save_conversation_message(session_id, "assistant", "concurrent reply")
+        return commit(*args, **kwargs)
+
+    with monkeypatch.context() as concurrent:
+        concurrent.setattr(db, "commit_chat_user_turn", accept_after_reply)
+        assert send(preview, "/chat/stream").status_code == 409
+    rows = db.read_chat_session_snapshot(session_id)["messages"]
+    assert rows[-1]["content"] == "concurrent reply" and not calls
+    assert all(row["content"] != "你好" for row in rows)
+    db.save_conversation_user_turn(session_id, "saved selection", ["ma_golden_cross"])
+    preview = read()
+    response = send(preview)
+    assert response.status_code == 200 and "fixture visible reply" in response.text
+    assert db.get_conversation_session_selected_skill_ids(session_id) == ["ma_golden_cross"]
+    assert len(calls) == 1 and "NOT_APPROVED" not in json.dumps(calls)
+    assert calls[0]["input"] == [{"role": row["role"], "content": row["content"]} for row in preview["messages"]] + [
+        {"role": "user", "content": "你好"},
+    ]
+    bound = read()
+    db.delete_conversation_session(session_id)
+    db.ensure_chat_session_generation(session_id)
+    assert send(bound).status_code == 409 and not db.read_chat_session_snapshot(session_id)["messages"]
+    preview = read()
+    oauth.disconnect(None, connection_id=SOURCE.connection_id)
+    assert send(preview).status_code == 409 and len(calls) == 1

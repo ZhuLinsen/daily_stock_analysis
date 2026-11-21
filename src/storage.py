@@ -3924,6 +3924,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         selected_skill_ids: Optional[List[str]] = None,
         active_stock_context: Optional[Dict[str, Any]] = None,
         confirm_stock: bool = False,
+        chatgpt_preview: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Accept message + explicit Skill + stock exactly once with snapshot CAS.
 
@@ -3934,9 +3935,28 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
 
         def write(session: Session) -> Dict[str, Any]:
             state = session.get(ConversationSessionState, session_id)
+            if chatgpt_preview is not None:
+                from src.agent.chatgpt_preview import HISTORY_LIMIT, VISIBLE_ROLES
+                rows = session.execute(select(
+                    ConversationMessage.id, ConversationMessage.role, ConversationMessage.content
+                ).where(
+                    ConversationMessage.session_id == session_id, ConversationMessage.role.in_(VISIBLE_ROLES),
+                    ConversationMessage.content != "",
+                ).order_by(ConversationMessage.created_at.desc(), ConversationMessage.id.desc()).limit(HISTORY_LIMIT)).all()
+                current = [{"message_id": str(row.id), "role": row.role, "content": row.content} for row in reversed(rows)]
+                if current != chatgpt_preview["messages"]:
+                    raise ChatSessionStateConflict()
+                if snapshot["session_generation"] is None:
+                    if state is not None and state.session_generation is not None:
+                        raise ChatSessionStateConflict()
+                    if state is None:
+                        state = ConversationSessionState(session_id=session_id, selected_skill_ids_json="null")
+                        session.add(state)
+                    state.session_generation = str(uuid.uuid4())
+                    session.flush()
             if (
-                state is None or not snapshot["session_generation"]
-                or state.session_generation != snapshot["session_generation"]
+                state is None or (not snapshot["session_generation"] and chatgpt_preview is None)
+                or (snapshot["session_generation"] is not None and state.session_generation != snapshot["session_generation"])
                 or state.state_version != snapshot["session_state_version"]
                 or self._chat_message_anchor(self._latest_chat_user(session, session_id))
                 != snapshot["latest_user_anchor"]

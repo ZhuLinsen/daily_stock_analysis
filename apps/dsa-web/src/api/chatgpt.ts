@@ -1,8 +1,23 @@
 import apiClient from './index';
 
-export type ConnectTarget = { registration_id: string } | { retry_id: string };
+export type ConnectTarget = { mode: 'new' } | { registration_id: string } | { retry_id: string };
 
 export type DisconnectTarget = { connection_id: string } | { attempt_id: string };
+
+export type ChatGPTAction = { label: string | null } & (
+  | { kind: 'new'; target: { mode: 'new' } }
+  | { kind: 'reauth'; target: { registration_id: string } }
+  | { kind: 'continue'; target: { retry_id: string } }
+  | { kind: 'disconnect' | 'retry_disconnect'; target: { connection_id: string } }
+  | { kind: 'cancel'; target: { attempt_id: string } }
+);
+
+export interface Revocation {
+  owner_kind: 'registered' | 'unverified';
+  state: 'pending' | 'unknown';
+  operation_id: string | null;
+  label: string | null;
+}
 
 export interface ChatGPTStatus {
   available: boolean;
@@ -10,11 +25,10 @@ export interface ChatGPTStatus {
   connection_id?: string;
   disconnect_retry_connection_id?: string | null;
   account_label?: string;
-  registration_id?: string;
-  accounts?: { id: string; label: string }[];
+  actions?: ChatGPTAction[];
+  revocations?: Revocation[];
+  reauth_reason?: 'scope_required' | 'credential_invalid' | 'legacy_import' | null;
   attempt_id?: string;
-  revocation_unconfirmed?: boolean;
-  revocation_account_label?: string | null;
   retry_id?: string | null;
   pending?: boolean;
   cancelling?: boolean;

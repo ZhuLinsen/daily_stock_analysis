@@ -3,9 +3,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Dict, List, Optional
 
+from src.agent.chatgpt_preview import make_preview
 from src.agent.factory import normalize_requested_skill_ids
 from src.agent.stock_scope import (
     SWITCH_CLEANUP_KEYS, StockIdentity, StockScope, StockScopeResolution, resolve_stock_scope,
@@ -110,6 +111,7 @@ class ResolvedChatTurn:
     confirm_stock: bool = False
     clarification: Optional[str] = None
     compatibility_disposition: str = "invalidate"
+    chatgpt_preview: Optional[Dict[str, Any]] = None
 
 
 class AgentChatSessionService:
@@ -169,8 +171,10 @@ class AgentChatSessionService:
         self,
         session_id: str,
         limit: int,
+        *, snapshot=None,
     ) -> ChatSessionDetail:
-        snapshot = self.db.read_chat_session_snapshot(session_id)
+        if snapshot is None:
+            snapshot = self.db.read_chat_session_snapshot(session_id)
         registry, lookup = _stock_lookup()
 
         return ChatSessionDetail(
@@ -181,6 +185,26 @@ class AgentChatSessionService:
             session_state_version=snapshot["session_state_version"],
             session_generation=snapshot["session_generation"],
         )
+
+    def chatgpt_preview(self, snapshot, connection_id, stock_hint):
+        stock = stock_hint
+        if not stock:
+            stock = _active_from_snapshot(snapshot, *_stock_lookup())
+        stock = {key: stock.get(key) for key in ("stock_code", "stock_name")} if stock else None
+        return make_preview(snapshot, connection_id, stock)
+
+    def prepare_chatgpt_turn(self, config, request, session_id):
+        snapshot = self.db.read_chat_session_snapshot(session_id)
+        hint = request.context or {}
+        preview = self.chatgpt_preview(snapshot, request.model_source.connection_id, hint if hint.get("stock_code") else None)
+        if request.snapshot_id != preview["snapshot_id"] or (
+            request.session_generation and request.session_generation != snapshot["session_generation"]
+        ):
+            raise ChatSessionStateConflict()
+        turn = self._resolve_session_turn(config, snapshot, request.message, request.effective_skills,
+                                         context=preview["stock"], approved_preview=preview)
+        # Only the displayed stock may accompany approved history as external context.
+        return replace(turn, chatgpt_preview=preview, effective_context=dict(preview["stock"] or {}))
 
     def prepare_session_turn(
         self, config: Any, session_id: str, message: str,
@@ -195,15 +219,29 @@ class AgentChatSessionService:
 
     def _resolve_session_turn(
         self, config: Any, snapshot: Dict[str, Any], message: str,
-        requested_skill_ids: Optional[List[str]], *, context: Optional[Dict[str, Any]],
+        requested_skill_ids: Optional[List[str]], *, context: Optional[Dict[str, Any]], approved_preview=None,
     ) -> ResolvedChatTurn:
         skills = self.resolve_skill_selection(config, snapshot["session_id"], requested_skill_ids, snapshot=snapshot)
+        if approved_preview is not None and skills.selected_skill_ids_update is None:
+            # An omitted or unrecognized selection grants no extra Skill for this turn.
+            skills = ChatSkillSelection(effective_skill_ids=[], selected_skill_ids_update=None)
         registry, lookup = _stock_lookup()
         active = _active_from_snapshot(snapshot, registry, lookup)
+        selected_hint = False
+        if approved_preview is not None:
+            stock = approved_preview["stock"]
+            if not stock:
+                active = None
+            elif not active or active["stock_code"] != stock["stock_code"]:
+                identity = _hint_identity(stock, registry, lookup)
+                if not identity:
+                    raise ChatSessionStateConflict()
+                active = _stock_record(identity, lookup, registry)
+                selected_hint = True
         baseline = dict(active) if active else None
         decision = decide_chat_object(message, _identity(active) if active else None, registry, lookup)
         compare = decision.kind == "compare"
-        confirm = False
+        confirm = selected_hint
         clarification = None
         if decision.kind == "clarify":
             clarification = "请明确提供本次讨论的股票或指数代码，或确认是否切换。"
@@ -280,6 +318,7 @@ class AgentChatSessionService:
         return self.db.commit_chat_user_turn(
             turn.snapshot, turn.message, selected_skill_ids=turn.skill_selection.selected_skill_ids_update,
             active_stock_context=turn.active_stock_context, confirm_stock=turn.confirm_stock,
+            **({"chatgpt_preview": turn.chatgpt_preview} if turn.chatgpt_preview is not None else {}),
         )
 
     def delete_session(self, session_id: str) -> int:

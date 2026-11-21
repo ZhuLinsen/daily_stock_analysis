@@ -90,7 +90,7 @@ export const useChatGPTStore = create<ChatGPTState>((set, get) => {
         if (!isAxiosError(error)) throw error;
         if (error.response) {
           const code = extractErrorCode(error.response.data);
-          if (code === 'chatgpt_target_changed' || code === 'chatgpt_store_unavailable') await get().refresh();
+          if (code === 'chatgpt_target_changed' || code === 'chatgpt_connection_busy' || code === 'chatgpt_store_unavailable') await get().refresh();
           throw error;
         }
         const status = await syncConnection(++readSequence).catch(() => undefined);
