@@ -71,12 +71,15 @@ def ensure_symlink_target(path: Path, expected_target: str, description: str) ->
             )
         return
 
-    # Windows checkouts with core.symlinks=false materialize git symlinks
-    # (mode 120000) as a plain text file containing the target path.
     if path.is_file():
         actual = _normalize_link_target(path.read_text(encoding="utf-8"))
         if actual == expected_target:
-            return
+            fail(
+                f"{description} was checked out as a plain text symlink stub "
+                f"(likely Windows core.symlinks=false), so tools cannot traverse it. "
+                f"Enable symlinks and re-checkout: "
+                f"git config core.symlinks true && git checkout -- CLAUDE.md .claude/skills"
+            )
 
     fail(f"{description} must be a symlink to {expected_target}")
 
@@ -89,6 +92,17 @@ def ensure_symlinks() -> None:
         "../.agents/skills",
         ".claude/skills",
     )
+    if not CLAUDE.is_file():
+        fail("CLAUDE.md symlink does not resolve to a readable file")
+    if not CLAUDE_SKILLS_LINK.is_dir():
+        fail(".claude/skills symlink does not resolve to a readable directory")
+    for skill_name in REQUIRED_SKILLS:
+        via_link = CLAUDE_SKILLS_LINK / skill_name / "SKILL.md"
+        if not via_link.is_file():
+            fail(
+                f"skill not accessible via .claude/skills symlink: "
+                f"{via_link.relative_to(ROOT)}"
+            )
 
 
 def ensure_copilot_entry() -> None:
@@ -152,7 +166,7 @@ def ensure_gitignore_rules() -> None:
         if snippet not in gitignore:
             fail(f".gitignore is missing required AI asset rule: {snippet}")
     ignored = subprocess.run(
-        ["git", "check-ignore", "-q", ".agents/skills/analyze-pr/SKILL.md"],
+        ["git", "check-ignore", "--no-index", "-q", ".agents/skills/analyze-pr/SKILL.md"],
         cwd=ROOT,
         capture_output=True,
         check=False,

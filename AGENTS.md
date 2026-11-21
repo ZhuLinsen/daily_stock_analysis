@@ -28,7 +28,7 @@
 ## 2. AI 协作资产治理
 
 - 规则真源：根目录 `AGENTS.md`。
-- Claude 兼容入口：根目录 `CLAUDE.md`（指向 `AGENTS.md` 的软链接）与 `.claude/skills`（指向 `../.agents/skills` 的软链接）。
+- Claude 兼容入口：根目录 `CLAUDE.md`（指向 `AGENTS.md` 的软链接）与 `.claude/skills`（指向 `../.agents/skills` 的软链接）；Windows 若因 `core.symlinks=false` 检出为文本占位文件，执行 `git config core.symlinks true && git checkout -- CLAUDE.md .claude/skills` 恢复。
 - 仓库协作 skill 真源：`.agents/skills/`（含 `analyze-pr`、`analyze-issue`、`fix-issue`，须带 YAML frontmatter 并引用 `AGENTS.md`）。
 - Copilot 入口：`.github/copilot-instructions.md` 与 `.github/instructions/*.instructions.md`；如与本文件冲突，以 `AGENTS.md` 为准。
 - 本地审查/分析产物：**默认直接输出在对话中，不落盘**；仅当用户明确要求存档时写入 `.reviews/`（已加入 `.gitignore`）。
