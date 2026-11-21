@@ -47,6 +47,8 @@ describe('ReportPriceLevelsChart helpers & component', () => {
     expect(parseStrategyPriceLevel('Wait for the 20D moving average to turn higher')).toBeNull();
     expect(parseStrategyPriceLevel('等待收复 20 日均线后再评估')).toBeNull();
     expect(parseStrategyPriceLevel('20 일 이동평균선 회복 대기')).toBeNull();
+    expect(parseStrategyPriceLevel('等待收复 5/20 日均线后再评估')).toBeNull();
+    expect(parseStrategyPriceLevel('5/20일 이동평균선 회복 대기')).toBeNull();
     expect(parseStrategyPriceLevel('1st target: $60')).toBe(60);
     expect(parseStrategyPriceLevel('1차 목표가 53,000원')).toBe(53000);
     expect(parseStrategyPriceLevel('1차 목표가 53000')).toBe(53000);
@@ -54,10 +56,16 @@ describe('ReportPriceLevelsChart helpers & component', () => {
     expect(parseStrategyPriceLevel('第1个止盈目标：60')).toBe(60);
     expect(parseStrategyPriceLevel('首个止盈目标：风险回报比 2:1，止盈 60 元')).toBe(60);
     expect(parseStrategyPriceLevel('止盈目标：风险回报比 2∶1，止盈 60')).toBe(60);
+    expect(parseStrategyPriceLevel('止盈目标：风险回报比 2/1，止盈 60')).toBe(60);
+    expect(parseStrategyPriceLevel('止盈目标：风险回报比 2 比 1，止盈 $60')).toBe(60);
     expect(parseStrategyPriceLevel('Take profit at 60, above the current price of $50')).toBe(60);
     expect(parseStrategyPriceLevel('止损设在 48，当前价 50 元')).toBe(48);
     expect(parseStrategyPriceLevel('Current price: $50; take profit at 60')).toBe(60);
     expect(parseStrategyPriceLevel('止盈目标 60，当前价格 50 元')).toBe(60);
+    expect(parseStrategyPriceLevel('当前价：50元，止损设在 48')).toBe(48);
+    expect(parseStrategyPriceLevel('当前价：50元，暂不设止损')).toBeNull();
+    expect(parseStrategyPriceLevel('止损位：跌破前低（48元）')).toBe(48);
+    expect(parseStrategyPriceLevel('Stop-loss: ($48)')).toBe(48);
     expect(parseStrategyPriceLevel('+12%')).toBeNull();
     expect(parseStrategyPriceLevel('-2.5')).toBeNull();
   });
