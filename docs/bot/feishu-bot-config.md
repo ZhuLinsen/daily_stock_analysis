@@ -69,6 +69,7 @@ FEISHU_SEND_AS_FILE=true
 - **依赖版本**：`lark-oapi>=1.0.0` 需包含 `im.v1.file.create` API（文件上传类）
 - **Webhook 模式**：回退为发送文件内容文本（Webhook 不支持文件上传）
 - **生效范围**：仅对 `route_type="report"` 的报告推送生效；告警、系统通知等不受影响
+- 飞书报告附件使用临时文件，发送结束后自动清理。分析产物保存到 `reports/`，复盘云文档链接直接以消息发送。
 - **GitHub Actions 定时任务**：已通过 `.github/workflows/00-daily-analysis.yml` 映射，在 repo Settings → Secrets and variables → Actions 中添加同名变量或 secret 即可启用
 - **配置方式**：支持 `.env` 文件、GitHub Actions Secret/Variable 或 Web/桌面设置页配置
 

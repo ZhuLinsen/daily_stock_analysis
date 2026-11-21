@@ -10,6 +10,8 @@ import sys
 import time
 from unittest.mock import patch
 
+import pytest
+
 from scripts.write_github_step_summary import build_step_summary_markdown, main
 
 
@@ -24,19 +26,34 @@ def test_noop_when_github_step_summary_unset(tmp_path: Path) -> None:
     assert code == 0
 
 
-def test_writes_redacted_reports_to_step_summary(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "authorization_line",
+    [
+        "Authorization: Bearer {credential}",
+        "**Authorization**: Bearer {credential}",
+        "__Authorization:__ Bearer {credential}",
+        "*Authorization*: Bearer {credential}",
+        "_Authorization_: Bearer {credential}",
+        "`Authorization`: Bearer {credential}",
+        "`` Authorization ``: Bearer {credential}",
+        "`` Authorization: `` Bearer {credential}",
+        "**`Authorization`**: Bearer {credential}",
+        "HTTP**Authorization**: Bearer {credential}",
+        "* `Authorization`: Bearer {credential}",
+        "Authorization: Bearer `` {credential} ``",
+        "**Authorization:** Bearer `` {credential} ``",
+    ],
+)
+def test_writes_redacted_reports_to_step_summary(tmp_path: Path, authorization_line: str) -> None:
     reports_dir = tmp_path / "reports"
     reports_dir.mkdir()
     (reports_dir / "report_20261120.md").write_text(
-        "# 决策仪表盘\n"
-        "Authorization: Bearer short-bearer-token\n"
-        "**Authorization**: Bearer short-bearer-token\n",
+        "# 决策仪表盘\n",
         encoding="utf-8",
     )
-    (reports_dir / "market_review_20261120.md").write_text(
-        "# 大盘复盘\n上证指数收涨 0.8%\n",
-        encoding="utf-8",
-    )
+    credential = "short-bearer-token"
+    market_report = "# 大盘复盘\n上证指数收涨 0.8%\n" + authorization_line.format(credential=credential)
+    (reports_dir / "market_review_20261120.md").write_text(market_report, encoding="utf-8")
     summary_file = tmp_path / "step_summary.md"
 
     with patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": str(summary_file)}, clear=True):
@@ -46,8 +63,40 @@ def test_writes_redacted_reports_to_step_summary(tmp_path: Path) -> None:
     written = summary_file.read_text(encoding="utf-8")
     assert "# 决策仪表盘" in written
     assert "# 大盘复盘" in written
-    assert "short-bearer-token" not in written
+    assert "上证指数收涨 0.8%" in written
+    assert credential not in written
+    assert "Authorization: <redacted>" in written
     assert "analysis-reports-*" in written
+
+
+def test_short_stock_report_leaves_remaining_budget_for_market_review(tmp_path: Path) -> None:
+    reports_dir = tmp_path / "reports"
+    reports_dir.mkdir()
+    (reports_dir / "report_20261120.md").write_text("# 个股汇总", encoding="utf-8")
+    (reports_dir / "market_review_20261120.md").write_text(
+        "# 大盘复盘\n" + ("市场走势。" * 40) + "\n建议继续观察。" + ("市场走势。" * 100),
+        encoding="utf-8",
+    )
+
+    rendered = build_step_summary_markdown(reports_dir, max_bytes=1000, target_date="20261120")
+
+    assert len(rendered.encode("utf-8")) <= 1000
+    assert "# 个股汇总" in rendered
+    assert "建议继续观察。" in rendered
+    assert "Summary preview truncated" in rendered
+
+
+def test_tiny_body_budget_prioritizes_market_review(tmp_path: Path) -> None:
+    reports_dir = tmp_path / "reports"
+    reports_dir.mkdir()
+    (reports_dir / "report_20261120.md").write_text("个股概况。" * 200, encoding="utf-8")
+    (reports_dir / "market_review_20261120.md").write_text("# 大盘复盘\n市场走势。", encoding="utf-8")
+
+    rendered = build_step_summary_markdown(reports_dir, max_bytes=280, target_date="20261120")
+
+    assert len(rendered.encode("utf-8")) <= 280
+    assert "# 大盘复盘" in rendered
+    assert "Summary preview truncated" in rendered
 
 
 def test_truncates_cleanly_under_max_bytes_with_valid_utf8(tmp_path: Path) -> None:
@@ -80,16 +129,24 @@ def test_redaction_failure_skips_summary_write(tmp_path: Path) -> None:
     reports_dir = tmp_path / "reports"
     reports_dir.mkdir()
     (reports_dir / "report_20261120.md").write_text(
-        "Authorization: Bearer sk-secret-token-123456\n", encoding="utf-8"
+        "# 先生成的个股报告\n", encoding="utf-8"
+    )
+    (reports_dir / "market_review_20261120.md").write_text(
+        "`Authorization`: Bearer short-bearer-token\n", encoding="utf-8"
     )
     summary_file = tmp_path / "step_summary.md"
+    summary_file.write_text("Existing summary\n", encoding="utf-8")
 
     with patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": str(summary_file)}, clear=True):
-        with patch("scripts.write_github_step_summary._redact_text", return_value=None):
+        with patch(
+            "src.llm.local_cli_backend.redact_diagnostic_text",
+            side_effect=["# 先生成的个股报告", RuntimeError("Scrubber unavailable")],
+        ) as scrubber:
             code = main(["--reports-dir", str(reports_dir), "--date", "20261120"])
 
     assert code == 0
-    assert not summary_file.exists()
+    assert scrubber.call_count == 2
+    assert summary_file.read_text(encoding="utf-8") == "Existing summary\n"
 
 
 def test_script_entrypoint_redacts_without_pythonpath(tmp_path: Path) -> None:

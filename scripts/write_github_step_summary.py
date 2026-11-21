@@ -19,22 +19,33 @@ if str(_REPO_ROOT) not in sys.path:
 
 _DEFAULT_MAX_BYTES = 200_000
 _AGGREGATE_REPORT_RE = re.compile(r"^report_\d{8}\.md$")
+_MARKDOWN_FIELD_MARKER = r"[*_`]+"
+_AUTHORIZATION_FIELD = r"(?:proxy[-_ \t]?)?authorization"
 _MARKDOWN_AUTHORIZATION_FIELD_PATTERN = re.compile(
-    r"(?P<opening>\*\*|__)(?P<field>(?:proxy[-_ \t]?)?authorization)"
-    r"(?:(?P<closing_before>\*\*|__)(?P<separator_before>[ \t]*(?:=|:))"
-    r"|(?P<separator_inside>[ \t]*(?:=|:))(?P<closing_after>\*\*|__))",
+    r"(?<![*_`])(?P<attached>(?<=[A-Za-z0-9_-]))?"
+    rf"{_MARKDOWN_FIELD_MARKER}[ \t]*(?P<field>{_AUTHORIZATION_FIELD})"
+    rf"(?:[ \t]*{_MARKDOWN_FIELD_MARKER}(?P<separator_before>[ \t]*[:=])"
+    rf"|(?P<separator_inside>[ \t]*[:=])[ \t]*{_MARKDOWN_FIELD_MARKER})",
+    re.IGNORECASE,
+)
+_PADDED_BEARER_CODE_PATTERN = re.compile(
+    rf"(?<![A-Za-z0-9_-])(?P<prefix>{_AUTHORIZATION_FIELD}[ \t]*[:=][ \t]*bearer[ \t]+)"
+    r"(?P<backticks>`+)[ \t]+(?P<token>[^`\s]+)[ \t]+(?P=backticks)(?!`)",
     re.IGNORECASE,
 )
 
 
-def _normalize_markdown_sensitive_fields(text: str) -> str:
-    """Expose Markdown-emphasized sensitive labels to the diagnostic scrubber."""
+def _normalize_markdown_authorization(text: str) -> str:
+    """Expose Markdown-formatted authorization fields to the diagnostic scrubber."""
 
     def normalize(match: re.Match[str]) -> str:
         separator = match.group("separator_before") or match.group("separator_inside")
-        return f"{match.group('field')}{separator}"
+        # Preserve the field boundary when emphasis immediately follows a word.
+        boundary = " " if match.group("attached") is not None else ""
+        return f"{boundary}{match.group('field')}{separator}"
 
-    return _MARKDOWN_AUTHORIZATION_FIELD_PATTERN.sub(normalize, text)
+    normalized = _MARKDOWN_AUTHORIZATION_FIELD_PATTERN.sub(normalize, text)
+    return _PADDED_BEARER_CODE_PATTERN.sub(r"\g<prefix>\g<token>", normalized)
 
 
 def _redact_text(text: str) -> Optional[str]:
@@ -43,7 +54,7 @@ def _redact_text(text: str) -> Optional[str]:
         from src.llm.local_cli_backend import redact_diagnostic_text
 
         return redact_diagnostic_text(
-            _normalize_markdown_sensitive_fields(text),
+            _normalize_markdown_authorization(text),
             limit=sys.maxsize,
         )
     except Exception:
@@ -183,18 +194,18 @@ def build_step_summary_markdown(
         return clipped_all
 
     body_budget = max_bytes - overhead_bytes
-    if stock_body and market_body and body_budget > len(sep.encode("utf-8")) + 64:
-        sep_bytes = len(sep.encode("utf-8"))
+    sep_bytes = len(sep.encode("utf-8"))
+    if stock_body and market_body and body_budget > sep_bytes + 64:
         usable = body_budget - sep_bytes
+        stock_bytes = len(stock_body.encode("utf-8"))
         market_bytes = len(market_body.encode("utf-8"))
-        reserve_cap = int(usable * 0.4)
-        market_alloc = min(market_bytes, max(reserve_cap, 1)) if market_bytes <= reserve_cap else reserve_cap
+        market_alloc = min(market_bytes, max(usable * 2 // 5, usable - stock_bytes))
         stock_alloc = usable - market_alloc
         clipped_stock, _ = _truncate_utf8_bytes(stock_body, stock_alloc)
         clipped_market, _ = _truncate_utf8_bytes(market_body, market_alloc)
         body_out = f"{clipped_stock}{sep}{clipped_market}" if clipped_stock and clipped_market else (clipped_stock or clipped_market)
     else:
-        body_out, _ = _truncate_utf8_bytes(full_body, body_budget)
+        body_out, _ = _truncate_utf8_bytes(market_body or stock_body, body_budget)
 
     result = f"{header}{body_out}{suffix}"
     if len(result.encode("utf-8")) > max_bytes:
