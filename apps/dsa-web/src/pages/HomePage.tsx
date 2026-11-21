@@ -46,7 +46,7 @@ import type {
   TaskInfo,
 } from '../types/analysis';
 import type { RunFlowSnapshotSource } from '../types/runFlow';
-import { getTodayInShanghai } from '../utils/format';
+import { getTodayInShanghai, shiftDateKey } from '../utils/format';
 import { useStockIndex } from '../hooks/useStockIndex';
 import { resolveRegisteredIndexCanonical, toAssetAwareCodeKey, type AssetAwareAssetType } from '../utils/stockCode';
 
@@ -144,12 +144,6 @@ function getShanghaiTimeValue(value?: string | null): number {
     : trimmed;
   const date = new Date(normalized);
   return Number.isNaN(date.getTime()) ? 0 : date.getTime();
-}
-
-function shiftDateKey(dateKey: string, days: number): string {
-  const date = new Date(`${dateKey}T12:00:00Z`);
-  date.setUTCDate(date.getUTCDate() + days);
-  return date.toISOString().slice(0, 10);
 }
 
 function getStockCodeKey(code?: string | null, assetType?: AssetAwareAssetType | null): string {
