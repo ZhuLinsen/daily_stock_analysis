@@ -211,7 +211,7 @@ codex plugin add daily-stock-analysis@daily-stock-analysis
 /plugin install daily-stock-analysis@daily-stock-analysis
 ```
 
-本地 checkout：`codex plugin marketplace add /path/to/daily_stock_analysis`。使用技能前请先按 [完整指南](docs/full-guide.md) 部署并配置 DSA，或通过 `DSA_REPO_ROOT` / 询问用户定位已有检出后再调用分析示例。只读 MCP（`python -m src.mcp_server`，可选依赖 `mcp>=1.0.0,<2`）同样需在完整仓库 checkout 中按 [完整指南](docs/full-guide.md#只读-mcp-stdio-服务可选) 手动配置，不写入插件清单。
+本地 checkout：`codex plugin marketplace add /path/to/daily_stock_analysis`。使用技能前请先按 [完整指南](docs/full-guide.md) 部署并配置 DSA，或通过 `DSA_REPO_ROOT` / 询问用户定位已有检出后再调用分析示例（示例会 `chdir` 到检出根目录，以便与 Web 共用相对 `DATABASE_PATH` / 复盘锁）。对话内大盘复盘（`send_notification=False`）需要检出已支持该参数；仅有 v3.35.0 等旧检出时应先更新，避免 `TypeError` 或意外推送。HTTP 对接见 [OpenClaw 集成](docs/openclaw-skill-integration.md)（对话场景须显式 `"notify": false`）。只读 MCP（`python -m src.mcp_server`，可选依赖 `mcp>=1.0.0,<2`）同样需在完整仓库 checkout 中按 [完整指南](docs/full-guide.md#只读-mcp-stdio-服务可选) 手动配置，不写入插件清单。
 
 ## 📱 推送效果
 

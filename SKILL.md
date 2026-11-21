@@ -14,11 +14,12 @@ description: "分析股票和市场。当用户想要分析单个或多个股票
    - 询问用户本机 DSA 仓库路径；
    - 读取环境变量 `DSA_REPO_ROOT`（指向仓库根目录，含 `src/` 与 `.env`）；
    - 若当前工作目录已是 DSA 根目录，可直接使用。
-3. **再执行示例代码**：`cd` 到该根目录，或将该根目录加入 `sys.path` / `PYTHONPATH`，并在该环境下加载依赖与配置。
-4. **若无法定位或未部署**：停止分析，向用户说明本技能只驱动现有 DSA 安装，并指向部署指南：
+3. **再执行示例代码**：必须先 `os.chdir(repo_root)`（或等价地在该根目录启动进程），再将该根目录加入 `sys.path` / `PYTHONPATH`。仅改 `sys.path` 不够：默认相对 `DATABASE_PATH` 与大盘复盘锁按**进程工作目录**解析，不 `chdir` 会导致插件与 Web 锁住不同文件、写入不同 SQLite。
+4. **对话内大盘复盘（不推送）**：需要检出已支持 `perform_market_review(..., send_notification=...)`（本仓库较新提交；例如 v3.35.0 尚不支持）。若不支持，先更新检出，**不要**回退为无该参数的调用（旧签名默认会推送）。
+5. **若无法定位或未部署**：停止分析，向用户说明本技能只驱动现有 DSA 安装，并指向部署指南：
    - 中文：[完整配置与部署指南](https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/full-guide.md)
    - English: [Full Guide](https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/full-guide_EN.md)
-5. **可选**：若用户已启动 API（如 `python main.py --serve-only`），也可按 [OpenClaw / HTTP 对接](https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/openclaw-skill-integration.md) 通过 `DSA_BASE_URL` 调用 REST，而不走下方 Python 导入。
+6. **可选 HTTP**：若用户已启动 API（如 `python main.py --serve-only`），也可按 [OpenClaw / HTTP 对接](https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/openclaw-skill-integration.md) 通过 `DSA_BASE_URL` 调用 REST。**对话内分析须显式传 `"notify": false`**（API 默认 `notify: true`，省略会向已配置渠道推送）。
 
 本技能基于 `src/services/analyzer_service.py` 的逻辑，提供分析股票和整体市场的功能。
 
@@ -63,8 +64,9 @@ description: "分析股票和市场。当用户想要分析单个或多个股票
 import os
 import sys
 
-# 先定位已配置的 DSA 检出（见「运行前提」）
-repo_root = os.environ.get("DSA_REPO_ROOT") or os.getcwd()
+# 先定位已配置的 DSA 检出，并切换到该根目录（见「运行前提」）
+repo_root = os.path.abspath(os.environ.get("DSA_REPO_ROOT") or os.getcwd())
+os.chdir(repo_root)
 if repo_root not in sys.path:
     sys.path.insert(0, repo_root)
 
@@ -101,7 +103,8 @@ if result:
 import os
 import sys
 
-repo_root = os.environ.get("DSA_REPO_ROOT") or os.getcwd()
+repo_root = os.path.abspath(os.environ.get("DSA_REPO_ROOT") or os.getcwd())
+os.chdir(repo_root)
 if repo_root not in sys.path:
     sys.path.insert(0, repo_root)
 
@@ -123,7 +126,7 @@ for result in results:
 **输入:**
 - `config` (Config, 可选): 配置对象。默认为 `None`。
 - `notifier` (NotificationService, 可选): 通知服务对象。默认为 `None`。
-- `send_notification` (bool, 可选): 是否向已配置的外部通知渠道推送。**对话场景默认传 `False`**；仅当用户明确要求「推送 / 发送到通知渠道」时才设为 `True`。
+- `send_notification` (bool, 可选): 是否向已配置的外部通知渠道推送。**对话场景默认传 `False`**；仅当用户明确要求「推送 / 发送到通知渠道」时才设为 `True`。旧检出若无此参数，须先升级，不可静默回退为会推送的旧调用。
 
 **输出:** `Optional[str]`
 一个包含市场复盘报告的字符串；失败或同机已有复盘在跑时为 `None`。
@@ -131,17 +134,28 @@ for result in results:
 **示例:**
 
 ```python
+import inspect
 import os
 import sys
 
-repo_root = os.environ.get("DSA_REPO_ROOT") or os.getcwd()
+repo_root = os.path.abspath(os.environ.get("DSA_REPO_ROOT") or os.getcwd())
+os.chdir(repo_root)
 if repo_root not in sys.path:
     sys.path.insert(0, repo_root)
 
 from src.services.analyzer_service import perform_market_review
 
 # 对话内查看复盘：禁用外部推送；需要推送时再传 send_notification=True
-report = perform_market_review(send_notification=False)
+review_kwargs = {}
+if "send_notification" in inspect.signature(perform_market_review).parameters:
+    review_kwargs["send_notification"] = False
+else:
+    raise RuntimeError(
+        "当前 DSA 检出的 perform_market_review 不支持 send_notification；"
+        "请先更新检出后再在对话中复盘，避免意外推送到外部渠道。"
+    )
+
+report = perform_market_review(**review_kwargs)
 if report:
     print(report)
 else:
