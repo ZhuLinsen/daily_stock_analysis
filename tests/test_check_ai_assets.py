@@ -33,11 +33,12 @@ def test_ensure_gitignore_rules_detects_ignored_tracked_agents_skill(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
-    skill = tmp_path / ".agents" / "skills" / "analyze-pr" / "SKILL.md"
-    skill.parent.mkdir(parents=True)
-    skill.write_text("---\nname: analyze-pr\ndescription: test\n---\nAGENTS.md\n", encoding="utf-8")
+    for skill_name in check_ai_assets.REQUIRED_SKILLS:
+        skill = tmp_path / ".agents" / "skills" / skill_name / "SKILL.md"
+        skill.parent.mkdir(parents=True, exist_ok=True)
+        skill.write_text(f"---\nname: {skill_name}\ndescription: test\n---\nAGENTS.md\n", encoding="utf-8")
     (tmp_path / ".gitignore").write_text(".claude/*\n!.claude/skills\n.reviews/\n", encoding="utf-8")
-    subprocess.run(["git", "add", ".agents/skills/analyze-pr/SKILL.md", ".gitignore"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "add", ".agents", ".gitignore"], cwd=tmp_path, check=True)
 
     monkeypatch.setattr(check_ai_assets, "ROOT", tmp_path)
     check_ai_assets.ensure_gitignore_rules()

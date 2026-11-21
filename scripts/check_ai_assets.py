@@ -165,14 +165,21 @@ def ensure_gitignore_rules() -> None:
     for snippet in REQUIRED_GITIGNORE_SNIPPETS:
         if snippet not in gitignore:
             fail(f".gitignore is missing required AI asset rule: {snippet}")
-    ignored = subprocess.run(
-        ["git", "check-ignore", "--no-index", "-q", ".agents/skills/analyze-pr/SKILL.md"],
-        cwd=ROOT,
-        capture_output=True,
-        check=False,
-    )
-    if ignored.returncode == 0:
-        fail(".agents/skills/analyze-pr/SKILL.md must not be ignored by .gitignore")
+    for skill_name in REQUIRED_SKILLS:
+        rel_skill = f".agents/skills/{skill_name}/SKILL.md"
+        ignored = subprocess.run(
+            ["git", "check-ignore", "--no-index", "-q", rel_skill],
+            cwd=ROOT,
+            capture_output=True,
+            check=False,
+        )
+        if ignored.returncode == 0:
+            fail(f"{rel_skill} must not be ignored by .gitignore")
+        if ignored.returncode != 1:
+            fail(
+                f"git check-ignore failed for {rel_skill} "
+                f"(exit={ignored.returncode})"
+            )
 
 
 def ensure_no_tracked_local_artifacts() -> None:

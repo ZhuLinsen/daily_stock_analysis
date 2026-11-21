@@ -426,3 +426,21 @@ def test_pull_request_number_failure_after_bad_event_payload(monkeypatch, tmp_pa
     assert raised, 'Expected RuntimeError when PR number cannot be derived'
     captured = capsys.readouterr()
     assert '事件载荷 JSON 解析失败' in captured.out
+
+
+def test_build_prompt_forbids_whole_pr_merge_verdict_when_truncated():
+    prompt = ai_review.build_prompt(
+        'diff --git a/foo.py b/foo.py\n+x = 1',
+        ['foo.py', 'bar.py'],
+        True,
+        'chore: test',
+        'body',
+        'evidence',
+    )
+    assert '不得对整个 PR 给出“可合入”结论' in prompt
+
+
+def test_load_review_guidance_falls_back_when_skill_missing_in_legacy_checkout(tmp_path):
+    guidance = ai_review._load_review_guidance(tmp_path)
+    assert guidance == ai_review._FALLBACK_REVIEW_GUIDANCE
+
