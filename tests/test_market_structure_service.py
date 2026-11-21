@@ -330,6 +330,45 @@ def test_market_hotspot_service_builds_theme_context_from_dsa_rankings() -> None
     assert context["theme_breadth"]["leading_concept_count"] == 1
 
 
+def test_partial_rankings_stay_partial_and_skip_the_success_cache() -> None:
+    class _PartialRankings:
+        def __init__(self) -> None:
+            self.sector_calls = 0
+            self.concept_calls = 0
+
+        def get_sector_rankings(self, n: int = 5):
+            self.sector_calls += 1
+            return (
+                [{"name": "半导体", "change_pct": 2.0, "coverage": "partial"}],
+                [{"name": "银行", "change_pct": -1.0}],
+            )
+
+        def get_concept_rankings(self, n: int = 5):
+            self.concept_calls += 1
+            return (
+                [{"name": "存储芯片", "change_pct": 3.0}],
+                [{"name": "旅游", "change_pct": -2.0}],
+            )
+
+    fetcher = _PartialRankings()
+    service = MarketHotspotService(
+        fetcher_manager=fetcher,
+        success_cache_ttl_seconds=60,
+        failure_cache_ttl_seconds=0,
+    )
+
+    first = service.get_hotspots(market="cn", trade_date="2026-07-04")
+    second = service.get_hotspots(market="cn", trade_date="2026-07-04")
+
+    assert first["status"] == "partial"
+    assert first["leading_industries"][0]["coverage"] == "partial"
+    semiconductor = next(item for item in first["active_themes"] if item["name"] == "半导体")
+    assert semiconductor["coverage"] == "partial"
+    assert fetcher.sector_calls == 2
+    assert fetcher.concept_calls == 2
+    assert second["status"] == "partial"
+
+
 def test_market_hotspot_service_caches_rankings_per_instance() -> None:
     fetcher = _FakeFetcherManager()
     service = MarketHotspotService(fetcher_manager=fetcher)

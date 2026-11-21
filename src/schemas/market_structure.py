@@ -39,6 +39,7 @@ class RankedThemeItem(BaseModel):
     source: ThemeRankSource = "unknown"
     code: Optional[str] = None
     updated_at: Optional[str] = None
+    coverage: Optional[Literal["complete", "partial"]] = None
 
 
 class MarketThemeItem(RankedThemeItem):
