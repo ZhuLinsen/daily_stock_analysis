@@ -105,6 +105,23 @@ _POSTER_TEXT = {
         "disclaimer": "AI 생성 연구 자료이며 투자 조언이 아닙니다. 투자에는 위험이 따릅니다.",
         "source": "데이터 소스",
     },
+    "ar": {
+        "brand": "تحليل الأسهم الذكي", "stock_subtitle": "بطاقة القرار · الفرضية والمستويات والمخاطر",
+        "market_subtitle": "مراجعة إغلاق المؤشرات واتساع السوق والمخاطر", "multi_title": "مراجعة الأسواق المتعددة",
+        "multi_subtitle": "المؤشرات والقطاعات وحدود المخاطر حسب السوق", "dashboard_subtitle": "ملخص قرارات الأسهم",
+        "score": "التقييم", "confidence": "الثقة", "trend": "الاتجاه", "core": "الخلاصة المحورية",
+        "snapshot": "لقطة السوق", "execution": "خطة التنفيذ", "technical": "المؤشرات الفنية",
+        "next_watch": "المتابعة القادمة", "positive_catalysts": "المحفزات الإيجابية", "risk_alerts": "تنبيهات المخاطر",
+        "catalysts_risks": "المحفزات والمخاطر", "no_position": "بدون مركز", "holding": "مركز قائم",
+        "position": "الحجم", "entry": "الدخول", "risk_control": "ضبط المخاطر", "position_advice": "توصية المركز",
+        "market_signal": "إشارة السوق", "today_conclusion": "خلاصة الجلسة", "breadth": "اتساع السوق",
+        "dimensions": "تفصيل الإشارات", "leaders": "القطاعات القيادية", "laggards": "القطاعات المتراجعة",
+        "focus_tag": "مراقبة", "avoid_tag": "تجنب", "focus": "قائمة المتابعة", "funds": "تدفقات السيولة",
+        "strategy": "خطة الجلسة القادمة", "risks": "تنبيهات المخاطر", "tagline": "أبحاث كمية مبنية على الأدلة والانضباط",
+        "open_source": "مشروع مفتوح المصدر · GitHub", "xiaohongshu": "Xiaohongshu",
+        "disclaimer": "تحليل بحثي مدعوم بالذكاء الاصطناعي لأغراض الدراسة فقط ولا يعد توصية استثمارية.",
+        "source": "المصدر",
+    },
 }
 _POSTER_LABELS = {
     "en": {
@@ -124,6 +141,15 @@ _POSTER_LABELS = {
         "行动窗口": "행동 구간", "下次检查": "다음 점검", "上涨": "상승", "下跌": "하락",
         "涨停": "상한가", "跌停": "하한가", "成交额": "거래대금", "赚钱效应": "시장 폭 점수",
         "指数强度": "지수 강도", "涨停结构": "상한가 구조",
+    },
+    "ar": {
+        "当前/收盘": "السعر/الإغلاق", "现价": "السعر الحالي", "涨跌幅": "التغير", "涨跌": "التغير",
+        "量比": "نسبة الحجم", "换手率": "معدل الدوران", "换手": "الدوران", "理想买入": "دخول مثالي",
+        "确认买入": "دخول مؤكد", "止损": "وقف الخسارة", "目标": "الهدف", "均线": "اصطفاف المتوسطات",
+        "量能": "السيولة", "趋势分": "نقاط الاتجاه", "MA5乖离": "انحراف MA5", "支撑": "الدعم", "压力": "المقاومة",
+        "行动窗口": "نافذة التنفيذ", "下次检查": "المراجعة القادمة", "上涨": "صاعدة", "下跌": "هابطة",
+        "涨停": "حد أقصى صعود", "跌停": "حد أقصى هبوط", "成交额": "قيمة التداول", "赚钱效应": "قوة الاتساع",
+        "指数强度": "قوة المؤشر", "涨停结构": "هيكل الصعود",
     },
 }
 _MARKET_LABEL_PATTERNS = (
@@ -294,14 +320,14 @@ def _plain(value: object) -> str:
     text = re.sub(r"\[([^]]+)\]\([^)]+\)", r"\1", text)
     text = re.sub(r"<[^>]+>", " ", text)
     text = re.sub(r"[*_`~]", "", text)
-    text = re.sub(r"^[^\w\u4e00-\u9fff+\-]+", "", text)
+    text = re.sub(r"^[^\w\u0600-\u06FF\u4e00-\u9fff+\-]+", "", text)
     return re.sub(r"\s+", " ", text).strip()
 
 
 def _clean_value(value: object, *, limit: int = 90) -> str:
     text = _plain(value)
     text = re.sub(
-        r"^(?:理想买入点|次优买入点|止损位?|目标位?|ideal entry|secondary entry|stop loss|target)\s*[:：]\s*",
+        r"^(?:理想买入点|次优买入点|止损位?|目标位?|ideal entry|secondary entry|stop loss|target|دخول مثالي|دخول مؤكد|وقف الخسارة|الهدف)\s*[:：]\s*",
         "",
         text,
         flags=re.IGNORECASE,
@@ -309,7 +335,7 @@ def _clean_value(value: object, *, limit: int = 90) -> str:
     if text.lower() in _NA_VALUES:
         return ""
     if len(text) > limit:
-        return text[: limit - 1].rstrip("，,；;。.") + "…"
+        return text[: limit - 1].rstrip("،؛؟，,；;。.") + "…"
     return text
 
 
@@ -318,13 +344,13 @@ def _compact_text(value: object, *, limit: int = 46) -> str:
 
     text = _clean_value(value, limit=max(limit * 2, 90))
     text = re.sub(r"^[✅⚠️❌🔴🟢🟡]+\s*", "", text)
-    text = re.sub(r"\s+", " ", text).strip(" ，,；;。")
+    text = re.sub(r"\s+", " ", text).strip(" ،؛؟，,；;。")
     if len(text) <= limit:
         return text
-    first_clause = re.split(r"[；;。]", text, maxsplit=1)[0].strip()
+    first_clause = re.split(r"[؛;；。]", text, maxsplit=1)[0].strip()
     if first_clause and len(first_clause) <= limit:
         return first_clause
-    return text[: limit - 1].rstrip("，,；;。 ") + "…"
+    return text[: limit - 1].rstrip("،؛؟，,；;。 ") + "…"
 
 
 def _nested_mapping(value: object, *keys: str) -> Mapping[str, Any]:
@@ -345,12 +371,16 @@ def _poster_language(
     if isinstance(payload, Mapping):
         raw_language = payload.get("report_language") or payload.get("language")
         normalized = str(raw_language or "").strip().lower().replace("_", "-")
+        if normalized.startswith("ar"):
+            return "ar"
         if normalized.startswith("en"):
             return "en"
         if normalized.startswith("ko"):
             return "ko"
         if normalized.startswith("zh"):
             return "zh"
+    if re.search(r"[\u0600-\u06FF]", markdown_text or ""):
+        return "ar"
     if re.search(r"[\uac00-\ud7af]", markdown_text or ""):
         return "ko"
     if re.search(
@@ -369,7 +399,7 @@ def _poster_text(language: str, key: str) -> str:
 def _poster_html_language(language: str) -> str:
     """Map the supported report language, not the market region, to HTML lang."""
 
-    return {"zh": "zh-CN", "en": "en", "ko": "ko"}.get(language, "zh-CN")
+    return {"zh": "zh-CN", "en": "en", "ko": "ko", "ar": "ar"}.get(language, "zh-CN")
 
 
 def _poster_label(language: str, label: str) -> str:
@@ -2127,9 +2157,10 @@ def build_share_image_html(
         content = _generic_body(fallback_html)
 
     poster_branding = branding or ShareImageBranding()
+    html_dir_attr = ' dir="rtl"' if language == "ar" else ""
 
     return f"""<!DOCTYPE html>
-<html lang="{_poster_html_language(language)}">
+<html lang="{_poster_html_language(language)}"{html_dir_attr}>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=1080, initial-scale=1">
@@ -2140,6 +2171,7 @@ def build_share_image_html(
     body {{ color: #081b40; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", "Noto Sans CJK SC", "Noto Sans CJK KR", Arial, sans-serif; font-size: 22px; line-height: 1.5; -webkit-font-smoothing: antialiased; }}
     html[lang="zh-CN"] body {{ font-family: "Noto Sans CJK SC", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; }}
     html[lang="ko"] body {{ font-family: "Noto Sans CJK KR", "Noto Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; }}
+    html[lang="ar"] body {{ direction: rtl; text-align: right; unicode-bidi: plaintext; font-family: "Geeza Pro", "SF Arabic", "Cairo", "Tajawal", Arial, sans-serif; }}
     .poster {{ width: 1080px; padding: 38px 34px 24px; border: 1px solid #aebdd4; border-radius: 28px; background: radial-gradient(circle at 92% 6%, rgba(48,123,255,.15), transparent 260px), linear-gradient(180deg,#fff 0%,#fbfdff 78%,#eef5ff 100%); }}
     .poster-header {{ display: table; width: 100%; margin-bottom: 28px; }}
     .brand, .meta {{ display: table-cell; vertical-align: middle; }}
