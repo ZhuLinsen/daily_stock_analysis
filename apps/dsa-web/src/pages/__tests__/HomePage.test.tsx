@@ -566,6 +566,7 @@ describe('HomePage', () => {
     // (`sh000016`) — the registry-resolved identity must bridge them without
     // crossing into the bare `000016` stock row.
     vi.mocked(systemConfigApi.getWatchlist).mockResolvedValue(['000016.SH', '000016']);
+    vi.mocked(systemConfigApi.removeFromWatchlist).mockResolvedValue(['000016.SH']);
     vi.mocked(historyApi.getStockBarList).mockResolvedValue({
       total: 2,
       items: [
@@ -651,6 +652,11 @@ describe('HomePage', () => {
     expect(stockRow).not.toHaveTextContent('上证50');
     expect(stockRow).toHaveTextContent('任务等待中');
     expect(stockRow).not.toHaveTextContent('任务分析中');
+
+    fireEvent.click(screen.getByRole('button', { name: '从自选股移除 000016' }));
+    await waitFor(() => expect(screen.queryByTestId('watchlist-row-000016')).not.toBeInTheDocument());
+    expect(systemConfigApi.removeFromWatchlist).toHaveBeenCalledWith('000016');
+    expect(screen.getByTestId('watchlist-row-000016.SH')).toHaveTextContent('上证50');
   });
 
   it('keeps the watchlist workspace loading and defers history lookup until the index registry is ready (PR #2312)', async () => {
@@ -2234,6 +2240,49 @@ describe('HomePage', () => {
     expect(vi.mocked(analysisApi.analyzeAsync).mock.calls[0]?.[0].stockCodes).toHaveLength(50);
     expect(vi.mocked(analysisApi.analyzeAsync).mock.calls[1]?.[0].stockCodes).toHaveLength(1);
     expect(vi.mocked(analysisApi.getTasks).mock.calls.length).toBeGreaterThan(taskRefreshCallsBeforeSubmit);
+  });
+
+  it('analyzes a watchlist with a legacy class share and removes a Yahoo preferred share', async () => {
+    configureWatchlistBatch(0);
+    vi.mocked(systemConfigApi.getWatchlist).mockResolvedValue(['BRK-B', 'AAPL', 'BAC-PL']);
+    vi.mocked(analysisApi.analyzeAsync).mockImplementation(async () => {
+      const accepted = ['BRK.B', 'AAPL', 'BAC-PL'].map((stockCode) => ({
+        taskId: `task-${stockCode}`,
+        stockCode,
+        status: 'pending' as const,
+        progress: 0,
+        reportType: 'detailed',
+        createdAt: '2026-03-19T08:00:00Z',
+      }));
+      vi.mocked(analysisApi.getTasks).mockResolvedValue({
+        total: accepted.length,
+        pending: accepted.length,
+        processing: 0,
+        tasks: accepted,
+      });
+      return { accepted, duplicates: [], message: 'accepted' };
+    });
+    vi.mocked(systemConfigApi.removeFromWatchlist).mockResolvedValue(['BRK-B', 'AAPL']);
+
+    render(
+      <MemoryRouter>
+        <HomePage />
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: '自选' }));
+    fireEvent.click(await screen.findByRole('button', { name: '分析全部' }));
+    expect(await screen.findByText('已提交 3 个任务，0 个正在运行')).toBeInTheDocument();
+    expect(screen.getByTestId('watchlist-row-BRK-B')).toHaveTextContent('任务等待中');
+    expect(analysisApi.analyzeAsync).toHaveBeenCalledWith(expect.objectContaining({
+      stockCodes: ['BRK-B', 'AAPL', 'BAC-PL'],
+    }));
+
+    fireEvent.click(screen.getByRole('button', { name: '从自选股移除 BAC-PL' }));
+    await waitFor(() => expect(screen.queryByTestId('watchlist-row-BAC-PL')).not.toBeInTheDocument());
+    expect(systemConfigApi.removeFromWatchlist).toHaveBeenCalledWith('BAC-PL');
+    expect(screen.getByTestId('watchlist-row-BRK-B')).toBeInTheDocument();
+    expect(screen.getByTestId('watchlist-row-AAPL')).toBeInTheDocument();
   });
 
   it('deduplicates index aliases while keeping the same-code stock in analyze-all (PR #2312)', async () => {

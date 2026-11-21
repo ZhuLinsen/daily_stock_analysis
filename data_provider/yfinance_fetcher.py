@@ -33,7 +33,7 @@ from tenacity import (
 
 from .base import BaseFetcher, DataFetchError, STANDARD_COLUMNS, _is_hk_market, is_bse_code
 from .realtime_types import UnifiedRealtimeQuote, RealtimeSource
-from .us_index_mapping import get_us_index_yf_symbol, is_us_stock_code
+from .us_index_mapping import get_us_index_yf_symbol, get_us_stock_yf_symbol, is_us_stock_code
 from .yfinance_fundamental_adapter import _safe_float
 from src.services.market_symbol_utils import get_suffix_market, is_suffix_market_symbol
 
@@ -126,10 +126,10 @@ class YfinanceFetcher(BaseFetcher):
             logger.debug(f"识别为美股指数: {code} -> {yf_symbol}")
             return yf_symbol
 
-        # 美股：1-5 个大写字母（可选 .X 后缀），原样返回
-        if is_us_stock_code(code):
-            logger.debug(f"识别为美股代码: {code}")
-            return code
+        # 美股类别股在 Yahoo 使用连字符，例如 BRK.B -> BRK-B。
+        yf_symbol = get_us_stock_yf_symbol(code)
+        if yf_symbol:
+            return yf_symbol
 
         # 日股/韩股/台股 MVP：显式 Yahoo Finance suffix-only 代码，原样传给 Yahoo。
         if self._is_jp_kr_suffix_stock(code) or self._is_tw_suffix_stock(code):
@@ -827,7 +827,8 @@ class YfinanceFetcher(BaseFetcher):
 
         try:
             symbol = self._convert_stock_code(stock_code)
-            is_us_symbol = self._is_us_stock(symbol)
+            is_us_symbol = self._is_us_stock(stock_code)
+            quote_code = stock_code.strip().upper() if is_us_symbol else symbol
             suffix_market = get_suffix_market(symbol)
             logger.debug(f"[Yfinance] 获取 {symbol} 实时行情")
 
@@ -858,7 +859,7 @@ class YfinanceFetcher(BaseFetcher):
                 if hist.empty:
                     if is_us_symbol:
                         logger.warning(f"[Yfinance] 无法获取 {symbol} 的数据，尝试 Stooq 兜底")
-                        return self._get_us_stock_quote_from_stooq(symbol)
+                        return self._get_us_stock_quote_from_stooq(quote_code)
                     logger.warning(f"[Yfinance] 无法获取 {symbol} 的数据")
                     return None
 
@@ -922,9 +923,13 @@ class YfinanceFetcher(BaseFetcher):
 
             try:
                 info_name = ticker_info.get('shortName', '') or ticker_info.get('longName', '') or ''
-                name = info_name if is_meaningful_stock_name(info_name, symbol) else STOCK_NAME_MAP.get(symbol, '')
+                name = (
+                    info_name
+                    if is_meaningful_stock_name(info_name, symbol)
+                    else STOCK_NAME_MAP.get(quote_code, '')
+                )
             except Exception:
-                name = STOCK_NAME_MAP.get(symbol, '')
+                name = STOCK_NAME_MAP.get(quote_code, '')
 
             # 复用上方已获取的 ticker_info，无额外请求
             pe_ratio = _safe_float(ticker_info.get('trailingPE'))
@@ -943,7 +948,7 @@ class YfinanceFetcher(BaseFetcher):
                 if value is None
             ]
             quote = UnifiedRealtimeQuote(
-                code=symbol,
+                code=quote_code,
                 name=name,
                 source=RealtimeSource.FALLBACK,
                 market=suffix_market or ("hk" if _is_hk_market(stock_code) else "us" if is_us_symbol else None),

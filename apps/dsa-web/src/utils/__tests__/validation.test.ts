@@ -6,6 +6,11 @@ import {
 } from '../validation';
 
 describe('stock code validation', () => {
+  test.each(['BRK-B', 'BAC-PL'])('accepts Yahoo stock code %s', (code) => {
+    expect(validateStockCode(code.toLowerCase())).toEqual({ valid: true, normalized: code });
+    expect(isObviouslyInvalidStockQuery(code)).toBe(false);
+  });
+
   test.each([
     ['7203.T', '7203.T'],
     ['6758.t', '6758.T'],
