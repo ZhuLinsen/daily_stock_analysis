@@ -86,6 +86,58 @@ def test_patch_mini_racer_class_is_idempotent_and_skips_close() -> None:
     assert not getattr(FakeMiniRacer.close, "_dsa_mini_racer_locked", False)
 
 
+def test_patch_mini_racer_class_does_not_block_while_eval_holds_runtime_lock() -> None:
+    runtime_lock = threading.RLock()
+    entered = threading.Event()
+    release = threading.Event()
+
+    class SlowMiniRacer:
+        def __init__(self) -> None:
+            pass
+
+        def eval(self, code: str) -> str:
+            entered.set()
+            assert release.wait(timeout=5.0)
+            return code
+
+    class FreshMiniRacer:
+        def eval(self, code: str) -> str:
+            return code
+
+    assert patch_mini_racer_class(SlowMiniRacer, lock=runtime_lock) is True
+
+    eval_result: list[str] = []
+
+    def run_slow_eval() -> None:
+        eval_result.append(SlowMiniRacer().eval("slow"))
+
+    worker = threading.Thread(target=run_slow_eval, daemon=True)
+    worker.start()
+    assert entered.wait(timeout=2.0)
+
+    try:
+        # Repeat patch call (e.g. setup_env() from FastAPI middleware) and
+        # first-time patching must not block on an active eval holding runtime_lock.
+        patch_done = threading.Event()
+        patch_outcomes: list[bool] = []
+
+        def run_patches() -> None:
+            patch_outcomes.append(patch_mini_racer_class(SlowMiniRacer, lock=runtime_lock))
+            patch_outcomes.append(patch_mini_racer_class(FreshMiniRacer, lock=runtime_lock))
+            patch_done.set()
+
+        patcher = threading.Thread(target=run_patches, daemon=True)
+        patcher.start()
+        assert patch_done.wait(timeout=1.0), "patch_mini_racer_class blocked on active eval lock"
+        patcher.join(timeout=1.0)
+        assert patch_outcomes == [True, True]
+    finally:
+        release.set()
+        worker.join(timeout=2.0)
+
+    assert eval_result == ["slow"]
+
+
 def test_patch_mini_racer_class_rejects_non_type() -> None:
     assert patch_mini_racer_class(None) is False
     assert patch_mini_racer_class(lambda: None) is False

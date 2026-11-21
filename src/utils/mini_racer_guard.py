@@ -20,8 +20,17 @@ import threading
 from typing import Any, Callable, Optional
 
 _MINI_RACER_LOCK = threading.RLock()
+_PATCH_LOCK = threading.Lock()
 _GUARDED_METHODS = ("__init__", "eval", "execute", "call")
 _LOCKED_MARKER = "_dsa_mini_racer_locked"
+
+
+def _is_fully_patched(mini_racer_cls: type) -> bool:
+    for method_name in _GUARDED_METHODS:
+        orig = getattr(mini_racer_cls, method_name, None)
+        if callable(orig) and not getattr(orig, _LOCKED_MARKER, False):
+            return False
+    return True
 
 
 def _make_locked_wrapper(
@@ -50,12 +59,20 @@ def patch_mini_racer_class(
     drives ``eval()`` via an internal background event-loop thread, so acquiring
     ``_MINI_RACER_LOCK`` inside GC finalization / ``close()`` could risk an
     ABBA lock inversion.
+
+    Patching itself uses a dedicated ``_PATCH_LOCK`` (plus a lock-free fast
+    path once already patched) rather than ``active_lock``, so repeat calls
+    such as ``setup_env()`` from request middleware never block on an active
+    background JS evaluation.
     """
     if not isinstance(mini_racer_cls, type):
         return False
 
+    if _is_fully_patched(mini_racer_cls):
+        return True
+
     active_lock = lock or _MINI_RACER_LOCK
-    with active_lock:
+    with _PATCH_LOCK:
         for method_name in _GUARDED_METHODS:
             orig = getattr(mini_racer_cls, method_name, None)
             if not callable(orig) or getattr(orig, _LOCKED_MARKER, False):
