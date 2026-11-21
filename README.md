@@ -193,6 +193,26 @@ python main.py --serve-only
 
 > Docker 部署、定时任务、云服务器访问请参考 [完整指南](docs/full-guide.md)；桌面客户端打包请参考 [桌面端打包说明](docs/desktop-package.md)。
 
+### 作为 Agent 插件安装
+
+本仓库提供 agent-agnostic 市场入口 [`.agents/plugins/marketplace.json`](.agents/plugins/marketplace.json)，插件目录为 [`plugin/`](plugin/)（`stock_analyzer` skill 正文在 `plugin/skills/stock_analyzer/SKILL.md`，根目录 `SKILL.md` 为符号链接以免重复）。仓库维护用 skill（`analyze-issue` 等）不进入插件。
+
+**Codex：**
+
+```bash
+codex plugin marketplace add ZhuLinsen/daily_stock_analysis
+codex plugin add daily-stock-analysis@daily-stock-analysis
+```
+
+**Claude Code：**
+
+```bash
+/plugin marketplace add ZhuLinsen/daily_stock_analysis
+/plugin install daily-stock-analysis@daily-stock-analysis
+```
+
+本地 checkout：`codex plugin marketplace add /path/to/daily_stock_analysis`。只读 MCP（`python -m src.mcp_server`，可选依赖 `mcp>=1.0.0,<2`）需在完整仓库 checkout 中按 [完整指南](docs/full-guide.md#只读-mcp-stdio-服务可选) 手动配置，不写入插件清单（安装缓存仅含 `plugin/`，不含 `src/`）。
+
 ## 📱 推送效果
 
 ### 决策仪表盘

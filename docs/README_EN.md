@@ -193,6 +193,26 @@ python main.py --serve-only
 
 > Docker deployment, scheduling, and cloud-server WebUI access are documented in the [Full Guide](./full-guide_EN.md).
 
+### Install as an agent plugin
+
+This repo ships an agent-agnostic marketplace at [`.agents/plugins/marketplace.json`](../.agents/plugins/marketplace.json). The plugin lives in [`plugin/`](../plugin/); the `stock_analyzer` skill body is at `plugin/skills/stock_analyzer/SKILL.md` (repo-root `SKILL.md` is a symlink, so OpenClaw/docs keep the same path without duplicating content). Repo-maintenance skills (`analyze-issue`, etc.) are not shipped in the plugin.
+
+**Codex:**
+
+```bash
+codex plugin marketplace add ZhuLinsen/daily_stock_analysis
+codex plugin add daily-stock-analysis@daily-stock-analysis
+```
+
+**Claude Code:**
+
+```bash
+/plugin marketplace add ZhuLinsen/daily_stock_analysis
+/plugin install daily-stock-analysis@daily-stock-analysis
+```
+
+Local checkout: `codex plugin marketplace add /path/to/daily_stock_analysis`. The optional read-only MCP server (`python -m src.mcp_server`, dependency `mcp>=1.0.0,<2`) is configured manually from a full checkout per the [Full Guide](./full-guide_EN.md#read-only-mcp-stdio-server-optional); it is not bundled in the plugin package (Codex caches only `plugin/`, which does not include `src/`).
+
 ## 📱 Sample Output
 
 ### Decision Dashboard
