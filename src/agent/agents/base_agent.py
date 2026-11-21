@@ -153,6 +153,11 @@ class BaseAgent(ABC):
             opinion = self.post_process(ctx, loop_result.content)
             if opinion is not None:
                 opinion.agent_name = self.agent_name
+                opinion.source_evidence_ids = tuple(dict.fromkeys(
+                    f"tool:{entry['tool_call_id']}"
+                    for entry in loop_result.tool_calls_log
+                    if entry.get("success") and entry.get("tool_call_id")
+                ))
                 self._apply_memory_calibration(ctx, opinion, result)
                 ctx.add_opinion(opinion)
                 result.opinion = opinion

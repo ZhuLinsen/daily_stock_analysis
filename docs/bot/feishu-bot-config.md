@@ -57,6 +57,8 @@ FEISHU_DOMAIN=feishu
 - 如果你做的是应用机器人 / Stream Bot，可直接看文末保留的原流程截图参考
 - App Bot 发送路径复用 `requirements.txt` 中已有的 `lark-oapi>=1.0.0`，标准安装使用 `pip install -r requirements.txt`；参考 [Feishu message create OpenAPI](https://open.feishu.cn/document/server-docs/im-v1/message/create)、[lark-oapi PyPI](https://pypi.org/project/lark-oapi/) 和 [SDK repo](https://github.com/larksuite/oapi-sdk-python)
 
+Webhook 和 App Bot 推送的交互卡片可附工作台按钮，配置见[飞书完整指南](../full-guide.md#飞书)。
+
 ### 文件发送模式（FEISHU_SEND_AS_FILE）
 
 开启后，飞书 App Bot 将报告以 `.md` 文件形式发送，而非文字/卡片消息：

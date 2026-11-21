@@ -23,7 +23,7 @@ import requests
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from src.config import Config
-from src.formatters import utf16_len
+from src.formatters import TRUNCATION_SUFFIX, utf16_len
 from src.notification_sender import (
     AstrbotSender,
     CustomWebhookSender,
@@ -592,14 +592,15 @@ class TestFeishuSender(unittest.TestCase):
 
     @mock.patch.object(FeishuSender, "_app_send_raw", return_value=True)
     def test_app_bot_request_shape_interactive(self, mock_raw):
-        """_app_send_once constructs interactive card payload with lark_md."""
+        """App Bot sends an interactive card payload with lark_md."""
         cfg = _config(
             feishu_app_id="cli_app",
             feishu_app_secret="secret",
             feishu_chat_id="oc_chat",
         )
         sender = FeishuSender(cfg)
-        result = sender._app_send_once(object(), "**bold** text")
+        with mock.patch.object(sender, "_ensure_app_client", return_value=object()):
+            result = sender.send_to_feishu("**bold** text")
 
         self.assertTrue(result)
         call = mock_raw.call_args
@@ -611,7 +612,7 @@ class TestFeishuSender(unittest.TestCase):
 
     @mock.patch.object(FeishuSender, "_app_send_raw")
     def test_app_bot_request_shape_text_fallback(self, mock_raw):
-        """_app_send_once falls back to text payload when card fails."""
+        """App Bot falls back to text payload when a card fails."""
         mock_raw.side_effect = [False, True]
         cfg = _config(
             feishu_app_id="cli_app",
@@ -619,7 +620,8 @@ class TestFeishuSender(unittest.TestCase):
             feishu_chat_id="oc_chat",
         )
         sender = FeishuSender(cfg)
-        result = sender._app_send_once(object(), "plain text")
+        with mock.patch.object(sender, "_ensure_app_client", return_value=object()):
+            result = sender.send_to_feishu("plain text")
 
         self.assertTrue(result)
         self.assertEqual(mock_raw.call_count, 2)
@@ -2330,6 +2332,240 @@ class TestTelegramSender(unittest.TestCase):
 
         self.assertFalse(result)
         self.assertEqual(mock_post.call_count, 2)
+
+
+class TestFeishuStructuredCard(unittest.TestCase):
+    def _send_card(self, report, mode, web_url="", fallback_url=""):
+        settings = {
+            "webhook": {"feishu_webhook_url": "https://feishu.example/hook"},
+            "app": {"feishu_app_id": "cli_app", "feishu_app_secret": "secret", "feishu_chat_id": "oc_chat"},
+        }
+        with mock.patch.dict("os.environ", {"FEISHU_CARD_WEB_URL": web_url, "DSA_WEB_URL": fallback_url}):
+            sender = FeishuSender(_config(**settings[mode]))
+        if mode == "webhook":
+            with mock.patch("requests.post", return_value=_response(200, {"code": 0})) as post:
+                self.assertTrue(sender.send_to_feishu(report))
+            post.assert_called_once()
+            payload = post.call_args.kwargs["json"]
+            self.assertEqual(payload["msg_type"], "interactive")
+            return payload["card"]
+
+        client, create = _fake_feishu_client(_sdk_response(True))
+        with mock.patch.object(sender, "_ensure_app_client", return_value=client):
+            self.assertTrue(sender.send_to_feishu(report))
+        create.assert_called_once()
+        body = create.call_args.args[0].request_body
+        self.assertEqual(body.msg_type, "interactive")
+        return json.loads(body.content)
+
+    def test_real_reports_keep_titles_and_bounded_risk_panels_in_both_modes(self):
+        from src.analyzer import AnalysisResult
+        from src.notification import NotificationService
+
+        stock = AnalysisResult(
+            code="600519", name="贵州茅台", sentiment_score=85, trend_prediction="看多",
+            operation_advice="买入", analysis_summary="趋势向好",
+            dashboard={"intelligence": {
+                "risk_alerts": ["监管调查"], "positive_catalysts": ["销售回升"],
+            }},
+        )
+        other_stock = AnalysisResult(
+            code="000001", name="平安银行", sentiment_score=55, trend_prediction="震荡", operation_advice="观望",
+            dashboard={"intelligence": {"risk_alerts": ["估值风险"]}},
+        )
+        with mock.patch("src.notification.get_config", return_value=_config(report_renderer_enabled=False)):
+            service = NotificationService()
+            reports = [(service.generate_single_stock_report(stock), 1)]
+            reports.append((service.generate_dashboard_report([stock, other_stock], "2026-02-01"), 2))
+        with mock.patch("src.notification.get_config", return_value=_config(report_renderer_enabled=True)):
+            reports.append((service.generate_dashboard_report([stock, other_stock], "2026-02-01"), 2))
+
+        web_url = "https://dsa.example.com/chat?stock=600519"
+        for mode in ("webhook", "app"):
+            for report, risk_count in reports:
+                with self.subTest(mode=mode, risk_count=risk_count):
+                    card = self._send_card(report, mode, web_url)
+                    self.assertEqual(card["header"]["title"]["content"], report.lstrip().splitlines()[0].lstrip("# "))
+                    self.assertEqual(card["header"]["template"], "red")
+                    bodies = [element["text"]["content"] for element in card["elements"] if element["tag"] == "div"]
+                    panels = [body for body in bodies if "风险警报" in body]
+                    self.assertEqual(len(panels), risk_count)
+                    self.assertIn("监管调查", panels[0])
+                    self.assertNotIn("销售回升", panels[0])
+                    self.assertNotIn("平安银行", panels[0])
+                    self.assertGreater(next(i for i, body in enumerate(bodies) if "销售回升" in body), bodies.index(panels[0]))
+                    if risk_count == 2:
+                        self.assertIn("估值风险", panels[1])
+                        self.assertTrue(any("平安银行" in body for body in bodies[bodies.index(panels[0]) + 1:]))
+                    self.assertEqual(card["elements"][-1]["actions"][0]["url"], web_url)
+
+    def test_workspace_url_priority_and_plain_text_title_in_both_modes(self):
+        preferred_url = "https://dsa.example/chat"
+        fallback_url = "https://fallback.example/chat"
+        for mode in ("webhook", "app"):
+            for configured_url, expected_url in ((preferred_url, preferred_url), (" ", fallback_url)):
+                card = self._send_card("## 🟢 \\*ST 示例\n\nReport", mode, configured_url, fallback_url)
+                self.assertEqual(card["header"]["title"]["content"], "🟢 *ST 示例")
+                self.assertEqual(card["elements"][-1]["actions"][0]["url"], expected_url)
+
+    def test_code_example_does_not_supply_card_title_or_risk_panel(self):
+        report = "```md\n# 🔴 示例标题\n🚨 **风险警报**:\n- 示例风险\n```\n\n# 🟢 实际报告\n\n正文"
+        for mode in ("webhook", "app"):
+            with self.subTest(mode=mode):
+                card = self._send_card(report, mode)
+                self.assertEqual(card["header"]["title"]["content"], "🟢 实际报告")
+                self.assertEqual(card["header"]["template"], "green")
+                self.assertEqual([item["tag"] for item in card["elements"]], ["div"])
+                self.assertIn("示例风险", card["elements"][0]["text"]["content"])
+
+    def test_real_dashboard_colors_ignore_zero_counts_in_both_modes(self):
+        from src.analyzer import AnalysisResult
+        from src.notification import NotificationService
+
+        for renderer_enabled in (False, True):
+            with mock.patch("src.notification.get_config", return_value=_config(
+                report_renderer_enabled=renderer_enabled,
+            )):
+                service = NotificationService()
+                for advice, score, color in (("买入", 85, "green"), ("观望", 55, "orange"), ("卖出", 20, "red")):
+                    result = AnalysisResult(
+                        code="600519", name="贵州茅台", sentiment_score=score,
+                        trend_prediction="震荡", operation_advice=advice,
+                    )
+                    report = service.generate_dashboard_report([result], "2026-02-01")
+                    for mode in ("webhook", "app"):
+                        with self.subTest(renderer_enabled=renderer_enabled, mode=mode, advice=advice):
+                            card = self._send_card(report, mode)
+                            self.assertEqual(card["header"]["template"], color)
+                            self.assertTrue(all(element["tag"] != "action" for element in card["elements"]))
+
+    @mock.patch("src.notification_sender.feishu_sender.time.sleep")
+    def test_app_bot_near_limit_keeps_cards_and_buttons_with_wire_size_budget(self, _sleep):
+        from lark_oapi import JSON
+
+        report = "A" * 29602
+        web_url = "https://dsa.example.com/chat?query=" + "x" * 1350
+        client, create = _fake_feishu_client()
+
+        def send_with_feishu_limit(request):
+            within_limit = len(JSON.marshal(request.request_body).encode("utf-8")) <= 30000
+            return _sdk_response(within_limit, code=0 if within_limit else 230025)
+
+        create.side_effect = send_with_feishu_limit
+        with mock.patch.dict("os.environ", {"FEISHU_CARD_WEB_URL": web_url}):
+            sender = FeishuSender(_config(
+                feishu_app_id="cli_app", feishu_app_secret="secret", feishu_chat_id="oc_chat", feishu_max_bytes=30000,
+            ))
+        with mock.patch.object(sender, "_ensure_app_client", return_value=client):
+            self.assertTrue(sender.send_to_feishu(report))
+
+        self.assertGreater(create.call_count, 1)
+        recovered = []
+        for page, call in enumerate(create.call_args_list, start=1):
+            body = call.args[0].request_body
+            self.assertEqual(body.msg_type, "interactive")
+            self.assertLessEqual(len(JSON.marshal(body).encode("utf-8")), 30000)
+            elements = json.loads(body.content)["elements"]
+            self.assertEqual(elements[-1]["actions"][0]["url"], web_url)
+            content, marker = elements[0]["text"]["content"].rsplit("\n\n", 1)
+            self.assertEqual(marker, f"📄 {page}/{create.call_count}")
+            recovered.append(content.removesuffix(TRUNCATION_SUFFIX))
+        self.assertEqual("".join(recovered), report)
+
+    def test_app_bot_omits_a_button_that_cannot_fit_on_a_card(self):
+        report = "# 🟢 个股报告\n\n正文"
+        web_url = "https://dsa.example.com/chat?query=" + "x" * 30000
+
+        card = self._send_card(report, "app", web_url)
+
+        self.assertEqual(card["header"]["title"]["content"], "🟢 个股报告")
+        self.assertEqual([element["tag"] for element in card["elements"]], ["div"])
+        self.assertIn("正文", card["elements"][0]["text"]["content"])
+
+    @mock.patch("src.notification_sender.feishu_sender.time.sleep")
+    def test_webhook_near_limit_keeps_cards_and_buttons_with_wire_size_budget(self, _sleep):
+        url = "https://feishu.example/hook"
+        web_url = "https://dsa.example.com/chat?query=" + "x" * 420
+
+        def send_with_feishu_limit(url, *, json, **kwargs):
+            prepared = requests.Request("POST", url, json=json).prepare()
+            return _response(200, {"code": 0 if len(prepared.body) <= 20000 else 19028})
+
+        cases = [
+            ("A" * 19700, 20000, {}),
+            ("股" * 4000, 20000, {"feishu_webhook_secret": "signed", "feishu_webhook_keyword": "报告"}),
+            ("A" * 400, 170, {}),
+        ]
+        for report, content_budget, security in cases:
+            with self.subTest(signed=bool(security), content_budget=content_budget), \
+                 mock.patch.dict("os.environ", {"FEISHU_CARD_WEB_URL": web_url}), \
+                 mock.patch("requests.post", side_effect=send_with_feishu_limit) as post:
+                sender = FeishuSender(_config(feishu_webhook_url=url, feishu_max_bytes=content_budget, **security))
+                self.assertTrue(sender.send_to_feishu(report, timeout_seconds=7))
+
+                recovered = []
+                for page, call in enumerate(post.call_args_list, start=1):
+                    payload = call.kwargs["json"]
+                    self.assertEqual(payload["msg_type"], "interactive")
+                    self.assertEqual(call.kwargs["timeout"], 7)
+                    self.assertLessEqual(len(requests.Request("POST", url, json=payload).prepare().body), 20000)
+                    if security:
+                        self.assertIn("sign", payload)
+                        self.assertIn("timestamp", payload)
+                    elements = payload["card"]["elements"]
+                    self.assertEqual(elements[-1]["actions"][0]["url"], web_url)
+                    body = elements[0]["text"]["content"]
+                    self.assertLessEqual(len(body.encode("utf-8")), content_budget)
+                    body, marker = body.rsplit("\n\n", 1)
+                    self.assertEqual(marker, f"📄 {page}/{post.call_count}")
+                    recovered.append(body.removeprefix("报告\n").removesuffix(TRUNCATION_SUFFIX))
+                self.assertGreater(post.call_count, 1)
+                self.assertEqual("".join(recovered), report)
+
+    @mock.patch("src.notification_sender.feishu_sender.time.sleep")
+    def test_webhook_fallback_preserves_budget_and_refreshes_signatures(self, sleep):
+        body = "股" * 4000
+        url = "https://feishu.example/hook"
+        timestamp = 1700000000
+
+        def advance_time(_seconds):
+            nonlocal timestamp
+            timestamp += 1
+
+        def post_payload(url, *, json, **kwargs):
+            self.assertLessEqual(len(requests.Request("POST", url, json=json).prepare().body), 20000)
+            self.assertEqual(json["timestamp"], str(timestamp))
+            return _response(200, {"code": 1 if json["msg_type"] == "interactive" else 0})
+
+        sleep.side_effect = advance_time
+        with mock.patch.dict("os.environ", {"FEISHU_CARD_WEB_URL": "https://dsa.example/?" + "x" * 20000}), \
+             mock.patch("src.notification_sender.feishu_sender.time.time", side_effect=lambda: timestamp), \
+             mock.patch("requests.post", side_effect=post_payload) as post:
+            sender = FeishuSender(_config(feishu_webhook_url=url, feishu_webhook_secret="signed"))
+            self.assertTrue(sender.send_to_feishu(body))
+
+        payloads = [call.kwargs["json"] for call in post.call_args_list]
+        self.assertGreater(len(payloads), 2)
+        for card, text in zip(payloads[::2], payloads[1::2]):
+            self.assertEqual(card["msg_type"], "interactive")
+            self.assertEqual(text["msg_type"], "text")
+            self.assertEqual(card["sign"], text["sign"])
+            self.assertFalse(any(element["tag"] == "action" for element in card["card"]["elements"]))
+
+    @mock.patch("src.notification_sender.feishu_sender.requests.post")
+    def test_webhook_sends_text_when_keyword_leaves_no_room_for_card(self, post):
+        post.return_value = _response(200, {"code": 0})
+        url = "https://feishu.example/hook"
+        keyword = "A" * 19900
+        sender = FeishuSender(_config(feishu_webhook_url=url, feishu_webhook_keyword=keyword))
+
+        self.assertTrue(sender.send_to_feishu("Report"))
+
+        post.assert_called_once()
+        payload = post.call_args.kwargs["json"]
+        self.assertEqual(payload["msg_type"], "text")
+        self.assertEqual(payload["content"]["text"], f"{keyword}\nReport")
+        self.assertLessEqual(len(requests.Request("POST", url, json=payload).prepare().body), 20000)
 
 
 if __name__ == "__main__":

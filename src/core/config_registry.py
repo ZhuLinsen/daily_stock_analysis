@@ -4239,6 +4239,36 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         ],
         "warning_codes": [],
     },
+    "AGENT_DEBATE_ENABLED": {
+        "title": "Conditional Bull/Bear Debate",
+        "description": "In multi-agent mode, add an evidence brief and mandatory risk review when opinions disagree on direction or a buy opinion reaches 0.75 confidence.",
+        "category": "agent",
+        "data_type": "boolean",
+        "ui_control": "switch",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": "false",
+        "options": [],
+        "validation": {},
+        "display_order": 76,
+        "help_key": "settings.agent.AGENT_DEBATE_ENABLED",
+        "examples": [
+            "AGENT_DEBATE_ENABLED=false",
+            "AGENT_DEBATE_ENABLED=true",
+        ],
+        "docs": [
+            {
+                "label": "完整指南：Agent 配置",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/full-guide.md#agent_debate_enabled",
+            },
+            {
+                "label": "Agent configuration guide (English)",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/full-guide_EN.md#agent_debate_enabled",
+            },
+        ],
+        "warning_codes": [],
+    },
     "AGENT_SKILL_CONCURRENCY": {
         "title": "Strategy Skill Concurrency",
         "description": "Maximum number of specialist strategy-skill agents to run concurrently in specialist mode.",
