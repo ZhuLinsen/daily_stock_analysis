@@ -1,0 +1,14 @@
+---
+title: "OpenAPI 接口浏览器"
+description: "交互式检索 Daily Stock Analysis FastAPI 后端全部 REST 接口、参数与 Schema 契约。"
+---
+
+import ApiExplorer from '../../../../components/ApiExplorer.astro';
+
+本页面直接从主仓 `docs/architecture/api_spec.json` 自动同步生成，支持按模块标签筛选与关键字实时过滤。
+
+:::note[管理员认证说明]
+当开启 `ADMIN_AUTH_ENABLED=true` 时，除登录、健康检查与 OpenAPI 文档外，`/api/v1/*` 接口需要有效管理员会话 Cookie；默认本地单机模式不强制认证。
+:::
+
+<ApiExplorer lang="zh" />

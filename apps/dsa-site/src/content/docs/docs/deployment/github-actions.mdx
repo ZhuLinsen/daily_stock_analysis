@@ -1,0 +1,42 @@
+---
+title: "GitHub Actions 零成本定时部署"
+description: "无需购买服务器，Fork 仓库配置 Secrets 即可在每个交易日 18:00 自动执行分析并推送报告。"
+---
+
+GitHub Actions 是最轻量、零基础设施成本的运行方式。通过仓库内置的工作流，系统会在每个工作日 **18:00（北京时间）** 自动检查交易日并运行全部分析与通知推送。
+
+## 操作步骤
+
+### 1. Fork 主仓库
+
+前往 [ZhuLinsen/daily_stock_analysis](https://github.com/ZhuLinsen/daily_stock_analysis) 点击右上角 **Fork**，将代码复制到你的 GitHub 账号下。
+
+### 2. 配置 Repository Secrets / Variables
+
+打开你 Fork 后的仓库：`Settings → Secrets and variables → Actions → New repository secret`。
+
+**至少配置 1 个 AI 模型 Key：**
+
+| Secret 名称 | 说明 | 推荐度 |
+| --- | --- | --- |
+| `MODELFLARE_KEY` | Modelflare 模型网关 Key，自动补齐默认地址与模型 | 推荐 |
+| `LLM_X6AI_API_KEY` | x6.ai 模型网关 Key，低成本接入主流模型 | 推荐 |
+| `GEMINI_API_KEY` | Google Gemini API Key | 可选 |
+| `OPENAI_API_KEY` | OpenAI / DeepSeek / 通义千问等兼容 Key（需配合 `OPENAI_BASE_URL`、`OPENAI_MODEL`） | 可选 |
+| `ANTHROPIC_API_KEY` | Anthropic Claude API Key | 可选 |
+
+**配置自选股与通知渠道：**
+
+- `STOCK_LIST`：如 `600519,hk00700,AAPL,7203.T`（可放在 Variables 或 Secrets）
+- 通知渠道（至少配一个）：`WECHAT_WEBHOOK_URL`、`FEISHU_WEBHOOK_URL`、`TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID`、`DISCORD_WEBHOOK_URL`、`EMAIL_SENDER` + `EMAIL_PASSWORD`
+- 推荐加配新闻搜索：`SERPAPI_API_KEYS` 或 `ANSPIRE_API_KEYS` / `TAVILY_API_KEYS`
+
+### 3. 启用 Actions 并手动测试
+
+1. 切换到你 Fork 仓库的 **Actions** 标签页，点击 **I understand my workflows, go ahead and enable them**。
+2. 左侧选择 **每日股票分析** 工作流，点击右侧 **Run workflow** 手动试跑一次。
+3. 运行完成后检查工作流日志以及你的企业微信 / 飞书 / 邮箱是否收到报告。
+
+:::note[非交易日跳过规则]
+工作流默认按 A / H / US 市场交易日自动过滤休市日；如需在周末或休市日强制跑通测试，可在手动触发 `Run workflow` 时勾选强制运行选项。
+:::
