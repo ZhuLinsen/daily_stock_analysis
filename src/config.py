@@ -961,6 +961,9 @@ def setup_env(override: bool = False):
                   system environment variables take precedence.
     """
     Config._capture_bootstrap_runtime_env_overrides()
+    from src.utils.mini_racer_guard import ensure_mini_racer_thread_safety
+
+    ensure_mini_racer_thread_safety()
     # src/config.py -> src/ -> root
     env_file = os.getenv("ENV_FILE")
     if env_file:
