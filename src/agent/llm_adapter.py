@@ -6,13 +6,14 @@ Normalizes function-calling / tool-use across all providers into a unified
 interface consumed by the AgentExecutor, via LiteLLM.
 """
 
+import copy
 import json
 import logging
 import math
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 import litellm
 from litellm import Router
@@ -330,6 +331,66 @@ def get_thinking_extra_body(model: str) -> Optional[dict]:
     )
 
 
+def merge_thinking_extra_body(
+    params: Mapping[str, Any],
+    default_extra: Optional[Mapping[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """Merge default thinking/reasoning extra_body without overwriting explicit config.
+
+    Precedence: explicit deployment/request configuration (either inside
+    ``extra_body`` or as a matching top-level parameter such as
+    ``reasoning_effort`` or ``thinking``) always wins over defaults.
+    Returns ``None`` when there is nothing to set or when an existing non-dict
+    ``extra_body`` should be left untouched.
+    """
+    existing_extra = params.get("extra_body")
+    if existing_extra is not None and not isinstance(existing_extra, Mapping):
+        return None
+    merged: Dict[str, Any] = copy.deepcopy(dict(existing_extra)) if isinstance(existing_extra, Mapping) else {}
+    if not default_extra:
+        return merged if isinstance(existing_extra, Mapping) else None
+    added = False
+    for key, value in default_extra.items():
+        if key in merged or (key in params and params.get(key) is not None):
+            continue
+        merged[key] = copy.deepcopy(value)
+        added = True
+    if not added and not isinstance(existing_extra, Mapping):
+        return None
+    return merged
+
+
+def apply_thinking_extra_body_to_model_list(
+    model_list: Optional[List[Dict[str, Any]]],
+) -> List[Dict[str, Any]]:
+    """Return a copied Router model_list with per-deployment default extra_body merged."""
+    prepared: List[Dict[str, Any]] = []
+    for entry in model_list or []:
+        if not isinstance(entry, dict):
+            prepared.append(entry)
+            continue
+        raw_params = entry.get("litellm_params")
+        if not isinstance(raw_params, dict):
+            prepared.append(dict(entry))
+            continue
+        wire_model = str(raw_params.get("model") or entry.get("model_name") or "").strip()
+        model_short = wire_model.split("/")[-1] if "/" in wire_model else wire_model
+        default_extra = get_thinking_extra_body(model_short)
+        if not default_extra:
+            prepared.append(dict(entry))
+            continue
+        merged_extra = merge_thinking_extra_body(raw_params, default_extra)
+        if merged_extra is None:
+            prepared.append(dict(entry))
+            continue
+        new_params = dict(raw_params)
+        new_params["extra_body"] = merged_extra
+        new_entry = dict(entry)
+        new_entry["litellm_params"] = new_params
+        prepared.append(new_entry)
+    return prepared
+
+
 def resolve_fallback_litellm_wire_models(
     model: str,
     model_list: Optional[List[Dict[str, Any]]] = None,
@@ -379,6 +440,7 @@ class LLMToolAdapter:
         config = config or get_config()
         self._config = config
         self._router = None          # litellm Router (multi-key primary model)
+        self._router_has_merged_extra_body = False
         self._legacy_router_model_list: List[Dict[str, Any]] = []
         self._litellm_available = False
         self._backend_error: Optional[GenerationError] = None
@@ -413,6 +475,7 @@ class LLMToolAdapter:
     def _init_litellm(self) -> None:
         """Initialize litellm Router from channels / YAML / legacy keys."""
         config = self._config
+        self._router_has_merged_extra_body = False
         self._legacy_router_model_list = []
         try:
             self._generation_backend_id = resolve_agent_generation_backend_id(config)
@@ -509,17 +572,19 @@ class LLMToolAdapter:
                 )
                 logger.warning("Agent LLM: no Agent-safe channel deployments after Hermes filtering")
                 return
+            prepared_model_list = apply_thinking_extra_body_to_model_list(model_list)
             self._router = Router(
-                model_list=model_list,
+                model_list=prepared_model_list,
                 routing_strategy="simple-shuffle",
                 num_retries=2,
             )
+            self._router_has_merged_extra_body = True
             unique_models = list(dict.fromkeys(
                 e['litellm_params']['model'] for e in model_list
             ))
             logger.info(
                 f"Agent LLM: Router initialized from channels/YAML — "
-                f"{len(model_list)} deployment(s), models: {unique_models}"
+                f"{len(prepared_model_list)} deployment(s), models: {unique_models}"
             )
             return
 
@@ -535,7 +600,7 @@ class LLMToolAdapter:
 
         if len(keys) > 1:
             ep = extra_litellm_params(litellm_model, config)
-            legacy_model_list = [
+            legacy_model_list = apply_thinking_extra_body_to_model_list([
                 {
                     "model_name": litellm_model,
                     "litellm_params": {
@@ -545,13 +610,14 @@ class LLMToolAdapter:
                     },
                 }
                 for k in keys
-            ]
+            ])
             self._legacy_router_model_list = legacy_model_list
             self._router = Router(
                 model_list=legacy_model_list,
                 routing_strategy="simple-shuffle",
                 num_retries=2,
             )
+            self._router_has_merged_extra_body = True
             logger.info(
                 f"Agent LLM: Legacy Router initialized with {len(keys)} keys "
                 f"for {litellm_model}"
@@ -738,9 +804,6 @@ class LLMToolAdapter:
         if timeout is not None:
             call_kwargs["timeout"] = timeout
 
-        if extra:
-            call_kwargs["extra_body"] = extra
-
         if tools:
             call_kwargs["tools"] = tools
 
@@ -756,11 +819,17 @@ class LLMToolAdapter:
         recovery_model_list = resolution.model_list or self._config.llm_model_list
         if self._router and model == agent_primary_model and not use_channel_router:
             recovery_model_list = self._legacy_router_model_list or self._config.llm_model_list
-        if not uses_router:
-            keys = get_api_keys_for_model(model, self._config)
-            if keys:
-                call_kwargs["api_key"] = keys[0]
-            call_kwargs.update(extra_litellm_params(model, self._config))
+        if uses_router and getattr(self, "_router_has_merged_extra_body", False):
+            recovery_model_list = apply_thinking_extra_body_to_model_list(recovery_model_list)
+        else:
+            if not uses_router:
+                keys = get_api_keys_for_model(model, self._config)
+                if keys:
+                    call_kwargs["api_key"] = keys[0]
+                call_kwargs.update(extra_litellm_params(model, self._config))
+            merged_extra = merge_thinking_extra_body(call_kwargs, extra)
+            if merged_extra is not None:
+                call_kwargs["extra_body"] = merged_extra
         call_kwargs = apply_litellm_generation_params(
             call_kwargs,
             model,

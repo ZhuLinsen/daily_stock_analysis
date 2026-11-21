@@ -23,7 +23,9 @@ from json_repair import repair_json
 from litellm import Router
 
 from src.agent.llm_adapter import (
+    apply_thinking_extra_body_to_model_list,
     get_thinking_extra_body,
+    merge_thinking_extra_body,
     resolve_fallback_litellm_wire_models,
     register_fallback_model_pricing,
 )
@@ -2874,6 +2876,7 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
         self._use_legacy_default_prompt_override = use_legacy_default_prompt
         self._resolved_prompt_state: Optional[Dict[str, Any]] = None
         self._router = None
+        self._router_has_merged_extra_body = False
         self._legacy_router_model_list: List[Dict[str, Any]] = []
         self._litellm_available = False
         self._init_litellm()
@@ -3087,22 +3090,25 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                     self._litellm_available = True
                     logger.info("Analyzer LLM: Hermes-only route will use direct no-proxy completion")
                     return
+            prepared_router_model_list = apply_thinking_extra_body_to_model_list(router_model_list)
             try:
                 self._router = Router(
-                    model_list=router_model_list,
+                    model_list=prepared_router_model_list,
                     routing_strategy="simple-shuffle",
                     num_retries=2,
                 )
             except TypeError:
                 logger.debug("Analyzer LLM: Router constructor signature not compatible; fallback to direct mode")
                 self._router = None
+                self._router_has_merged_extra_body = False
             else:
+                self._router_has_merged_extra_body = True
                 unique_models = list(dict.fromkeys(
                     e['litellm_params']['model'] for e in model_list
                 ))
                 logger.info(
                     f"Analyzer LLM: Router initialized from channels/YAML — "
-                    f"{len(router_model_list)} deployment(s), models: {unique_models}"
+                    f"{len(prepared_router_model_list)} deployment(s), models: {unique_models}"
                 )
                 return
 
@@ -3131,19 +3137,22 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                 legacy_model_list = configured_model_list
 
         if len(legacy_model_list) > 1:
-            self._legacy_router_model_list = legacy_model_list
+            prepared_legacy_model_list = apply_thinking_extra_body_to_model_list(legacy_model_list)
+            self._legacy_router_model_list = prepared_legacy_model_list
             try:
                 self._router = Router(
-                    model_list=legacy_model_list,
+                    model_list=prepared_legacy_model_list,
                     routing_strategy="simple-shuffle",
                     num_retries=2,
                 )
             except TypeError:
                 logger.debug("Analyzer LLM: Legacy Router constructor signature not compatible; using legacy model_list fallback")
                 self._router = None
+                self._router_has_merged_extra_body = False
             else:
+                self._router_has_merged_extra_body = True
                 logger.info(
-                    f"Analyzer LLM: Legacy Router initialized with {len(legacy_model_list)} keys "
+                    f"Analyzer LLM: Legacy Router initialized with {len(prepared_legacy_model_list)} keys "
                     f"for {litellm_model}"
                 )
                 return
@@ -3363,10 +3372,18 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                 raise RuntimeError("Hermes API key is a masked placeholder and cannot be used for generation")
             timeout = float(call_kwargs.get("timeout") or 30.0)
             hermes_kwargs = dict(call_kwargs)
-            hermes_kwargs["model"] = str(params.get("model") or model)
+            hermes_wire_model = str(params.get("model") or model)
+            hermes_kwargs["model"] = hermes_wire_model
             hermes_kwargs["stream"] = False
             hermes_kwargs.pop("api_key", None)
             hermes_kwargs.pop("api_base", None)
+            hermes_short = hermes_wire_model.split("/")[-1] if "/" in hermes_wire_model else hermes_wire_model
+            merged_hermes_extra = merge_thinking_extra_body(
+                params,
+                get_thinking_extra_body(hermes_short),
+            )
+            if merged_hermes_extra is not None:
+                hermes_kwargs["extra_body"] = merged_hermes_extra
             with open_hermes_no_proxy_client(api_key=api_key, base_url=base_url, timeout=timeout) as client:
                 hermes_kwargs["client"] = client
                 return litellm.completion(**hermes_kwargs)
@@ -3993,23 +4010,27 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                 }
                 if requested_timeout not in (None, ""):
                     call_kwargs["timeout"] = requested_timeout
-                if extra:
-                    call_kwargs["extra_body"] = extra
                 uses_router = (
                     (use_channel_router and self._router and model in router_model_names)
                     or (self._router and model == config.litellm_model and not use_channel_router)
                 )
-                if not uses_router:
-                    try:
-                        keys = get_api_keys_for_model(model, config)
-                    except AttributeError:
-                        keys = []
-                    if keys:
-                        call_kwargs["api_key"] = keys[0]
-                    try:
-                        call_kwargs.update(extra_litellm_params(model, config))
-                    except AttributeError:
-                        pass
+                if uses_router and getattr(self, "_router_has_merged_extra_body", False):
+                    recovery_model_list = apply_thinking_extra_body_to_model_list(recovery_model_list)
+                else:
+                    if not uses_router:
+                        try:
+                            keys = get_api_keys_for_model(model, config)
+                        except AttributeError:
+                            keys = []
+                        if keys:
+                            call_kwargs["api_key"] = keys[0]
+                        try:
+                            call_kwargs.update(extra_litellm_params(model, config))
+                        except AttributeError:
+                            pass
+                    merged_extra = merge_thinking_extra_body(call_kwargs, extra)
+                    if merged_extra is not None:
+                        call_kwargs["extra_body"] = merged_extra
                 call_kwargs = apply_litellm_generation_params(
                     call_kwargs,
                     model,
