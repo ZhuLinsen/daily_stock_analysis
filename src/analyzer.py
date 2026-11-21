@@ -38,6 +38,7 @@ from src.config import (
     get_explicit_llm_channel_model_provider,
     resolve_news_window_days,
 )
+from src.core.stock_execution_context import is_current_stock_cancelled, raise_if_stock_cancelled
 from src.llm.hermes import (
     HERMES_CHANNEL_NAME,
     build_hermes_redaction_values,
@@ -1058,7 +1059,10 @@ def _extract_positive_finite_float(value: Any) -> Optional[float]:
     if value is None or isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):
-        parsed = float(value)
+        try:
+            parsed = float(value)
+        except OverflowError:
+            return None
         return parsed if math.isfinite(parsed) and parsed > 0 else None
     from src.utils.sniper_points import parse_sniper_value
 
@@ -1066,7 +1070,15 @@ def _extract_positive_finite_float(value: Any) -> Optional[float]:
     return parsed if parsed is not None and math.isfinite(parsed) and parsed > 0 else None
 
 
-_SNIPER_CURRENCY_MARKERS = ("元", "¥", "￥", "$", "NT$", "HK$", "US$", "₩", "円")
+_SNIPER_NUMBER = r"[+-]?(?:\d+(?:\.\d+)?|\.\d+)"
+_SNIPER_GROUPED_NUMBER = re.compile(r"(?<![\d.,，])\d{1,3}(?:[,，]\d{3})+(?!\d)")
+_SNIPER_CURRENCY_PRICE = re.compile(
+    rf"(?:(?<![-\d.])[$¥￥₩€£]\s*({_SNIPER_NUMBER})|"
+    rf"(?<![A-Za-z\d_.+-])({_SNIPER_NUMBER})\s*"
+    r"(?:(?:USD|HKD|TWD|CNY|JPY|KRW|EUR|GBP)\b|US\$|HK\$|NT\$|元|¥|￥|円|₩))",
+    re.IGNORECASE,
+)
+_SNIPER_PRICE_REFERENCE = r"MA\s*\d+\b|\b(?:spot(?: price)?|current price)\b|现价|当前价"
 
 
 def _extract_raw_sniper_points(result: "AnalysisResult") -> Dict[str, Any]:
@@ -1093,34 +1105,46 @@ def _extract_raw_sniper_points(result: "AnalysisResult") -> Dict[str, Any]:
     return dict(raw_points)
 
 
-def _extract_sniper_price_only(raw_value: Any, current_price: Optional[float] = None) -> Optional[float]:
-    """Extract positive finite price from a sniper value, ignoring relative % targets."""
+def _extract_sniper_price_only(
+    raw_value: Any, price_references: Dict[str, Optional[float]]
+) -> Optional[float]:
+    """Resolve absolute prices and percentages with a recognized reference."""
     if isinstance(raw_value, str):
-        text = raw_value.strip()
-        if not text:
-            return None
-        pre_paren = text.split("(")[0].split("（")[0]
-        percent_match = re.search(r"(\d+(?:\.\d+)?)\s*[%％]", text)
-        if percent_match and current_price is not None and not any(
-            marker in text.upper() for marker in _SNIPER_CURRENCY_MARKERS + ("USD",)
-        ):
-            percent = float(percent_match.group(1)) / 100
-            if re.search(r"below|低于|下方|低位", text, re.IGNORECASE):
-                return current_price * (1 - percent)
-            if re.search(r"above|高于|上方|高位", text, re.IGNORECASE):
-                return current_price * (1 + percent)
-            return None
-        if percent_match and any(marker in text.upper() for marker in _SNIPER_CURRENCY_MARKERS + ("USD",)):
-            price_match = re.search(
-                r"(?<![A-Za-z])(?:[$¥￥₩]\s*\d+(?:\.\d+)?|"
-                r"\d+(?:\.\d+)?\s*(?:USD|US\$|HK\$|元|¥|￥|円))",
+        text = _SNIPER_GROUPED_NUMBER.sub(
+            lambda match: match.group().replace(",", "").replace("，", ""), raw_value.strip()
+        )
+        percent_match = re.search(rf"({_SNIPER_NUMBER})\s*[%％]", text)
+        if percent_match:
+            pre_paren = re.split(r"[(（]", text, maxsplit=1)[0].strip()
+            price_match = _SNIPER_CURRENCY_PRICE.search(pre_paren)
+            if price_match:
+                return _extract_positive_finite_float(price_match.group(1) or price_match.group(2))
+            bare_price = re.match(rf"^({_SNIPER_NUMBER})(?:\s*[,，;；]|$)", pre_paren)
+            if bare_price:
+                return _extract_positive_finite_float(bare_price.group(1))
+
+            relative = re.search(
+                rf"(\b(?:below|above)\b|低于|高于)\s*(?:the\s+)?({_SNIPER_PRICE_REFERENCE})",
                 pre_paren,
                 re.IGNORECASE,
             )
-            if price_match:
-                number_match = re.search(r"\d+(?:\.\d+)?", price_match.group(0))
-                if number_match:
-                    return float(number_match.group(0))
+            if relative:
+                direction, reference_name = relative.groups()
+            else:
+                relative = re.search(
+                    rf"({_SNIPER_PRICE_REFERENCE})\s*(?:的)?(下方|低位|上方|高位)", pre_paren, re.IGNORECASE,
+                )
+                if not relative:
+                    return None
+                reference_name, direction = relative.groups()
+            reference_key = re.sub(r"\s+", "", reference_name.casefold())
+            reference = price_references.get(reference_key if reference_key.startswith("ma") else "spot")
+            percent = float(percent_match.group(1)) / 100
+            if reference is None or percent < 0:
+                return None
+            if direction.casefold() in {"below", "低于", "下方", "低位"}:
+                percent = -percent
+            return _extract_positive_finite_float(reference + reference * percent)
     return _extract_positive_finite_float(raw_value)
 
 
@@ -1180,11 +1204,19 @@ def validate_sniper_price_sanity(
         if current_price is not None:
             break
 
+    price_references = {"spot": current_price}
+    for key in ("ma5", "ma10", "ma20", "ma60"):
+        for source in (trend_ctx, trend_analysis, today, ctx, snapshot, pp):
+            value = _extract_positive_finite_float(source.get(key))
+            if value is not None:
+                price_references[key] = value
+                break
+
     raw_points = _extract_raw_sniper_points(result)
-    ideal_buy = _extract_sniper_price_only(raw_points.get("ideal_buy"), current_price)
-    secondary_buy = _extract_sniper_price_only(raw_points.get("secondary_buy"), current_price)
-    stop_loss = _extract_sniper_price_only(raw_points.get("stop_loss"), current_price)
-    take_profit = _extract_sniper_price_only(raw_points.get("take_profit"), current_price)
+    ideal_buy = _extract_sniper_price_only(raw_points.get("ideal_buy"), price_references)
+    secondary_buy = _extract_sniper_price_only(raw_points.get("secondary_buy"), price_references)
+    stop_loss = _extract_sniper_price_only(raw_points.get("stop_loss"), price_references)
+    take_profit = _extract_sniper_price_only(raw_points.get("take_profit"), price_references)
 
     decision_type = str(getattr(result, "decision_type", None) or "").strip().lower()
     final_action = normalize_decision_action(getattr(result, "action", None))
@@ -3742,6 +3774,7 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
         return_generation_result: bool = False,
     ) -> Union[Tuple[str, str, Dict[str, Any]], GenerationResult]:
         """Compatibility wrapper around the configured generation backend."""
+        raise_if_stock_cancelled()
         preflight_error = self.get_generation_backend_config_error()
         if preflight_error is not None and not self._can_use_generation_fallback(preflight_error):
             raise preflight_error
@@ -3758,7 +3791,7 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                 audit_context=audit_context,
             )
         except GenerationError as exc:
-            if not exc.fallbackable or not fallback_backend_id:
+            if is_current_stock_cancelled() or not exc.fallbackable or not fallback_backend_id:
                 raise
             try:
                 fallback_backend = self._get_generation_backend(fallback_backend_id)
@@ -3782,6 +3815,7 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                     },
                 ) from fallback_exc
             try:
+                raise_if_stock_cancelled()
                 result = fallback_backend.generate(
                     prompt,
                     generation_config,
@@ -3902,6 +3936,7 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
         effective_system_prompt = system_prompt or self.TEXT_SYSTEM_PROMPT
         router_model_names = set(get_configured_llm_models(config.llm_model_list))
         for model in models_to_try:
+            raise_if_stock_cancelled()
             last_model = model
             origins = route_deployment_origins(config.llm_model_list, model)
             model_stream = bool(stream and not origins.has_hermes)
@@ -4108,6 +4143,7 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                 raise ValueError("LLM returned empty response")
 
             except Exception as e:
+                raise_if_stock_cancelled()
                 if uses_router:
                     router_model, router_provider = self._resolve_router_failure_identity(
                         e,

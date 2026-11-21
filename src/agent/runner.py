@@ -22,7 +22,7 @@ import re
 import time
 import threading
 import contextvars
-from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from concurrent.futures import FIRST_COMPLETED, wait
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
@@ -43,6 +43,11 @@ from src.agent.tools.execution import (
     serialize_tool_result,
 )
 from src.agent.stock_scope import StockScope
+from src.core.stock_execution_context import (
+    get_current_stock_cancellation,
+    raise_if_stock_cancelled,
+    stock_child_thread_pool,
+)
 from src.llm.usage import should_persist_usage_telemetry
 from src.utils.data_processing import normalize_report_signal_attribution
 from src.storage import persist_llm_usage as _persist_usage
@@ -456,11 +461,13 @@ def run_agent_loop(
             progress_callback(stream_event("thinking", step=step + 1, message=thinking_msg))
 
         # --- LLM call ---
+        raise_if_stock_cancelled()
         response = llm_adapter.call_with_tools(
             messages,
             tool_decls,
             timeout=remaining_timeout,
         )
+        raise_if_stock_cancelled()
         provider_used = response.provider
         total_tokens += (response.usage or {}).get("total_tokens", 0)
         m = getattr(response, "model", "") or response.provider
@@ -733,6 +740,7 @@ def _execute_tools(
     """
 
     def _exec_single(tc_item):
+        raise_if_stock_cancelled()
         return execute_runner_tool_call(
             tool_call=tc_item,
             tool_registry=tool_registry,
@@ -804,7 +812,8 @@ def _execute_tools(
         _record(plan[0][0], timed_out=False, out=_exec_single(plan[0][0]))
         return results
 
-    pool = ThreadPoolExecutor(max_workers=min(len(plan), 5))
+    pool = stock_child_thread_pool(min(len(plan), 5), "agent-tool")
+    stock_token = get_current_stock_cancellation()
     futures: Dict[Any, Any] = {}
     cancel_of: Dict[Any, threading.Event] = {}
     # ``deadline_of`` maps a Future to a single-element holder list; the worker
@@ -839,6 +848,7 @@ def _execute_tools(
         pending = set(futures)
 
         while pending:
+            raise_if_stock_cancelled()
             now = time.monotonic()
             deadlines = []
             for f in pending:
@@ -861,7 +871,10 @@ def _execute_tools(
                 # out, so block until a call completes (efficient for the default
                 # no-timeout path).
                 wait_timeout = None
+            if stock_token is not None:
+                wait_timeout = min(wait_timeout, 0.05) if wait_timeout is not None else 0.05
             done, _ = wait(pending, timeout=wait_timeout, return_when=FIRST_COMPLETED)
+            raise_if_stock_cancelled()
             for fut in done:
                 pending.discard(fut)
                 _record(futures[fut], timed_out=False, out=fut.result())
@@ -878,6 +891,7 @@ def _execute_tools(
                 pending.discard(fut)
                 cancel_of[fut].set()
                 timeout_triggered = True
+                fut.cancel()
                 timeout_s = timeout_of.get(fut) or (tool_wait_timeout_seconds or 0.0)
                 logger.warning(
                     "Tool '%s' timed out after %.2fs at step %d",
@@ -885,6 +899,10 @@ def _execute_tools(
                 )
                 _record(futures[fut], timed_out=True, timeout_s=timeout_s)
     finally:
+        for fut, cancel_event in cancel_of.items():
+            if not fut.done():
+                cancel_event.set()
+                timeout_triggered = True
         # Do not wait when a timeout fired — the timed-out handler may still be
         # running in a worker and would otherwise block this call indefinitely.
         pool.shutdown(wait=not timeout_triggered, cancel_futures=True)

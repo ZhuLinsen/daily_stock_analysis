@@ -453,6 +453,12 @@ For the notification baseline, diagnostics, and deployment notes, see [Notificat
 | `LOG_DIR` | Log directory | `./logs` |
 | `SAVE_CONTEXT_SNAPSHOT` | Persist analysis-history `context_snapshot`. When false, new history records do not save enhanced_context, market_phase_summary, AnalysisContextPack overview, or diagnostic snapshots, but current-run prompt summaries remain enabled | `true` |
 
+Within the same process, a timed-out task holds its slot until its worker and any in-flight calls exit. Later batches share that capacity. Prefetching uses the same time limit and is skipped when all slots are busy. Other running stocks can finish within their own time limits. If all remaining stocks are queued, the batch skips them after waiting one per-stock timeout for a free slot. Cancellation cleans up local generation processes and is checked again after in-flight requests return. Setting `0` disables batch timeout isolation. Revert the corresponding code to undo changes to price checks, news handling, and risk summaries.
+
+When timeout isolation is enabled, LiteLLM requests use the remaining per-stock budget. Model fallback and parameter retries check the deadline before sending a request.
+
+The GitHub Actions daily analysis workflow reads the Variable first and then the Secret of the same name. Either source accepts `0` to disable isolation.
+
 > Timeout partial-delivery ops: a notification-channel exception is logged (`Partial timeout notification failed`) and skipped; it is not re-raised and cannot keep `status().running` true (notify runs on a daemon thread after the analysis lock is released). Storage import / collect failures also fail open: `status().last_error` may stay at the baseline `timed out after Ns` string, or be enriched to `completed=0`, which is indistinguishable from “nothing was saved”. Grep `Failed to collect completed analyses after timeout`, `Timeout partial delivery failed open`, and `Partial timeout notification failed`. After the first release, watch notification volume; set `DSA_TIMEOUT_PARTIAL_NOTIFY=false` to disable pushes.
 
 > Behavior notes:
@@ -1782,6 +1788,8 @@ A: Check if Actions is enabled, and if cron expression is correct (note it's UTC
 - Stock news search now applies a domain-agnostic admission filter after relevance ranking: obvious download/install/app-rating pages and adult/escort spam pages are removed, and zero-score filler results are dropped when the same batch already has direct-stock or scored sector/market candidates. This is not a hard-coded website blocklist.
 - This admission-filter change is isolated to retrieval post-filtering and does not alter model names, provider settings, Base URL, LiteLLM route semantics, or runtime config migration/cleanup behavior.
 - `get_realtime_quote` does not use `stock_daily` as a realtime-quote cache and does not write intraday quotes into the daily-bar table; realtime quote caching should use a dedicated realtime store if needed.
+
+Industry intelligence requests a 180-day window from the search provider. Actual recall depends on how the provider handles that request. The application applies its own date filter and relevance checks before merging copies with the same title and publication date. Undated results are marked as unsuitable for short-term catalyst evidence.
 
 ## Agent Event Monitor
 

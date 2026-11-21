@@ -35,18 +35,25 @@ def test_risk_summary_preserves_negated_substring_alerts() -> None:
     assert _risk_summary(result, dashboard) == ["无退市风险", "退市风险"]
 
 
-def test_risk_summary_preserves_alert_after_risk_was_resolved() -> None:
+@pytest.mark.parametrize("resolved, alert", [
+    ("目前不存在重大的退市风险", "退市风险"),
+    ("退市风险已解除", "退市风险"),
+    ("Delisting risk has been resolved", "Delisting risk"),
+    ("Delisting risk has been fully resolved", "Delisting risk"),
+    ("If delisting is announced, trading may be suspended", "trading may be suspended"),
+])
+def test_risk_summary_preserves_alert_alongside_qualified_risk(resolved, alert) -> None:
     result = AnalysisResult(
         code="600519",
         name="贵州茅台",
         sentiment_score=50,
         trend_prediction="未知",
         operation_advice="观望",
-        risk_warning="退市风险已解除",
+        risk_warning=resolved,
     )
-    dashboard = {"intelligence": {"risk_alerts": ["退市风险"]}}
+    dashboard = {"intelligence": {"risk_alerts": [alert]}}
 
-    assert _risk_summary(result, dashboard) == ["退市风险已解除", "退市风险"]
+    assert _risk_summary(result, dashboard) == [resolved, alert]
 
 
 @pytest.fixture()

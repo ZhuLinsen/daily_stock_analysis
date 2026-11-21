@@ -10,19 +10,16 @@ Tools:
 import logging
 
 from src.agent.news_evidence import record_news_evidence
-from src.agent.tools.execution import get_tool_stock_identity
+from src.agent.tools.execution import get_tool_stock_identity, is_tool_cancellation_requested
 from src.agent.tools.registry import ToolParameter, ToolDefinition, ToolPolicy
+from src.core.stock_execution_context import is_current_stock_cancelled
 
 logger = logging.getLogger(__name__)
 
 
 def _stock_run_cancelled() -> bool:
     """Avoid doing persistence work after the owning batch slot timed out."""
-    try:
-        from src.core.stock_execution_context import is_current_stock_cancelled
-        return is_current_stock_cancelled()
-    except Exception:
-        return False
+    return is_current_stock_cancelled() or is_tool_cancellation_requested()
 
 
 _NEWS_READ_POLICY = ToolPolicy.declared(
@@ -97,7 +94,10 @@ def _persist_news_response(
 
     code = _canonical_search_code(stock_code)
     try:
-        saved_count = _get_db().save_news_intel(
+        db = _get_db()
+        if _stock_run_cancelled():
+            return
+        saved_count = db.save_news_intel(
             code=code,
             name=stock_name,
             dimension=dimension,
@@ -128,6 +128,8 @@ def _handle_search_stock_news(stock_code: str, stock_name: str) -> dict:
     if not service.is_available:
         return {"error": "No search engine available (no API keys configured)"}
 
+    if _stock_run_cancelled():
+        return {"error": "Stock analysis timed out before searching news"}
     response = service.search_stock_news(query_code, query_name, max_results=5)
 
     if _stock_run_cancelled():
@@ -206,6 +208,8 @@ def _handle_search_comprehensive_intel(stock_code: str, stock_name: str) -> dict
     if not service.is_available:
         return {"error": "No search engine available (no API keys configured)"}
 
+    if _stock_run_cancelled():
+        return {"error": "Stock analysis timed out before searching intelligence"}
     intel_results = service.search_comprehensive_intel(
         stock_code=query_code,
         stock_name=query_name,

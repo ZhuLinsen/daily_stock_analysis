@@ -773,3 +773,55 @@ class TestSniperPriceSanityChecks(unittest.TestCase):
             result.dashboard["data_perspective"]["price_sanity"]["ideal_buy"],
             110.0,
         )
+
+    def test_grouped_currency_price_with_percentage_uses_full_amount(self) -> None:
+        from src.analyzer import validate_sniper_price_sanity
+
+        for ideal in (
+            "1,100 USD, 10% above spot",
+            "$1,100 (10% above spot)",
+            "1,100 (10% above spot)",
+            "1,100, 10% above spot",
+        ):
+            with self.subTest(ideal=ideal):
+                result = self._make_buy_result(
+                    ideal_buy=ideal, stop_loss="900 USD", take_profit="1,050 USD",
+                    current_price=950,
+                )
+                result.dashboard["battle_plan"]["sniper_points"]["secondary_buy"] = None
+                warnings = validate_sniper_price_sanity(result, emit_log=False)
+                sanity = result.dashboard["data_perspective"]["price_sanity"]
+                self.assertEqual(sanity["ideal_buy"], 1_100)
+                self.assertEqual(warnings, ["take_profit_below_ideal_buy"])
+
+    def test_sniper_price_overflow_keeps_validation_available(self) -> None:
+        from src.analyzer import validate_sniper_price_sanity
+
+        result = self._make_buy_result(ideal_buy=10 ** 400, stop_loss=90, take_profit=120)
+        result.dashboard["battle_plan"]["sniper_points"]["secondary_buy"] = 85
+
+        warnings = validate_sniper_price_sanity(result, emit_log=False)
+
+        self.assertEqual(warnings, ["stop_loss_above_secondary_buy"])
+        self.assertIsNone(result.dashboard["data_perspective"]["price_sanity"]["ideal_buy"])
+
+    def test_relative_sniper_price_uses_named_reference(self) -> None:
+        from src.analyzer import validate_sniper_price_sanity
+
+        for expression, expected in (
+            ("10% above MA20", 99.0),
+            ("10% above spot, MA20 nearby", 110.0),
+            ("10% below spot", 90.0),
+            ("MA20 下方 1%", 89.1),
+            ("10% above MA60", None),
+            ("10% above resistance, spot nearby", None),
+        ):
+            with self.subTest(expression=expression):
+                result = self._make_buy_result(
+                    ideal_buy=expression, stop_loss="89 USD", take_profit="105 USD",
+                    current_price=100,
+                )
+                validate_sniper_price_sanity(result, {"trend_result": {"ma20": 90}}, emit_log=False)
+                sanity = result.dashboard["data_perspective"]["price_sanity"]
+                self.assertEqual(sanity["ideal_buy"], expected)
+                self.assertEqual(sanity["inverted"], expected == 110.0)

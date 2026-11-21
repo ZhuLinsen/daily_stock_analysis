@@ -40,6 +40,7 @@ from src.config import (
     normalize_news_strategy_profile,
     resolve_news_window_days,
 )
+from src.core.stock_execution_context import get_current_stock_cancellation, raise_if_stock_cancelled
 from src.data.stock_mapping import (
     canonicalize_foreign_stock_code,
     foreign_stock_english_aliases,
@@ -2767,7 +2768,9 @@ class SearchService:
         the next reservation and the losers keep waiting on that new owner.
         """
         waited = False
+        stock_token = get_current_stock_cancellation()
         while True:
+            raise_if_stock_cancelled()
             cached, cache_owner, cache_event = self._get_cached_or_reserve(key)
             if cached is not None or cache_owner:
                 return cached, cache_owner, cache_event, waited
@@ -2777,6 +2780,8 @@ class SearchService:
             remaining = None if deadline is None else deadline - time.monotonic()
             if remaining is not None and remaining <= 0:
                 raise TimeoutError("题材新闻搜索等待超过调用截止时间")
+            if stock_token is not None:
+                remaining = min(remaining, 0.05) if remaining is not None else 0.05
             if remaining is None:
                 cached = self._wait_for_cached(key, cache_event)
             else:
@@ -3617,7 +3622,10 @@ class SearchService:
         now = datetime.now()
         local_tz = now.astimezone().tzinfo or timezone.utc
 
-        relative_date = cls._parse_relative_news_date(text, now)
+        try:
+            relative_date = cls._parse_relative_news_date(text, now)
+        except (OverflowError, ValueError):
+            relative_date = None
         if relative_date:
             return relative_date
 
@@ -3689,6 +3697,8 @@ class SearchService:
     def _dedup_title_key(title: Any) -> str:
         text = unicodedata.normalize("NFKC", str(title or "")).strip().casefold()
         text = text.replace("−", "-").replace("﹣", "-").replace("－", "-")
+        text = re.sub(r"([+-])\s+(?=\d|\.\d)", r"\1", text)
+        text = re.sub(r"(?<!\d)\.(?=\d)", "0.", text)
         if not text:
             return ""
         compact: List[str] = []
@@ -3724,22 +3734,26 @@ class SearchService:
             return response
 
         selected: List[SearchResult] = []
-        selected_indexes: Dict[str, int] = {}
+        selected_indexes: Dict[str, Dict[Optional[date], int]] = {}
         for item in response.results:
             key = self._dedup_title_key(item.title)
             if not key:
                 selected.append(item)
                 continue
 
-            previous_index = selected_indexes.get(key)
+            current_date = self._normalize_news_publish_date(item.published_date)
+            editions = selected_indexes.setdefault(key, {})
+            if current_date is None and editions and None not in editions:
+                # An undated copy cannot erase a dated edition.
+                continue
+            previous_date = current_date if current_date in editions else None
+            previous_index = editions.get(previous_date)
             if previous_index is None:
-                selected_indexes[key] = len(selected)
+                editions[current_date] = len(selected)
                 selected.append(item)
                 continue
 
             previous = selected[previous_index]
-            previous_date = self._normalize_news_publish_date(previous.published_date)
-            current_date = self._normalize_news_publish_date(item.published_date)
             previous_official = self._is_trusted_official_news_source(previous)
             current_official = self._is_trusted_official_news_source(item)
             previous_bad = (
@@ -3752,16 +3766,7 @@ class SearchService:
             )
             previous_score = previous.relevance_score or 0
             current_score = item.relevance_score or 0
-            # Distinct dated editions are distinct evidence, even when their
-            # headlines are identical (for example, weekly industry reports).
-            if previous_date is not None and current_date is not None and previous_date != current_date:
-                selected.append(item)
-                continue
             if current_bad and not previous_bad:
-                current_wins = False
-            elif previous_date is not None and current_date is None:
-                # A later official/clean undated copy must not erase dated
-                # evidence merely because its source is trusted.
                 current_wins = False
             elif previous_date is None and current_date is not None:
                 current_wins = not current_bad
@@ -3777,6 +3782,9 @@ class SearchService:
                 )
             if current_wins:
                 selected[previous_index] = item
+                if previous_date != current_date:
+                    del editions[previous_date]
+                    editions[current_date] = previous_index
 
         limited = selected[:max_results]
         if len(limited) == len(response.results):
@@ -3798,6 +3806,7 @@ class SearchService:
         max_results: int,
         log_scope: str,
         keep_unknown: bool = False,
+        deduplicate: bool = True,
     ) -> SearchResponse:
         """Hard-filter results by published_date recency and normalize date strings."""
         if not response.success or not response.results:
@@ -3860,10 +3869,11 @@ class SearchService:
             error_message=response.error_message,
             search_time=response.search_time,
         )
-        filtered_response = self._deduplicate_news_response(
-            filtered_response,
-            max_results=max_results,
-        )
+        if deduplicate:
+            filtered_response = self._deduplicate_news_response(
+                filtered_response,
+                max_results=max_results,
+            )
         filtered = filtered_response.results
 
         if dropped_unknown or dropped_old or dropped_future:
@@ -3880,14 +3890,7 @@ class SearchService:
                 latest.isoformat(),
             )
 
-        return SearchResponse(
-            query=response.query,
-            results=filtered,
-            provider=response.provider,
-            success=response.success,
-            error_message=response.error_message,
-            search_time=response.search_time,
-        )
+        return filtered_response
 
     def _normalize_and_limit_response(
         self,
@@ -4011,6 +4014,7 @@ class SearchService:
         had_provider_success = False
         try:
             for provider in self._providers:
+                raise_if_stock_cancelled()
                 if not provider.is_available:
                     continue
                 search_kwargs: Dict[str, Any] = {}
@@ -4039,32 +4043,39 @@ class SearchService:
                     logger.warning("%s 题材搜索失败: %s，尝试下一个引擎", provider.name, exc)
                     continue
 
+                raise_if_stock_cancelled()
                 had_provider_success = had_provider_success or bool(response.success)
                 filtered = self._filter_news_response(
                     response,
                     search_days=search_days,
                     max_results=provider_max_results,
                     log_scope=f"{topic_text}:{provider.name}:topic_news",
+                    deduplicate=False,
                 )
                 if filtered.success and filtered.results:
                     prioritized, _preferred_count = self._prioritize_news_language(
                         filtered,
                         prefer_chinese=prefer_chinese,
                     )
+                    prioritized = self._filter_ranked_news_for_context(
+                        prioritized,
+                        log_scope=f"{topic_text}:{provider.name}:topic_news",
+                    )
                     prioritized = self._deduplicate_news_response(
                         prioritized,
                         max_results=provider_max_results,
                     )
                     limited = self._limit_search_response(prioritized, max_results=max_results)
-                    self._record_news_search_run(
-                        provider=provider.name,
-                        operation="search_topic_news",
-                        success=True,
-                        latency_ms=self._elapsed_ms(started_at),
-                        record_count=len(limited.results or []),
-                    )
-                    self._put_cache(cache_key, limited)
-                    return limited
+                    if limited.results:
+                        self._record_news_search_run(
+                            provider=provider.name,
+                            operation="search_topic_news",
+                            success=True,
+                            latency_ms=self._elapsed_ms(started_at),
+                            record_count=len(limited.results),
+                        )
+                        self._put_cache(cache_key, limited)
+                        return limited
 
                 self._record_news_search_run(
                     provider=provider.name,
@@ -4256,6 +4267,7 @@ class SearchService:
             best_ranked_response: Optional[SearchResponse] = None
             best_ranked_stats: Optional[Dict[str, int]] = None
             for provider in self._providers:
+                raise_if_stock_cancelled()
                 if not provider.is_available:
                     continue
 
@@ -4288,11 +4300,13 @@ class SearchService:
                         error_message=exc,
                     )
                     raise
+                raise_if_stock_cancelled()
                 filtered_response = self._filter_news_response(
                     response,
                     search_days=search_days,
                     max_results=provider_max_results,
                     log_scope=f"{stock_code}:{provider.name}:stock_news",
+                    deduplicate=False,
                 )
                 had_provider_success = had_provider_success or bool(response.success)
 
@@ -4306,7 +4320,7 @@ class SearchService:
                         stock_code=stock_code,
                         stock_name=stock_name,
                         prefer_chinese=prefer_chinese,
-                        max_results=provider_max_results,
+                        max_results=len(language_response.results),
                         log_scope=f"{stock_code}:{provider.name}:stock_news",
                     )
                     admitted_response = self._filter_ranked_news_for_context(
@@ -4672,6 +4686,7 @@ class SearchService:
         for dim in search_dimensions:
             if search_count >= max_searches:
                 break
+            raise_if_stock_cancelled()
             
             # 选择搜索引擎（轮流使用）
             available_providers = [p for p in self._providers if p.is_available]
@@ -4707,11 +4722,13 @@ class SearchService:
                     max_results=provider_max_results,
                     days=request_days,
                 )
+            raise_if_stock_cancelled()
             if dim['strict_freshness']:
                 filtered_response = self._filter_news_response(
                     response,
                     search_days=search_days,
                     max_results=provider_max_results,
+                    deduplicate=False,
                     log_scope=f"{stock_code}:{provider.name}:{dim['name']}",
                 )
             elif dim['name'] in self.ANALYTICAL_INTEL_DIMENSIONS:
@@ -4720,20 +4737,21 @@ class SearchService:
                     search_days=self.ANALYTICAL_INTEL_LOOKBACK_DAYS,
                     max_results=provider_max_results,
                     keep_unknown=True,
+                    deduplicate=False,
                     log_scope=f"{stock_code}:{provider.name}:{dim['name']}",
                 )
             else:
                 filtered_response = self._normalize_and_limit_response(
                     response,
                     max_results=provider_max_results,
-                    deduplicate=dim["name"] != "industry",
+                    deduplicate=False,
                 )
             filtered_response = self._rank_news_response(
                 filtered_response,
                 stock_code=stock_code,
                 stock_name=stock_name,
                 prefer_chinese=self._should_prefer_chinese_news(stock_code, stock_name),
-                max_results=provider_max_results,
+                max_results=len(filtered_response.results),
                 log_scope=f"{stock_code}:{provider.name}:{dim['name']}:rank",
             )
             filtered_response = self._filter_ranked_news_for_context(

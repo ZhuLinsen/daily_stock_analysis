@@ -35,6 +35,7 @@ from src.services.stock_list_parser import (
     ParseStatus,
     parse_analysis_target,
 )
+from src.stock_analyzer import TrendAnalysisResult
 
 
 def _index_target(raw: str) -> AnalysisTarget:
@@ -417,6 +418,49 @@ class PipelineCapabilityMatrixTestCase(unittest.TestCase):
         pipeline._ensure_agent_history.assert_called_once_with(
             "csi930955", analysis_target=target
         )
+
+
+class PipelineSniperSanityTestCase(unittest.TestCase):
+    @patch("src.agent.factory.build_agent_executor")
+    def test_final_buy_action_checks_secondary_entry_before_history_save(self, build_executor) -> None:
+        build_executor.return_value.run.return_value.runtime_facts = None
+        for agent_mode in (False, True):
+            with self.subTest(agent_mode=agent_mode):
+                code = "sh000016"
+                pipeline = _analysis_pipeline(code, "上证50")
+                pipeline.config.agent_mode = agent_mode
+                pipeline.config.report_integrity_enabled = False
+                pipeline._refresh_decision_action_for_final_result = (
+                    StockAnalysisPipeline._refresh_decision_action_for_final_result
+                )
+                pipeline._ensure_agent_history = MagicMock()
+                pipeline._build_agent_analysis_artifacts = MagicMock()
+                pipeline._persist_skill_opinion_samples_after_history_save = MagicMock()
+                pipeline._filter_agent_tools_for_index = MagicMock(return_value=build_executor.return_value)
+                pipeline.db.get_data_range.return_value = [MagicMock(to_dict=lambda: {"close": 100})]
+                pipeline.trend_analyzer.analyze.return_value = TrendAnalysisResult(code=code, ma20=100)
+
+                analysis = _analysis_result(code, "上证50", None)
+                analysis.sentiment_score = 90
+                analysis.action = analysis.decision_type = "hold"
+                analysis.operation_advice = "持有"
+                analysis.dashboard = {"battle_plan": {"sniper_points": {
+                    "ideal_buy": "105", "secondary_buy": "5% below MA20",
+                    "stop_loss": "100", "take_profit": "120",
+                }}}
+                pipeline.analyzer.analyze.return_value = analysis
+                pipeline._agent_result_to_analysis_result = MagicMock(return_value=analysis)
+
+                result = pipeline.analyze_stock(
+                    code, ReportType.SIMPLE, "q-sniper-sanity", analysis_target=_index_target(code)
+                )
+
+                self.assertIs(result, analysis)
+                self.assertIs(pipeline.db.save_analysis_history.call_args.kwargs["result"], result)
+                self.assertEqual(result.action, "buy")
+                sanity = result.dashboard["data_perspective"]["price_sanity"]
+                self.assertEqual(sanity["secondary_buy"], 95)
+                self.assertEqual(sanity["warnings"], ["stop_loss_above_secondary_buy"])
 
 
 class PipelineDailySourceAttributionTestCase(unittest.TestCase):

@@ -102,6 +102,18 @@ class SearchNewsFreshnessTestCase(unittest.TestCase):
         self.assertIn('"影视传媒"', mock_search.call_args.args[0])
         self.assertEqual(mock_search.call_args.kwargs["days"], 3)
 
+    def test_topic_news_checks_quality_before_merging_same_day_titles(self) -> None:
+        today = datetime.now().date().isoformat()
+        service, _ = self._create_service_with_mock_provider(response=_response([
+            _result("影视传媒应用", today, snippet="官方版 安卓版 立即下载 52MB", url="https://example.com/app"),
+            _result("影视传媒动态", today, snippet="官方版 安卓版 立即下载 52MB", url="https://example.com/download"),
+            _result("影视传媒动态", today, snippet="板块近期出现新订单。", url="https://example.com/news"),
+        ]))
+
+        response = service.search_topic_news("影视传媒", max_results=1)
+
+        self.assertEqual([item.url for item in response.results], ["https://example.com/news"])
+
     def test_invalid_profile_falls_back_to_short(self) -> None:
         """Invalid profile should fallback to short (3 days)."""
         service, mock_search = self._create_service_with_mock_provider(
@@ -2539,14 +2551,19 @@ class SearchNewsFreshnessTestCase(unittest.TestCase):
         self.assertIn("[日期未知·勿作短期催化]", formatted)
 
         tomorrow = (today + timedelta(days=1)).isoformat()
+        in_three_days = (today + timedelta(days=3)).isoformat()
         future_resp = _response([
             _result("明日公告", tomorrow),
+            _result("三天后公告", in_three_days),
             _result("不可解析日期报道", "N/A"),
+            _result("超出日期范围的报道", "999999999999 days ago"),
         ])
         future_formatted = service.format_intel_report({"latest_news": future_resp}, "贵州茅台")
         self.assertIn(f"[{tomorrow} · 明日]", future_formatted)
         self.assertNotIn(f"[{tomorrow} · 今日]", future_formatted)
+        self.assertIn(f"[{in_three_days} · 3天后]", future_formatted)
         self.assertIn("[N/A · 日期未知·勿作短期催化]", future_formatted)
+        self.assertIn("[999999999999 days ago · 日期未知·勿作短期催化]", future_formatted)
 
     def test_title_dedup_keeps_direction_and_later_official_copy(self) -> None:
         """Dedup must not merge signed figures or hide a later official page."""
@@ -2606,6 +2623,55 @@ class SearchNewsFreshnessTestCase(unittest.TestCase):
             [item.published_date for item in response.results],
             [(today - timedelta(days=7)).isoformat(), today.isoformat()],
         )
+
+    def test_industry_admits_relevant_copies_before_title_dedup(self) -> None:
+        today = datetime.now().date().isoformat()
+        news = _response([
+            _result("白酒销量观察", None, snippet="贵州茅台销量继续增长", url="https://example.com/sales"),
+            _result("白酒销量观察", today, snippet="今天天气晴朗", url="https://example.com/weather"),
+            _result("贵州茅台产品销售公告", today),
+        ])
+        service, mock_search = self._create_service_with_mock_provider(response=news)
+        with patch("src.search_service.time.sleep"):
+            industry = service.search_comprehensive_intel("600519", "贵州茅台", max_searches=6)["industry"]
+
+        self.assertIn("https://example.com/sales", [item.url for item in industry.results])
+        self.assertNotIn("https://example.com/weather", [item.url for item in industry.results])
+        self.assertEqual(mock_search.call_args.kwargs["days"], service.ANALYTICAL_INTEL_LOOKBACK_DAYS)
+
+    def test_stock_news_admits_related_copy_before_merging_same_day_titles(self) -> None:
+        today = datetime.now().date().isoformat()
+        service, _ = self._create_service_with_mock_provider(response=_response([
+            _result("销量观察", today, snippet="今天天气晴朗", url="https://example.com/weather"),
+            _result("销量观察", today, snippet="贵州茅台 600519 销量增长", url="https://example.com/sales"),
+        ]))
+
+        response = service.search_stock_news("600519", "贵州茅台")
+
+        self.assertEqual([item.url for item in response.results], ["https://example.com/sales"])
+
+    def test_industry_keeps_all_dated_editions_when_intermediate_copies_repeat(self) -> None:
+        today = datetime.now().date()
+        dates = [(today - timedelta(days=days)).isoformat() for days in (90, 30, 0)]
+        news = _response([
+            _result("贵州茅台白酒行业周报", dates[edition], url=f"https://example.com/report/{index}")
+            for index, edition in enumerate([0, *([1] * 12), 2])
+        ])
+        service, _ = self._create_service_with_mock_provider(response=news)
+        with patch("src.search_service.time.sleep"):
+            industry = service.search_comprehensive_intel("600519", "贵州茅台", max_searches=6)["industry"]
+
+        self.assertEqual([item.published_date for item in industry.results], dates)
+
+    def test_comprehensive_intel_keeps_spaced_unicode_minus(self) -> None:
+        titles = ["贵州茅台 Q3净利同比5%", "贵州茅台 Q3净利同比− 5%", "贵州茅台 Q3净利同比−5%"]
+        today = datetime.now().date().isoformat()
+        news = _response([_result(title, today) for title in titles])
+        service, _ = self._create_service_with_mock_provider(response=news)
+        with patch("src.search_service.time.sleep"):
+            industry = service.search_comprehensive_intel("600519", "贵州茅台", max_searches=6)["industry"]
+
+        self.assertEqual([item.title for item in industry.results], titles[:2])
 
 
 if __name__ == "__main__":

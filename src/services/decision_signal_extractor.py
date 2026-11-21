@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 from typing import Any, Dict, Literal, Mapping, Optional
 
 from data_provider.base import normalize_stock_code
@@ -502,8 +503,14 @@ def _risk_items_duplicate(current: str, previous: str) -> bool:
     resolving_terms = ("解除", "已消除", "不存在", "没有", "无")
     if any(negation in prefix for negation in negations) or any(
         qualifier in prefix for qualifier in qualifiers
+    ) or re.search(
+        r"\b(?:if|unless|provided that|in case of)\b", prefix,
     ) or any(
         term in suffix for term in resolving_terms
+    ) or re.search(
+        r"^[\s:—–-]*(?:(?:has been|had been|is|was)\s+)?(?:(?:fully|already)\s+)?"
+        r"(?:resolved|eliminated|removed|lifted|cleared|ruled out|no longer (?:present|exists|applies))\b",
+        suffix,
     ):
         return False
     return True
