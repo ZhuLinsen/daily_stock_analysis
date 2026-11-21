@@ -874,6 +874,30 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertFalse(payload["llm_yaml_active"])
         self.assertIn("LITELLM_CONFIG", {item["key"] for item in payload["items"]})
 
+    def test_empty_litellm_yaml_entries_fall_back_to_llm_channels_consistently(self) -> None:
+        yaml_path = Path(self.temp_dir.name) / "empty-entry-litellm.yaml"
+        yaml_path.write_text(
+            "model_list:\n  - {}\n  - litellm_params: {}\n",
+            encoding="utf-8",
+        )
+        self._rewrite_env(
+            "STOCK_LIST=600519",
+            f"LITELLM_CONFIG={yaml_path}",
+            "LLM_CHANNELS=fallback",
+            "LLM_FALLBACK_PROTOCOL=openai",
+            "LLM_FALLBACK_API_KEY=sk-fallback",
+            "LLM_FALLBACK_MODELS=openai/fallback-model",
+        )
+
+        with patch.dict(os.environ, {"ENV_FILE": str(self.env_path)}, clear=True):
+            Config.reset_instance()
+            runtime_cfg = Config.get_instance()
+            payload = self.service.get_config(include_schema=True)
+
+        self.assertFalse(payload["llm_yaml_active"])
+        self.assertEqual(runtime_cfg.llm_models_source, "llm_channels")
+        self.assertEqual(runtime_cfg.litellm_model, "openai/fallback-model")
+
     def test_get_config_runtime_env_fallback_does_not_persist_llm_fields_on_save(self) -> None:
         self._rewrite_env(
             "STOCK_LIST=600519",
