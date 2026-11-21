@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [新功能] Web 与桌面端已保存个股报告的策略点位区新增按需价格点位图，展示近 60 个交易日、MA5/MA20 及可解析的狙击点位参考线。
 - [chore] 仓库协作 skill 迁至 `.agents/skills/` 并保留 `.claude/skills/` 同步副本兼容 Claude Code，重构 `analyze-pr` 审查规范（文件覆盖账本、14 维影响面清单与不可逆变更约束），精简 `AGENTS.md`、PR 模板与 `ai-governance` 校验脚本，本地审查产物默认直接对话输出（可选 `.reviews/`）。
 - [修复] Agent 工具返回顶层错误或显式 `success: false` 时，进度事件与调用轨迹正确标记失败，并与非重试错误缓存命中保持一致；保留成功空结果、原始工具返回内容及最终回复语义。
 - [新功能] 飞书 Webhook 和 App Bot 交互卡片显示报告标题、信号配色及独立风险警报面板，可通过 `FEISHU_CARD_WEB_URL` 或 `DSA_WEB_URL` 添加 Web 工作台按钮。两种发送模式均按完整请求体字节数分页。

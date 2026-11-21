@@ -25,6 +25,7 @@ interface ReportPriceLevelsChartProps {
   failed?: boolean;
   strategy?: ReportStrategy;
   language?: ReportLanguage;
+  reportCurrentPrice?: number;
   onRetry?: () => void;
 }
 
@@ -54,15 +55,29 @@ export const ReportPriceLevelsChart: React.FC<ReportPriceLevelsChartProps> = ({
   failed = false,
   strategy,
   language = 'zh',
+  reportCurrentPrice,
   onRetry,
 }) => {
   const text = getReportText(language).priceLevelsChart;
   const data = useMemo(() => enrichBarsWithMovingAverages(bars, 60), [bars]);
 
-  const idealBuy = parseStrategyPriceLevel(strategy?.idealBuy);
-  const secondaryBuy = parseStrategyPriceLevel(strategy?.secondaryBuy);
-  const stopLoss = parseStrategyPriceLevel(strategy?.stopLoss);
-  const takeProfit = parseStrategyPriceLevel(strategy?.takeProfit);
+  const rawLevels = [
+    parseStrategyPriceLevel(strategy?.idealBuy),
+    parseStrategyPriceLevel(strategy?.secondaryBuy),
+    parseStrategyPriceLevel(strategy?.stopLoss),
+    parseStrategyPriceLevel(strategy?.takeProfit),
+  ];
+  const priceScaleMismatch = useMemo(() => {
+    if (reportCurrentPrice == null || !Number.isFinite(reportCurrentPrice) || reportCurrentPrice <= 0 || data.length === 0) {
+      return false;
+    }
+    const latestClose = data[data.length - 1].close;
+    const scaleRatio = reportCurrentPrice / latestClose;
+    return scaleRatio > 2 || scaleRatio < 0.5;
+  }, [data, reportCurrentPrice]);
+  const [idealBuy, secondaryBuy, stopLoss, takeProfit] = priceScaleMismatch
+    ? [null, null, null, null]
+    : rawLevels;
 
   const yDomain = useMemo<[number, number]>(() => {
     const vals: number[] = [];
@@ -78,7 +93,7 @@ export const ReportPriceLevelsChart: React.FC<ReportPriceLevelsChartProps> = ({
     const minVal = Math.min(...vals);
     const maxVal = Math.max(...vals);
     const pad = Math.max((maxVal - minVal) * 0.06, minVal * 0.01);
-    return [Number((minVal - pad).toFixed(2)), Number((maxVal + pad).toFixed(2))];
+    return [minVal - pad, maxVal + pad];
   }, [data, idealBuy, secondaryBuy, stopLoss, takeProfit]);
 
   if (failed || data.length === 0) {
@@ -132,6 +147,11 @@ export const ReportPriceLevelsChart: React.FC<ReportPriceLevelsChartProps> = ({
           {data[0].date} ~ {latest.date} ({data.length}D)
         </span>
       </div>
+      {priceScaleMismatch ? (
+        <p role="status" className="mb-2 rounded border border-amber-500/30 bg-amber-500/5 px-2 py-1 text-[11px] text-amber-600">
+          {text.priceScaleMismatch}
+        </p>
+      ) : null}
 
       <div className="h-[220px] w-full">
         <ResponsiveContainer width="100%" height="100%">

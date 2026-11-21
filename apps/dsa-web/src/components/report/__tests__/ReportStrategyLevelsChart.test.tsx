@@ -71,6 +71,25 @@ describe('ReportStrategy Levels Chart', () => {
     expect(mockGetStockHistory).toHaveBeenCalledTimes(1);
   });
 
+  it('passes the saved report price to the chart scale guard', async () => {
+    mockGetStockHistory.mockResolvedValue({
+      data: [{ date: '2026-11-20', open: 19, high: 21, low: 18, close: 20 }],
+    });
+
+    render(
+      <ReportStrategy
+        recordId={78}
+        stockCode="TSLA"
+        currentPrice={100}
+        strategy={{ idealBuy: '95', stopLoss: '80', takeProfit: '120' }}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '价格点位图' }));
+    expect(await screen.findByText('报告点位与当前行情价格口径不一致，暂不叠加参考线。')).toBeInTheDocument();
+    expect(screen.queryByTestId(/^ref-line-/)).not.toBeInTheDocument();
+  });
+
   it('isolates chart state and discards stale responses when switching reports', async () => {
     let resolveTsla!: (v: unknown) => void;
     mockGetStockHistory.mockImplementation((code: string) => {

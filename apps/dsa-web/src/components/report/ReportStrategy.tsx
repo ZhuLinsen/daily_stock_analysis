@@ -37,6 +37,7 @@ interface ReportStrategyProps {
   language?: ReportLanguage;
   recordId?: number;
   stockCode?: string;
+  currentPrice?: number;
 }
 
 interface ChartState {
@@ -81,6 +82,7 @@ export const ReportStrategy: React.FC<ReportStrategyProps> = ({
   language = 'zh',
   recordId,
   stockCode,
+  currentPrice,
 }) => {
   const symbol = stockCode?.trim();
   const reportKey = `${recordId ?? 0}:${symbol?.toUpperCase() ?? ''}`;
@@ -218,6 +220,7 @@ export const ReportStrategy: React.FC<ReportStrategyProps> = ({
               failed={chartFailed}
               strategy={strategy}
               language={reportLanguage}
+              reportCurrentPrice={currentPrice}
               onRetry={() => void fetchChartBars()}
             />
           </Suspense>

@@ -120,6 +120,25 @@ describe('ReportPriceLevelsChart helpers & component', () => {
     expect(parseStrategyPriceLevel('손절: 매수가 대비 5 퍼센트 하락')).toBeNull();
     expect(parseStrategyPriceLevel('止损：RSI低于30且价格跌破48元时退出')).toBe(48);
     expect(parseStrategyPriceLevel('Stop-loss: if RSI drops below 30, exit at $48')).toBe(48);
+    expect(parseStrategyPriceLevel('等待收复5及20日均线后再评估')).toBeNull();
+    expect(parseStrategyPriceLevel('等待收复20日均线一带（52.68元）后再评估')).toBeNull();
+    expect(parseStrategyPriceLevel('Reward-to-risk 2 to 1, take profit at $60')).toBe(60);
+    expect(parseStrategyPriceLevel('当前价格：为50元，止损设在48元')).toBe(48);
+    expect(parseStrategyPriceLevel('Stop-loss: below the 20/11/2026 low at $48')).toBe(48);
+    expect(parseStrategyPriceLevel('Ideal buy: 48, 20-day moving-average confirmation required')).toBe(48);
+    expect(parseStrategyPriceLevel('Stop loss: 48, 20-day moving-average confirmation required')).toBe(48);
+    expect(parseStrategyPriceLevel('理想买入：48，20日均线企稳后执行')).toBe(48);
+    expect(parseStrategyPriceLevel('止损：2次日线收盘低于48元')).toBe(48);
+    expect(parseStrategyPriceLevel('Stop loss: after 2 daily closes below $48')).toBe(48);
+    expect(parseStrategyPriceLevel('8-9美元')).toBe(8);
+    expect(parseStrategyPriceLevel('止盈目标：8/9美元')).toBe(8);
+    expect(parseStrategyPriceLevel('止盈目标：150.5,160港元')).toBe(150.5);
+    expect(parseStrategyPriceLevel('止盈目标：1，480元')).toBe(1480);
+    expect(parseStrategyPriceLevel('止损：较买入价下跌百分之5')).toBeNull();
+    expect(parseStrategyPriceLevel('止损：若RSI高于70且价格跌破48元则退出')).toBe(48);
+    expect(parseStrategyPriceLevel('Take profit when RSI rises above 70 and price reaches $60')).toBe(60);
+    expect(parseStrategyPriceLevel('Ideal buy: $.50')).toBe(0.5);
+    expect(parseStrategyPriceLevel('Stop loss: if price falls below 50¢')).toBe(0.5);
     expect(parseStrategyPriceLevel('+12%')).toBeNull();
     expect(parseStrategyPriceLevel('-2.5')).toBeNull();
   });
@@ -136,6 +155,19 @@ describe('ReportPriceLevelsChart helpers & component', () => {
     expect(capped).toHaveLength(60);
     expect(capped[0]).toMatchObject({ date: bars[27].date, ma5: 125, ma20: 117.5 });
     expect(capped[59].date).toBe(bars[86].date);
+  });
+
+  it('preserves sub-cent moving-average precision', () => {
+    const bars = Array.from({ length: 20 }, (_, i) => ({
+      date: `2026-01-${String(i + 1).padStart(2, '0')}`,
+      open: 0.0056,
+      high: 0.0056,
+      low: 0.0056,
+      close: 0.0056,
+    }));
+    const last = enrichBarsWithMovingAverages(bars).at(-1);
+    expect(last?.ma5).toBeCloseTo(0.0056, 10);
+    expect(last?.ma20).toBeCloseTo(0.0056, 10);
   });
 
   it('renders close, secondaryBuy, and sniper reference lines or empty retry button gracefully', () => {
@@ -209,5 +241,18 @@ describe('ReportPriceLevelsChart helpers & component', () => {
     expect(screen.getByTestId('ref-line-215')).toHaveTextContent('추가 매수 215');
     expect(screen.getByTestId('ref-line-200')).toHaveTextContent('손절 200');
     expect(screen.getByTestId('ref-line-260')).toHaveTextContent('목표 260');
+  });
+
+  it('does not overlay saved levels when the report and current bars use different price scales', () => {
+    render(
+      <ReportPriceLevelsChart
+        bars={[{ date: '2026-11-20', open: 19, high: 21, low: 18, close: 20 }]}
+        strategy={{ idealBuy: '95', stopLoss: '80', takeProfit: '120' }}
+        reportCurrentPrice={100}
+      />,
+    );
+
+    expect(screen.getByRole('status')).toHaveTextContent('价格口径不一致');
+    expect(screen.queryByTestId(/^ref-line-/)).not.toBeInTheDocument();
   });
 });
