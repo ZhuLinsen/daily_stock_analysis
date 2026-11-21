@@ -138,6 +138,7 @@ class HiThinkFetcher(BaseFetcher):
         self._daily_disabled_until = 0.0
         self._realtime_disabled_until = 0.0
         self._fundamental_disabled_until = 0.0
+        self._financial_path_disabled_until: Dict[str, float] = {}
         self._valuation_disabled_until = 0.0
         self._rank_disabled_until = 0.0
         self._index_daily_disabled_until = 0.0
@@ -237,6 +238,7 @@ class HiThinkFetcher(BaseFetcher):
         directory_only: bool = False,
         hot_stocks_only: bool = False,
         limit_up_only: bool = False,
+        financial_path: Optional[str] = None,
     ) -> None:
         with self._lock:
             self._last_error = message
@@ -265,6 +267,8 @@ class HiThinkFetcher(BaseFetcher):
                 self._hot_stocks_disabled_until = deadline
             if limit_up_only:
                 self._limit_up_disabled_until = deadline
+            if financial_path:
+                self._financial_path_disabled_until[financial_path] = deadline
 
     def _mark_success(self) -> None:
         with self._lock:
@@ -310,6 +314,8 @@ class HiThinkFetcher(BaseFetcher):
         resolved_capability = self._request_capability(path) if capability is None else capability
         if not self.is_available_for_request(resolved_capability):
             raise DataFetchError("HiThink is cooling down after an authentication or rate-limit failure")
+        if path.startswith("/api/a-share/financials/") and not self._financial_path_available(path):
+            raise DataFetchError("HiThink financial endpoint is cooling down after a permission failure")
 
         url = f"{_BASE_URL}{path}"
         headers = {"X-api-key": self.api_key, "Accept": "application/json"}
@@ -433,7 +439,11 @@ class HiThinkFetcher(BaseFetcher):
             self._remember_error(message, realtime_only=True)
         elif capability == "valuation" or path.startswith("/api/a-share/valuations/"):
             self._remember_error(message, valuation_only=True)
-        elif capability == "fundamental" or path.startswith("/api/a-share/financials/"):
+        elif path.startswith("/api/a-share/financials/"):
+            # 2003 is per endpoint. A denied balance sheet must not cool the
+            # cash-flow statement or indicators the same key can still call.
+            self._remember_error(message, financial_path=path)
+        elif capability == "fundamental":
             self._remember_error(message, fundamental_only=True)
         elif capability == "stock_list" or path.startswith("/api/meta/tickers/"):
             self._remember_error(message, directory_only=True)
@@ -540,12 +550,33 @@ class HiThinkFetcher(BaseFetcher):
             and bool(frame["date"].notna().any())
         )
 
-    @staticmethod
-    def _daily_dates(frame: pd.DataFrame) -> List[str]:
-        if not HiThinkFetcher._has_daily_rows(frame):
+    def _financial_path_available(self, path: str) -> bool:
+        with self._lock:
+            return time.monotonic() >= self._financial_path_disabled_until.get(path, 0.0)
+
+    def _usable_daily_dates(self, frame: pd.DataFrame) -> List[str]:
+        """Dates that survive the same cleaning as ``_normalize_data``.
+
+        A row with a date but a zero close is dropped before indicators run.
+        Counting it as coverage would reuse the hole on the next read.
+        """
+        if not self._has_daily_rows(frame):
             return []
-        parsed = pd.to_datetime(frame["date"], errors="coerce").dropna()
-        return sorted({value.strftime("%Y-%m-%d") for value in parsed})
+        parsed = pd.to_datetime(frame["date"], errors="coerce")
+        working = pd.DataFrame({
+            "date": parsed.dt.strftime("%Y-%m-%d"),
+            "open": pd.to_numeric(frame.get("open_price"), errors="coerce"),
+            "high": pd.to_numeric(frame.get("high_price"), errors="coerce"),
+            "low": pd.to_numeric(frame.get("low_price"), errors="coerce"),
+            "close": pd.to_numeric(frame.get("close_price"), errors="coerce"),
+            "volume": pd.to_numeric(frame.get("volume"), errors="coerce"),
+        })
+        working.loc[parsed.isna(), "date"] = pd.NA
+        for column in ("open", "high", "low", "close", "volume"):
+            working[column] = working[column].replace([math.inf, -math.inf], pd.NA)
+        working = working.dropna(subset=["date", "open", "high", "low", "close", "volume"])
+        working = working[(working["close"] > 0) & (working["volume"] >= 0)]
+        return sorted(set(working["date"].tolist()))
 
     @staticmethod
     def _only_weekend(first: datetime, last: datetime) -> bool:
@@ -613,7 +644,7 @@ class HiThinkFetcher(BaseFetcher):
         # requested window can be reused. A non-empty partial payload is not
         # either: recording the caller's start and end would let a later read
         # reuse a handful of bars as the whole window.
-        dates = self._daily_dates(frame)
+        dates = self._usable_daily_dates(frame)
         if not dates or end_date < start_date:
             return False
         if self._covers_requested_window(dates, start_date, end_date):

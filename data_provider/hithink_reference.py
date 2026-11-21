@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
-from .hithink_fetcher import HiThinkFetcher, HiThinkRequestError
+from .hithink_fetcher import DataFetchError, HiThinkFetcher, HiThinkRequestError
 
 logger = logging.getLogger(__name__)
 
@@ -145,7 +145,7 @@ def _fill_hot_prices(fetcher: HiThinkFetcher, rows: List[Dict[str, Any]]) -> Non
             continue
         try:
             payload = fetcher._request("/api/a-share/prices/snapshot", {"thscodes": ",".join(symbols)})
-        except HiThinkRequestError as exc:
+        except (HiThinkRequestError, DataFetchError) as exc:
             logger.info("[HiThinkFetcher] hot-stock snapshot skipped: %s", exc)
             return
         data = payload.get("data") or {}

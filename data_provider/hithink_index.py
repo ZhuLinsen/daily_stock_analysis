@@ -64,6 +64,15 @@ def main_indices(fetcher: HiThinkFetcher, region: str = "cn") -> Optional[List[D
         prev_close = fetcher_number(item.get("prev_price"))
         high = fetcher_number(item.get("high_price"))
         low = fetcher_number(item.get("low_price"))
+        change = fetcher_number(item.get("price_change"))
+        change_pct = fetcher_number(item.get("price_change_ratio_pct"))
+        if prev_close and prev_close > 0:
+            if change is None:
+                change = price - prev_close
+            if change_pct is None:
+                change_pct = (price - prev_close) / prev_close * 100
+        if change_pct is None:
+            continue
         amplitude = None
         if prev_close and prev_close > 0 and high is not None and low is not None:
             amplitude = (high - low) / prev_close * 100
@@ -72,8 +81,8 @@ def main_indices(fetcher: HiThinkFetcher, region: str = "cn") -> Optional[List[D
             "code": code,
             "name": name,
             "current": price,
-            "change": fetcher_number(item.get("price_change")),
-            "change_pct": fetcher_number(item.get("price_change_ratio_pct")),
+            "change": change,
+            "change_pct": change_pct,
             "open": fetcher_number(item.get("open_price")),
             "high": high,
             "low": low,

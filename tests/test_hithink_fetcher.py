@@ -504,6 +504,50 @@ class HiThinkFetcherTests(unittest.TestCase):
         self.assertEqual(list(cached_weekend["date"].dt.strftime("%Y-%m-%d")), ["2024-01-05", "2024-01-08"])
         self.assertEqual(request.call_count, 3)
 
+    def test_zero_close_does_not_cover_the_prefetched_window(self) -> None:
+        fetcher = self._fetcher()
+        manager = DataFetcherManager(fetchers=[fetcher])
+        batch = {
+            "code": 0,
+            "message": "success",
+            "data": {
+                "interval": "1d",
+                "adjust": "none",
+                "item": [{
+                    "thscode": "600519.SH",
+                    "timestamp": _ms(2024, 1, 4),
+                    "item": [
+                        _bar(2024, 1, 2, 10),
+                        _bar(2024, 1, 3, 0),
+                        _bar(2024, 1, 4, 12),
+                    ],
+                }],
+            },
+        }
+        complete = _history(_bar(2024, 1, 2, 10), _bar(2024, 1, 3, 11), _bar(2024, 1, 4, 12))
+
+        with patch(
+            "data_provider.hithink_fetcher.requests.get",
+            side_effect=[_response(batch), _response(complete)],
+        ) as request:
+            cached = fetcher.prefetch_daily_klines(
+                ["600519"],
+                start_date="2024-01-02",
+                end_date="2024-01-04",
+            )
+            frame, source = manager.get_daily_data(
+                "600519",
+                start_date="2024-01-02",
+                end_date="2024-01-04",
+            )
+
+        self.assertEqual(cached, 1)
+        self.assertEqual(source, "HiThinkFetcher")
+        self.assertEqual(list(frame["date"].dt.strftime("%Y-%m-%d")), ["2024-01-02", "2024-01-03", "2024-01-04"])
+        self.assertEqual(request.call_count, 2)
+        self.assertIn("historical-batch", request.call_args_list[0].args[0])
+        self.assertTrue(request.call_args_list[1].args[0].endswith("/historical"))
+
     def test_batch_adjustment_or_interval_mismatch_is_not_cached(self) -> None:
         mismatched = {
             "code": 0,

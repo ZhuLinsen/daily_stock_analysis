@@ -218,6 +218,8 @@ class HiThinkFundamentalAdapter:
     def _latest_statement(self, path: str, thscode: str, result: Dict[str, Any]) -> Dict[str, Any]:
         if not self.fetcher.is_available("fundamental") or self._budget_exhausted(result):
             return {}
+        if not self.fetcher._financial_path_available(path):
+            return {}
         try:
             payload = self.fetcher._request(
                 path,
@@ -226,7 +228,7 @@ class HiThinkFundamentalAdapter:
             )
             return _latest_item(payload)
         except HiThinkRequestError as exc:
-            _remember_permission(self.fetcher, exc)
+            _remember_permission(self.fetcher, exc, financial_path=path)
             logger.warning("[HiThinkFetcher] financial statement failed: path=%s code=%s", path, exc.code)
             result["errors"].append(f"{path}:{exc.code or type(exc).__name__}")
             return {}
@@ -240,6 +242,8 @@ class HiThinkFundamentalAdapter:
     def _indicators(self, thscode: str, report: str, result: Dict[str, Any]) -> Dict[str, Optional[float]]:
         if not self.fetcher.is_available("fundamental") or self._budget_exhausted(result):
             return {}
+        if not self.fetcher._financial_path_available(_INDICATORS_PATH):
+            return {}
         try:
             payload = self.fetcher._request(
                 _INDICATORS_PATH,
@@ -247,7 +251,7 @@ class HiThinkFundamentalAdapter:
                 capability="fundamental",
             )
         except HiThinkRequestError as exc:
-            _remember_permission(self.fetcher, exc)
+            _remember_permission(self.fetcher, exc, financial_path=_INDICATORS_PATH)
             logger.warning("[HiThinkFetcher] financial indicators failed: code=%s", exc.code)
             result["errors"].append(f"indicators:{exc.code or type(exc).__name__}")
             return {}
@@ -383,10 +387,14 @@ def _remember_permission(
     exc: HiThinkRequestError,
     *,
     valuation_only: bool = False,
+    financial_path: Optional[str] = None,
 ) -> None:
     if not exc.permission:
         return
     if valuation_only:
         fetcher._remember_error(str(exc), valuation_only=True)
+        return
+    if financial_path:
+        fetcher._remember_error(str(exc), financial_path=financial_path)
         return
     fetcher._remember_error(str(exc), fundamental_only=True)
