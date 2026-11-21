@@ -1,46 +1,79 @@
-<!-- 可用中文或英文填写。Use Chinese or English. Keep the details relevant to this PR. -->
+<!--
+For Chinese contributors: 请直接用中文填写。
+For English contributors: please fill in English.
+-->
 
 ## PR Type
 
-<!-- fix / feat / perf / refactor / docs / test / ci / chore -->
+- [ ] fix
+- [ ] feat
+- [ ] refactor
+- [ ] docs
+- [ ] chore
+- [ ] test
+- [ ] ci
 
 ## Background And Problem
 
-<!-- 谁在什么场景遇到什么问题？为什么值得做？ / Who is affected, what happens today, and why is this change useful? -->
+描述当前问题现象、触发条件、关联 Issue（`Fixes #xxx` / `Refs #xxx`，无 Issue 时写动机与验收标准）以及根因定位（`path:line`）。
 
 ## Scope Of Change
 
-<!-- 按独立改动说明改前、改后和原因，列出涉及的模块或文件。治理改动说明影响哪份规则及其执行入口。 / Describe each change, its previous and new behavior, and the modules or files involved. -->
+按实际 `git diff` 列出改动（区分**新增文件**与**修改的既有运行时文件**，避免描述与实际 diff 不一致）：
 
-## Issue Link
+- 文件总数 / 变更行数：
+- 新增文件：
+- 修改的既有运行时文件：
+- 文档更新（`docs/*` / `docs/CHANGELOG.md`）：
 
-<!-- Fixes #... / Refs #...。无 Issue 时说明动机和验收标准。 / Without an issue, give the motivation and acceptance criteria. -->
+## Behavior Changes (Before vs After)
 
-## User Impact
+| 场景 / 输入 | 改前行为 | 改后行为 | 谁会感知（配置/渠道/页面） |
+|---|---|---|---|
+|  |  |  |  |
 
-<!-- Web 和 Desktop 界面或交互、报告内容或版式、通知展示有何变化？说明受影响的 CLI/API、配置或部署入口、默认是否启用、旧用户是否需要操作。 / Describe visible Web/Desktop, report and notification changes, affected CLI/API/configuration, defaults, and any steps for existing users. -->
+## Config / API / UI Impact
+
+- **环境变量 / `.env` 配置变更**（无则写 `无`；有则逐项列键名、默认值、不配置时行为，并确认 `.env.example` / docs / Web 设置页 / Actions 同步情况）：
+- **API / Schema / CLI 变更**（无则写 `无`；有则写字段/参数变化与 Web/Desktop 兼容情况）：
+- **第三方模型 / API 兼容变更**（如涉及，附官方来源链接、锁定依赖兼容窗口、是否改写旧配置；否则写 `不适用`）：
 
 ## Verification Commands And Results
 
-<!-- 列出实际运行的命令、关键结果和未验证项。给出当前 Head 的 CI 链接，说明适用的 ai-governance / backend-gate / docker-build / web-gate 等检查是通过、失败、待完成或按路径跳过。 / Link current-head CI and distinguish passed, failed, pending and path-skipped jobs from local verification. -->
+贴实际执行的命令与关键结果，并与当前 Head CI 保持一致：
+
+- 当前 Head CI：`ai-governance: pass/fail` | `backend-gate: pass/fail` | `docker-build: pass/fail/skipped` | `web-gate: pass/fail/skipped`（附链接）
+- 本地验证命令与结果（如有环境差异请注明）：
 
 ## Visual Evidence (if applicable)
 
-<!-- 涉及 Web / Desktop 界面、设置字段或报告/通知渲染时，附对应页面或报告截图，最好包含前后对比。写明页面、状态、Head 和证据链接。可用评论附件或 Actions artifact；无法截图时给原因、复现步骤和可查看的替代产物。一次性证据放在 PR 或 CI 中。纯内部改动说明为何不适用。 / For visible changes, link screenshots or before/after images for the specific state. If unavailable, explain why and provide reproducible alternative evidence. -->
+若修改了报告格式、报告渲染、通知卡片或 Web/Desktop UI 界面，请附受影响页面/报告截图（涉及前后差异优先附前后对比；勿将一次性截图作为仓库文件提交）。无法截图时写明原因与可复现替代证据（如 Playwright 命令与 Actions artifact 链接）。
 
-## Compatibility And Risk
+- 截图 / 产物链接：
 
-<!-- 写明受影响的数据与回退路径。涉及第三方模型、API、路由、固定参数或依赖版本时，引用官方依据，说明锁定版本和已验证调用链。配置保存/迁移需说明对旧配置的处理。 / Cover relevant data, fallback, upstream contracts, verified dependency versions and migration behavior. -->
+## Irreversible Changes And Recovery (if applicable)
 
-## Rollback Plan
+仅当涉及**数据库/持久化格式变更、运行时配置自动改写/迁移、外部系统状态写入（自选/账本/通知）、或发布策略变化**时，写明旧数据/旧配置如何处理及恢复方式；纯代码变更直接写 `无`。
 
-<!-- 给出可执行的最小回滚步骤，包括必要的配置、数据或工作流处理。 / Give actionable rollback steps, including configuration or data recovery where applicable. -->
+- 
 
 ## EXTRACT_PROMPT Change (if applicable)
 
-<!-- 若改动 src/services/image_stock_extractor.py 的 EXTRACT_PROMPT，请附完整最新 prompt。 / Include the full updated EXTRACT_PROMPT when changed. -->
+若修改了 `src/services/image_stock_extractor.py` 中的 `EXTRACT_PROMPT`，请粘贴完整最新 prompt：
+
+<details>
+<summary>展开 / Expand: Full EXTRACT_PROMPT</summary>
+
+```
+(paste full prompt here)
+```
+
+</details>
 
 ## Checklist
 
-- [ ] PR 标题和标签能准确描述变更，供发布说明自动汇总。 / The PR title and labels describe the change for generated release notes.
-- [ ] 已更新受影响的使用文档，说明必要的升级操作。 / Affected usage docs and required upgrade steps are covered.
+- [ ] PR 描述与实际 `git diff` 完全一致
+- [ ] 已说明行为变化与配置/API/UI/报告/通知影响面
+- [ ] 已提供可复现的验证命令与当前 Head CI 结论
+- [ ] 若修改报告/通知/Web UI，已附截图或可复现替代可视证据，且未将临时截图提交入库
+- [ ] 若涉及用户可见变更，已同步相关 `docs/*.md` 与 `docs/CHANGELOG.md`（`[Unreleased]` 扁平格式）

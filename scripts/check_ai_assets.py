@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -12,7 +13,9 @@ AGENTS = ROOT / "AGENTS.md"
 CLAUDE = ROOT / "CLAUDE.md"
 COPILOT = ROOT / ".github" / "copilot-instructions.md"
 INSTRUCTIONS_DIR = ROOT / ".github" / "instructions"
-CLAUDE_SKILLS_DIR = ROOT / ".claude" / "skills"
+SKILLS_DIR = ROOT / ".agents" / "skills"
+CLAUDE_SKILLS_LINK = ROOT / ".claude" / "skills"
+CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 
 REQUIRED_INSTRUCTION_FILES = {
     "backend.instructions.md",
@@ -20,17 +23,25 @@ REQUIRED_INSTRUCTION_FILES = {
     "governance.instructions.md",
 }
 
-REQUIRED_SKILL_FILES = {
-    "README.md",
-    "analyze-issue/SKILL.md",
-    "analyze-pr/SKILL.md",
-    "fix-issue/SKILL.md",
-}
+REQUIRED_SKILLS = (
+    "analyze-issue",
+    "analyze-pr",
+    "fix-issue",
+)
 
 REQUIRED_GITIGNORE_SNIPPETS = (
     ".claude/*",
-    "!.claude/skills/",
-    "!.claude/skills/**",
+    "!.claude/skills",
+    ".reviews/",
+)
+
+REQUIRED_CI_JOBS_IN_AGENTS = (
+    "ai-governance",
+    "backend-gate",
+    "docker-build",
+    "web-gate",
+    "desktop-futu-package-windows",
+    "desktop-futu-package-macos",
 )
 
 
@@ -44,16 +55,40 @@ def ensure_file_exists(path: Path, description: str) -> None:
         fail(f"{description} is missing: {path.relative_to(ROOT)}")
 
 
-def ensure_symlink() -> None:
-    ensure_file_exists(AGENTS, "canonical AGENTS.md")
-    if not CLAUDE.exists():
-        fail("CLAUDE.md is missing")
-    if not CLAUDE.is_symlink():
-        fail("CLAUDE.md must be a symlink to AGENTS.md")
+def _normalize_link_target(target: str) -> str:
+    return target.strip().replace("\\", "/")
 
-    target = Path(CLAUDE.readlink())
-    if target != Path("AGENTS.md"):
-        fail(f"CLAUDE.md must point to AGENTS.md, found: {target}")
+
+def ensure_symlink_target(path: Path, expected_target: str, description: str) -> None:
+    if not path.exists() and not path.is_symlink():
+        fail(f"{description} is missing: {path.relative_to(ROOT)}")
+
+    if path.is_symlink():
+        actual = _normalize_link_target(str(path.readlink()))
+        if actual != expected_target:
+            fail(
+                f"{description} must point to {expected_target}, found: {actual}"
+            )
+        return
+
+    # Windows checkouts with core.symlinks=false materialize git symlinks
+    # (mode 120000) as a plain text file containing the target path.
+    if path.is_file():
+        actual = _normalize_link_target(path.read_text(encoding="utf-8"))
+        if actual == expected_target:
+            return
+
+    fail(f"{description} must be a symlink to {expected_target}")
+
+
+def ensure_symlinks() -> None:
+    ensure_file_exists(AGENTS, "canonical AGENTS.md")
+    ensure_symlink_target(CLAUDE, "AGENTS.md", "CLAUDE.md")
+    ensure_symlink_target(
+        CLAUDE_SKILLS_LINK,
+        "../.agents/skills",
+        ".claude/skills",
+    )
 
 
 def ensure_copilot_entry() -> None:
@@ -63,7 +98,8 @@ def ensure_copilot_entry() -> None:
         "Canonical source:",
         "AGENTS.md",
         "CLAUDE.md",
-        ".claude/skills/",
+        ".agents/skills/",
+        ".claude/skills",
     )
     for fragment in required_fragments:
         if fragment not in content:
@@ -78,16 +114,36 @@ def ensure_instruction_files() -> None:
         fail(f"missing instruction files: {', '.join(sorted(missing))}")
 
 
+def _parse_frontmatter(content: str) -> dict[str, str]:
+    match = re.match(r"^---\r?\n(.*?)\r?\n---\r?\n", content, re.DOTALL)
+    if not match:
+        return {}
+    fields: dict[str, str] = {}
+    for line in match.group(1).splitlines():
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        fields[key.strip()] = value.strip().strip('"').strip("'")
+    return fields
+
+
 def ensure_skill_files() -> None:
-    ensure_file_exists(CLAUDE_SKILLS_DIR, "Claude skills directory")
-    for relative_path in REQUIRED_SKILL_FILES:
-        path = CLAUDE_SKILLS_DIR / relative_path
-        if not path.exists():
+    ensure_file_exists(SKILLS_DIR, "Agents skills directory")
+    for skill_name in REQUIRED_SKILLS:
+        path = SKILLS_DIR / skill_name / "SKILL.md"
+        if not path.is_file():
             fail(f"missing repository skill asset: {path.relative_to(ROOT)}")
-        if path.is_file():
-            content = path.read_text(encoding="utf-8")
-            if relative_path != "README.md" and "AGENTS.md" not in content:
-                fail(f"{path.relative_to(ROOT)} must reference AGENTS.md as the rule source")
+        content = path.read_text(encoding="utf-8")
+        frontmatter = _parse_frontmatter(content)
+        if frontmatter.get("name") != skill_name:
+            fail(
+                f"{path.relative_to(ROOT)} frontmatter name must be {skill_name!r}, "
+                f"found: {frontmatter.get('name')!r}"
+            )
+        if not frontmatter.get("description"):
+            fail(f"{path.relative_to(ROOT)} frontmatter must include non-empty description")
+        if "AGENTS.md" not in content:
+            fail(f"{path.relative_to(ROOT)} must reference AGENTS.md as the rule source")
 
 
 def ensure_gitignore_rules() -> None:
@@ -97,29 +153,59 @@ def ensure_gitignore_rules() -> None:
             fail(f".gitignore is missing required AI asset rule: {snippet}")
 
 
-def ensure_no_tracked_claude_artifacts() -> None:
+def ensure_no_tracked_local_artifacts() -> None:
     result = subprocess.run(
-        ["git", "ls-files", "--", ".claude"],
+        ["git", "ls-files", "--", ".claude", ".reviews"],
         cwd=ROOT,
         capture_output=True,
         text=True,
         check=True,
     )
     tracked = [line.strip() for line in result.stdout.splitlines() if line.strip()]
-    allowed_prefixes = (".claude/skills/",)
+    allowed = {".claude/skills"}
     for path in tracked:
-        if path.startswith(allowed_prefixes):
+        if path in allowed:
             continue
-        fail(f"tracked .claude artifact outside skills/: {path}")
+        fail(f"tracked local AI artifact outside allowed symlink: {path}")
+
+
+def ensure_no_stale_claude_reviews_refs() -> None:
+    check_paths = [
+        AGENTS,
+        COPILOT,
+        *INSTRUCTIONS_DIR.glob("*.instructions.md"),
+        *(SKILLS_DIR / s / "SKILL.md" for s in REQUIRED_SKILLS),
+        ROOT / "docs" / "CONTRIBUTING.md",
+        ROOT / "docs" / "CONTRIBUTING_EN.md",
+    ]
+    for path in check_paths:
+        if not path.is_file():
+            continue
+        content = path.read_text(encoding="utf-8")
+        if ".claude/reviews" in content:
+            fail(f"stale '.claude/reviews' reference found in {path.relative_to(ROOT)}")
+
+
+def ensure_ci_table_alignment() -> None:
+    ensure_file_exists(CI_WORKFLOW, "CI workflow")
+    agents_text = AGENTS.read_text(encoding="utf-8")
+    ci_text = CI_WORKFLOW.read_text(encoding="utf-8")
+    for job_name in REQUIRED_CI_JOBS_IN_AGENTS:
+        if job_name not in ci_text:
+            fail(f"expected CI job {job_name!r} missing from .github/workflows/ci.yml")
+        if job_name not in agents_text:
+            fail(f"CI job {job_name!r} missing from AGENTS.md verification matrix")
 
 
 def main() -> None:
-    ensure_symlink()
+    ensure_symlinks()
     ensure_copilot_entry()
     ensure_instruction_files()
     ensure_skill_files()
     ensure_gitignore_rules()
-    ensure_no_tracked_claude_artifacts()
+    ensure_no_tracked_local_artifacts()
+    ensure_no_stale_claude_reviews_refs()
+    ensure_ci_table_alignment()
     print("[ai-assets] OK")
 
 

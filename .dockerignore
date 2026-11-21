@@ -27,7 +27,9 @@ env/
 # 忽略本地仓库、CI 元数据和运行产物
 .git/
 .github/
-.claude/reviews/
+.claude/
+.agents/
+.reviews/
 data/
 logs/
 reports/
