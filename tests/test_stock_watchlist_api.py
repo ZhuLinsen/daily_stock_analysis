@@ -11,6 +11,7 @@ from api.v1.endpoints.stocks import add_to_watchlist, get_watchlist, remove_from
 from api.v1.schemas.history import WatchlistRequest
 from src.config import Config, setup_env
 from src.core.config_manager import ConfigManager
+from src.services.stock_list_parser import split_stock_list
 from src.services.system_config_service import SystemConfigService
 
 
@@ -20,11 +21,8 @@ class FakeSystemConfigService:
         self.config_version = "cfg-v1"
         self.update_calls: list[str] = []
 
-    def get_config(self, include_schema: bool = False) -> dict:
-        return {
-            "config_version": self.config_version,
-            "items": [{"key": "STOCK_LIST", "value": self.stock_list}],
-        }
+    def get_watchlist_snapshot(self) -> tuple[list[str], str]:
+        return split_stock_list(self.stock_list), self.config_version
 
     def update(self, **kwargs) -> None:
         items = kwargs["items"]
@@ -54,8 +52,8 @@ def test_watchlist_remove_deletes_raw_hk_code_from_prefixed_variant_request() ->
     )
 
     assert response.stock_codes == []
-    assert service.stock_list == ""
-    assert service.update_calls == [""]
+    assert service.stock_list == ","
+    assert service.update_calls == [","]
 
 
 def test_watchlist_matching_is_case_insensitive_for_us_tickers() -> None:
@@ -72,7 +70,7 @@ def test_watchlist_matching_is_case_insensitive_for_us_tickers() -> None:
 
     assert add_response.stock_codes == ["aapl"]
     assert remove_response.stock_codes == []
-    assert service.update_calls == [""]
+    assert service.update_calls == [","]
 
 
 def test_watchlist_reads_common_copy_paste_separators() -> None:
@@ -94,6 +92,20 @@ def test_watchlist_add_normalizes_existing_mixed_separators_on_write() -> None:
     assert response.stock_codes == ["600519", "300750", "AAPL"]
     assert service.stock_list == "600519,300750,AAPL"
     assert service.update_calls == ["600519,300750,AAPL"]
+
+
+def test_watchlist_mutations_accept_yahoo_class_share_alias() -> None:
+    service = FakeSystemConfigService("600519,BRK-B")
+
+    added = add_to_watchlist(WatchlistRequest(stock_code="BRK.B"), service=service)
+    assert added.stock_codes == ["600519", "BRK-B"]
+    assert service.update_calls == []
+
+    removed = remove_from_watchlist(WatchlistRequest(stock_code="BRK-B"), service=service)
+    assert removed.stock_codes == ["600519"]
+
+    added = add_to_watchlist(WatchlistRequest(stock_code="BRK-B"), service=service)
+    assert added.stock_codes == ["600519", "BRK.B"]
 
 
 @pytest.mark.parametrize(
@@ -152,7 +164,7 @@ def test_watchlist_writes_with_existing_llm_errors_preserve_runtime_overrides(
             assert os.environ["WEBUI_HOST"] == "0.0.0.0"
             assert os.environ["STRATEGIES_DIR"] == "/container/strategies"
             saved_after = manager.read_config_map()
-            assert saved_after.pop("STOCK_LIST") == ""
+            assert saved_after.pop("STOCK_LIST") == ","
             saved_before.pop("STOCK_LIST")
             assert saved_after == saved_before
             assert service.validate(items=[])["issues"]
@@ -208,9 +220,8 @@ def test_watchlist_add_keeps_container_override_when_env_file_lacks_the_key(tmp_
 def test_watchlist_clear_takes_effect_despite_container_override(tmp_path):
     """Clearing must win over a container override.
 
-    refresh_stock_list() falls back to os.environ only when the file value is
-    empty, so the fast path has to mirror the emptied value or the old list
-    would be resurrected.
+    The persisted list stays empty even when a worker retains an older
+    STOCK_LIST in its process environment.
     """
     env_path = tmp_path / ".env"
     env_path.write_text(

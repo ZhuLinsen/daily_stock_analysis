@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { systemConfigApi } from '../api/systemConfig';
-import { findMatchingStockCode, includesStockCode } from '../utils/stockCode';
+import { includesStockCode, toAssetAwareCodeKey } from '../utils/stockCode';
 
 export interface UseWatchlistReturn {
   watchlistCodes: string[];
@@ -14,7 +14,7 @@ export interface UseWatchlistReturn {
   refresh: () => Promise<void>;
 }
 
-export function useWatchlist(): UseWatchlistReturn {
+export function useWatchlist(getCodeKey: (code: string) => string = toAssetAwareCodeKey): UseWatchlistReturn {
   const [codes, setCodes] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isActioning, setIsActioning] = useState(false);
@@ -65,8 +65,8 @@ export function useWatchlist(): UseWatchlistReturn {
   }, []);
 
   const isInWatchlist = useCallback(
-    (stockCode: string) => includesStockCode(codes, stockCode),
-    [codes],
+    (stockCode: string) => includesStockCode(codes, stockCode, getCodeKey),
+    [codes, getCodeKey],
   );
 
   const addToWatchlist = useCallback(async (stockCode: string) => {
@@ -102,13 +102,12 @@ export function useWatchlist(): UseWatchlistReturn {
   }, [isActioning, showMessage]);
 
   const toggleWatchlist = useCallback(async (stockCode: string) => {
-    const existingStockCode = findMatchingStockCode(codes, stockCode);
-    if (existingStockCode) {
-      await removeFromWatchlist(existingStockCode);
+    if (isInWatchlist(stockCode)) {
+      await removeFromWatchlist(stockCode);
     } else {
       await addToWatchlist(stockCode);
     }
-  }, [codes, removeFromWatchlist, addToWatchlist]);
+  }, [isInWatchlist, removeFromWatchlist, addToWatchlist]);
 
   return {
     watchlistCodes: codes,

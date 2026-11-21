@@ -29,8 +29,7 @@ jobs:
     outputs:
       safe_to_run: ${{ steps.check_sensitive.outputs.safe_to_run }}
       sensitive_files_changed: ${{ steps.check_sensitive.outputs.sensitive_files_changed }}
-      has_py_changes: ${{ steps.check_sensitive.outputs.has_py_changes }}
-      has_reviewable_changes: ${{ steps.check_sensitive.outputs.has_reviewable_changes }}
+      has_changes: ${{ steps.check_sensitive.outputs.has_changes }}
 
     steps:
       - name: 🔒 检查敏感文件修改
@@ -56,25 +55,9 @@ jobs:
             const sensitive = files
               .map(file => file.filename)
               .filter(filename => /^(\.github\/workflows\/.*\.ya?ml|\.github\/scripts\/.*\.py)$/.test(filename));
-            const isReviewable = filename =>
-              /\.(py|md|ts|tsx)$/.test(filename) ||
-              filename === 'README.md' ||
-              filename === 'AGENTS.md' ||
-              filename === 'requirements.txt' ||
-              filename === '.github/requirements-ci.txt' ||
-              filename === 'pyproject.toml' ||
-              filename === 'setup.cfg' ||
-              filename === '.github/PULL_REQUEST_TEMPLATE.md' ||
-              filename === 'docker/Dockerfile' ||
-              filename === 'docker-compose.yml' ||
-              filename.startsWith('apps/dsa-web/') ||
-              filename.startsWith('.github/workflows/') ||
-              filename.startsWith('.github/scripts/');
-
             core.setOutput('safe_to_run', 'true');
             core.setOutput('sensitive_files_changed', sensitive.length ? 'true' : 'false');
-            core.setOutput('has_py_changes', files.some(file => file.filename.endsWith('.py')) ? 'true' : 'false');
-            core.setOutput('has_reviewable_changes', files.some(file => isReviewable(file.filename)) ? 'true' : 'false');
+            core.setOutput('has_changes', files.length > 0 ? 'true' : 'false');
 
             if (sensitive.length) {
               await core.summary
@@ -93,11 +76,12 @@ jobs:
     needs: [security-check]
     if: |
       needs.security-check.outputs.safe_to_run == 'true' &&
-      needs.security-check.outputs.has_reviewable_changes == 'true' &&
+      needs.security-check.outputs.has_changes == 'true' &&
       vars.ENABLE_AI_REVIEW != 'false'
     permissions:
       contents: read
       pull-requests: read
+      actions: read
 
     steps:
       - name: 📥 检出可信主分支脚本
@@ -106,6 +90,7 @@ jobs:
           ref: ${{ github.event.repository.default_branch }}
           sparse-checkout: |
             .github/scripts
+            .agents/skills/analyze-pr/SKILL.md
           sparse-checkout-cone-mode: false
           path: main-scripts
           persist-credentials: false
@@ -130,8 +115,6 @@ jobs:
           OPENAI_BASE_URL: ${{ vars.OPENAI_BASE_URL }}
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
           AI_REVIEW_STRICT: ${{ vars.AI_REVIEW_STRICT || 'false' }}
-          CI_DELEGATED_TO_PULL_REQUEST: 'true'
-          CI_HAS_PY_CHANGES: ${{ needs.security-check.outputs.has_py_changes }}
         run: python main-scripts/.github/scripts/ai_review.py
 
       - name: 📤 上传审查结果
@@ -266,41 +249,16 @@ jobs:
               comment.user.type === 'Bot' && comment.body.includes('## 🤖 自动审查报告')
             );
 
-            const aiStatus = process.env.AI_REVIEW_RESULT === 'success' ? '✅ 已完成' :
-              process.env.AI_REVIEW_RESULT === 'skipped' ? '⏭️ 跳过' : '⚠️ 失败';
-            let report = `## 🤖 自动审查报告
-
-            | 项目 | 结果 |
-            |------|------|
-            | 📊 变更文件 | ${files.length} 个 |
-            | ➕ 新增行数 | ${additions} 行 |
-            | ➖ 删除行数 | ${deletions} 行 |
-            | 🔍 代码检查 | 由独立 \`pull_request\` CI / \`backend-gate\` 执行 |
-            | 🧠 AI 审查 | ${aiStatus} |
-
-            ### 📁 修改的文件
-
-            `;
-
+            const aiStatus = aiReview ? '✅ 已生成' :
+              process.env.AI_REVIEW_RESULT === 'skipped' ? '⏭️ 跳过' : '⚠️ 未取得审查正文';
+            let report = `## 🤖 自动审查报告\n\n${aiReview || aiStatus}\n\n`;
+            report += '<details><summary>变更范围与检查信息</summary>\n\n';
+            report += `共 ${files.length} 个文件，+${additions} / -${deletions}。请核对当前 Head 的独立 CI。\n\n`;
             for (const file of files.slice(0, 20)) {
-              const status = file.status === 'added' ? '🆕' : file.status === 'removed' ? '🗑️' : '📝';
-              report += `- ${status} \`${file.filename}\` (+${file.additions}/-${file.deletions})\n`;
+              report += `- \`${file.filename}\` (+${file.additions}/-${file.deletions})\n`;
             }
-            if (files.length > 20) report += `\n... 还有 ${files.length - 20} 个文件\n`;
-            if (aiReview) {
-              report += `
-            ---
-
-            ### 🧠 AI 代码审查意见
-
-            ${aiReview}
-            `;
-            }
-            report += `
-            ---
-
-            > 💡 **提示**: 请同时核对独立 CI 结果，并遵循项目代码规范。
-            `;
+            if (files.length > 20) report += `\n另有 ${files.length - 20} 个文件，见 Files changed。\n`;
+            report += '\n</details>\n';
 
             if (botComment) {
               await github.rest.issues.updateComment({

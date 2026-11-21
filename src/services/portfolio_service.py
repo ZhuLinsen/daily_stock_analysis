@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -203,6 +204,9 @@ class PortfolioService:
         side_norm = (side or "").strip().lower()
         if side_norm not in VALID_SIDES:
             raise ValueError("side must be buy or sell")
+        for field, value in (("quantity", quantity), ("price", price), ("fee", fee), ("tax", tax)):
+            if not math.isfinite(value):
+                raise ValueError(f"{field} must be finite")
         if quantity <= 0 or price <= 0:
             raise ValueError("quantity and price must be > 0")
         if fee < 0 or tax < 0:
@@ -266,6 +270,8 @@ class PortfolioService:
         direction_norm = (direction or "").strip().lower()
         if direction_norm not in VALID_CASH_DIRECTIONS:
             raise ValueError("direction must be in or out")
+        if not math.isfinite(amount):
+            raise ValueError("amount must be finite")
         if amount <= 0:
             raise ValueError("amount must be > 0")
         with self.repo.portfolio_write_session() as session:
@@ -298,6 +304,10 @@ class PortfolioService:
         action_type_norm = (action_type or "").strip().lower()
         if action_type_norm not in VALID_CORPORATE_ACTIONS:
             raise ValueError("action_type must be cash_dividend or split_adjustment")
+
+        for field, value in (("cash_dividend_per_share", cash_dividend_per_share), ("split_ratio", split_ratio)):
+            if value is not None and not math.isfinite(value):
+                raise ValueError(f"{field} must be finite")
 
         if action_type_norm == "cash_dividend":
             if cash_dividend_per_share is None or cash_dividend_per_share < 0:

@@ -148,6 +148,7 @@ interface LLMChannelEditorProps {
   onDirtyChange?: (dirty: boolean) => void;
   onSavingChange?: (saving: boolean) => void;
   draftResetToken?: number;
+  llmYamlActive?: boolean;
   disabled?: boolean;
 }
 
@@ -1613,6 +1614,11 @@ function buildFilteredChannelUpdateItems({
     }
     return updates.filter((item) => item.key !== 'LLM_MODELFLARE_API_KEY' && item.key !== 'LLM_MODELFLARE_API_KEYS');
   }
+  const removedModelflare = initialNames.some((name) => name.toLowerCase() === 'modelflare')
+    && !channels.some((channel) => channel.name.toLowerCase() === 'modelflare');
+  if (removedModelflare && managesRuntimeConfig && (savedItemMap.get('MODELFLARE_KEY') || '').trim()) {
+    updates.push({ key: 'MODELFLARE_KEY', value: '' });
+  }
   return updates;
 }
 
@@ -1674,6 +1680,7 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
   onDirtyChange,
   onSavingChange,
   draftResetToken = 0,
+  llmYamlActive,
   disabled = false,
 }) => {
   const initialItemSourceByKey = useMemo(() => {
@@ -1708,11 +1715,14 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
   const hasPersistedHermesSecret = (channel: ChannelConfig): boolean => (
     isHermesChannel(channel) && initialItemSourceByKey.get('LLM_HERMES_API_KEY') === true
   );
-  const hasLitellmConfig = useMemo(
-    () => items.some((item) => item.key === 'LITELLM_CONFIG' && item.value.trim().length > 0),
-    [items],
-  );
-  const managesRuntimeConfig = !hasLitellmConfig;
+  // When a valid YAML source is active, the generic settings fields own the
+  // runtime model aliases. The channel editor must not submit empty values
+  // for aliases that only exist in YAML. If the API does not provide the
+  // source status, retain the legacy path-based fallback for older clients.
+  const hasActiveYaml = llmYamlActive ?? items.some((item) => item.key === 'LITELLM_CONFIG'
+    && item.value.trim().length > 0
+    && item.rawValueExists !== false);
+  const managesRuntimeConfig = !hasActiveYaml;
   const modelProviderPrefixSet = useMemo(
     () => new Set(modelProviderPrefixes.map((provider) => provider.trim().toLowerCase()).filter(Boolean)),
     [modelProviderPrefixes],
@@ -1746,7 +1756,14 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
   const prevDraftResetTokenRef = useRef(draftResetToken);
   const prevChannelsRef = useRef(channelsFingerprint);
   const prevRuntimeRef = useRef(runtimeFingerprint);
-  const pendingSaveFeedbackFingerprintRef = useRef<{ channels: string; runtime: string } | null>(null);
+  const previousInitialChannelsRef = useRef(initialChannels);
+  const previousInitialRuntimeConfigRef = useRef(initialRuntimeConfig);
+  const removedInitialChannelNamesRef = useRef<Set<string>>(new Set());
+  const pendingSaveFeedbackFingerprintRef = useRef<{
+    channels: string;
+    runtime: string;
+    resetAfterSave?: boolean;
+  } | null>(null);
   const discoveryNonceRef = useRef<Record<string, number>>({});
   const discoveryRequestIdRef = useRef(0);
   const capabilityNonceRef = useRef<Record<string, number>>({});
@@ -1757,15 +1774,97 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
       && prevDraftResetTokenRef.current === draftResetToken) {
       return;
     }
+    const isExplicitReset = prevDraftResetTokenRef.current !== draftResetToken;
+    const previousInitialChannels = previousInitialChannelsRef.current;
+    const previousInitialRuntimeConfig = previousInitialRuntimeConfigRef.current;
     prevDraftResetTokenRef.current = draftResetToken;
     prevChannelsRef.current = channelsFingerprint;
     prevRuntimeRef.current = runtimeFingerprint;
+    // Keep snapshots for channels that temporarily disappear from `items`.
+    // The shorthand MODELFLARE_KEY path can do exactly that while its draft
+    // value is cleared and then entered again.
+    const nextInitialChannelNames = new Set(initialChannels.map((channel) => channel.name.toLowerCase()));
+    previousInitialChannelsRef.current = [
+      ...initialChannels,
+      ...previousInitialChannels.filter((channel) => !nextInitialChannelNames.has(channel.name.toLowerCase())),
+    ];
+    previousInitialRuntimeConfigRef.current = initialRuntimeConfig;
     const pendingSaveFeedbackFingerprint = pendingSaveFeedbackFingerprintRef.current;
-    const preserveSaveFeedback = pendingSaveFeedbackFingerprint?.channels === channelsFingerprint
+    const resetAfterSave = pendingSaveFeedbackFingerprint?.resetAfterSave === true;
+    const preserveSaveFeedback = !resetAfterSave
+      && pendingSaveFeedbackFingerprint?.channels === channelsFingerprint
       && pendingSaveFeedbackFingerprint.runtime === runtimeFingerprint;
     pendingSaveFeedbackFingerprintRef.current = null;
-    setChannels(initialChannels);
-    setRuntimeConfig(initialRuntimeConfig);
+    if (isExplicitReset) {
+      removedInitialChannelNamesRef.current = new Set();
+      setChannels(initialChannels);
+      setRuntimeConfig(initialRuntimeConfig);
+    } else if (resetAfterSave) {
+      removedInitialChannelNamesRef.current = new Set();
+      setChannels(initialChannels);
+      setRuntimeConfig(initialRuntimeConfig);
+    } else {
+      setChannels((currentChannels) => {
+        const removedInitialChannelNames = removedInitialChannelNamesRef.current;
+        const currentChannelNames = new Set(currentChannels.map((channel) => channel.name.toLowerCase()));
+        previousInitialChannels.forEach((channel) => {
+          const name = channel.name.toLowerCase();
+          if (!currentChannelNames.has(name)) {
+            removedInitialChannelNames.add(name);
+          }
+        });
+        currentChannelNames.forEach((name) => removedInitialChannelNames.delete(name));
+        const nextChannelNames = new Set(initialChannels.map((channel) => channel.name.toLowerCase()));
+        const mergedChannels = initialChannels.flatMap((nextInitial) => {
+          if (removedInitialChannelNames.has(nextInitial.name.toLowerCase())
+            && !currentChannelNames.has(nextInitial.name.toLowerCase())) {
+            return [];
+          }
+          const currentChannel = currentChannels.find(
+            (channel) => channel.id === nextInitial.id
+              || channel.name.toLowerCase() === nextInitial.name.toLowerCase(),
+          );
+          const previousInitial = previousInitialChannels.find(
+            (channel) => channel.id === nextInitial.id
+              || channel.name.toLowerCase() === nextInitial.name.toLowerCase(),
+          );
+          if (!currentChannel || !previousInitial) {
+            return [nextInitial];
+          }
+          const merged = { ...nextInitial };
+          (['name', 'protocol', 'apiSurface', 'baseUrl', 'apiKey', 'models', 'enabled'] as const).forEach((field) => {
+            if (currentChannel[field] !== previousInitial[field]) {
+              Object.assign(merged, { [field]: currentChannel[field] });
+            }
+          });
+          return [merged];
+        });
+
+        // A locally added channel has no previous initial snapshot. Keep it
+        // until the user explicitly resets, but drop channels removed by the
+        // external draft update.
+        return [
+          ...mergedChannels,
+          ...currentChannels.filter((channel) => {
+            if (nextChannelNames.has(channel.name.toLowerCase())) return false;
+            const previousInitial = previousInitialChannels.find((initial) => (
+              initial.id === channel.id || initial.name.toLowerCase() === channel.name.toLowerCase()
+            ));
+            if (!previousInitial) return true;
+            return !channelsAreEqual(channel, previousInitial);
+          }),
+        ];
+      });
+      setRuntimeConfig((currentRuntime) => {
+        const merged = { ...initialRuntimeConfig };
+        (['primaryModel', 'agentPrimaryModel', 'fallbackModels', 'visionModel', 'temperature'] as const).forEach((field) => {
+          if (JSON.stringify(currentRuntime[field]) !== JSON.stringify(previousInitialRuntimeConfig[field])) {
+            Object.assign(merged, { [field]: currentRuntime[field] });
+          }
+        });
+        return merged;
+      });
+    }
     setVisibleKeys({});
     setTestStates({});
     setDiscoveryStates({});
@@ -2114,14 +2213,29 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
         items: updateItems,
       });
       const responseWarnings = response.warnings || [];
-      await onSaved(updateItems);
+      const resetAfterSave = updateItems.some((item) => (
+        item.key.toUpperCase() === 'LLM_HERMES_API_KEY'
+        || (item.key.toUpperCase() === 'MODELFLARE_KEY' && !item.value.trim())
+      ));
       pendingSaveFeedbackFingerprintRef.current = {
         channels: JSON.stringify(parseChannelsFromItems(updateItems)),
         runtime: JSON.stringify(parseRuntimeConfigFromItems(updateItems)),
+        resetAfterSave,
       };
+      await onSaved(updateItems);
+      if (resetAfterSave) {
+        setChannels((currentChannels) => currentChannels.map((channel) => {
+          const initialChannel = initialChannels.find((initial) => (
+            initial.id === channel.id || initial.name.toLowerCase() === channel.name.toLowerCase()
+          ));
+          return initialChannel ? { ...channel, apiKey: initialChannel.apiKey } : channel;
+        }));
+        onDraftItemsChangeRef.current?.([]);
+      }
       setSaveWarnings(responseWarnings);
       setSaveMessage({ type: 'success', text: managesRuntimeConfig ? 'AI 配置已保存' : '渠道配置已保存' });
     } catch (error: unknown) {
+      pendingSaveFeedbackFingerprintRef.current = null;
       setSaveWarnings([]);
       setSaveMessage({ type: 'error', error: getParsedApiError(error) });
     } finally {

@@ -17,8 +17,8 @@ import threading
 import time
 from pathlib import Path
 import uuid
-from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from collections import defaultdict, deque
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import List, Dict, Any, Optional, Tuple, Callable
@@ -37,6 +37,7 @@ from src.analyzer import (
     normalize_chip_structure_availability,
     populate_decision_action_fields,
     stabilize_decision_with_structure,
+    validate_sniper_price_sanity,
 )
 from src.notification import NotificationService, NotificationChannel
 from src.schemas.decision_action import normalize_decision_action
@@ -97,6 +98,11 @@ from src.services.decision_signal_extractor import (
 )
 from src.services.stock_list_parser import AnalysisTarget, ParseStatus
 from src.services.decision_signal_summary import summarize_decision_signal
+from src.core.stock_execution_context import (
+    StockCancellationToken,
+    is_current_stock_cancelled as _is_current_stock_cancelled,
+    set_current_stock_cancellation,
+)
 from src.enums import ReportType
 from src.stock_analyzer import StockTrendAnalyzer, TrendAnalysisResult
 from src.core.trading_calendar import (
@@ -111,6 +117,167 @@ from bot.models import BotMessage
 
 
 logger = logging.getLogger(__name__)
+
+
+class _DaemonThreadStockExecutor:
+    """Bound stock work across batches, including workers still draining."""
+
+    _condition = threading.Condition()
+    _occupied: set[Future] = set()
+    _waiting: Dict["_DaemonThreadStockExecutor", None] = {}
+
+    def __init__(self, timeout_seconds: float, max_workers: int = 1):
+        self._timeout_seconds = max(0.0, float(timeout_seconds or 0.0))
+        self._max_workers = max(1, int(max_workers or 1))
+        self._queue = deque()
+        self._active: Dict[Future, StockCancellationToken] = {}
+        self._closed = False
+
+    def submit_prefetch(self, function: Callable[[str], None]) -> Optional[Future]:
+        """Skip optional prefetch when all execution slots are occupied."""
+        with self._condition:
+            if len(self._occupied) >= self._max_workers:
+                return None
+            return self.submit(function, "prefetch")
+
+    @classmethod
+    def _release_locked(cls, slot: Future) -> None:
+        cls._occupied.remove(slot)
+        for executor in tuple(cls._waiting):
+            executor._dispatch_locked()
+        cls._condition.notify_all()
+
+    def submit(self, function: Callable[..., Any], code: str, **kwargs: Any) -> Future:
+        future: Future = Future()
+        with self._condition:
+            if self._closed:
+                raise RuntimeError("daemon stock executor has been shut down")
+            self._queue.append((function, code, kwargs, future))
+            self._waiting[self] = None
+            self._dispatch_locked()
+        return future
+
+    def wait_for_results(self, pending: set[Future]) -> set[Future]:
+        """Keep collecting running stocks while bounding any wait for a slot."""
+        idle_deadline = None
+        with self._condition:
+            while True:
+                done = {future for future in pending if future.done()}
+                if done:
+                    return done
+                if pending.intersection(self._active):
+                    idle_deadline = None
+                    self._condition.wait()
+                    continue
+                now = time.monotonic()
+                if idle_deadline is None:
+                    idle_deadline = now + self._timeout_seconds
+                remaining = idle_deadline - now
+                if remaining <= 0:
+                    logger.warning("批量分析等待空闲槽位超时，跳过 %d 个未启动标的", len(pending))
+                    for future in pending:
+                        future.set_result(None)
+                    return set()
+                self._condition.wait(timeout=remaining)
+
+    def _dispatch_locked(self) -> None:
+        while self._queue and len(self._occupied) < self._max_workers:
+            function, code, kwargs, future = self._queue.popleft()
+            if future.done():
+                continue
+            deadline = time.monotonic() + self._timeout_seconds
+            token = StockCancellationToken(deadline)
+            work_done = threading.Event()
+            self._active[future] = token
+            self._occupied.add(future)
+            try:
+                threading.Thread(
+                    target=self._watch,
+                    args=(code, future, token, work_done),
+                    name=f"stock-timeout-watch-{code}",
+                    daemon=True,
+                ).start()
+                threading.Thread(
+                    target=self._run,
+                    args=(function, code, kwargs, future, token, work_done),
+                    name=f"stock-analysis-{code}",
+                    daemon=True,
+                ).start()
+            except RuntimeError:
+                logger.exception("[%s] 无法启动股票分析线程", code)
+                work_done.set()
+                self._active.pop(future)
+                self._occupied.remove(future)
+                future.set_result(None)
+                self._condition.notify_all()
+        if not self._queue:
+            self._waiting.pop(self, None)
+
+    def _run(self, function, code, kwargs, future, token, work_done) -> None:
+        previous = set_current_stock_cancellation(token)
+        result = None
+        try:
+            if not token.is_cancelled():
+                result = function(code, **kwargs)
+        except BaseException as exc:
+            logger.warning("[%s] 股票分析线程异常终止 (%s): %s", code, type(exc).__name__, exc)
+        finally:
+            set_current_stock_cancellation(previous)
+            with self._condition:
+                work_done.set()
+                completed_in_time = not token.is_cancelled() and not future.done()
+                if completed_in_time:
+                    future.set_result(result)
+                    self._condition.notify_all()
+            # A stock that completes on time can leave abandoned calls to drain.
+            # A stock that timed out keeps its slot until all its workers exit.
+            token.join_workers(include_abandoned=not completed_in_time)
+            with self._condition:
+                if token.is_cancelled() and not future.done():
+                    # Cancellation publishes the result after subprocess cleanup.
+                    self._condition.wait_for(future.done)
+                self._active.pop(future)
+                self._release_locked(future)
+
+    def _watch(self, code, future, token, work_done) -> None:
+        work_done.wait(timeout=token.remaining_seconds())
+        with self._condition:
+            if future.done():
+                return
+            token.request_cancel()
+        logger.warning(
+            "[%s] 单只股票分析超时 (%ss)，标记取消并保留执行槽位直到线程退出",
+            code,
+            self._timeout_seconds,
+        )
+        self._finish_cancellation(future, token)
+
+    def _finish_cancellation(self, future: Future, token: StockCancellationToken) -> None:
+        token.cancel()
+        with self._condition:
+            if not future.done():
+                future.set_result(None)
+            self._condition.notify_all()
+
+    def shutdown(self, wait: bool = True, cancel_futures: bool = False) -> None:
+        cancellations = []
+        with self._condition:
+            self._closed = True
+            if cancel_futures:
+                cancellations = list(self._active.items())
+                for _, token in cancellations:
+                    token.request_cancel()
+                for _, _, _, future in self._queue:
+                    if not future.done():
+                        future.set_result(None)
+                self._queue.clear()
+                self._waiting.pop(self, None)
+                self._condition.notify_all()
+        for future, token in cancellations:
+            self._finish_cancellation(future, token)
+        if wait:
+            with self._condition:
+                self._condition.wait_for(lambda: not self._active and not self._queue)
 
 
 # ---------------------------------------------------------------------------
@@ -399,8 +566,12 @@ class StockAnalysisPipeline:
         """
         stock_name = code
         try:
+            if _is_current_stock_cancelled():
+                return False, "股票分析已取消"
             # 首先获取股票名称
             stock_name = self.fetcher_manager.get_stock_name(code, allow_realtime=False)
+            if _is_current_stock_cancelled():
+                return False, "股票分析已取消"
 
             target_date = self._resolve_resume_target_date(
                 code, current_time=current_time, analysis_target=analysis_target
@@ -414,11 +585,16 @@ class StockAnalysisPipeline:
                 return True, None
 
             # 从数据源获取数据
+            if _is_current_stock_cancelled():
+                return False, "股票分析已取消"
             logger.info(f"{stock_name}({code}) 开始从数据源获取数据...")
             df, source_name = self.fetcher_manager.get_daily_data(code, days=30)
 
             if df is None or df.empty:
                 return False, "获取数据为空"
+
+            if _is_current_stock_cancelled():
+                return False, "股票分析已取消"
 
             # 保存到数据库
             saved_count = self.db.save_daily_data(df, code, source_name)
@@ -462,6 +638,8 @@ class StockAnalysisPipeline:
         """
         stock_name = code
         try:
+            if _is_current_stock_cancelled():
+                return None
             portfolio_context = getattr(self, "portfolio_context", None)
             if not isinstance(portfolio_context, dict):
                 portfolio_context = None
@@ -511,6 +689,8 @@ class StockAnalysisPipeline:
             else:
                 stock_name = self.fetcher_manager.get_stock_name(code, allow_realtime=False)
 
+            if _is_current_stock_cancelled():
+                return None
             # Step 1: 获取实时行情（量比、换手率等）- 使用统一入口，自动故障切换
             realtime_quote = None
             try:
@@ -537,6 +717,8 @@ class StockAnalysisPipeline:
             if not stock_name:
                 stock_name = f'股票{code}'
 
+            if _is_current_stock_cancelled():
+                return None
             # Step 2: 获取筹码分布 - 使用统一入口，带熔断保护
             # 指数目标跳过筹码分布（INDEX_SKIP_MODULES 能力矩阵）
             chip_data = None
@@ -571,6 +753,8 @@ class StockAnalysisPipeline:
                     logger.info(f"{stock_name}({code}) Auto-enabled agent mode due to configured skills: {configured_skills}")
 
             self._emit_progress(32, f"{stock_name}：正在聚合基本面与趋势数据")
+            if _is_current_stock_cancelled():
+                return None
 
             # Step 2.5: 基本面能力聚合（统一入口，异常降级）
             # - 失败时返回 partial/failed，不影响既有技术面/新闻链路
@@ -605,6 +789,8 @@ class StockAnalysisPipeline:
                     logger.warning(f"{stock_name}({code}) 基本面聚合失败: {e}")
                     fundamental_context = self.fetcher_manager.build_failed_fundamental_context(code, str(e))
 
+            if _is_current_stock_cancelled():
+                return None
             if is_index and "belong_boards" in INDEX_SKIP_MODULES:
                 logger.debug(f"{stock_name}({code}) 指数目标跳过板块归属")
                 if isinstance(fundamental_context, dict):
@@ -625,6 +811,8 @@ class StockAnalysisPipeline:
             )
 
             # P0: write-only snapshot, fail-open, no read dependency on this table.
+            if _is_current_stock_cancelled():
+                return None
             if not is_index:
                 try:
                     self.db.save_fundamental_snapshot(
@@ -699,11 +887,15 @@ class StockAnalysisPipeline:
                 # 使用多维度搜索（最多5次搜索）
                 # 指数目标：查询 subject 仅用注册表中文名称，不把 canonical code /
                 # 六码机器码带入查询（Story 1.5 V7）。
+                if _is_current_stock_cancelled():
+                    return None
                 intel_results = self.search_service.search_comprehensive_intel(
                     stock_code=("" if is_index else code),
                     stock_name=stock_name,
                     max_searches=5
                 )
+                if _is_current_stock_cancelled():
+                    return None
 
                 # 格式化情报报告
                 if intel_results:
@@ -719,6 +911,8 @@ class StockAnalysisPipeline:
                     try:
                         query_context = self._build_query_context(query_id=query_id)
                         for dim_name, response in intel_results.items():
+                            if _is_current_stock_cancelled():
+                                return None
                             if response and response.success and response.results:
                                 self.db.save_news_intel(
                                     code=code,
@@ -737,7 +931,11 @@ class StockAnalysisPipeline:
             social_evidence_context: Optional[str] = None
             if self.social_sentiment_service is not None and self.social_sentiment_service.is_available and is_us_stock_code(code):
                 try:
+                    if _is_current_stock_cancelled():
+                        return None
                     social_context = self.social_sentiment_service.get_social_context(code)
+                    if _is_current_stock_cancelled():
+                        return None
                     if social_context:
                         logger.info(f"{stock_name}({code}) Social sentiment data retrieved")
                         social_evidence_context = social_context
@@ -835,6 +1033,8 @@ class StockAnalysisPipeline:
                 )
 
             self._emit_progress(64, f"{stock_name}：正在请求 LLM 生成报告")
+            if _is_current_stock_cancelled():
+                return None
             llm_started_at = time.monotonic()
             try:
                 record_llm_run_started(
@@ -848,6 +1048,8 @@ class StockAnalysisPipeline:
                     stream_progress_callback=_on_llm_stream,
                     analysis_context_pack_summary=analysis_context_pack_summary,
                 )
+                if _is_current_stock_cancelled():
+                    return None
                 llm_duration_ms = int((time.monotonic() - llm_started_at) * 1000)
                 if result is not None:
                     # 交给展示层区分「未配置渠道」「检索零命中」和「正常命中」。
@@ -890,6 +1092,8 @@ class StockAnalysisPipeline:
 
             # Step 7.5: 填充分析时的价格信息到 result
             if result:
+                if _is_current_stock_cancelled():
+                    return None
                 self._emit_progress(94, f"{stock_name}：正在校验并整理分析结果")
                 result.query_id = query_id
                 realtime_data = enhanced_context.get('realtime', {})
@@ -937,13 +1141,22 @@ class StockAnalysisPipeline:
                     report_type=report_type.value,
                     previous_operation_advice=action_source_advice,
                 )
+                sniper_context = enhanced_context
+                if trend_result is not None:
+                    sniper_context = {**enhanced_context, "trend_result": self._safe_to_dict(trend_result)}
+                validate_sniper_price_sanity(result, sniper_context)
 
             if result:
                 self._append_daily_data_source(result, context, analysis_target)
 
             # Step 8: 保存分析历史记录
+            if result and result.success and _is_current_stock_cancelled():
+                logger.warning(f"{stock_name}({code}) 已超时取消，跳过历史报告保存")
+                return None
             if result and result.success:
                 try:
+                    if _is_current_stock_cancelled():
+                        return None
                     self._emit_progress(97, f"{stock_name}：正在保存分析报告")
                     context_snapshot = self._build_context_snapshot(
                         enhanced_context=enhanced_context,
@@ -955,6 +1168,8 @@ class StockAnalysisPipeline:
                         market_phase_summary=market_phase_summary,
                     )
                     result.diagnostic_context_snapshot = context_snapshot
+                    if _is_current_stock_cancelled():
+                        return None
                     saved_history_id = self.db.save_analysis_history(
                         result=result,
                         query_id=query_id,
@@ -975,7 +1190,7 @@ class StockAnalysisPipeline:
                             saved_history_id if valid_saved_history_id else None
                         ),
                     )
-                    if valid_saved_history_id:
+                    if valid_saved_history_id and not _is_current_stock_cancelled():
                         self._extract_decision_signal_after_history_save(
                             result=result,
                             query_id=query_id,
@@ -1435,8 +1650,10 @@ class StockAnalysisPipeline:
             logger.debug("[%s] Agent history: %d bars in DB, sufficient", code, len(bars))
             return
         try:
+            if _is_current_stock_cancelled():
+                return
             df, source = self.fetcher_manager.get_daily_data(code, days=min_days)
-            if df is not None and not df.empty:
+            if not _is_current_stock_cancelled() and df is not None and not df.empty:
                 self.db.save_daily_data(df, code, source)
                 logger.info("[%s] Prefetched %d rows of history for agent (source: %s)", code, len(df), source)
         except Exception as e:
@@ -1502,6 +1719,8 @@ class StockAnalysisPipeline:
         """
         try:
             from src.agent.factory import build_agent_executor
+            if _is_current_stock_cancelled():
+                return None
             report_language = normalize_report_language(getattr(self.config, "report_language", "zh"))
 
             is_index = (
@@ -1556,6 +1775,8 @@ class StockAnalysisPipeline:
             # can consume it through the existing news_context channel
             social_evidence_context: Optional[str] = None
             if self.social_sentiment_service is not None and self.social_sentiment_service.is_available and is_us_stock_code(code):
+                if _is_current_stock_cancelled():
+                    return None
                 try:
                     social_context = self.social_sentiment_service.get_social_context(code)
                     if social_context:
@@ -1627,6 +1848,8 @@ class StockAnalysisPipeline:
             news_evidence_token = activate_news_evidence_scope()
             news_evidence = get_current_news_evidence()
             try:
+                if _is_current_stock_cancelled():
+                    return None
                 record_llm_run_started(
                     model=getattr(self.config, "agent_litellm_model", None),
                     call_type="agent_analysis",
@@ -1646,6 +1869,8 @@ class StockAnalysisPipeline:
                 reset_news_evidence_scope(news_evidence_token)
 
             # 转换为 AnalysisResult
+            if _is_current_stock_cancelled():
+                return None
             result = self._agent_result_to_analysis_result(
                 agent_result,
                 code,
@@ -1845,6 +2070,7 @@ class StockAnalysisPipeline:
                             ),
                         )
                     )
+                validate_sniper_price_sanity(result, initial_context)
 
             if result:
                 self._append_daily_data_source(
@@ -1859,17 +2085,27 @@ class StockAnalysisPipeline:
             # 使用 search_stock_news（与 Agent 工具调用逻辑一致），仅 1 次 API 调用，无额外延迟
             if self.search_service is not None and self.search_service.is_available:
                 try:
+                    if _is_current_stock_cancelled():
+                        return None
                     news_response = self.search_service.search_stock_news(
                         stock_code=("" if is_index else code),
                         stock_name=resolved_stock_name,
                         max_results=5
                     )
+                    if _is_current_stock_cancelled():
+                        return None
                     # 这次补查只为持久化新闻情报（Fixes #396），刻意不写
                     # result.news_result_count：它发生在分析结束之后，与 Agent 实际
                     # 消费的证据无关，用它做披露判定会两个方向都失真。真正的计数在
                     # executor.run() 的证据作用域里收集（见上文）。
-                    if news_response.success and news_response.results:
+                    if (
+                        news_response.success
+                        and news_response.results
+                        and not _is_current_stock_cancelled()
+                    ):
                         query_context = self._build_query_context(query_id=query_id)
+                        if _is_current_stock_cancelled():
+                            return None
                         self.db.save_news_intel(
                             code=code,
                             name=resolved_stock_name,
@@ -1883,8 +2119,13 @@ class StockAnalysisPipeline:
                     logger.warning(f"[{code}] Agent 模式保存新闻情报失败: {e}")
 
             # 保存分析历史记录
+            if result and result.success and _is_current_stock_cancelled():
+                logger.warning(f"[{code}] Agent 模式已超时取消，跳过历史报告保存")
+                return None
             if result and result.success:
                 try:
+                    if _is_current_stock_cancelled():
+                        return None
                     agent_context_snapshot = self._build_context_snapshot(
                         enhanced_context={
                             **self._without_runtime_prompt_context(initial_context),
@@ -1898,6 +2139,8 @@ class StockAnalysisPipeline:
                     )
                     result.diagnostic_context_snapshot = agent_context_snapshot
                     agent_context_snapshot["stock_name"] = resolved_stock_name
+                    if _is_current_stock_cancelled():
+                        return None
                     saved_history_id = self.db.save_analysis_history(
                         result=result,
                         query_id=query_id,
@@ -1918,13 +2161,15 @@ class StockAnalysisPipeline:
                             saved_history_id if valid_saved_history_id else None
                         ),
                     )
-                    if valid_saved_history_id:
+                    if valid_saved_history_id and not _is_current_stock_cancelled():
                         self._persist_skill_opinion_samples_after_history_save(
                             runtime_facts=getattr(agent_result, "runtime_facts", None),
                             analysis_history_id=saved_history_id,
                             stock_code=code,
                             analysis_context_pack_overview=analysis_context_pack_overview,
                         )
+                        if _is_current_stock_cancelled():
+                            return None
                         self._extract_decision_signal_after_history_save(
                             result=result,
                             query_id=query_id,
@@ -1989,7 +2234,7 @@ class StockAnalysisPipeline:
     ) -> Optional[Dict[str, Any]]:
         """Load analysis context, fetching JP/KR/TW daily bars when DB has no context."""
         context = self.db.get_analysis_context(code)
-        if isinstance(context, dict) and context:
+        if _is_current_stock_cancelled() or (isinstance(context, dict) and context):
             return context
 
         if analysis_target is not None and analysis_target.asset_type == ParseStatus.INDEX:
@@ -2005,6 +2250,8 @@ class StockAnalysisPipeline:
             logger.warning("[%s] JP/KR daily fallback fetch failed: %s", code, exc)
             return context
 
+        if _is_current_stock_cancelled():
+            return context
         if df is None or df.empty:
             logger.warning("[%s] JP/KR daily fallback returned empty data", code)
             return context
@@ -3365,6 +3612,7 @@ class StockAnalysisPipeline:
         report_type: ReportType = ReportType.SIMPLE,
         analysis_query_id: Optional[str] = None,
         current_time: Optional[datetime] = None,
+        force_refresh: bool = False,
         analysis_target: Optional[AnalysisTarget] = None,
     ) -> Optional[AnalysisResult]:
         """
@@ -3385,6 +3633,7 @@ class StockAnalysisPipeline:
             single_stock_notify: 是否启用单股推送模式（每分析完一只立即推送）
             report_type: 报告类型枚举（从配置读取，Issue #119）
             current_time: 本轮运行冻结的参考时间，用于统一断点续传目标交易日判断
+            force_refresh: 是否忽略可复用的本地行情缓存并重新获取
             analysis_target: 结构化分析目标（指数目标用于推导 market=cn 与能力矩阵）
 
         Returns:
@@ -3411,8 +3660,14 @@ class StockAnalysisPipeline:
             self._emit_progress(12, f"{code}：正在准备分析任务")
             # Step 1: 获取并保存数据
             success, error = self.fetch_and_save_stock_data(
-                code, current_time=current_time, analysis_target=analysis_target
+                code,
+                force_refresh=force_refresh,
+                current_time=current_time,
+                analysis_target=analysis_target,
             )
+            if _is_current_stock_cancelled():
+                logger.warning("[%s] 已超时取消，跳过后续分析", code)
+                return None
             
             if not success:
                 logger.warning(f"[{code}] 数据获取失败: {error}")
@@ -3431,6 +3686,9 @@ class StockAnalysisPipeline:
             if analysis_target is not None:
                 analyze_kwargs["analysis_target"] = analysis_target
             result = self.analyze_stock(code, report_type, **analyze_kwargs)
+            if _is_current_stock_cancelled():
+                logger.warning("[%s] 已超时取消，丢弃分析结果", code)
+                return None
             
             if result and result.success:
                 logger.info(
@@ -3439,7 +3697,7 @@ class StockAnalysisPipeline:
                 )
                 
                 # 单股推送模式（#55）：每分析完一只股票立即推送
-                if single_stock_notify:
+                if single_stock_notify and not _is_current_stock_cancelled():
                     self._send_single_stock_notification(
                         result,
                         report_type=report_type,
@@ -3460,6 +3718,27 @@ class StockAnalysisPipeline:
             reset_run_diagnostic_context(diag_token)
             reset_frozen_target_date(token)
     
+    def _prefetch_batch_data(self, stock_codes: List[str], dry_run: bool) -> None:
+        # Small lists are cheaper to fetch individually.
+        if len(stock_codes) >= 5:
+            daily_prefetch_count = self.fetcher_manager.prefetch_daily_klines(stock_codes, days=30)
+            if daily_prefetch_count > 0:
+                logger.info(
+                    "[prefetch] component=daily_kline_prefetch action=complete "
+                    "provider=TickFlowFetcher cached=%d stock_count=%d",
+                    daily_prefetch_count,
+                    len(stock_codes),
+                )
+            if _is_current_stock_cancelled():
+                return
+            prefetch_count = self.fetcher_manager.prefetch_realtime_quotes(stock_codes)
+            if prefetch_count > 0:
+                logger.info("已启用批量预取架构：缓存 %d 条实时行情", prefetch_count)
+
+        # Issue #455: Skip name lookup for data-only runs.
+        if not dry_run and not _is_current_stock_cancelled():
+            self.fetcher_manager.prefetch_stock_names(stock_codes, use_bulk=False)
+
     def run(
         self,
         stock_codes: Optional[List[str]] = None,
@@ -3540,27 +3819,10 @@ class StockAnalysisPipeline:
         # 冻结本轮运行的统一参考时间，避免跨市场收盘边界时同批股票使用不同目标交易日。
         resume_reference_time = current_time or datetime.now(timezone.utc)
         
-        # === 批量预取实时行情（优化：避免每只股票都触发全量拉取）===
-        # 只有股票数量 >= 5 时才进行预取，少量股票直接逐个查询更高效
-        if len(stock_codes) >= 5:
-            daily_prefetch_count = self.fetcher_manager.prefetch_daily_klines(stock_codes, days=30)
-            if daily_prefetch_count > 0:
-                logger.info(
-                    "[prefetch] component=daily_kline_prefetch action=complete "
-                    "provider=TickFlowFetcher cached=%d stock_count=%d",
-                    daily_prefetch_count,
-                    len(stock_codes),
-                )
-
-            prefetch_count = self.fetcher_manager.prefetch_realtime_quotes(stock_codes)
-            if prefetch_count > 0:
-                logger.info(f"已启用批量预取架构：一次拉取全市场数据，{len(stock_codes)} 只股票共享缓存")
-
-        # Issue #455: 预取股票名称，避免并发分析时显示「股票xxxxx」
-        # dry_run 仅做数据拉取，不需要名称预取，避免额外网络开销
-        if not dry_run:
-            self.fetcher_manager.prefetch_stock_names(stock_codes, use_bulk=False)
-
+        per_stock_timeout = max(
+            0,
+            int(getattr(self.config, "per_stock_timeout_seconds", 300) or 0),
+        )
         # 单股推送模式（#55）：从配置读取
         single_stock_notify = getattr(self.config, 'single_stock_notify', False)
         # Issue #119: 从配置读取报告类型
@@ -3581,11 +3843,25 @@ class StockAnalysisPipeline:
             )
         
         results: List[AnalysisResult] = []
-        
-        # 使用线程池并发处理
+
+        # 使用线程池并发处理，并为单只股票卡死提供有界超时隔离
         # 注意：max_workers 设置较低（默认3）以避免触发反爬
-        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            # 提交任务
+        executor = (
+            _DaemonThreadStockExecutor(per_stock_timeout, self.max_workers)
+            if per_stock_timeout > 0
+            else ThreadPoolExecutor(max_workers=self.max_workers)
+        )
+        try:
+            if len(stock_codes) >= 5 or not dry_run:
+                if isinstance(executor, _DaemonThreadStockExecutor):
+                    prefetch = executor.submit_prefetch(
+                        lambda _: self._prefetch_batch_data(stock_codes, dry_run)
+                    )
+                    if prefetch is not None:
+                        prefetch.result()
+                else:
+                    self._prefetch_batch_data(stock_codes, dry_run)
+
             future_to_code = {}
             for idx, code in enumerate(stock_codes):
                 target = (
@@ -3608,38 +3884,48 @@ class StockAnalysisPipeline:
                     **submit_kwargs,
                 )
                 future_to_code[future] = code
-            
-            # 收集结果
-            for idx, future in enumerate(as_completed(future_to_code)):
-                code = future_to_code[future]
-                try:
-                    result = future.result()
-                    if result and result.success:
-                        results.append(result)
-                        if single_stock_notify and send_notification and not dry_run:
-                            self._send_single_stock_notification(
-                                result,
-                                report_type=report_type,
-                                fallback_code=code,
+
+            pending = set(future_to_code.keys())
+            completed_count = 0
+            while pending:
+                if isinstance(executor, _DaemonThreadStockExecutor):
+                    done = executor.wait_for_results(pending)
+                    if not done:
+                        break
+                    pending.difference_update(done)
+                else:
+                    done, pending = wait(pending, return_when=FIRST_COMPLETED)
+
+                for future in done:
+                    completed_count += 1
+                    code = future_to_code[future]
+                    try:
+                        result = future.result()
+                        if result and result.success:
+                            results.append(result)
+                            if single_stock_notify and send_notification and not dry_run:
+                                self._send_single_stock_notification(
+                                    result,
+                                    report_type=report_type,
+                                    fallback_code=code,
+                                )
+                        elif result and not result.success:
+                            logger.warning(
+                                f"[{code}] 分析结果标记为失败，不计入汇总: "
+                                f"{result.error_message or '未知原因'}"
                             )
-                    elif result and not result.success:
-                        logger.warning(
-                            f"[{code}] 分析结果标记为失败，不计入汇总: "
-                            f"{result.error_message or '未知原因'}"
-                        )
 
-                    # Issue #128: 分析间隔 - 在个股分析和大盘分析之间添加延迟
-                    if idx < len(stock_codes) - 1 and analysis_delay > 0:
-                        # 注意：此 sleep 发生在“主线程收集 future 的循环”中，
-                        # 并不会阻止线程池中的任务同时发起网络请求。
-                        # 因此它对降低并发请求峰值的效果有限；真正的峰值主要由 max_workers 决定。
-                        # 该行为目前保留（按需求不改逻辑）。
-                        logger.debug(f"等待 {analysis_delay} 秒后继续下一只股票...")
-                        time.sleep(analysis_delay)
+                        # Issue #128: 分析间隔 - 在个股分析和大盘分析之间添加延迟
+                        if completed_count < len(stock_codes) and analysis_delay > 0:
+                            logger.debug(f"等待 {analysis_delay} 秒后继续下一只股票...")
+                            time.sleep(analysis_delay)
 
-                except Exception as e:
-                    logger.error(f"[{code}] 任务执行失败: {e}")
-        
+                    except Exception as e:
+                        logger.error(f"[{code}] 任务执行失败: {e}")
+
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
+
         # 统计
         elapsed_time = time.time() - start_time
         

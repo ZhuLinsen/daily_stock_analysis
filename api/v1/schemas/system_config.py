@@ -99,6 +99,7 @@ class SystemConfigResponse(BaseModel):
     config_version: str
     mask_token: str
     items: List[SystemConfigItem]
+    llm_yaml_active: bool = False
     llm_model_providers: List[str] = Field(default_factory=list)
     updated_at: Optional[str] = None
 

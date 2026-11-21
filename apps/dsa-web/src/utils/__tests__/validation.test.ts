@@ -6,12 +6,21 @@ import {
 } from '../validation';
 
 describe('stock code validation', () => {
+  test.each(['BRK-B', 'BAC-PL'])('accepts Yahoo stock code %s', (code) => {
+    expect(validateStockCode(code.toLowerCase())).toEqual({ valid: true, normalized: code });
+    expect(isObviouslyInvalidStockQuery(code)).toBe(false);
+  });
+
   test.each([
     ['7203.T', '7203.T'],
     ['6758.t', '6758.T'],
     ['005930.KS', '005930.KS'],
     ['247540.kq', '247540.KQ'],
-  ])('accepts JP/KR Yahoo suffix code %s', (input, normalized) => {
+    ['2330.TW', '2330.TW'],
+    ['2330.tw', '2330.TW'],
+    ['6488.TWO', '6488.TWO'],
+    ['6488.two', '6488.TWO'],
+  ])('accepts JP/KR/TW Yahoo suffix code %s', (input, normalized) => {
     expect(looksLikeStockCode(input)).toBe(true);
     expect(validateStockCode(input)).toEqual({
       valid: true,
@@ -20,8 +29,8 @@ describe('stock code validation', () => {
     expect(isObviouslyInvalidStockQuery(input)).toBe(false);
   });
 
-  test.each(['7203', '005930.K', '035720.KRX'])(
-    'does not treat ambiguous JP/KR-like query %s as a valid suffix code',
+  test.each(['7203', '005930.K', '035720.KRX', '2330.TWW', '233.TW'])(
+    'does not treat ambiguous JP/KR/TW-like query %s as a valid suffix code',
     (input) => {
       const result = validateStockCode(input);
       expect(result.valid).toBe(false);

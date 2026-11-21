@@ -18,6 +18,26 @@ from src.services.stock_code_utils import (
 )
 
 
+_INTRADAY_EVAL_PHASES = frozenset({"intraday", "lunch_break", "closing_auction"})
+_LEGACY_T_MINUS_1_VERSIONS = frozenset({
+    "v1",
+    "1",
+    "1.0",
+    "skill-opinion-outcome-v1",
+    "decision-signal-v1",
+})
+
+
+def uses_intraday_session_start(engine_version: Optional[str]) -> bool:
+    """Return False for explicit legacy v1 engines that preserve T-1 intraday anchor."""
+    if engine_version is None:
+        return True
+    normalized = str(engine_version).strip().lower()
+    if not normalized:
+        return True
+    return normalized not in _LEGACY_T_MINUS_1_VERSIONS
+
+
 @dataclass(frozen=True)
 class DailyStockStartResolution:
     """Authoritative identity and start date before local bars are queried."""
@@ -39,6 +59,7 @@ def resolve_stock_daily_start(
     stock_code: Optional[str],
     context_snapshot: Any,
     analysis_date: Optional[date],
+    engine_version: Optional[str] = None,
 ) -> DailyStockStartResolution:
     """Resolve stock identity, validated phase context, and expected start."""
 
@@ -74,6 +95,17 @@ def resolve_stock_daily_start(
                 "invalid_market_phase_context",
             )
 
+    phase = (
+        str(phase_summary.get("phase") or "").strip().lower()
+        if isinstance(phase_summary, dict)
+        else ""
+    )
+    raw_session_date = (
+        phase_summary.get("session_date")
+        if isinstance(phase_summary, dict)
+        else None
+    )
+
     effective_date_value = (
         phase_summary.get("effective_daily_bar_date")
         if isinstance(phase_summary, dict)
@@ -107,18 +139,45 @@ def resolve_stock_daily_start(
                 "invalid_effective_daily_bar_date",
                 legacy_backtest_start_date=effective_date,
             )
+        use_intraday_t = uses_intraday_session_start(engine_version)
+        # Intraday / lunch / closing-auction analyses already observed session T
+        # price action; anchor evaluation at session T close instead of T-1 close
+        # so the T-1 -> T intraday move is not counted as forward alpha.
+        if use_intraday_t and phase in _INTRADAY_EVAL_PHASES:
+            intraday_session = _parse_date(raw_session_date) if raw_session_date else analysis_date
+            if (
+                intraday_session is not None
+                and intraday_session <= analysis_date
+                and intraday_session > effective_date
+                and resolve_historical_daily_bar_date(
+                    identity.market,
+                    intraday_session,
+                    "postmarket",
+                )
+                == intraday_session
+            ):
+                return DailyStockStartResolution(identity, intraday_session, None)
         return DailyStockStartResolution(identity, effective_date, None)
 
-    phase = (
-        phase_summary.get("phase")
-        if isinstance(phase_summary, dict)
-        else None
-    )
-    expected_start_date = resolve_historical_daily_bar_date(
-        identity.market,
-        analysis_date,
-        phase,
-    )
+    if uses_intraday_session_start(engine_version) and phase in _INTRADAY_EVAL_PHASES:
+        intraday_session = _parse_date(raw_session_date) if raw_session_date else analysis_date
+        if intraday_session is None or intraday_session > analysis_date:
+            return DailyStockStartResolution(
+                identity,
+                None,
+                "unresolvable_expected_start_date",
+            )
+        expected_start_date = resolve_historical_daily_bar_date(
+            identity.market,
+            intraday_session,
+            "postmarket",
+        )
+    else:
+        expected_start_date = resolve_historical_daily_bar_date(
+            identity.market,
+            analysis_date,
+            phase or None,
+        )
     if expected_start_date is None:
         return DailyStockStartResolution(
             identity,

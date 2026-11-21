@@ -1931,11 +1931,17 @@ textarea {
   padding: 4px 6px;
 }
 
+.home-markdown-prose :where(td) {
+  /* Keep short labels and values readable when long text can break anywhere. */
+  min-width: 8ch;
+  overflow-wrap: anywhere;
+}
+
 .home-markdown-prose :where(table) {
   display: block;
   width: 100%;
   overflow-x: auto;
-  white-space: nowrap;
+  white-space: normal;
 }
 
 .home-markdown-prose :where(th) {
@@ -2921,4 +2927,9 @@ textarea {
   .backtest-table-scroll-hint {
     text-align: left;
   }
+}
+
+.num {
+  font-variant-numeric: tabular-nums slashed-zero;
+  font-feature-settings: "tnum" 1, "zero" 1;
 }

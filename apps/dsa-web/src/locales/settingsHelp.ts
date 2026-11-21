@@ -991,10 +991,18 @@ const settingsHelpZhCN: SettingsHelpMap = {
   'settings.agent.AGENT_RISK_OVERRIDE': {
     title: '风险 Agent 否决权',
     summary: '允许风险 Agent 在检测到关键风险信号时否决买入信号。',
-    usage: '开启后，full/specialist 模式中的风险 Agent 可将买入建议降级为观望或卖出。',
-    valueNotes: ['仅在 AGENT_ORCHESTRATOR_MODE 包含风险阶段时生效。'],
+    usage: '开启后，重要风险信号可将买入建议降级为观望或卖出。',
+    valueNotes: ['full 和 specialist 包含风险阶段。quick 和 standard 在触发证据辩论时也会运行风险阶段。'],
     impact: ['影响最终投资建议的风险保守程度。'],
-    notes: ['关闭后风险 Agent 的意见仅作参考，不会否决决策。'],
+    notes: ['关闭后，已完成的风险审查仅作参考。证据辩论要求的审查未完成时仍暂缓买入。'],
+  },
+  'settings.agent.AGENT_DEBATE_ENABLED': {
+    title: '条件触发多空证据辩论',
+    summary: '在多策略分歧或高确信买入时触发结构化 Bull/Bear 证据对照与风控必审。',
+    usage: '默认关闭（false）。仅在 AGENT_ARCH=multi 时生效，前序意见出现方向分歧或买入置信度达到 0.75 时触发。',
+    valueNotes: ['quick 和 standard 在触发后运行风险阶段，full 使用已有风险阶段，specialist 在策略评估后运行风险阶段。'],
+    impact: ['影响多策略决策综合阶段的证据对照与风控审视强度。'],
+    notes: ['风险审查失败或因运行预算跳过时，系统暂缓买入。'],
   },
   'settings.agent.DEEP_RESEARCH': {
     title: 'Deep Research',
@@ -2224,10 +2232,18 @@ const settingsHelpEnUS: SettingsHelpMap = {
   'settings.agent.AGENT_RISK_OVERRIDE': {
     title: 'Risk Agent Veto',
     summary: 'Allows the risk agent to veto buy signals when critical risk flags are detected.',
-    usage: 'When enabled, the risk agent in full/specialist mode can downgrade buy recommendations to hold or sell.',
-    valueNotes: ['Only effective when AGENT_ORCHESTRATOR_MODE includes the risk stage.'],
+    usage: 'When enabled, material risk signals can downgrade buy recommendations to hold or sell.',
+    valueNotes: ['Full and specialist include a risk stage. Quick and standard also run it when the evidence debate triggers.'],
     impact: ['Affects the risk conservatism of final investment recommendations.'],
-    notes: ['When disabled, the risk agent opinion is advisory only and cannot override decisions.'],
+    notes: ['When disabled, completed reviews are advisory. An incomplete review required by the evidence debate still defers buying.'],
+  },
+  'settings.agent.AGENT_DEBATE_ENABLED': {
+    title: 'Conditional Bull/Bear Evidence Debate',
+    summary: 'Triggers an evidence-bound Bull/Bear contrast brief and mandatory risk review on strategy disagreement or high-conviction buy signals.',
+    usage: 'Defaults to false. With AGENT_ARCH=multi, triggers on directional disagreement or a buy opinion with at least 0.75 confidence.',
+    valueNotes: ['Quick and standard run a risk stage when triggered. Full uses its existing risk stage. Specialist runs it after strategy evaluation.'],
+    impact: ['Enhances evidence traceability and risk review before final decision synthesis.'],
+    notes: ['If the review fails or runs out of time, the system defers buying.'],
   },
   'settings.agent.DEEP_RESEARCH': {
     title: 'Deep Research',
