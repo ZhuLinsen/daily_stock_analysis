@@ -99,7 +99,11 @@ def _canonical_symbol(symbol: str, market: str) -> Optional[str]:
     if market == "hk":
         return f"HK{code.zfill(5)}" if code.isdigit() and len(code) <= 5 else None
     if market == "jp":
-        return f"{code}.T" if code.isdigit() and len(code) in (4, 5) else None
+        if len(code) not in (4, 5):
+            return None
+        if code.isdigit() or (code.isalnum() and any(ch.isdigit() for ch in code)):
+            return f"{code}.T"
+        return None
     return None
 
 
@@ -292,10 +296,15 @@ def parse_statement(xml_bytes: bytes) -> StatementParseResult:
             "请为每个账户配置单独的 Flex Query"
         )
 
-    if not saw_trades_section and not saw_cash_section:
+    if not saw_trades_section or not saw_cash_section:
+        missing = []
+        if not saw_trades_section:
+            missing.append("Trades")
+        if not saw_cash_section:
+            missing.append("CashTransactions")
         raise IbkrPortfolioError(
-            "IBKR Flex 报表缺少 Trades 与 CashTransactions 分区；"
-            "账本同步需要包含这两个分区的完整 Flex Query（而非仅 Open Positions）"
+            f"IBKR Flex 报表缺少 {' / '.join(missing)} 分区；"
+            "账本同步需要同时包含 Trades 与 CashTransactions 的完整 Flex Query（而非仅 Open Positions）"
         )
 
     return result

@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
+from sqlalchemy.exc import IntegrityError
+
 from data_provider.base import canonical_stock_code, normalize_stock_code
 from src.config import get_config
 from src.repositories.portfolio_repo import (
@@ -276,26 +278,34 @@ class PortfolioService:
         if amount <= 0:
             raise ValueError("amount must be > 0")
         source_uid_norm = (source_uid or "").strip() or None
-        with self.repo.portfolio_write_session() as session:
-            account = self._require_active_account_in_session(session=session, account_id=account_id)
-            if source_uid_norm and self.repo.has_cash_source_uid_in_session(
-                session=session, account_id=account_id, source_uid=source_uid_norm
-            ):
-                raise PortfolioConflictError(
-                    f"Duplicate cash source_uid for account_id={account_id}: {source_uid_norm}"
+        try:
+            with self.repo.portfolio_write_session() as session:
+                account = self._require_active_account_in_session(session=session, account_id=account_id)
+                if source_uid_norm and self.repo.has_cash_source_uid_in_session(
+                    session=session, account_id=account_id, source_uid=source_uid_norm
+                ):
+                    raise PortfolioConflictError(
+                        f"Duplicate cash source_uid for account_id={account_id}: {source_uid_norm}"
+                    )
+                currency_norm = self._normalize_currency(currency or account.base_currency)
+                row = self.repo.add_cash_ledger_in_session(
+                    session=session,
+                    account_id=account_id,
+                    event_date=event_date,
+                    direction=direction_norm,
+                    amount=float(amount),
+                    currency=currency_norm,
+                    note=(note or "").strip() or None,
+                    source_uid=source_uid_norm,
                 )
-            currency_norm = self._normalize_currency(currency or account.base_currency)
-            row = self.repo.add_cash_ledger_in_session(
-                session=session,
-                account_id=account_id,
-                event_date=event_date,
-                direction=direction_norm,
-                amount=float(amount),
-                currency=currency_norm,
-                note=(note or "").strip() or None,
-                source_uid=source_uid_norm,
-            )
-            return {"id": int(row.id)}
+                return {"id": int(row.id)}
+        except IntegrityError:
+            # The partial UNIQUE index on (account_id, source_uid) is the
+            # authoritative guard: a concurrent sync can pass the pre-insert
+            # check and then collide at flush/commit time.
+            raise PortfolioConflictError(
+                f"Duplicate cash source_uid for account_id={account_id}: {source_uid_norm}"
+            ) from None
 
     def record_corporate_action(
         self,

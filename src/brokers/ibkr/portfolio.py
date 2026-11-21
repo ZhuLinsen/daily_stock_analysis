@@ -36,8 +36,15 @@ def _to_analysis_code(symbol: str, listing_exchange: str) -> Optional[str]:
     if exchange in _HK_EXCHANGES:
         return f"HK{code.zfill(5)}" if code.isdigit() and len(code) <= 5 else None
     if exchange in _JP_EXCHANGES:
-        return f"{code}.T" if code.isdigit() and len(code) in (4, 5) else None
+        return f"{code}.T" if _is_jp_base(code) else None
     return None
+
+
+def _is_jp_base(code: str) -> bool:
+    """Return whether a symbol is a valid Tokyo base (4-5 digits or 130A-style)."""
+    if len(code) not in (4, 5):
+        return False
+    return code.isdigit() or (code.isalnum() and any(ch.isdigit() for ch in code))
 
 
 def _open_position_rows(xml_bytes: bytes) -> Iterable[ET.Element]:

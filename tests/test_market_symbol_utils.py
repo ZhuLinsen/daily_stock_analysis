@@ -35,3 +35,21 @@ def test_bare_base_lookup_is_only_allowed_for_jp_kr_mvp() -> None:
     assert suffix_base_lookup_allowed("247540.KQ") is True
     assert suffix_base_lookup_allowed("2330.TW") is False
     assert suffix_base_lookup_allowed("6505.TWO") is False
+
+
+def test_jp_alphanumeric_tickers_are_supported() -> None:
+    # JPX issues alphanumeric codes such as 130A; Yahoo lists them as 130A.T.
+    assert get_suffix_market("130A.T") == "jp"
+    assert get_suffix_market("130a.t") == "jp"
+    assert normalize_suffix_market_symbol("130a.t") == "130A.T"
+    assert is_suffix_market_symbol("130A.T", "jp") is True
+
+
+def test_jp_rule_does_not_capture_pure_letter_bases() -> None:
+    # Pure-letter dotted US shapes must stay out of the JP rule.
+    assert get_suffix_market("ABCD.T") is None
+    assert get_suffix_market("AAPL.T") is None
+    # Digits remain mandatory for alphanumeric bases.
+    assert get_suffix_market("13AA.T") == "jp"
+    assert get_suffix_market("A13A.T") == "jp"
+    assert get_suffix_market("13AB5.T") == "jp"

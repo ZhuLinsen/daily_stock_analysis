@@ -59,11 +59,16 @@ def _statement(*sections: str) -> bytes:
 
 
 def _with_trades(*trades: str) -> bytes:
-    return _statement(f"<Trades>{''.join(trades)}</Trades>")
+    # A valid ledger statement always carries both required sections.
+    return _statement(
+        f"<Trades>{''.join(trades)}</Trades><CashTransactions></CashTransactions>"
+    )
 
 
 def _with_cash(*rows: str) -> bytes:
-    return _statement(f"<CashTransactions>{''.join(rows)}</CashTransactions>")
+    return _statement(
+        f"<Trades></Trades><CashTransactions>{''.join(rows)}</CashTransactions>"
+    )
 
 
 class IbkrStatementParseTest(unittest.TestCase):
@@ -187,8 +192,25 @@ class IbkrStatementParseTest(unittest.TestCase):
             '<OpenPositions><OpenPosition assetCategory="STK" symbol="AAPL" '
             'listingExchange="NASDAQ" position="10" /></OpenPositions>'
         )
-        with self.assertRaisesRegex(IbkrPortfolioError, "缺少 Trades 与 CashTransactions"):
+        with self.assertRaisesRegex(IbkrPortfolioError, "Trades / CashTransactions"):
             s.parse_statement(xml)
+
+    def test_trades_only_statement_fails(self) -> None:
+        xml = _statement(f"<Trades>{_trade()}</Trades>")
+        with self.assertRaisesRegex(IbkrPortfolioError, "CashTransactions"):
+            s.parse_statement(xml)
+
+    def test_cash_only_statement_fails(self) -> None:
+        xml = _statement(f"<CashTransactions>{_cash()}</CashTransactions>")
+        with self.assertRaisesRegex(IbkrPortfolioError, "Trades"):
+            s.parse_statement(xml)
+
+    def test_jp_alphanumeric_trade_symbol(self) -> None:
+        result = s.parse_statement(
+            _with_trades(_trade(symbol="130A", listingExchange="TSEJ", currency="JPY"))
+        )
+        self.assertEqual(result.trades[0].symbol, "130A.T")
+        self.assertEqual(result.trades[0].market, "jp")
 
     def test_multi_account_rows_fail(self) -> None:
         xml = _statement(

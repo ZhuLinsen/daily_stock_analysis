@@ -603,7 +603,13 @@ class PortfolioCashLedger(Base):
 
     __table_args__ = (
         Index('ix_portfolio_cash_account_date', 'account_id', 'event_date'),
-        Index('ix_portfolio_cash_source_uid', 'account_id', 'source_uid'),
+        Index(
+            'ix_portfolio_cash_source_uid',
+            'account_id',
+            'source_uid',
+            unique=True,
+            sqlite_where=text('source_uid IS NOT NULL'),
+        ),
     )
 
 
@@ -1806,7 +1812,9 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
 
         Enables idempotent broker-sync imports (e.g. IBKR Flex deposits) by
         carrying the broker's stable transaction id on cash events, mirroring
-        the existing ``trade_uid`` dedup on trades.
+        the existing ``trade_uid`` dedup on trades. A partial UNIQUE index on
+        ``(account_id, source_uid)`` makes the dedup atomic, so concurrent syncs
+        cannot double-record the same deposit.
         """
         if not self._is_sqlite_engine:
             return
@@ -1824,17 +1832,28 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                 exc,
             )
             raise
-        if "source_uid" in existing:
-            return
-        try:
-            with self._engine.begin() as connection:
-                connection.exec_driver_sql(
-                    f"ALTER TABLE {PortfolioCashLedger.__tablename__} "
-                    "ADD COLUMN source_uid VARCHAR(128)"
-                )
-        except OperationalError as exc:
-            if not self._is_sqlite_duplicate_column_error(exc, "source_uid"):
-                raise
+        if "source_uid" not in existing:
+            try:
+                with self._engine.begin() as connection:
+                    connection.exec_driver_sql(
+                        f"ALTER TABLE {PortfolioCashLedger.__tablename__} "
+                        "ADD COLUMN source_uid VARCHAR(128)"
+                    )
+            except OperationalError as exc:
+                if not self._is_sqlite_duplicate_column_error(exc, "source_uid"):
+                    raise
+
+        # Replace the plain index with a partial UNIQUE index (idempotent), so a
+        # concurrent insert cannot pass the pre-insert existence check.
+        with self._engine.begin() as connection:
+            connection.exec_driver_sql(
+                "DROP INDEX IF EXISTS ix_portfolio_cash_source_uid"
+            )
+            connection.exec_driver_sql(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ix_portfolio_cash_source_uid "
+                f"ON {PortfolioCashLedger.__tablename__} (account_id, source_uid) "
+                "WHERE source_uid IS NOT NULL"
+            )
 
     def _ensure_stock_daily_canonical_id(self) -> None:
         """Self-healing migration: add + backfill the ``canonical_id`` column.

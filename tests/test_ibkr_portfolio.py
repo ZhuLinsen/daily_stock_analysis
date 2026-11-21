@@ -25,11 +25,13 @@ def _position(symbol, exchange, position="10", category="STK", currency="USD", d
     )
 
 
-def _statement(*rows, section=True):
+def _statement(*rows, section=True, to_date=None):
     body = f"<OpenPositions>{''.join(rows)}</OpenPositions>" if section else "<Trades />"
+    # Keep the statement period recent so the freshness guard does not reject it.
+    to_date = to_date or date.today().strftime("%Y%m%d")
     return (
         '<FlexQueryResponse queryName="test" type="AF"><FlexStatements count="1">'
-        '<FlexStatement accountId="U0000000" fromDate="20260101" toDate="20261117" period="YearToDate">'
+        f'<FlexStatement accountId="U0000000" fromDate="20260101" toDate="{to_date}" period="YearToDate">'
         f"{body}</FlexStatement></FlexStatements></FlexQueryResponse>"
     ).encode()
 

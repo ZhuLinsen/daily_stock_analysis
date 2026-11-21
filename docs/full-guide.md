@@ -871,7 +871,7 @@ GitHub Actions 每日工作流（`.github/workflows/00-daily-analysis.yml`）把
 python -m src.brokers.ibkr.sync
 ```
 
-首次导入可用 `--since 2024-01-01` 回填历史（按 ≤365 天分窗），默认同步最近约 400 天；`--dry-run` 只解析不写入，`--account-id` 指定目标账本账户（存在多个账户且没有唯一 IBKR 账户时必填）。同步是幂等的：成交按 IBKR `tradeID` 去重，存取款按现金流水的 `source_uid`（IBKR `transactionID`）去重，重复运行不会重复入账。导入范围仅限股票成交（按 `buySell` 方向）与 Deposits/Withdrawals；货币兑换（FX）、分红、预扣税、费用、公司行为（拆合股）以及不支持交易所（如 BM / SBF / LSE / IBIS）的持仓会记录日志后跳过。现金流水新增 `source_uid` 列由启动时的自动迁移补齐，历史数据不受影响。同步结果会以 JSON 输出导入 / 去重 / 跳过 / 错误计数。
+首次导入可用 `--since 2024-01-01` 回填历史（按 ≤365 天分窗），默认同步最近约 400 天；`--dry-run` 只解析不写入。目标账本账户固定按 `broker=IBKR` 匹配：只有一个 IBKR 账户时自动使用，存在多个时用 `--account-id` 指定；如果没有 broker=IBKR 的账户，同步会直接失败而不会写入其他券商账户，避免混记两个券商的持仓与现金。Flex 报表必须同时包含 Trades 与 CashTransactions 分区，缺少任一分区都会明确报错，不会把配置错误的查询当成「没有成交/没有现金流水」的静默成功。同步是幂等的：成交按 IBKR `tradeID` 去重，存取款按现金流水的 `source_uid`（IBKR `transactionID`）去重，且 `(account_id, source_uid)` 上有部分唯一索引，并发同步也不会重复入账。导入范围仅限股票成交（按 `buySell` 方向）与 Deposits/Withdrawals；货币兑换（FX）、分红、预扣税、费用、公司行为（拆合股）以及不支持交易所（如 BM / SBF / LSE / IBIS）的持仓会记录日志后跳过。本地账本为多头模型，无法表示空头：某标的卖出因可卖数量不足而失败后，本轮会跳过该标的的后续成交，避免随后的买回成交被记成虚假多头；跳过的数量在同步摘要的 `trades_skipped_unbalanced` 中给出。现金流水与部分唯一索引由启动时的自动迁移补齐，历史数据不受影响。同步结果会以 JSON 输出导入 / 去重 / 跳过 / 错误计数。
 
 ### Futu 真实持仓作为分析列表
 
@@ -903,7 +903,7 @@ OpenD 默认地址为 `127.0.0.1:11111`，可用 `FUTU_OPEND_HOST` / `FUTU_OPEND
 python main.py --portfolio ibkr
 ```
 
-`--portfolio ibkr` 每次分析前都会通过 Flex Web Service 重新下载报表（`SendRequest` 获取 reference code 后轮询 `GetStatement`；报表生成中、服务繁忙或限流时有限次重试），不需要额外依赖。持仓取自 Open Positions 分区，反映 IBKR 最近一次报表日（通常为上一交易日）的持仓。只有 `assetCategory=STK` 且数量为正的持仓会进入分析，同一持仓的多个 lot 会按代码去重；期权、期货、外汇及空头持仓会被排除。代码转换仅支持 `listingExchange` 为 NASDAQ / NYSE / ARCA / AMEX / BATS（美股；`BRK B` 这类类股会跳过）、SEHK（港股，如 `700` → `HK00700`）和 TSEJ（日股，如 `7203` → `7203.T`）的持仓；其他交易所（如 BM、SBF、LSE、IBIS）的持仓会在日志中以 `代码@交易所` 列出并跳过。Flex 查询缺少 Open Positions 分区、token / query id 无效、XML 无法解析、或股票持仓缺少代码 / 数量无效时，整次导入会明确失败，不会返回静默截断的结果；错误信息与日志不会包含 token。
+`--portfolio ibkr` 每次分析前都会通过 Flex Web Service 重新下载报表（`SendRequest` 获取 reference code 后轮询 `GetStatement`；报表生成中、服务繁忙或限流时有限次重试），不需要额外依赖。持仓取自 Open Positions 分区，反映 IBKR 最近一次报表日（通常为上一交易日）的持仓。只有 `assetCategory=STK` 且数量为正的持仓会进入分析，同一持仓的多个 lot 会按代码去重；期权、期货、外汇及空头持仓会被排除。代码转换仅支持 `listingExchange` 为 NASDAQ / NYSE / ARCA / AMEX / BATS（美股；`BRK B` 这类类股会跳过）、SEHK（港股，如 `700` → `HK00700`）和 TSEJ（日股，如 `7203` → `7203.T`，也支持 `130A` 这类字母数字代码 → `130A.T`）的持仓；其他交易所（如 BM、SBF、LSE、IBIS）的持仓会在日志中以 `代码@交易所` 列出并跳过。Flex 查询缺少 Open Positions 分区、token / query id 无效、XML 无法解析、或股票持仓缺少代码 / 数量无效时，整次导入会明确失败，不会返回静默截断的结果；错误信息与日志不会包含 token。
 
 `--stocks` 覆盖、定时模式每轮重新读取、无符合条件持仓时跳过个股分析、单次 CLI 失败退出码以及服务 / 调度模式下记录错误后继续运行的语义，与 Futu 持仓导入一致。
 

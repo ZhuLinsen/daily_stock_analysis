@@ -15,7 +15,7 @@ import json
 import logging
 import os
 from datetime import date, timedelta
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 from src.brokers.ibkr.flex import IbkrPortfolioError, download_flex_statement
 from src.brokers.ibkr.statement import StatementParseResult, TradeRecord, parse_statement
@@ -53,16 +53,21 @@ def _resolve_account_id(service: PortfolioService, account_id: Optional[int]) ->
     accounts = service.list_accounts(include_inactive=False)
     if not accounts:
         raise IbkrPortfolioError("没有可用的持仓账户，请先创建 IBKR 账户")
-    if len(accounts) == 1:
-        return int(accounts[0]["id"])
 
+    # Filter by broker BEFORE the single-account shortcut: a sole active account
+    # may belong to another broker (e.g. Futu), and importing IBKR trades into
+    # it would silently mix two brokers' positions and cash.
     ibkr_accounts = [
         a for a in accounts if (a.get("broker") or "").strip().lower() == "ibkr"
     ]
     if len(ibkr_accounts) == 1:
         return int(ibkr_accounts[0]["id"])
+    if len(ibkr_accounts) > 1:
+        raise IbkrPortfolioError(
+            "存在多个 IBKR 持仓账户，请用 --account-id 指定目标账户"
+        )
     raise IbkrPortfolioError(
-        "存在多个持仓账户，请用 --account-id 指定目标账户"
+        "没有 broker=IBKR 的持仓账户，请先创建 IBKR 账户，或用 --account-id 显式指定目标账户"
     )
 
 
@@ -145,12 +150,21 @@ def sync_ibkr_portfolio(
         "skipped_cash_count": len(parsed.skipped_cash),
         "skipped_corporate_actions": parsed.skipped_corporate_actions[:20],
         "skipped_corporate_actions_count": len(parsed.skipped_corporate_actions),
+        "trades_skipped_unbalanced": 0,
         "errors": [],
     }
+
+    blocked_symbols: Set[str] = set()
 
     for record in trades:
         if dry_run:
             summary["trades_inserted"] += 1
+            continue
+        # After an oversell for a symbol, stop importing its later executions in
+        # this run. The ledger is long-only, so a skipped short open followed by a
+        # buy-to-cover would otherwise become a phantom long position.
+        if record.symbol in blocked_symbols:
+            summary["trades_skipped_unbalanced"] += 1
             continue
         try:
             service.record_trade(
@@ -171,6 +185,7 @@ def sync_ibkr_portfolio(
         except PortfolioConflictError:
             summary["trades_duplicate"] += 1
         except PortfolioOversellError as exc:
+            blocked_symbols.add(record.symbol)
             summary["errors"].append(f"oversell {record.symbol}@{record.trade_date}: {exc}")
         except Exception as exc:  # defensive: one bad row must not abort the sync
             summary["errors"].append(f"trade {record.symbol}: {exc}")

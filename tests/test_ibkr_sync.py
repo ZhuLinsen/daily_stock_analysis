@@ -23,7 +23,7 @@ def _statement(*trades: str) -> bytes:
     return (
         '<FlexQueryResponse queryName="test" type="AF"><FlexStatements count="1">'
         '<FlexStatement accountId="U0000000" fromDate="20260101" toDate="20261117" period="YearToDate">'
-        f"<Trades>{''.join(trades)}</Trades>"
+        f"<Trades>{''.join(trades)}</Trades><CashTransactions></CashTransactions>"
         "</FlexStatement></FlexStatements></FlexQueryResponse>"
     ).encode()
 
@@ -101,6 +101,26 @@ class IbkrSyncTest(unittest.TestCase):
         self.assertTrue(any("oversell" in e for e in summary["errors"]))
         self.assertEqual(summary["trades_inserted"], 0)
 
+    def test_symbol_is_blocked_after_oversell_to_avoid_phantom_long(self) -> None:
+        # Short open fails as oversell, then the buy-to-cover must NOT be imported.
+        service = self._service()
+        service.record_trade.side_effect = PortfolioOversellError(
+            symbol="AAPL", trade_date=date(2026, 1, 2), requested_quantity=10, available_quantity=0
+        )
+        statement = _statement(
+            _trade("AAPL", "SELL", "100", trade_date="20260102"),
+            _trade("AAPL", "BUY", "101", trade_date="20260103"),
+        )
+        with patch.object(sync, "PortfolioService", return_value=service), patch.object(
+            sync, "download_flex_statement", side_effect=[statement, _statement()]
+        ):
+            summary = sync.sync_ibkr_portfolio()
+
+        # Only the first (failing) attempt reached record_trade; the cover was skipped.
+        self.assertEqual(service.record_trade.call_count, 1)
+        self.assertEqual(summary["trades_inserted"], 0)
+        self.assertEqual(summary["trades_skipped_unbalanced"], 1)
+
     def test_dry_run_parses_but_does_not_write(self) -> None:
         service = self._service()
         with patch.object(sync, "PortfolioService", return_value=service), patch.object(
@@ -125,7 +145,23 @@ class IbkrSyncTest(unittest.TestCase):
         self.assertEqual(sync._resolve_account_id(service, 8), 8)
 
         service.list_accounts.return_value = [{"id": 7, "broker": "A"}, {"id": 8, "broker": "B"}]
-        with self.assertRaisesRegex(IbkrPortfolioError, "account-id"):
+        with self.assertRaisesRegex(IbkrPortfolioError, "broker=IBKR"):
+            sync._resolve_account_id(service, None)
+
+    def test_resolve_account_id_never_uses_a_non_ibkr_account(self) -> None:
+        service = MagicMock()
+        # A sole active account belonging to another broker must not be reused.
+        service.list_accounts.return_value = [{"id": 3, "broker": "Futu"}]
+        with self.assertRaisesRegex(IbkrPortfolioError, "broker=IBKR"):
+            sync._resolve_account_id(service, None)
+
+    def test_resolve_account_id_rejects_multiple_ibkr_accounts(self) -> None:
+        service = MagicMock()
+        service.list_accounts.return_value = [
+            {"id": 1, "broker": "IBKR"},
+            {"id": 2, "broker": "IBKR"},
+        ]
+        with self.assertRaisesRegex(IbkrPortfolioError, "多个 IBKR"):
             sync._resolve_account_id(service, None)
 
     def test_chunk_windows_respects_365_day_limit(self) -> None:

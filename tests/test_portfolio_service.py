@@ -192,6 +192,45 @@ class PortfolioServiceTestCase(unittest.TestCase):
         )
         self.assertEqual(self.service.list_cash_ledger_events(account_id=aid)["total"], 3)
 
+    def test_cash_source_uid_has_atomic_unique_index(self) -> None:
+        # The pre-insert check is not enough under concurrency; a partial UNIQUE
+        # index must reject a duplicate (account_id, source_uid) at the DB level.
+        from sqlalchemy.exc import IntegrityError
+
+        kid = self.service.create_account(
+            name="ibkr-atomic", broker="IBKR", market="us", base_currency="EUR"
+        )["id"]
+        self.service.record_cash_ledger(
+            account_id=kid,
+            event_date=date(2026, 1, 5),
+            direction="in",
+            amount=10,
+            currency="EUR",
+            source_uid="dup-uid-1",
+        )
+        # Bypass the service check and insert directly: the unique index must fire.
+        from src.repositories.portfolio_repo import PortfolioRepository
+
+        repo = PortfolioRepository()
+        with self.assertRaises(IntegrityError):
+            repo.add_cash_ledger(
+                account_id=kid,
+                event_date=date(2026, 1, 5),
+                direction="in",
+                amount=10,
+                currency="EUR",
+                source_uid="dup-uid-1",
+            )
+        # Multiple NULL source_uid rows are still allowed (partial index).
+        repo.add_cash_ledger(
+            account_id=kid, event_date=date(2026, 1, 6), direction="in",
+            amount=1, currency="EUR", source_uid=None,
+        )
+        repo.add_cash_ledger(
+            account_id=kid, event_date=date(2026, 1, 7), direction="in",
+            amount=1, currency="EUR", source_uid=None,
+        )
+
     def test_current_snapshot_uses_realtime_price_when_close_missing(self) -> None:
         today = date.today()
         account = self.service.create_account(name="Main", broker="Demo", market="cn", base_currency="CNY")
