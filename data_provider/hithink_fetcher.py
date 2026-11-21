@@ -72,9 +72,6 @@ _ADJUSTMENTS = {"none", "forward", "backward"}
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 # Stay under the documented 10-year window, including the end-of-day timestamp.
 _MAX_WINDOW_DAYS = 3600
-# Friday to the next Monday is three calendar days. A longer hole is not a
-# weekend, so those dates stay uncovered until a response actually returns them.
-_MAX_SESSION_GAP_DAYS = 3
 _MAX_BATCH_SYMBOLS = 10
 _AUTH_CODES = {2001}
 _CAPABILITY_DENIED_CODE = 2003
@@ -550,21 +547,45 @@ class HiThinkFetcher(BaseFetcher):
         parsed = pd.to_datetime(frame["date"], errors="coerce").dropna()
         return sorted({value.strftime("%Y-%m-%d") for value in parsed})
 
+    @staticmethod
+    def _only_weekend(first: datetime, last: datetime) -> bool:
+        """True when every day from first through last is Saturday or Sunday.
+
+        An empty range (last before first) is already covered by a session.
+        """
+        if last < first:
+            return True
+        cursor = first
+        while cursor <= last:
+            if cursor.weekday() < 5:
+                return False
+            cursor += timedelta(days=1)
+        return True
+
+    @classmethod
+    def _sessions_continue(cls, previous: str, current: str) -> bool:
+        """Join the next session only when no weekday is missing.
+
+        A three-day calendar gap is a weekend only from Friday to Monday.
+        Tuesday to Friday is the same distance and skips two trading days.
+        """
+        prev = datetime.strptime(previous, "%Y-%m-%d")
+        nxt = datetime.strptime(current, "%Y-%m-%d")
+        gap = (nxt - prev).days
+        if gap == 1:
+            return True
+        return gap == 3 and prev.weekday() == 4 and nxt.weekday() == 0
+
     @classmethod
     def _session_spans(cls, dates: List[str]) -> List[Tuple[str, str]]:
-        """Join only sessions separated by a weekend.
-
-        A single bar, or two bars with a longer hole between them, stays two
-        uncovered gaps rather than one span that later reads can reuse.
-        """
+        """Join consecutive sessions and a Friday-to-Monday weekend only."""
         spans: List[Tuple[str, str]] = []
         for day in dates:
             if not spans:
                 spans.append((day, day))
                 continue
             start, end = spans[-1]
-            gap = (datetime.strptime(day, "%Y-%m-%d") - datetime.strptime(end, "%Y-%m-%d")).days
-            if 0 < gap <= _MAX_SESSION_GAP_DAYS:
+            if cls._sessions_continue(end, day):
                 spans[-1] = (start, day)
                 continue
             spans.append((day, day))
@@ -578,9 +599,14 @@ class HiThinkFetcher(BaseFetcher):
         span_start, span_end = spans[0]
         if span_start < start_date or span_end > end_date:
             return False
-        start_gap = (datetime.strptime(span_start, "%Y-%m-%d") - datetime.strptime(start_date, "%Y-%m-%d")).days
-        end_gap = (datetime.strptime(end_date, "%Y-%m-%d") - datetime.strptime(span_end, "%Y-%m-%d")).days
-        return start_gap <= _MAX_SESSION_GAP_DAYS and end_gap <= _MAX_SESSION_GAP_DAYS
+        start = datetime.strptime(start_date, "%Y-%m-%d")
+        end = datetime.strptime(end_date, "%Y-%m-%d")
+        first = datetime.strptime(span_start, "%Y-%m-%d")
+        last = datetime.strptime(span_end, "%Y-%m-%d")
+        return cls._only_weekend(start, first - timedelta(days=1)) and cls._only_weekend(
+            last + timedelta(days=1),
+            end,
+        )
 
     def _store_daily(self, thscode: str, start_date: str, end_date: str, frame: pd.DataFrame) -> bool:
         # An empty payload is a valid response, but it is not evidence that the

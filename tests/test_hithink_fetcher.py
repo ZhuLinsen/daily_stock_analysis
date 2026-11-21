@@ -417,9 +417,9 @@ class HiThinkFetcherTests(unittest.TestCase):
             "data_provider.hithink_fetcher.requests.get",
             side_effect=[_response(first), _response(second)],
         ) as request:
-            fetcher.get_daily_data("600519", start_date="2024-01-01", end_date="2024-01-05")
+            fetcher.get_daily_data("600519", start_date="2024-01-02", end_date="2024-01-05")
             fetcher.get_daily_data("600519", start_date="2024-01-06", end_date="2024-01-10")
-            frame = fetcher.get_daily_data("600519", start_date="2024-01-01", end_date="2024-01-10")
+            frame = fetcher.get_daily_data("600519", start_date="2024-01-02", end_date="2024-01-10")
 
         self.assertEqual(request.call_count, 2)
         self.assertEqual(
@@ -444,10 +444,10 @@ class HiThinkFetcherTests(unittest.TestCase):
             "data_provider.hithink_fetcher.requests.get",
             side_effect=[_response(january), _response(empty), _response(empty)],
         ) as request:
-            cached = fetcher.get_daily_data("600519", start_date="2024-01-01", end_date="2024-01-10")
+            cached = fetcher.get_daily_data("600519", start_date="2024-01-02", end_date="2024-01-10")
             with self.assertRaises(DataFetchError):
                 fetcher.get_daily_data("600519", start_date="2024-02-01", end_date="2024-02-10")
-            again = fetcher.get_daily_data("600519", start_date="2024-01-01", end_date="2024-01-10")
+            again = fetcher.get_daily_data("600519", start_date="2024-01-02", end_date="2024-01-10")
             with self.assertRaises(DataFetchError):
                 fetcher.get_daily_data("600519", start_date="2024-02-01", end_date="2024-02-10")
 
@@ -479,6 +479,30 @@ class HiThinkFetcherTests(unittest.TestCase):
         self.assertEqual(request.call_args_list[2].kwargs["params"]["start"], _ms(2024, 6, 1))
         self.assertEqual(request.call_args_list[4].kwargs["params"]["thscode"], "000001.SZ")
         self.assertEqual(request.call_args_list[4].kwargs["params"]["start"], _ms(2024, 6, 1))
+
+    def test_tuesday_to_friday_gap_is_not_treated_as_a_weekend(self) -> None:
+        fetcher = self._fetcher()
+        missing_two_sessions = _history(_bar(2024, 1, 2, 10), _bar(2024, 1, 5, 11))
+        friday_to_monday = _history(_bar(2024, 1, 5, 13), _bar(2024, 1, 8, 14))
+
+        with patch(
+            "data_provider.hithink_fetcher.requests.get",
+            side_effect=[
+                _response(missing_two_sessions),
+                _response(missing_two_sessions),
+                _response(friday_to_monday),
+            ],
+        ) as request:
+            first = fetcher.get_daily_data("600519", start_date="2024-01-02", end_date="2024-01-05")
+            again = fetcher.get_daily_data("600519", start_date="2024-01-02", end_date="2024-01-05")
+            weekend = fetcher.get_daily_data("600519", start_date="2024-01-05", end_date="2024-01-08")
+            cached_weekend = fetcher.get_daily_data("600519", start_date="2024-01-05", end_date="2024-01-08")
+
+        self.assertEqual(list(first["date"].dt.strftime("%Y-%m-%d")), ["2024-01-02", "2024-01-05"])
+        self.assertEqual(list(again["date"].dt.strftime("%Y-%m-%d")), ["2024-01-02", "2024-01-05"])
+        self.assertEqual(list(weekend["date"].dt.strftime("%Y-%m-%d")), ["2024-01-05", "2024-01-08"])
+        self.assertEqual(list(cached_weekend["date"].dt.strftime("%Y-%m-%d")), ["2024-01-05", "2024-01-08"])
+        self.assertEqual(request.call_count, 3)
 
     def test_batch_adjustment_or_interval_mismatch_is_not_cached(self) -> None:
         mismatched = {
