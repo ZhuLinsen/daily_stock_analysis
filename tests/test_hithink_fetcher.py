@@ -366,15 +366,27 @@ class HiThinkFetcherTests(unittest.TestCase):
                 },
             }
 
-        responses = [_response(_batch_payload(window_start)) for window_start, _window_end in windows]
-        with patch("data_provider.hithink_fetcher.requests.get", side_effect=responses) as request:
+        def _batch_response(url, **kwargs):
+            start_ms = kwargs["params"]["start"]
+            moment = datetime.fromtimestamp(start_ms / 1000, tz=ZoneInfo("Asia/Shanghai"))
+            day = moment.strftime("%Y-%m-%d")
+            if "historical-batch" in url:
+                return _response(_batch_payload(day))
+            year, month, day_number = (int(part) for part in day.split("-"))
+            return _response(_history(_bar(year, month, day_number, 10)))
+
+        with patch("data_provider.hithink_fetcher.requests.get", side_effect=_batch_response) as request:
             cached = fetcher.prefetch_daily_klines(["600519"], start_date=start_date, end_date=end_date)
             self.assertEqual(cached, 1)
             self.assertEqual(request.call_count, 2)
-            for window_start, window_end in windows:
-                frame = fetcher.get_daily_data("600519", start_date=window_start, end_date=window_end)
+            for window_start, _window_end in windows:
+                frame = fetcher.get_daily_data("600519", start_date=window_start, end_date=window_start)
                 self.assertEqual(list(frame["date"].dt.strftime("%Y-%m-%d")), [window_start])
             self.assertEqual(request.call_count, 2)
+            window_start, window_end = windows[0]
+            refetch = fetcher.get_daily_data("600519", start_date=window_start, end_date=window_end)
+            self.assertEqual(list(refetch["date"].dt.strftime("%Y-%m-%d")), [window_start])
+            self.assertGreater(request.call_count, 2)
 
         requested_starts = [call.kwargs["params"]["start"] for call in request.call_args_list]
         self.assertEqual(len(set(requested_starts)), 2)
@@ -398,23 +410,34 @@ class HiThinkFetcherTests(unittest.TestCase):
 
     def test_adjacent_daily_cache_ranges_cover_the_joined_request(self) -> None:
         fetcher = self._fetcher()
-        first = _history(_bar(2024, 1, 2, 10))
-        second = _history(_bar(2024, 1, 11, 12))
+        first = _history(_bar(2024, 1, 2, 10), _bar(2024, 1, 3, 11), _bar(2024, 1, 4, 12), _bar(2024, 1, 5, 13))
+        second = _history(_bar(2024, 1, 8, 14), _bar(2024, 1, 9, 15), _bar(2024, 1, 10, 16))
 
         with patch(
             "data_provider.hithink_fetcher.requests.get",
             side_effect=[_response(first), _response(second)],
         ) as request:
-            fetcher.get_daily_data("600519", start_date="2024-01-01", end_date="2024-01-10")
-            fetcher.get_daily_data("600519", start_date="2024-01-11", end_date="2024-01-20")
-            frame = fetcher.get_daily_data("600519", start_date="2024-01-01", end_date="2024-01-20")
+            fetcher.get_daily_data("600519", start_date="2024-01-01", end_date="2024-01-05")
+            fetcher.get_daily_data("600519", start_date="2024-01-06", end_date="2024-01-10")
+            frame = fetcher.get_daily_data("600519", start_date="2024-01-01", end_date="2024-01-10")
 
         self.assertEqual(request.call_count, 2)
-        self.assertEqual(list(frame["date"].dt.strftime("%Y-%m-%d")), ["2024-01-02", "2024-01-11"])
+        self.assertEqual(
+            list(frame["date"].dt.strftime("%Y-%m-%d")),
+            ["2024-01-02", "2024-01-03", "2024-01-04", "2024-01-05", "2024-01-08", "2024-01-09", "2024-01-10"],
+        )
 
     def test_empty_daily_response_does_not_extend_coverage(self) -> None:
         fetcher = self._fetcher()
-        january = _history(_bar(2024, 1, 2, 10))
+        january = _history(
+            _bar(2024, 1, 2, 10),
+            _bar(2024, 1, 3, 11),
+            _bar(2024, 1, 4, 12),
+            _bar(2024, 1, 5, 13),
+            _bar(2024, 1, 8, 14),
+            _bar(2024, 1, 9, 15),
+            _bar(2024, 1, 10, 16),
+        )
         empty = {"code": 0, "message": "success", "data": {"timestamp": None, "item": []}}
 
         with patch(
@@ -428,9 +451,34 @@ class HiThinkFetcherTests(unittest.TestCase):
             with self.assertRaises(DataFetchError):
                 fetcher.get_daily_data("600519", start_date="2024-02-01", end_date="2024-02-10")
 
-        self.assertEqual(len(cached), 1)
-        self.assertEqual(len(again), 1)
+        self.assertEqual(len(cached), 7)
+        self.assertEqual(len(again), 7)
         self.assertEqual(request.call_count, 3)
+
+    def test_partial_daily_response_does_not_cover_the_requested_window(self) -> None:
+        fetcher = self._fetcher()
+        one_bar = _history(_bar(2024, 1, 2, 10))
+        ends_only = _history(_bar(2024, 1, 2, 10), _bar(2024, 12, 31, 20))
+
+        with patch(
+            "data_provider.hithink_fetcher.requests.get",
+            side_effect=[_response(one_bar), _response(one_bar), _response(one_bar), _response(ends_only), _response(ends_only)],
+        ) as request:
+            first = fetcher.get_daily_data("600519", start_date="2024-01-01", end_date="2024-12-31")
+            same_day = fetcher.get_daily_data("600519", start_date="2024-01-02", end_date="2024-01-02")
+            again = fetcher.get_daily_data("600519", start_date="2024-01-01", end_date="2024-12-31")
+            fetcher.get_daily_data("600519", start_date="2024-06-01", end_date="2024-06-30")
+            fetcher.get_daily_data("000001", start_date="2024-01-01", end_date="2024-12-31")
+            fetcher.get_daily_data("000001", start_date="2024-06-01", end_date="2024-06-30")
+
+        self.assertEqual(list(first["date"].dt.strftime("%Y-%m-%d")), ["2024-01-02"])
+        self.assertEqual(list(same_day["date"].dt.strftime("%Y-%m-%d")), ["2024-01-02"])
+        self.assertEqual(list(again["date"].dt.strftime("%Y-%m-%d")), ["2024-01-02"])
+        self.assertEqual(request.call_count, 5)
+        self.assertEqual(request.call_args_list[2].kwargs["params"]["thscode"], "600519.SH")
+        self.assertEqual(request.call_args_list[2].kwargs["params"]["start"], _ms(2024, 6, 1))
+        self.assertEqual(request.call_args_list[4].kwargs["params"]["thscode"], "000001.SZ")
+        self.assertEqual(request.call_args_list[4].kwargs["params"]["start"], _ms(2024, 6, 1))
 
     def test_batch_adjustment_or_interval_mismatch_is_not_cached(self) -> None:
         mismatched = {

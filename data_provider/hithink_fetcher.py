@@ -72,6 +72,9 @@ _ADJUSTMENTS = {"none", "forward", "backward"}
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 # Stay under the documented 10-year window, including the end-of-day timestamp.
 _MAX_WINDOW_DAYS = 3600
+# Friday to the next Monday is three calendar days. A longer hole is not a
+# weekend, so those dates stay uncovered until a response actually returns them.
+_MAX_SESSION_GAP_DAYS = 3
 _MAX_BATCH_SYMBOLS = 10
 _AUTH_CODES = {2001}
 _CAPABILITY_DENIED_CODE = 2003
@@ -540,12 +543,57 @@ class HiThinkFetcher(BaseFetcher):
             and bool(frame["date"].notna().any())
         )
 
+    @staticmethod
+    def _daily_dates(frame: pd.DataFrame) -> List[str]:
+        if not HiThinkFetcher._has_daily_rows(frame):
+            return []
+        parsed = pd.to_datetime(frame["date"], errors="coerce").dropna()
+        return sorted({value.strftime("%Y-%m-%d") for value in parsed})
+
+    @classmethod
+    def _session_spans(cls, dates: List[str]) -> List[Tuple[str, str]]:
+        """Join only sessions separated by a weekend.
+
+        A single bar, or two bars with a longer hole between them, stays two
+        uncovered gaps rather than one span that later reads can reuse.
+        """
+        spans: List[Tuple[str, str]] = []
+        for day in dates:
+            if not spans:
+                spans.append((day, day))
+                continue
+            start, end = spans[-1]
+            gap = (datetime.strptime(day, "%Y-%m-%d") - datetime.strptime(end, "%Y-%m-%d")).days
+            if 0 < gap <= _MAX_SESSION_GAP_DAYS:
+                spans[-1] = (start, day)
+                continue
+            spans.append((day, day))
+        return spans
+
+    @classmethod
+    def _covers_requested_window(cls, dates: List[str], start_date: str, end_date: str) -> bool:
+        spans = cls._session_spans(dates)
+        if len(spans) != 1 or end_date < start_date:
+            return False
+        span_start, span_end = spans[0]
+        if span_start < start_date or span_end > end_date:
+            return False
+        start_gap = (datetime.strptime(span_start, "%Y-%m-%d") - datetime.strptime(start_date, "%Y-%m-%d")).days
+        end_gap = (datetime.strptime(end_date, "%Y-%m-%d") - datetime.strptime(span_end, "%Y-%m-%d")).days
+        return start_gap <= _MAX_SESSION_GAP_DAYS and end_gap <= _MAX_SESSION_GAP_DAYS
+
     def _store_daily(self, thscode: str, start_date: str, end_date: str, frame: pd.DataFrame) -> bool:
         # An empty payload is a valid response, but it is not evidence that the
-        # requested window can be reused. Keeping it would let later windows
-        # widen the covered span without those dates ever being fetched.
-        if not self._has_daily_rows(frame) or end_date < start_date:
+        # requested window can be reused. A non-empty partial payload is not
+        # either: recording the caller's start and end would let a later read
+        # reuse a handful of bars as the whole window.
+        dates = self._daily_dates(frame)
+        if not dates or end_date < start_date:
             return False
+        if self._covers_requested_window(dates, start_date, end_date):
+            covered = [(start_date, end_date)]
+        else:
+            covered = self._session_spans(dates)
         with self._lock:
             key = self._cache_key(thscode)
             current = self._daily_cache.get(key)
@@ -557,11 +605,10 @@ class HiThinkFetcher(BaseFetcher):
                 if "date" in stored.columns:
                     stored = stored.drop_duplicates(subset=["date"], keep="last").reset_index(drop=True)
             self._daily_cache[key] = stored
-            self._daily_coverage[key] = self._merge_coverage(
-                self._daily_coverage.get(key, []),
-                start_date,
-                end_date,
-            )
+            ranges = self._daily_coverage.get(key, [])
+            for covered_start, covered_end in covered:
+                ranges = self._merge_coverage(ranges, covered_start, covered_end)
+            self._daily_coverage[key] = ranges
             return True
 
     def _load_daily(self, thscode: str, start_date: str, end_date: str) -> Optional[pd.DataFrame]:
