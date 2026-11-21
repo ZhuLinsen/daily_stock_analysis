@@ -115,7 +115,11 @@ class MarketReviewRequest(BaseModel):
 
     send_notification: bool = Field(
         True,
-        description="是否在大盘复盘完成后发送推送通知",
+        validation_alias=AliasChoices("send_notification", "notify"),
+        description=(
+            "是否在大盘复盘完成后发送推送通知；"
+            "也接受 notify 作为请求体别名（与个股 analyze 字段名对齐）"
+        ),
     )
     report_language: Optional[Literal["zh", "en", "ko"]] = Field(
         None,
