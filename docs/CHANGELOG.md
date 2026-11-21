@@ -22,6 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [修复] 持仓交易、现金流水和公司行动拒绝 NaN / Infinity 等非有限数值；CSV 预览、预演和提交在写入前拒绝包含非有限数值或费税合计溢出的交易行，并返回行号和字段，避免污染账本和快照；API 校验错误中的非有限数值可安全返回 JSON。
 - [改进] Web 股票输入框的联想搜索为每只股票只规范化一次代码、名称、拼音和别名，后续搜索直接复用，不再每次都对约 3.2 万条索引重新做 Unicode 规范化。
 
+- [修复] 持仓页浮动盈亏与收益率改用 A 股习惯的红涨绿跌配色，新增 `text-price-up` / `text-price-down` 工具类并复用 `--home-price-up` / `--home-price-down` 变量，收益为 0 时保持中性色，与个股页保持一致。
+
+- [修复] 为 MiniMax-M3.1-Flash 推理模型请求自动附带 `reasoning_effort=low`，避免隐藏推理耗尽 `max_tokens` 后返回 HTTP 200 但内容为空，导致个股分析报 `LLM returned empty response`。
+
 ## [3.35.0] - 2026-11-16
 
 ### 发布亮点
