@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import re
+import sys
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Mapping, Optional, Tuple
@@ -138,13 +139,23 @@ MODELFLARE_LLM_BASE_URL_DEFAULT = "https://modelflare.dev/v1"
 MODELFLARE_LLM_MODEL_DEFAULT = "openai/gpt-6.1-sol"
 
 
+def _safe_urlparse(value: Optional[str]):
+    """Parse a URL without raising ValueError on malformed bracketed hosts or invalid ports."""
+    try:
+        parsed = urlparse((value or "").strip())
+        _ = parsed.port
+        return parsed
+    except ValueError:
+        return None
+
+
 def _has_ntfy_topic_endpoint(value: Optional[str]) -> bool:
     """Return whether an ntfy URL points at a concrete topic endpoint."""
     raw_url = (value or "").strip()
     if not raw_url:
         return False
-    parsed = urlparse(raw_url)
-    if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+    parsed = _safe_urlparse(raw_url)
+    if parsed is None or parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
         return False
     return any(unquote(segment).strip() for segment in parsed.path.split("/") if segment)
 
@@ -154,8 +165,8 @@ def _has_gotify_base_url(value: Optional[str]) -> bool:
     raw_url = (value or "").strip().rstrip("/")
     if not raw_url:
         return False
-    parsed = urlparse(raw_url)
-    if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+    parsed = _safe_urlparse(raw_url)
+    if parsed is None or parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
         return False
     if parsed.query or parsed.fragment:
         return False
@@ -451,6 +462,12 @@ def get_litellm_model_providers() -> frozenset[str]:
     installation gets the complete provider set from its pinned LiteLLM.
     """
     providers = set(_FALLBACK_LITELLM_MODEL_PROVIDERS)
+    had_litellm = "litellm" in sys.modules
+    prev_cost_map_env = os.environ.get("LITELLM_LOCAL_MODEL_COST_MAP")
+    if not had_litellm and prev_cost_map_env is None:
+        # Prevent litellm.__init__ from fetching GitHub's model_prices JSON
+        # during offline config/doctor initialization.
+        os.environ["LITELLM_LOCAL_MODEL_COST_MAP"] = "True"
     try:
         from litellm.types.utils import LlmProviders
 
@@ -461,6 +478,9 @@ def get_litellm_model_providers() -> frozenset[str]:
         )
     except (ImportError, AttributeError, TypeError):
         logger.debug("LiteLLM provider metadata unavailable; using the compatibility fallback")
+    finally:
+        if not had_litellm and prev_cost_map_env is None:
+            os.environ.pop("LITELLM_LOCAL_MODEL_COST_MAP", None)
     return frozenset(providers)
 
 
@@ -593,8 +613,8 @@ def resolve_llm_channel_protocol(
             return name_protocol
 
     if base_url:
-        parsed = urlparse(base_url)
-        if parsed.hostname in {"127.0.0.1", "localhost", "0.0.0.0"}:
+        parsed = _safe_urlparse(base_url)
+        if parsed is not None and parsed.hostname in {"127.0.0.1", "localhost", "0.0.0.0"}:
             # Default to openai for local servers (vLLM, LM Studio, LocalAI, etc.).
             # Ollama users should set PROTOCOL=ollama explicitly or name the channel "ollama".
             return "openai"
@@ -608,8 +628,8 @@ def channel_allows_empty_api_key(protocol: Optional[str], base_url: Optional[str
     resolved_protocol = resolve_llm_channel_protocol(protocol, base_url=base_url)
     if resolved_protocol == "ollama":
         return True
-    parsed = urlparse(base_url or "")
-    return parsed.hostname in {"127.0.0.1", "localhost", "0.0.0.0"}
+    parsed = _safe_urlparse(base_url)
+    return parsed is not None and parsed.hostname in {"127.0.0.1", "localhost", "0.0.0.0"}
 
 
 def is_vendor_model_gateway_base_url(base_url: Optional[str]) -> bool:
@@ -1826,15 +1846,15 @@ class Config:
         searxng_base_urls = []
         invalid_searxng_urls = []
         for u in _raw_urls:
-            p = urlparse(u)
-            if p.scheme in ('http', 'https') and p.netloc:
+            p = _safe_urlparse(u)
+            if p is not None and p.scheme in ('http', 'https') and p.netloc:
                 searxng_base_urls.append(u)
             else:
                 invalid_searxng_urls.append(u)
         if invalid_searxng_urls:
             logger.warning(
-                "SEARXNG_BASE_URLS 中存在无效 URL，已忽略: %s",
-                ", ".join(invalid_searxng_urls[:3]),
+                "SEARXNG_BASE_URLS 中存在无效 URL，已忽略（数量: %d）",
+                len(invalid_searxng_urls),
             )
         searxng_public_instances_enabled = parse_env_bool(
             os.getenv('SEARXNG_PUBLIC_INSTANCES_ENABLED'),
@@ -2553,6 +2573,21 @@ class Config:
                 base_url = (
                     os.getenv('ANSPIRE_LLM_BASE_URL') or ANSPIRE_LLM_BASE_URL_DEFAULT
                 ).strip() or None
+            if base_url:
+                parsed_base_url = _safe_urlparse(base_url)
+                if (
+                    parsed_base_url is None
+                    or parsed_base_url.scheme.lower() not in {"http", "https"}
+                    or not parsed_base_url.netloc
+                ):
+                    issues.append(HermesConfigIssue(
+                        f"LLM_{ch_upper}_BASE_URL",
+                        "invalid_base_url",
+                        f"LLM_{ch_upper}_BASE_URL 不是有效的 http:// 或 https:// URL。",
+                    ))
+                    blocks_legacy_fallback = True
+                    _logger.warning("LLM_%s_BASE_URL is invalid; channel skipped", ch_upper)
+                    continue
             protocol_raw = os.getenv(f'LLM_{ch_upper}_PROTOCOL', '').strip()
             if ch_lower == "anspire" and not protocol_raw:
                 protocol_raw = "openai"
@@ -3678,8 +3713,8 @@ class Config:
             raw_url = (value or "").strip()
             if not raw_url:
                 return
-            parsed = urlparse(raw_url)
-            if parsed.scheme.lower() in {"http", "https"} and parsed.netloc:
+            parsed = _safe_urlparse(raw_url)
+            if parsed is not None and parsed.scheme.lower() in {"http", "https"} and parsed.netloc:
                 return
             issues.append(ConfigIssue(
                 severity="warning",

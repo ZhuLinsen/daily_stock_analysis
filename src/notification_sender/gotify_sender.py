@@ -23,7 +23,11 @@ def resolve_gotify_message_endpoint(gotify_url: Optional[str]) -> Optional[str]:
     if not raw_url:
         return None
 
-    parsed = urlparse(raw_url)
+    try:
+        parsed = urlparse(raw_url)
+        _ = parsed.port
+    except ValueError:
+        return None
     if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
         return None
     if parsed.query or parsed.fragment:

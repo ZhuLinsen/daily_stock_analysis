@@ -132,6 +132,48 @@ class _LLMDiagnostic:
     details: Dict[str, Any] = field(default_factory=dict)
 
 
+def _inspect_dir_writable(path_value: Optional[str]) -> Tuple[bool, Optional[Path]]:
+    """Inspect whether target dir (or deepest existing ancestor) is writable without creating dirs."""
+    if not path_value:
+        return False, None
+    try:
+        target = Path(path_value).expanduser()
+        for node in (target, *target.parents):
+            if node.is_symlink() and not node.exists():
+                return False, node
+            if node.exists():
+                if not node.is_dir():
+                    return False, node
+                return os.access(node, os.W_OK | os.X_OK), node
+        return False, None
+    except OSError:
+        return False, None
+
+
+def check_dir_writable(path_value: Optional[str]) -> bool:
+    """Return True if path (or its deepest existing ancestor) is a writable directory."""
+    ok, _ = _inspect_dir_writable(path_value)
+    return ok
+
+
+def check_database_path_usable(db_path_value: Optional[str]) -> bool:
+    """Return True if DATABASE_PATH is a writable file or creatable under a writable directory."""
+    if not db_path_value:
+        return False
+    try:
+        target = Path(db_path_value).expanduser()
+        if target.is_symlink() and not target.exists():
+            return False
+        if target.exists():
+            if target.is_dir() or not target.is_file():
+                return False
+            return os.access(target, os.R_OK | os.W_OK) and check_dir_writable(str(target.parent))
+        parent = target.parent if target.parent != Path("") else Path(".")
+        return check_dir_writable(str(parent))
+    except OSError:
+        return False
+
+
 class SystemConfigService:
     """Service layer for reading, validating, and updating runtime configuration."""
 
@@ -3991,13 +4033,73 @@ class SystemConfigService:
         )
 
     def _build_setup_storage_check(self, effective_map: Dict[str, str]) -> Dict[str, Any]:
-        db_path = Path((effective_map.get("DATABASE_PATH") or "./data/stock_analysis.db").strip()).expanduser()
+        raw_db_path = (effective_map.get("DATABASE_PATH") or "./data/stock_analysis.db").strip()
+        db_path = Path(raw_db_path).expanduser()
         parent = db_path.parent if db_path.parent != Path("") else Path(".")
-        probe = parent
-        while not probe.exists() and probe != probe.parent:
-            probe = probe.parent
 
-        if not probe.exists() or not probe.is_dir():
+        try:
+            if db_path.is_symlink() and not db_path.exists():
+                return self._setup_check(
+                    "storage",
+                    "数据库 / 本地存储",
+                    "system",
+                    True,
+                    "needs_action",
+                    f"数据库路径软链接无效: {db_path}",
+                    "请将 DATABASE_PATH 设置为可用的 SQLite 文件路径。",
+                )
+            if db_path.exists():
+                if db_path.is_dir() or not db_path.is_file():
+                    return self._setup_check(
+                        "storage",
+                        "数据库 / 本地存储",
+                        "system",
+                        True,
+                        "needs_action",
+                        f"数据库路径指向目录或非常规文件: {db_path}",
+                        "请将 DATABASE_PATH 设置为具体 SQLite 文件路径（如 ./data/stock_analysis.db）。",
+                    )
+                if not check_database_path_usable(str(db_path)):
+                    return self._setup_check(
+                        "storage",
+                        "数据库 / 本地存储",
+                        "system",
+                        True,
+                        "needs_action",
+                        f"数据库文件或所在目录不可写: {db_path}",
+                        "请调整 DATABASE_PATH 或目录权限。",
+                    )
+                return self._setup_check(
+                    "storage",
+                    "数据库 / 本地存储",
+                    "system",
+                    True,
+                    "configured",
+                    f"数据库路径可用: {db_path}",
+                )
+        except OSError as exc:
+            return self._setup_check(
+                "storage",
+                "数据库 / 本地存储",
+                "system",
+                True,
+                "needs_action",
+                f"数据库路径检查失败: {exc}",
+                "请检查 DATABASE_PATH 或上级目录权限。",
+            )
+
+        writable, probe = _inspect_dir_writable(str(parent))
+        if not writable:
+            if probe is not None and probe.exists() and probe.is_dir():
+                return self._setup_check(
+                    "storage",
+                    "数据库 / 本地存储",
+                    "system",
+                    True,
+                    "needs_action",
+                    f"数据库路径上级目录不可写: {probe}",
+                    "请调整 DATABASE_PATH 或目录权限。",
+                )
             return self._setup_check(
                 "storage",
                 "数据库 / 本地存储",
@@ -4008,27 +4110,14 @@ class SystemConfigService:
                 "请检查 DATABASE_PATH 或上级目录权限。",
             )
 
-        if os.access(probe, os.W_OK):
-            detail = f"数据库路径可用: {db_path}"
-            if not parent.exists():
-                detail = f"数据库上级目录可创建: {parent}"
-            return self._setup_check(
-                "storage",
-                "数据库 / 本地存储",
-                "system",
-                True,
-                "configured",
-                detail,
-            )
-
+        detail = f"数据库路径可用: {db_path}" if parent.exists() else f"数据库上级目录可创建: {parent}"
         return self._setup_check(
             "storage",
             "数据库 / 本地存储",
             "system",
             True,
-            "needs_action",
-            f"数据库路径上级目录不可写: {probe}",
-            "请调整 DATABASE_PATH 或目录权限。",
+            "configured",
+            detail,
         )
 
     @staticmethod

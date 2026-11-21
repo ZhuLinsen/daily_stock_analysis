@@ -424,6 +424,20 @@ python main.py --market-only
 
 ---
 
+### Q19: Fork 仓库后 GitHub Actions 为什么没有按时自动运行？如何同步更新与自检？
+
+**常见原因**：
+1. GitHub 对 Fork 仓库默认禁用定时 Workflows，需要进入 Fork 的 `Actions` 标签手动点击启用。
+2. GitHub 平台规定若仓库连续 **60 天无仓库活动**，会自动暂停 `schedule` 定时任务。
+3. 未同步上游仓库的最新修复，或本地修改了 `.github/workflows/*.yml` 导致 `Sync fork` 冲突。
+
+**解决方案**：
+1. 在你 Fork 的仓库首页点击 `Sync fork` → `Update branch` 同步最新代码（建议不要直接修改 workflow 文件，所有配置通过 `Settings → Secrets and variables → Actions` 传递）。
+2. 如已被 GitHub 自动暂停定时任务，进入 `Actions → 每日股票分析` 点击 `Enable workflow` 重新开启。
+3. 本地运行可使用 `python main.py --doctor` 一键输出脱敏配置/模型/通知/存储诊断信息，快速定位异常。
+
+---
+
 ## 💬 还有问题？
 
 如果以上内容没有解决你的问题，欢迎：

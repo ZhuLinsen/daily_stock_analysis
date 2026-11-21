@@ -1875,6 +1875,23 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertEqual(storage_check["status"], "configured")
         self.assertFalse(missing_parent.exists())
 
+    def test_get_setup_status_storage_check_rejects_directory_and_file_ancestor(self) -> None:
+        blocker_file = Path(self.temp_dir.name) / "main.py"
+        blocker_file.write_text("# regular file", encoding="utf-8")
+
+        for invalid_db in (Path(self.temp_dir.name), blocker_file / "stock_analysis.db"):
+            self._rewrite_env(
+                "LITELLM_MODEL=gemini/gemini-3-flash-preview",
+                "GEMINI_API_KEY=secret-key-value",
+                "STOCK_LIST=600519",
+                f"DATABASE_PATH={invalid_db}",
+            )
+            with patch.dict(os.environ, {}, clear=True):
+                status = self.service.get_setup_status()
+            storage_check = next(check for check in status["checks"] if check["key"] == "storage")
+            self.assertEqual(storage_check["status"], "needs_action")
+            self.assertFalse(status["is_complete"])
+
     def test_export_desktop_env_returns_raw_text(self) -> None:
         self.env_path.write_text(
             "# Desktop config\nSTOCK_LIST=600519,000001\n\nGEMINI_API_KEY=secret-key-value\n",

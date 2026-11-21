@@ -31,7 +31,11 @@ def resolve_ntfy_endpoint(ntfy_url: Optional[str]) -> Tuple[Optional[str], Optio
     if not raw_url:
         return None, None
 
-    parsed = urlparse(raw_url)
+    try:
+        parsed = urlparse(raw_url)
+        _ = parsed.port
+    except ValueError:
+        return None, None
     if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
         return None, None
 
