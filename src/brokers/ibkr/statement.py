@@ -52,6 +52,10 @@ class TradeRecord:
     fee: float
     tax: float
     trade_uid: str
+    # IBKR ``openCloseIndicator``: "O" opens a position, "C" closes one, or "".
+    # Kept because buy/sell direction alone cannot express a short: a BUY marked
+    # "C" is a short cover, which a long-only ledger must not book as a long.
+    open_close: str = ""
 
 
 @dataclass(frozen=True)
@@ -201,6 +205,7 @@ def _parse_trade(row: ET.Element) -> Tuple[Optional[TradeRecord], Optional[str]]
             fee=fee,
             tax=tax,
             trade_uid=trade_uid,
+            open_close=(row.get("openCloseIndicator") or "").strip().upper(),
         ),
         None,
     )
@@ -251,13 +256,20 @@ def parse_statement(xml_bytes: bytes) -> StatementParseResult:
     account_ids = set()
     saw_trades_section = False
     saw_cash_section = False
+    saw_trade_rows = False
+    saw_execution_rows = False
     for statement in _flex_statements(xml_bytes):
         account_id = (statement.get("accountId") or "").strip()
         if account_id:
             account_ids.add(account_id)
 
-        if statement.find("Trades") is not None:
+        trades_section = statement.find("Trades")
+        if trades_section is not None:
             saw_trades_section = True
+            for row in trades_section.findall("Trade"):
+                saw_trade_rows = True
+                if (row.get("levelOfDetail") or "").strip().upper() == "EXECUTION":
+                    saw_execution_rows = True
         if statement.find("CashTransactions") is not None:
             saw_cash_section = True
 
@@ -305,6 +317,14 @@ def parse_statement(xml_bytes: bytes) -> StatementParseResult:
         raise IbkrPortfolioError(
             f"IBKR Flex 报表缺少 {' / '.join(missing)} 分区；"
             "账本同步需要同时包含 Trades 与 CashTransactions 的完整 Flex Query（而非仅 Open Positions）"
+        )
+
+    # A Trades section configured with the Orders detail level produces rows but
+    # no EXECUTION rows; every stock trade would vanish without any error.
+    if saw_trade_rows and not saw_execution_rows:
+        raise IbkrPortfolioError(
+            "IBKR Flex 报表的 Trades 分区没有 Executions 明细（可能只选了 Orders）；"
+            "请在 Flex Query 的 Trades 分区选择 Executions 明细级别"
         )
 
     return result

@@ -142,11 +142,41 @@ class IbkrSyncTest(unittest.TestCase):
         service = MagicMock()
         service.list_accounts.return_value = [{"id": 7, "broker": "IBKR"}, {"id": 8, "broker": "Demo"}]
         self.assertEqual(sync._resolve_account_id(service, None), 7)
-        self.assertEqual(sync._resolve_account_id(service, 8), 8)
+        # An explicit id must still be an IBKR account.
+        self.assertEqual(sync._resolve_account_id(service, 7), 7)
+        with self.assertRaisesRegex(IbkrPortfolioError, "不是 broker=IBKR"):
+            sync._resolve_account_id(service, 8)
 
         service.list_accounts.return_value = [{"id": 7, "broker": "A"}, {"id": 8, "broker": "B"}]
         with self.assertRaisesRegex(IbkrPortfolioError, "broker=IBKR"):
             sync._resolve_account_id(service, None)
+
+    def test_dry_run_does_not_construct_the_ledger_service(self) -> None:
+        # Constructing PortfolioService initializes the DB and runs migrations,
+        # so a preview must never reach it.
+        with patch.object(sync, "PortfolioService") as service_cls, patch.object(
+            sync, "download_flex_statement", side_effect=[_statement(_trade("AAPL", "BUY", "1")), _statement()]
+        ):
+            summary = sync.sync_ibkr_portfolio(dry_run=True)
+
+        service_cls.assert_not_called()
+        self.assertIsNone(summary["account_id"])
+        self.assertEqual(summary["trades_inserted"], 1)
+
+    def test_short_cover_buy_is_skipped_outside_the_sync_window(self) -> None:
+        # The short opened before --since, so only the closing BUY is in the
+        # window; booking it as a long would be a phantom position.
+        service = self._service()
+        cover = _trade("AAPL", "BUY", "100")
+        cover = cover[:-2] + ' openCloseIndicator="C" />'
+        with patch.object(sync, "PortfolioService", return_value=service), patch.object(
+            sync, "download_flex_statement", side_effect=[_statement(cover), _statement()]
+        ):
+            summary = sync.sync_ibkr_portfolio()
+
+        service.record_trade.assert_not_called()
+        self.assertEqual(summary["trades_inserted"], 0)
+        self.assertEqual(summary["trades_skipped_unbalanced"], 1)
 
     def test_resolve_account_id_never_uses_a_non_ibkr_account(self) -> None:
         service = MagicMock()

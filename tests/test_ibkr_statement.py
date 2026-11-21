@@ -187,6 +187,27 @@ class IbkrStatementParseTest(unittest.TestCase):
         )
         self.assertEqual(result.skipped_corporate_actions, ["AMP: AMP SPLIT 1 FOR 25"])
 
+    def test_orders_detail_level_fails_instead_of_dropping_trades(self) -> None:
+        # Trades configured with the Orders detail level yields rows but no
+        # EXECUTION rows; every stock trade would otherwise vanish silently.
+        xml = _statement(
+            "<Trades>"
+            + _trade(levelOfDetail="ORDER")
+            + "</Trades><CashTransactions></CashTransactions>"
+        )
+        with self.assertRaisesRegex(IbkrPortfolioError, "Executions"):
+            s.parse_statement(xml)
+
+    def test_empty_trades_section_is_still_valid(self) -> None:
+        result = s.parse_statement(_statement("<Trades></Trades><CashTransactions></CashTransactions>"))
+        self.assertEqual(result.trades, [])
+
+    def test_short_cover_buy_is_recorded_with_open_close(self) -> None:
+        result = s.parse_statement(
+            _with_trades(_trade(buySell="BUY", quantity="10", openCloseIndicator="C"))
+        )
+        self.assertEqual(result.trades[0].open_close, "C")
+
     def test_positions_only_statement_fails(self) -> None:
         xml = _statement(
             '<OpenPositions><OpenPosition assetCategory="STK" symbol="AAPL" '

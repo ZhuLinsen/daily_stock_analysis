@@ -1843,8 +1843,28 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                 if not self._is_sqlite_duplicate_column_error(exc, "source_uid"):
                     raise
 
-        # Replace the plain index with a partial UNIQUE index (idempotent), so a
-        # concurrent insert cannot pass the pre-insert existence check.
+        # Replace the plain index with a partial UNIQUE index, so a concurrent
+        # insert cannot pass the pre-insert existence check. Skip all DDL when
+        # the correct unique index is already in place (the common case on every
+        # later startup), and only rebuild an older non-unique index once.
+        try:
+            indexes = {
+                index["name"]: index
+                for index in inspect(self._engine).get_indexes(
+                    PortfolioCashLedger.__tablename__
+                )
+            }
+        except Exception as exc:
+            logger.error(
+                "[PortfolioCashLedger] failed to inspect source_uid index; "
+                "migration cannot continue safely: %s",
+                exc,
+            )
+            raise
+        existing_index = indexes.get("ix_portfolio_cash_source_uid")
+        if existing_index is not None and existing_index.get("unique"):
+            return
+
         with self._engine.begin() as connection:
             connection.exec_driver_sql(
                 "DROP INDEX IF EXISTS ix_portfolio_cash_source_uid"

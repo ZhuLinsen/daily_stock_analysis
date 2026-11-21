@@ -47,19 +47,26 @@ def _chunk_windows(since: date, to_date: date) -> List[Tuple[str, str]]:
 
 
 def _resolve_account_id(service: PortfolioService, account_id: Optional[int]) -> int:
-    if account_id is not None:
-        return int(account_id)
-
     accounts = service.list_accounts(include_inactive=False)
     if not accounts:
         raise IbkrPortfolioError("没有可用的持仓账户，请先创建 IBKR 账户")
 
-    # Filter by broker BEFORE the single-account shortcut: a sole active account
-    # may belong to another broker (e.g. Futu), and importing IBKR trades into
-    # it would silently mix two brokers' positions and cash.
+    # Match by broker BEFORE any shortcut: a sole active account may belong to
+    # another broker (e.g. Futu), and an explicit --account-id may point at one
+    # by mistake. Both would silently mix two brokers' positions and cash.
     ibkr_accounts = [
         a for a in accounts if (a.get("broker") or "").strip().lower() == "ibkr"
     ]
+
+    if account_id is not None:
+        requested = int(account_id)
+        if not any(int(a["id"]) == requested for a in ibkr_accounts):
+            raise IbkrPortfolioError(
+                f"--account-id={requested} 不是 broker=IBKR 的活跃账户；"
+                "IBKR 同步只允许写入 IBKR 账本，避免与其他券商的持仓和现金混记"
+            )
+        return requested
+
     if len(ibkr_accounts) == 1:
         return int(ibkr_accounts[0]["id"])
     if len(ibkr_accounts) > 1:
@@ -124,9 +131,13 @@ def sync_ibkr_portfolio(
     since: Optional[date] = None,
     dry_run: bool = False,
 ) -> Dict[str, object]:
-    """Download and commit the IBKR Flex statement into the ledger."""
-    service = PortfolioService()
-    resolved_account_id = _resolve_account_id(service, account_id)
+    """Download and commit the IBKR Flex statement into the ledger.
+
+    ``dry_run`` never touches the database: it resolves credentials, downloads
+    and parses the statement, then reports what it would import. Constructing
+    ``PortfolioService`` initializes the database and runs the ledger
+    migrations, so that step is skipped entirely for a preview.
+    """
     token, query_id = _resolve_credentials()
 
     parsed = _download_and_parse(
@@ -134,6 +145,12 @@ def sync_ibkr_portfolio(
     )
 
     trades = sorted(parsed.trades, key=_trade_sort_key)
+
+    if dry_run:
+        resolved_account_id: Optional[int] = account_id
+    else:
+        service = PortfolioService()
+        resolved_account_id = _resolve_account_id(service, account_id)
 
     summary: Dict[str, object] = {
         "account_id": resolved_account_id,
@@ -157,14 +174,20 @@ def sync_ibkr_portfolio(
     blocked_symbols: Set[str] = set()
 
     for record in trades:
+        # A BUY marked "C" closes a short. The ledger is long-only, so booking it
+        # would create a phantom long — including when the short opened before the
+        # sync window, where no earlier oversell can be observed.
+        if record.open_close == "C" and record.side == "buy":
+            blocked_symbols.add(record.symbol)
+            summary["trades_skipped_unbalanced"] += 1
+            continue
+        if record.symbol in blocked_symbols:
+            # After an oversell (or an unrepresentable short cover), stop importing
+            # the symbol's later executions in this run.
+            summary["trades_skipped_unbalanced"] += 1
+            continue
         if dry_run:
             summary["trades_inserted"] += 1
-            continue
-        # After an oversell for a symbol, stop importing its later executions in
-        # this run. The ledger is long-only, so a skipped short open followed by a
-        # buy-to-cover would otherwise become a phantom long position.
-        if record.symbol in blocked_symbols:
-            summary["trades_skipped_unbalanced"] += 1
             continue
         try:
             service.record_trade(
