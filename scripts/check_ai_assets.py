@@ -151,6 +151,14 @@ def ensure_gitignore_rules() -> None:
     for snippet in REQUIRED_GITIGNORE_SNIPPETS:
         if snippet not in gitignore:
             fail(f".gitignore is missing required AI asset rule: {snippet}")
+    ignored = subprocess.run(
+        ["git", "check-ignore", "-q", ".agents/skills/analyze-pr/SKILL.md"],
+        cwd=ROOT,
+        capture_output=True,
+        check=False,
+    )
+    if ignored.returncode == 0:
+        fail(".agents/skills/analyze-pr/SKILL.md must not be ignored by .gitignore")
 
 
 def ensure_no_tracked_local_artifacts() -> None:
@@ -197,6 +205,19 @@ def ensure_ci_table_alignment() -> None:
             fail(f"CI job {job_name!r} missing from AGENTS.md verification matrix")
 
 
+def ensure_pr_review_skill_path_alignment() -> None:
+    expected = ".agents/skills/analyze-pr/SKILL.md"
+    legacy = ".claude/skills/analyze-pr/SKILL.md"
+    for rel_path in (".github/workflows/pr-review.yml", ".github/scripts/ai_review.py"):
+        path = ROOT / rel_path
+        ensure_file_exists(path, rel_path)
+        content = path.read_text(encoding="utf-8")
+        if legacy in content:
+            fail(f"stale {legacy!r} reference found in {rel_path}")
+        if expected not in content:
+            fail(f"{rel_path} must reference {expected!r}")
+
+
 def main() -> None:
     ensure_symlinks()
     ensure_copilot_entry()
@@ -206,6 +227,7 @@ def main() -> None:
     ensure_no_tracked_local_artifacts()
     ensure_no_stale_claude_reviews_refs()
     ensure_ci_table_alignment()
+    ensure_pr_review_skill_path_alignment()
     print("[ai-assets] OK")
 
 

@@ -381,7 +381,7 @@ def review_with_openai(prompt):
         response = client.chat.completions.create(
             model=model,
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=2000,
+            max_tokens=4000,
             temperature=0.3
         )
         print(f"✅ OpenAI 兼容接口 ({model}) 审查成功")
