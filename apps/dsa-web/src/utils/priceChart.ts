@@ -11,15 +11,15 @@ export interface PriceChartDatum {
 }
 
 const INDICATOR_PREFIX_RE = /(?:MA|BOLL|RSI|KDJ|MACD|WR|BIAS|T\+)\s*(?:\d+\s*\/\s*)*$/i;
-const NON_PRICE_UNIT_RE = /^(?:%|日|周|週|月|年|天|个交易日|倍|거래일|일|주|개월|년|배|(?:[-‐‑–]\s*)?(?:(?:trading\s+)?(?:days?|sessions?|periods?)|weeks?|months?|years?|times?|x|d)\b)/i;
-const MOVING_AVERAGE_PERIOD_LIST_RE = /\b\d+(?:\.\d+)?(?:(?:\s*[-‐‑–—/,、·，]+\s*(?:(?:and|or|to|&|和|및)\s+)?|\s+(?:and|or|to|&|和|및)\s+)\d+(?:\.\d+)?){1,}\s*(?:[-‐‑–—]\s*)?(?:(?:trading\s+)?(?:days?|sessions?|periods?|weeks?|months?|years?|d)|日|周|週|月|年|天|거래일|일|주|개월|년|배|MA|moving\s+averages?)(?![A-Za-z])/giu;
+const NON_PRICE_UNIT_RE = /^(?:%|percent(?:age)?\b|퍼센트|日|周|週|月|年|天|个交易日|倍|거래일|일|주|개월|년|배|(?:[-‐‑–]\s*)?(?:(?:trading\s+)?(?:days?|sessions?|periods?)|weeks?|months?|years?|times?|x|d)\b)/i;
+const MOVING_AVERAGE_PERIOD_LIST_RE = /\b\d+(?:\.\d+)?(?:(?:\s*[-‐‑–—/,、·，]+\s*(?:(?:and|or|to|&|和|및|와)\s*)?|\s+(?:and|or|to|&|和|및|와)\s*|(?:和|및|와)\s*)\d+(?:\.\d+)?){1,}\s*(?:[-‐‑–—]\s*)?(?:(?:trading\s+)?(?:days?|sessions?|periods?|weeks?|months?|years?|d)|日|周|週|月|年|天|거래일|일|주|개월|년|배|MA|moving\s+averages?)(?![A-Za-z])/giu;
 const CURRENT_PRICE_CONTEXT_RE = /(?:current|latest|last|market)\s+price(?:\s+(?:is|of|at))?\s*[:：]?\s*(?:about|around|approx(?:imately)?|approximately)?\s*(?:[$¥₩]|(?:USD|CNY|HKD|TWD|KRW|JPY)\s*)?$/i;
-const CJK_CURRENT_PRICE_CONTEXT_RE = /(?:当前价(?:格)?|目前价(?:格)?|现价)\s*(?:[:：]\s*)?(?:(?:约|大约)\s*)?(?:是|为|在)?\s*(?:约|大约)?\s*(?:[$¥₩]|(?:USD|CNY|HKD|TWD|KRW|JPY)\s*)?$/iu;
+const CJK_CURRENT_PRICE_CONTEXT_RE = /(?:当前价(?:格)?|目前价(?:格)?|现价)\s*(?:(?:约|大约)\s*)?(?:(?:是|为|在)\s*)?(?:[:：]\s*)?(?:(?:约|大约)\s*)?(?:[$¥₩]|(?:USD|CNY|HKD|TWD|KRW|JPY)\s*)?$/iu;
 const KOREAN_CURRENT_PRICE_CONTEXT_RE = /(?:현재\s*가격?|시세)\s*(?:는|이|가)?\s*(?:[:：]\s*)?약?\s*(?:[$¥₩]|(?:USD|CNY|HKD|TWD|KRW|JPY)\s*)?$/iu;
 
-const PRICE_UNIT_AFTER_RE = /^\s*(?:[$¥₩]|(?:USD|CNY|HKD|TWD|KRW|JPY|dollars?|euros?)\b|元|港元|円|원)/iu;
+const PRICE_UNIT_AFTER_RE = /^\s*(?:[$¥₩]|(?:USD|CNY|HKD|TWD|KRW|JPY|dollars?|euros?)\b|元|港元|港币|円|원)/iu;
 const PRICE_UNIT_BEFORE_RE = /(?:[$¥₩]|(?:USD|CNY|HKD|TWD|KRW|JPY)\s*)$/iu;
-const RATIO_CONTEXT_RE = /(?:risk\s*[-/]?\s*reward|risk\s*[-/]?\s*return|risk\s*reward|ratio|R\s*\/\s*R|风险\s*(?:回报|收益)|回报比|收益比|比率|손익비)/iu;
+const RATIO_CONTEXT_RE = /(?:risk\s*[-/]?\s*(?:to\s*[-/]?\s*)?(?:reward|return)|risk\s*reward|ratio|R\s*\/\s*R|风险\s*(?:回报|收益)|回报比|收益比|比率|손익\s*비)/iu;
 
 function isRatioCandidate(segment: string, start: number, end: number): boolean {
   for (const match of segment.matchAll(/\d+(?:\.\d+)?\s*([:：∶︓﹕꞉/／]|比|to)\s*\d+(?:\.\d+)?/gi)) {
@@ -48,15 +48,19 @@ function isRatioCandidate(segment: string, start: number, end: number): boolean 
 }
 
 function isDateCandidate(segment: string, start: number, end: number): boolean {
-  return [...segment.matchAll(/\b\d{4}[-/.]\d{1,2}[-/.]\d{1,2}\b|\d{4}\s*年\s*\d{1,2}\s*月\s*\d{1,2}\s*日|\b(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s+\d{1,2}(?:st|nd|rd|th)?(?:\s*,?\s*\d{4})?\b|\b\d{1,2}(?:st|nd|rd|th)?\s+(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s*,?\s*(?:\d{4})?\b|\b\d{1,2}[/-]\d{1,2}\b/giu)].some((match) => {
+  return [...segment.matchAll(/\b\d{4}[-/.]\d{1,2}[-/.]\d{1,2}\b|\d{4}\s*年\s*\d{1,2}\s*月\s*\d{1,2}\s*日|\d{1,2}\s*月\s*\d{1,2}\s*(?:日|号)|\b(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s+\d{1,2}(?:st|nd|rd|th)?(?:\s*,?\s*\d{4})?\b|\b\d{1,2}(?:st|nd|rd|th)?\s+(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s*,?\s*(?:\d{4})?\b|\b\d{1,2}[/-]\d{1,2}\b/giu)].some((match) => {
+    const matchStart = match.index ?? 0;
+    const matchEnd = matchStart + match[0].length;
     if (/^[0-9]{1,2}[/-][0-9]{1,2}$/u.test(match[0])) {
       const [month, day] = match[0].split(/[/-]/u).map(Number);
-      if (month > 12 || day > 31) {
+      if (month > 31 || day > 31 || (month > 12 && day > 12)) {
+        return false;
+      }
+      if (PRICE_UNIT_AFTER_RE.test(segment.slice(matchEnd)) || PRICE_UNIT_BEFORE_RE.test(segment.slice(0, matchStart))) {
         return false;
       }
     }
-    const matchStart = match.index ?? 0;
-    return start >= matchStart && end <= matchStart + match[0].length;
+    return start >= matchStart && end <= matchEnd;
   });
 }
 
@@ -70,7 +74,14 @@ function isMovingAveragePeriod(segment: string, start: number, end: number): boo
   // the last number, but every number in the list is a moving-average period.
   return [...segment.matchAll(MOVING_AVERAGE_PERIOD_LIST_RE)].some((match) => {
     const matchStart = match.index ?? 0;
-    return start >= matchStart && end <= matchStart + match[0].length;
+    if (start < matchStart || end > matchStart + match[0].length) {
+      return false;
+    }
+    // Keep an explicitly labelled first price in "$48, 20-day ...".
+    if (start === matchStart && /(?:[$¥₩]|(?:buy|entry|price|买入价|买点|价格)\s*[:：]?\s*)[^\d]*$/iu.test(prefix)) {
+      return false;
+    }
+    return true;
   });
 }
 
@@ -80,8 +91,12 @@ function isOrdinalCandidate(prefix: string, suffix: string): boolean {
 }
 
 function isCountCandidate(prefix: string, suffix: string): boolean {
-  return /^(?:根\s*K线|根\s*蜡烛|consecutive\s+closes?\b)/iu.test(suffix)
+  return /^(?:根\s*K线|根\s*蜡烛|次\s*收盘|closes?\b|consecutive\s+closes?\b)/iu.test(suffix)
     || /(?:连续|consecutive)\s*$/iu.test(prefix);
+}
+
+function isIndicatorThresholdCandidate(prefix: string): boolean {
+  return /(?:\bRSI|相对强弱指标)\s*(?:低于|小于|below|drops?\s+below|under|<)\s*$/iu.test(prefix);
 }
 
 function isCurrentPriceCandidate(prefix: string): boolean {
@@ -102,6 +117,7 @@ function extractFirstPriceToken(segment: string): number | null {
     && !isRatioCandidate(segment, start, end)
     && !isOrdinalCandidate(prefix, suffix)
     && !isCountCandidate(prefix, suffix)
+    && !isIndicatorThresholdCandidate(prefix)
     && !isDateCandidate(segment, start, end)
     && !isCurrentPriceCandidate(prefix)
   ));
@@ -123,21 +139,21 @@ export function parseStrategyPriceLevel(raw?: string | null): number | null {
   if (typeof raw !== 'string') {
     return null;
   }
-  const cleaned = raw.normalize('NFKC').replace(/(?<=\d),(?=\d{3}(?:\D|$))/g, '').trim();
+  const cleaned = raw.replace(/，/gu, '、').normalize('NFKC').replace(/(?<=\d),(?=\d{3}(?:\D|$))/g, '').trim();
   const parenthesizedPrice = /^\(\s*(?:[¥$₩]\s*)?(\d+(?:\.\d+)?)(?:\s*[元円원])?\s*\)$/.exec(cleaned);
   // Report templates put indicator values and supporting conditions in parentheses.
   // Strip indicator annotations, but retain explicit prices in parentheses such as
   // "stop-loss: ($48)" or "止损位：跌破前低（48元）".
   let priceText = parenthesizedPrice?.[1] ?? cleaned.replace(/\([^()]*\)/g, (match, offset: number, source: string) => {
     const prefix = source.slice(0, offset);
-    return /(?:\b(?:MA|BOLL|RSI|KDJ|MACD|WR|BIAS)\s*[\d\s/,-]*|均线|均線|移动平均线|moving\s+averages?|이동\s*평균선)\s*$/iu.test(prefix)
+    return /(?:\b(?:MA|BOLL|RSI|KDJ|MACD|WR|BIAS)\s*[\d\s/,-]*|均线|均線|移动平均线|moving\s+averages?|이동\s*평균선)\s*(?:附近|부근)?\s*$/iu.test(prefix)
       ? ' '
       : match;
   });
   if (!parenthesizedPrice) {
     priceText = priceText.replace(/\([^()]*$/g, (match, offset: number, source: string) => {
       const prefix = source.slice(0, offset);
-      return /(?:\b(?:MA|BOLL|RSI|KDJ|MACD|WR|BIAS)\s*[\d\s/,-]*|均线|均線|移动平均线|moving\s+averages?|이동\s*평균선)\s*$/iu.test(prefix)
+      return /(?:\b(?:MA|BOLL|RSI|KDJ|MACD|WR|BIAS)\s*[\d\s/,-]*|均线|均線|移动平均线|moving\s+averages?|이동\s*평균선)\s*(?:附近|부근)?\s*$/iu.test(prefix)
         ? ' '
         : match;
     });

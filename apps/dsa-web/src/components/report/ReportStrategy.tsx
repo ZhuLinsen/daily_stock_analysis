@@ -1,4 +1,4 @@
-import { Component, lazy, Suspense, useState } from 'react';
+import { Component, lazy, Suspense, useEffect, useRef, useState } from 'react';
 import type React from 'react';
 import { LineChart } from 'lucide-react';
 import { stocksApi, type StockKLineItem } from '../../api/stocks';
@@ -41,6 +41,7 @@ interface ReportStrategyProps {
 
 interface ChartState {
   key: string;
+  requestSeq: number;
   open: boolean;
   loading: boolean;
   bars: StockKLineItem[] | null;
@@ -83,21 +84,24 @@ export const ReportStrategy: React.FC<ReportStrategyProps> = ({
 }) => {
   const symbol = stockCode?.trim();
   const reportKey = `${recordId ?? 0}:${symbol?.toUpperCase() ?? ''}`;
-  const [previousReportKey, setPreviousReportKey] = useState(reportKey);
+  const activeReportKeyRef = useRef(reportKey);
+  const requestSeqRef = useRef(0);
+  const [activeRequestSeq, setActiveRequestSeq] = useState(0);
+  useEffect(() => {
+    if (activeReportKeyRef.current !== reportKey) {
+      activeReportKeyRef.current = reportKey;
+      requestSeqRef.current += 1;
+      setActiveRequestSeq(requestSeqRef.current);
+    }
+  }, [reportKey]);
   const [chartState, setChartState] = useState<ChartState>({
     key: '',
+    requestSeq: 0,
     open: false,
     loading: false,
     bars: null,
     failed: false,
   });
-  if (previousReportKey !== reportKey) {
-    setPreviousReportKey(reportKey);
-    if (chartState.loading) {
-      // Returning to this report must never restore an invalidated loading state.
-      setChartState({ ...chartState, open: false, loading: false });
-    }
-  }
 
   if (!strategy) {
     return null;
@@ -107,7 +111,7 @@ export const ReportStrategy: React.FC<ReportStrategyProps> = ({
   const text = getReportText(reportLanguage);
   const canShowChart = Boolean(recordId && recordId > 0 && symbol);
 
-  const isSameReport = chartState.key === reportKey;
+  const isSameReport = chartState.key === reportKey && chartState.requestSeq === activeRequestSeq;
   const showChart = isSameReport ? chartState.open : false;
   const isLoadingChart = isSameReport ? chartState.loading : false;
   const chartBars = isSameReport ? chartState.bars : null;
@@ -117,8 +121,12 @@ export const ReportStrategy: React.FC<ReportStrategyProps> = ({
     if (!symbol || !canShowChart || isLoadingChart) {
       return;
     }
+    const requestSeq = requestSeqRef.current + 1;
+    requestSeqRef.current = requestSeq;
+    setActiveRequestSeq(requestSeq);
     const pendingState: ChartState = {
       key: reportKey,
+      requestSeq,
       open: true,
       loading: true,
       bars: null,
@@ -127,12 +135,15 @@ export const ReportStrategy: React.FC<ReportStrategyProps> = ({
     setChartState(pendingState);
     try {
       const res = await stocksApi.getHistory(symbol, 60, 'daily');
-      // Only the state installed by this request may receive its result.
-      setChartState(current => current === pendingState
+      setChartState(current => activeReportKeyRef.current === reportKey
+        && requestSeqRef.current === requestSeq
+        && current.requestSeq === requestSeq
         ? { ...pendingState, loading: false, bars: res.data }
         : current);
     } catch {
-      setChartState(current => current === pendingState
+      setChartState(current => activeReportKeyRef.current === reportKey
+        && requestSeqRef.current === requestSeq
+        && current.requestSeq === requestSeq
         ? { ...pendingState, loading: false, failed: true }
         : current);
     }

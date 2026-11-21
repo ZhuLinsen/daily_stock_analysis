@@ -126,6 +126,37 @@ describe('ReportStrategy Levels Chart', () => {
     expect(await screen.findByText('192.00')).toBeInTheDocument();
   });
 
+  it('invalidates a request when leaving and returning to the same report', async () => {
+    let resolveStale!: (value: unknown) => void;
+    mockGetStockHistory
+      .mockImplementationOnce(() => new Promise((resolve) => {
+        resolveStale = resolve;
+      }))
+      .mockResolvedValueOnce({
+        data: [{ date: '2026-11-20', open: 220, high: 230, low: 215, close: 225 }],
+      });
+
+    const { rerender } = render(
+      <ReportStrategy recordId={104} stockCode="TSLA" strategy={{ idealBuy: '220' }} />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: '价格点位图' }));
+    await waitFor(() => expect(mockGetStockHistory).toHaveBeenCalledTimes(1));
+
+    rerender(<ReportStrategy recordId={105} stockCode="AAPL" strategy={{ idealBuy: '185' }} />);
+    rerender(<ReportStrategy recordId={104} stockCode="TSLA" strategy={{ idealBuy: '220' }} />);
+
+    const toggle = screen.getByRole('button', { name: '价格点位图' });
+    expect(toggle).toBeEnabled();
+    fireEvent.click(toggle);
+    expect(await screen.findByText('225.00')).toBeInTheDocument();
+
+    await act(async () => {
+      resolveStale({ data: [{ date: '2026-11-20', open: 995, high: 1000, low: 990, close: 999 }] });
+    });
+    expect(screen.getByText('225.00')).toBeInTheDocument();
+    expect(screen.queryByText('999.00')).not.toBeInTheDocument();
+  });
+
   it.each(['resolves', 'rejects'])('can fetch again when a stale request later %s', async (outcome) => {
     let settleStale!: () => void;
     mockGetStockHistory
