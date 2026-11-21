@@ -10,6 +10,7 @@ from __future__ import annotations
 import copy
 import logging
 import math
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from .base import DataFetchError
@@ -81,6 +82,38 @@ def _report_code(item: Dict[str, Any]) -> Optional[str]:
     return f"{year}-{suffix}"
 
 
+def _report_code_from_date(value: Any) -> Optional[str]:
+    """Map a statement date onto the indicator ``report`` code.
+
+    Quarterly dates are 03-31, 06-30, 09-30, and 12-31. The indicator endpoint
+    accepts that code without a successful income statement.
+    """
+    text = str(value or "")[:10]
+    try:
+        moment = datetime.strptime(text, "%Y-%m-%d")
+    except ValueError:
+        return None
+    quarter = {3: "1", 6: "2", 9: "3", 12: "4"}.get(moment.month)
+    if quarter is None:
+        return None
+    if (moment.month, moment.day) not in {(3, 31), (6, 30), (9, 30), (12, 31)}:
+        return None
+    return f"{moment.year}-{quarter}"
+
+
+def anchor_report_date(payload: Any) -> Optional[str]:
+    """Report date already present on a base fundamental bundle."""
+    if not isinstance(payload, dict):
+        return None
+    earnings = payload.get("earnings")
+    if not isinstance(earnings, dict):
+        return None
+    report = earnings.get("financial_report")
+    if not isinstance(report, dict) or not _present(report.get("report_date")):
+        return None
+    return str(report.get("report_date"))[:10]
+
+
 class HiThinkFundamentalAdapter:
     """Map documented HiThink financial payloads onto the pipeline bundle."""
 
@@ -91,9 +124,10 @@ class HiThinkFundamentalAdapter:
         self,
         stock_code: str,
         deadline: Optional[float] = None,
+        report_date: Optional[str] = None,
     ) -> Dict[str, Any]:
         with request_budget(deadline):
-            return self._load_fundamental_bundle(stock_code)
+            return self._load_fundamental_bundle(stock_code, report_date=report_date)
 
     def _same_statement_period(self, statement: Dict[str, Any], anchor: Optional[str]) -> bool:
         if not anchor:
@@ -109,7 +143,11 @@ class HiThinkFundamentalAdapter:
             return True
         return False
 
-    def _load_fundamental_bundle(self, stock_code: str) -> Dict[str, Any]:
+    def _load_fundamental_bundle(
+        self,
+        stock_code: str,
+        report_date: Optional[str] = None,
+    ) -> Dict[str, Any]:
         result = empty_fundamental_bundle()
         if not self.fetcher.is_available("fundamental"):
             return result
@@ -124,8 +162,9 @@ class HiThinkFundamentalAdapter:
         income = self._latest_statement(_INCOME_PATH, thscode, result)
         balance = self._latest_statement(_BALANCE_PATH, thscode, result) if not self._budget_exhausted(result) else {}
         cash_flow = self._latest_statement(_CASH_FLOW_PATH, thscode, result) if not self._budget_exhausted(result) else {}
-        anchor = self.fetcher._ms_to_date(income.get("period_end_ms")) if income else None
-        if income and anchor:
+        income_anchor = self.fetcher._ms_to_date(income.get("period_end_ms")) if income else None
+        anchor = income_anchor or (str(report_date)[:10] if report_date else None)
+        if income and income_anchor:
             result["earnings"]["income_statement"] = income
             result["earnings"]["financial_report"] = {
                 "report_date": anchor,
@@ -145,15 +184,23 @@ class HiThinkFundamentalAdapter:
         if cash_flow and self._same_statement_period(cash_flow, anchor):
             result["earnings"]["cash_flow"] = cash_flow
             report = result["earnings"].get("financial_report")
-            if isinstance(report, dict):
-                report["operating_cash_flow"] = _number(cash_flow.get("act_cash_flow_net"))
+            if not isinstance(report, dict):
+                report = {
+                    "report_date": anchor,
+                    "revenue": None,
+                    "net_profit_parent": None,
+                    "operating_cash_flow": None,
+                    "roe": None,
+                }
+                result["earnings"]["financial_report"] = report
+            report["operating_cash_flow"] = _number(cash_flow.get("act_cash_flow_net"))
             result["source_chain"].append("earnings:hithink_cash_flow")
         elif cash_flow:
             result["errors"].append("period_mismatch:cash_flow")
         if self._budget_exhausted(result):
             return result
 
-        report = _report_code(income) if income and anchor else None
+        report = _report_code(income) if income and income_anchor else _report_code_from_date(anchor)
         if report:
             indicators = self._indicators(thscode, report, result)
             growth = {

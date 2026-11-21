@@ -548,6 +548,57 @@ class HiThinkFetcherTests(unittest.TestCase):
         self.assertIn("historical-batch", request.call_args_list[0].args[0])
         self.assertTrue(request.call_args_list[1].args[0].endswith("/historical"))
 
+    def test_later_zero_close_does_not_keep_the_cached_window(self) -> None:
+        fetcher = self._fetcher()
+        manager = DataFetcherManager(fetchers=[fetcher])
+
+        def batch(close: float) -> dict:
+            return {
+                "code": 0,
+                "message": "success",
+                "data": {
+                    "interval": "1d",
+                    "adjust": "none",
+                    "item": [{
+                        "thscode": "600519.SH",
+                        "timestamp": _ms(2024, 1, 4),
+                        "item": [
+                            _bar(2024, 1, 2, 10),
+                            _bar(2024, 1, 3, close),
+                            _bar(2024, 1, 4, 12),
+                        ],
+                    }],
+                },
+            }
+
+        complete = _history(_bar(2024, 1, 2, 10), _bar(2024, 1, 3, 11), _bar(2024, 1, 4, 12))
+        with patch(
+            "data_provider.hithink_fetcher.requests.get",
+            side_effect=[_response(batch(11)), _response(batch(0)), _response(complete)],
+        ) as request:
+            self.assertEqual(
+                fetcher.prefetch_daily_klines(["600519"], start_date="2024-01-02", end_date="2024-01-04"),
+                1,
+            )
+            self.assertEqual(
+                fetcher.prefetch_daily_klines(["600519"], start_date="2024-01-02", end_date="2024-01-04"),
+                1,
+            )
+            frame, source = manager.get_daily_data(
+                "600519",
+                start_date="2024-01-02",
+                end_date="2024-01-04",
+            )
+
+        self.assertEqual(source, "HiThinkFetcher")
+        self.assertEqual(list(frame["date"].dt.strftime("%Y-%m-%d")), ["2024-01-02", "2024-01-03", "2024-01-04"])
+        self.assertEqual(list(frame["close"]), [10, 11, 12])
+        self.assertAlmostEqual(frame.iloc[2]["pct_chg"], (12 / 11 - 1) * 100)
+        self.assertEqual(request.call_count, 3)
+        self.assertIn("historical-batch", request.call_args_list[0].args[0])
+        self.assertIn("historical-batch", request.call_args_list[1].args[0])
+        self.assertTrue(request.call_args_list[2].args[0].endswith("/historical"))
+
     def test_batch_adjustment_or_interval_mismatch_is_not_cached(self) -> None:
         mismatched = {
             "code": 0,
@@ -680,6 +731,40 @@ class HiThinkFetcherTests(unittest.TestCase):
 
         self.assertEqual(request.call_count, 3)
         self.assertFalse(fetcher.is_available("realtime_quote"))
+
+    def test_rate_limit_inside_a_short_budget_still_cools_daily(self) -> None:
+        from data_provider.hithink_fetcher import _request_budget
+        from data_provider.hithink_fundamentals import HiThinkFundamentalAdapter
+
+        payloads = [
+            _response({}, status_code=429),
+            _response({"code": 4001, "message": "rate limit", "data": None}),
+        ]
+        for payload in payloads:
+            fetcher = HiThinkFetcher(api_key="hithink-test-key", retry_backoff=0.2)
+            calls = []
+
+            def fake_get(url, params=None, headers=None, timeout=None, payload=payload):
+                calls.append(url)
+                return payload
+
+            def fake_sleep(_seconds):
+                _request_budget.deadline = time.monotonic() - 1
+
+            with patch("data_provider.hithink_fetcher.requests.get", side_effect=fake_get), \
+                    patch("data_provider.hithink_fetcher.time.sleep", side_effect=fake_sleep):
+                result = HiThinkFundamentalAdapter(fetcher).get_valuation(
+                    "600519",
+                    deadline=time.monotonic() + 1,
+                )
+
+            self.assertEqual(result, {})
+            self.assertEqual(len(calls), 1)
+            self.assertFalse(fetcher.is_available("daily_data"))
+            with patch("data_provider.hithink_fetcher.requests.get") as daily:
+                with self.assertRaises(DataFetchError):
+                    fetcher.get_daily_data("600519", start_date="2024-01-02", end_date="2024-01-04")
+            self.assertEqual(daily.call_count, 0)
 
     def test_retry_sleep_stays_inside_the_remaining_budget(self) -> None:
         fetcher = HiThinkFetcher(api_key="hithink-test-key", retry_backoff=5, timeout=15)

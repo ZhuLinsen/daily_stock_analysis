@@ -345,10 +345,10 @@ class HiThinkFetcher(BaseFetcher):
                         code=429,
                         rate_limited=True,
                     )
+                    self._remember_error(str(last_error), cooldown=True)
                     if attempt < 2:
                         self._sleep_before_retry(attempt)
                         continue
-                    self._remember_error(str(last_error), cooldown=True)
                     raise last_error
                 last_error = HiThinkRequestError(f"HiThink HTTP {response.status_code}")
                 if response.status_code >= 500:
@@ -380,10 +380,12 @@ class HiThinkFetcher(BaseFetcher):
                 request_id,
             )
             error = self._error_from_code(code)
-            if error.code == _RATE_LIMIT_CODE and attempt < 2:
+            if error.code == _RATE_LIMIT_CODE:
                 last_error = error
-                self._sleep_before_retry(attempt)
-                continue
+                self._remember_error(str(error), cooldown=True)
+                if attempt < 2:
+                    self._sleep_before_retry(attempt)
+                    continue
             if error.code in _SERVER_CODES and attempt < 2:
                 last_error = error
                 self._sleep_before_retry(attempt)
@@ -512,6 +514,10 @@ class HiThinkFetcher(BaseFetcher):
     def _next_day(date_str: str) -> str:
         return (datetime.strptime(date_str, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
 
+    @staticmethod
+    def _previous_day(date_str: str) -> str:
+        return (datetime.strptime(date_str, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
+
     @classmethod
     def _merge_coverage(
         cls,
@@ -537,6 +543,31 @@ class HiThinkFetcher(BaseFetcher):
             merged[-1] = (merged[-1][0], max(merged[-1][1], end))
         return merged
 
+    @classmethod
+    def _subtract_coverage(
+        cls,
+        ranges: List[Tuple[str, str]],
+        start_date: str,
+        end_date: str,
+    ) -> List[Tuple[str, str]]:
+        """Drop the requested window from coverage that an older payload earned.
+
+        A later response that no longer covers the window must not keep the
+        old hit. Dates outside that window stay cached.
+        """
+        if end_date < start_date:
+            return list(ranges)
+        kept: List[Tuple[str, str]] = []
+        for start, end in ranges:
+            if end < start_date or start > end_date:
+                kept.append((start, end))
+                continue
+            if start < start_date:
+                kept.append((start, cls._previous_day(start_date)))
+            if end > end_date:
+                kept.append((cls._next_day(end_date), end))
+        return kept
+
     @staticmethod
     def _range_covered(ranges: List[Tuple[str, str]], start_date: str, end_date: str) -> bool:
         return any(covered_start <= start_date and covered_end >= end_date for covered_start, covered_end in ranges)
@@ -554,29 +585,34 @@ class HiThinkFetcher(BaseFetcher):
         with self._lock:
             return time.monotonic() >= self._financial_path_disabled_until.get(path, 0.0)
 
+    def _usable_daily_frame(self, frame: pd.DataFrame) -> pd.DataFrame:
+        """Rows that survive the same cleaning as ``_normalize_data``."""
+        if not self._has_daily_rows(frame):
+            return frame.iloc[0:0].copy()
+        parsed = pd.to_datetime(frame["date"], errors="coerce")
+        numbers = {
+            column: pd.to_numeric(frame.get(column), errors="coerce").replace(
+                [math.inf, -math.inf], pd.NA
+            )
+            for column in ("open_price", "high_price", "low_price", "close_price", "volume")
+        }
+        mask = parsed.notna()
+        for series in numbers.values():
+            mask = mask & series.notna()
+        mask = mask & (numbers["close_price"] > 0) & (numbers["volume"] >= 0)
+        return frame.loc[mask].copy()
+
     def _usable_daily_dates(self, frame: pd.DataFrame) -> List[str]:
         """Dates that survive the same cleaning as ``_normalize_data``.
 
         A row with a date but a zero close is dropped before indicators run.
         Counting it as coverage would reuse the hole on the next read.
         """
-        if not self._has_daily_rows(frame):
+        usable = self._usable_daily_frame(frame)
+        if usable.empty:
             return []
-        parsed = pd.to_datetime(frame["date"], errors="coerce")
-        working = pd.DataFrame({
-            "date": parsed.dt.strftime("%Y-%m-%d"),
-            "open": pd.to_numeric(frame.get("open_price"), errors="coerce"),
-            "high": pd.to_numeric(frame.get("high_price"), errors="coerce"),
-            "low": pd.to_numeric(frame.get("low_price"), errors="coerce"),
-            "close": pd.to_numeric(frame.get("close_price"), errors="coerce"),
-            "volume": pd.to_numeric(frame.get("volume"), errors="coerce"),
-        })
-        working.loc[parsed.isna(), "date"] = pd.NA
-        for column in ("open", "high", "low", "close", "volume"):
-            working[column] = working[column].replace([math.inf, -math.inf], pd.NA)
-        working = working.dropna(subset=["date", "open", "high", "low", "close", "volume"])
-        working = working[(working["close"] > 0) & (working["volume"] >= 0)]
-        return sorted(set(working["date"].tolist()))
+        parsed = pd.to_datetime(usable["date"], errors="coerce").dt.strftime("%Y-%m-%d")
+        return sorted(set(parsed.dropna().tolist()))
 
     @staticmethod
     def _only_weekend(first: datetime, last: datetime) -> bool:
@@ -644,17 +680,15 @@ class HiThinkFetcher(BaseFetcher):
         # requested window can be reused. A non-empty partial payload is not
         # either: recording the caller's start and end would let a later read
         # reuse a handful of bars as the whole window.
-        dates = self._usable_daily_dates(frame)
+        incoming = self._usable_daily_frame(frame)
+        dates = self._usable_daily_dates(incoming)
         if not dates or end_date < start_date:
             return False
-        if self._covers_requested_window(dates, start_date, end_date):
-            covered = [(start_date, end_date)]
-        else:
-            covered = self._session_spans(dates)
+        covers = self._covers_requested_window(dates, start_date, end_date)
+        covered = [(start_date, end_date)] if covers else self._session_spans(dates)
         with self._lock:
             key = self._cache_key(thscode)
             current = self._daily_cache.get(key)
-            incoming = frame.copy()
             if current is None or current.empty:
                 stored = incoming
             else:
@@ -663,6 +697,8 @@ class HiThinkFetcher(BaseFetcher):
                     stored = stored.drop_duplicates(subset=["date"], keep="last").reset_index(drop=True)
             self._daily_cache[key] = stored
             ranges = self._daily_coverage.get(key, [])
+            if not covers:
+                ranges = self._subtract_coverage(ranges, start_date, end_date)
             for covered_start, covered_end in covered:
                 ranges = self._merge_coverage(ranges, covered_start, covered_end)
             self._daily_coverage[key] = ranges

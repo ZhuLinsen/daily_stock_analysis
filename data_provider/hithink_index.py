@@ -132,7 +132,10 @@ def index_daily_data(
     if "interval" in data and data.get("interval") not in (None, "1d"):
         raise HiThinkRequestError("HiThink index historical response is not daily")
     raw = fetcher._bars_frame(data.get("item"), thscode=symbol)
-    return _normalize_index_bars(raw, symbol)
+    normalized = _normalize_index_bars(raw, symbol)
+    if normalized.empty:
+        return normalized
+    return fetcher._calculate_indicators(normalized)
 
 
 def rankings(fetcher: HiThinkFetcher, tag: str, n: int = 5) -> Optional[Tuple[List[Dict], List[Dict]]]:

@@ -1659,6 +1659,7 @@ class DataFetcherManager:
         """
         from .hithink_fundamentals import (
             HiThinkFundamentalAdapter,
+            anchor_report_date,
             empty_fundamental_bundle,
             merge_fundamental_bundles,
         )
@@ -1687,10 +1688,12 @@ class DataFetcherManager:
                 errors.append("fundamental_bundle_hithink timeout")
             else:
                 hithink_deadline = time.monotonic() + budget
+                known_report_date = anchor_report_date(ak_payload)
                 hithink_payload, hithink_error, hithink_ms = self._run_with_retry(
                     lambda: HiThinkFundamentalAdapter(hithink).get_fundamental_bundle(
                         stock_code,
                         deadline=hithink_deadline,
+                        report_date=known_report_date,
                     ),
                     budget,
                     "fundamental_bundle_hithink",

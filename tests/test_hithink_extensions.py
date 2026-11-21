@@ -436,6 +436,40 @@ class HiThinkIndexRouteTests(unittest.TestCase):
         self.assertEqual(source, "HiThinkFetcher")
         self.assertEqual(hithink.index_calls, ["000001.SH"])
 
+    def test_hithink_index_history_keeps_moving_averages(self) -> None:
+        empty = pd.DataFrame()
+        fetchers = [
+            _IndexFake(name, empty)
+            for name in ("TencentFetcher", "AkshareFetcher", "TickFlowFetcher", "YfinanceFetcher")
+        ]
+        hithink = HiThinkFetcher(api_key="hithink-test-key", retry_backoff=0)
+        manager = DataFetcherManager(fetchers=[*fetchers, hithink])
+        bars = []
+        for day, close in ((18, 100), (19, 110), (20, 120)):
+            bars.append({
+                "date_ms": _ms(2024, 11, day),
+                "open_price": close - 1,
+                "high_price": close + 1,
+                "low_price": close - 2,
+                "close_price": close,
+                "volume": 1000 * day,
+                "turnover": 1000 * close,
+            })
+        payload = _ok({"item": bars})
+        with patch("data_provider.hithink_fetcher.requests.get", return_value=_response(payload)):
+            frame, source = manager.get_daily_data(
+                "sh000001",
+                start_date="2024-11-18",
+                end_date="2024-11-20",
+            )
+
+        self.assertEqual(source, "HiThinkFetcher")
+        self.assertEqual(len(frame), 3)
+        for column in ("ma5", "ma10", "ma20", "volume_ratio"):
+            self.assertIn(column, frame.columns)
+            self.assertTrue(frame[column].notna().all())
+        self.assertAlmostEqual(frame.iloc[-1]["ma5"], 110.0)
+
     def test_index_history_older_than_five_years_is_not_returned_as_success(self) -> None:
         empty = pd.DataFrame()
         fetchers = [
@@ -742,6 +776,72 @@ class HiThinkFundamentalMergeTests(unittest.TestCase):
         self.assertEqual(len([url for url in urls if url.endswith("indicators")]), 2)
         self.assertTrue(fetcher.is_available("fundamental"))
         self.assertFalse(fetcher._financial_path_available("/api/a-share/financials/balance-sheets"))
+        self.assertTrue(fetcher._financial_path_available("/api/a-share/financials/cash-flow-statements"))
+
+    def test_income_denial_uses_the_akshare_period_for_cash_flow_and_indicators(self) -> None:
+        fetcher = self._fetcher()
+        manager = DataFetcherManager(fetchers=[fetcher])
+        period = _ms(2024, 9, 30)
+
+        def ak_bundle():
+            payload = empty_fundamental_bundle()
+            payload["earnings"] = {
+                "financial_report": {
+                    "report_date": "2024-09-30",
+                    "revenue": 100,
+                    "net_profit_parent": 20,
+                    "operating_cash_flow": None,
+                    "roe": None,
+                }
+            }
+            return payload
+
+        manager._fundamental_adapter.get_fundamental_bundle = lambda code: ak_bundle()
+        urls = []
+        reports = []
+
+        def fake_get(url, params=None, headers=None, timeout=None):
+            urls.append(url)
+            if url.endswith("indicators"):
+                reports.append((params or {}).get("report"))
+            if "valuations" in url or url.endswith("balance-sheets"):
+                return _response(_ok({"item": []}))
+            if url.endswith("income-statements"):
+                return _response({"code": 2003, "message": "denied", "data": None})
+            if url.endswith("cash-flow-statements"):
+                return _response(_ok({"item": [{
+                    "period_end_ms": period,
+                    "fiscal_year": 2024,
+                    "fiscal_period": "Q3",
+                    "act_cash_flow_net": 12.5,
+                }]}))
+            if url.endswith("indicators"):
+                return _response(_ok({
+                    "abilities": [{
+                        "indicators": [{"index_id": "net_profit_yoy_growth_ratio", "value": 8.0}],
+                    }],
+                }))
+            raise AssertionError(url)
+
+        with patch("data_provider.hithink_fetcher.requests.get", side_effect=fake_get):
+            first = manager.get_fundamental_context(
+                "600519",
+                budget_seconds=5,
+                realtime_quote=SimpleNamespace(),
+            )
+            second = manager.get_fundamental_context(
+                "000001",
+                budget_seconds=5,
+                realtime_quote=SimpleNamespace(),
+            )
+
+        self.assertEqual(first["earnings"]["data"]["financial_report"]["operating_cash_flow"], 12.5)
+        self.assertEqual(first["growth"]["data"]["net_profit_yoy"], 8.0)
+        self.assertEqual(second["earnings"]["data"]["financial_report"]["operating_cash_flow"], 12.5)
+        self.assertEqual(reports, ["2024-3", "2024-3"])
+        self.assertEqual(len([url for url in urls if url.endswith("income-statements")]), 1)
+        self.assertEqual(len([url for url in urls if url.endswith("cash-flow-statements")]), 2)
+        self.assertFalse(fetcher._financial_path_available("/api/a-share/financials/income-statements"))
         self.assertTrue(fetcher._financial_path_available("/api/a-share/financials/cash-flow-statements"))
 
     def test_daily_priority_does_not_move_hithink_ahead_of_hot_stocks(self) -> None:
