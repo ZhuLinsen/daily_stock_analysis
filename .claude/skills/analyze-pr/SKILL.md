@@ -48,7 +48,9 @@ description: 审查 daily_stock_analysis 仓库的 GitHub PR，基于完整 diff
    - `CI / Docker / 发布`：`.github/**`、`docker/**`、`scripts/**`
    - `文档`：`docs/**`、`docs/CHANGELOG.md`、`README.md`、中英对照文档
 4. **因果链与同语义排查**：核实问题现象 → 触发条件 → 根因（`path:line`）；对被改函数/配置键/字段做 `git grep`，查清 CLI / API / Bot / Web / Desktop / Scheduler 中未覆盖的同类入口。
-5. **声明 vs 事实 & 测试质量**：对照 PR 描述与实际 diff（标出声明未兑现 / 未声明改动）；检查测试是否打到真实风险层（而非把被改模块 mock 掉）以及是否覆盖行内 review 提出的反例。
+5. **必要性与减法评估 + 声明 vs 事实 & 测试质量**：
+   - 先对照 `AGENTS.md` §0 做产品减法检查：改动是否解决明确核心痛点，还是在叠加边角料功能、平行入口、重复模板或低频开关；若性价比偏低，直接在结论中建议瘦身或关闭。
+   - 对照 PR 描述与实际 diff（标出声明未兑现 / 未声明改动）；检查测试是否打到真实风险层（而非把被改模块 mock 掉）以及是否覆盖行内 review 提出的反例。
 
 ## 输出格式（固定 5 段，紧凑清晰）
 
