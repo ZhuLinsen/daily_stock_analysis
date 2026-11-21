@@ -29,6 +29,9 @@ REQUIRED_SKILLS = (
     "fix-issue",
 )
 
+PRODUCT_SKILL_ROOT = ROOT / "SKILL.md"
+PRODUCT_SKILL_PLUGIN = ROOT / "plugin" / "skills" / "stock_analyzer" / "SKILL.md"
+
 REQUIRED_GITIGNORE_SNIPPETS = (
     ".claude/*",
     "!.claude/skills",
@@ -172,6 +175,25 @@ def ensure_skill_files() -> None:
             fail(f"{path.relative_to(ROOT)} must reference AGENTS.md as the rule source")
 
 
+def ensure_product_skill_copies() -> None:
+    """Root SKILL.md must be a plain-file copy of the plugin skill (not a symlink)."""
+    ensure_file_exists(PRODUCT_SKILL_PLUGIN, "plugin stock_analyzer skill")
+    if PRODUCT_SKILL_ROOT.is_symlink():
+        fail(
+            "SKILL.md must be a regular file (not a symlink) so core.symlinks=false "
+            "checkouts and OpenClaw root-path imports still receive the skill body"
+        )
+    if not PRODUCT_SKILL_ROOT.is_file():
+        fail(f"product skill entry is missing: {PRODUCT_SKILL_ROOT.relative_to(ROOT)}")
+    root_bytes = PRODUCT_SKILL_ROOT.read_bytes()
+    plugin_bytes = PRODUCT_SKILL_PLUGIN.read_bytes()
+    if root_bytes != plugin_bytes:
+        fail(
+            "SKILL.md is out of sync with plugin/skills/stock_analyzer/SKILL.md; "
+            "keep both as identical regular files"
+        )
+
+
 def ensure_gitignore_rules() -> None:
     gitignore = (ROOT / ".gitignore").read_text(encoding="utf-8")
     for snippet in REQUIRED_GITIGNORE_SNIPPETS:
@@ -256,6 +278,7 @@ def main() -> None:
     ensure_copilot_entry()
     ensure_instruction_files()
     ensure_skill_files()
+    ensure_product_skill_copies()
     ensure_gitignore_rules()
     ensure_no_tracked_local_artifacts()
     ensure_no_stale_claude_reviews_refs()

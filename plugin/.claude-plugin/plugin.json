@@ -13,6 +13,5 @@
     "stock-analysis",
     "agent-skills",
     "finance"
-  ],
-  "skills": "./skills/"
+  ]
 }

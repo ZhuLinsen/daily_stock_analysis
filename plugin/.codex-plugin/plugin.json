@@ -20,7 +20,7 @@
   "interface": {
     "displayName": "Daily Stock Analysis",
     "shortDescription": "Analyze stocks and run market reviews with the DSA stock_analyzer skill.",
-    "longDescription": "Installs the user-facing stock_analyzer skill. The canonical skill file lives at plugin/skills/stock_analyzer/SKILL.md; repo-root SKILL.md is a symlink so OpenClaw and existing docs keep the same path without duplicating content. Repo-maintenance skills under .agents/skills are not included. Optional read-only MCP (`python -m src.mcp_server`) remains a checkout-side setup per docs/full-guide.md.",
+    "longDescription": "Installs the user-facing stock_analyzer skill that drives an already deployed DSA checkout or running DSA service (marketplace caches only plugin/, not src/). Skill body: plugin/skills/stock_analyzer/SKILL.md; repo-root SKILL.md is a plain-file copy for OpenClaw and core.symlinks=false. Repo-maintenance skills under .agents/skills are not included. Optional read-only MCP (`python -m src.mcp_server`) remains a checkout-side setup per docs/full-guide.md.",
     "category": "Productivity",
     "developerName": "ZhuLinsen",
     "websiteUrl": "https://github.com/ZhuLinsen/daily_stock_analysis",
