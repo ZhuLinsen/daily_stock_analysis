@@ -2,6 +2,10 @@
 
 set -euo pipefail
 
+# Keep every gate phase offline, including pytest collection before application
+# modules have had a chance to initialize LiteLLM.
+export LITELLM_LOCAL_MODEL_COST_MAP="${LITELLM_LOCAL_MODEL_COST_MAP:-True}"
+
 syntax_check() {
   echo "==> backend-gate: Python syntax check"
   python -m py_compile main.py src/config.py src/auth.py src/analyzer.py src/notification.py
