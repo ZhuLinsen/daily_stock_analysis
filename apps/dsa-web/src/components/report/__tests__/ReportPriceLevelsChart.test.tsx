@@ -51,7 +51,11 @@ describe('ReportPriceLevelsChart helpers & component', () => {
     expect(parseStrategyPriceLevel('5/20일 이동평균선 회복 대기')).toBeNull();
     expect(parseStrategyPriceLevel('等待收复 5、10、20 日均线后再评估')).toBeNull();
     expect(parseStrategyPriceLevel('5·10·20일 이동평균선 회복 대기')).toBeNull();
+    expect(parseStrategyPriceLevel('等待收复 5、10 和 20 日均线后再评估')).toBeNull();
+    expect(parseStrategyPriceLevel('5 및 20일 이동평균선 회복 대기')).toBeNull();
     expect(parseStrategyPriceLevel('20일 이동평균선(52.68원) 회복 대기')).toBeNull();
+    expect(parseStrategyPriceLevel('等待站稳 20 日均線（52.68元）再评估')).toBeNull();
+    expect(parseStrategyPriceLevel('20일 이동 평균선(52.68원) 회복 대기')).toBeNull();
     expect(parseStrategyPriceLevel('Wait for the 20-day moving averages (52.68) to turn higher')).toBeNull();
     expect(parseStrategyPriceLevel('1st target: $60')).toBe(60);
     expect(parseStrategyPriceLevel('1차 목표가 53,000원')).toBe(53000);
@@ -62,6 +66,8 @@ describe('ReportPriceLevelsChart helpers & component', () => {
     expect(parseStrategyPriceLevel('止盈目标：风险回报比 2∶1，止盈 60')).toBe(60);
     expect(parseStrategyPriceLevel('止盈目标：风险回报比 2/1，止盈 60')).toBe(60);
     expect(parseStrategyPriceLevel('Risk/reward ratio of 2 to 1, take profit at $60')).toBe(60);
+    expect(parseStrategyPriceLevel('R/R 2 to 1, take profit at $60')).toBe(60);
+    expect(parseStrategyPriceLevel('손익비 2/1, 목표가 60원')).toBe(60);
     expect(parseStrategyPriceLevel('止盈目标：60/65 元，分两批卖出')).toBe(60);
     expect(parseStrategyPriceLevel('止盈目标：60/65 元，分 2 批卖出')).toBe(60);
     expect(parseStrategyPriceLevel('Take profit target: $60/$65, sell in two batches')).toBe(60);
@@ -74,6 +80,8 @@ describe('ReportPriceLevelsChart helpers & component', () => {
     expect(parseStrategyPriceLevel('当前价：50元，暂不设止损')).toBeNull();
     expect(parseStrategyPriceLevel('当前价：约50元，止损设在 48')).toBe(48);
     expect(parseStrategyPriceLevel('当前价：约50元，暂不设止损')).toBeNull();
+    expect(parseStrategyPriceLevel('当前价格约为 50 元，止损价格 48 元')).toBe(48);
+    expect(parseStrategyPriceLevel('现价约为 50 元，暂无止损位')).toBeNull();
     expect(parseStrategyPriceLevel('Current price: approximately $50; take profit at 60')).toBe(60);
     expect(parseStrategyPriceLevel('止损位：跌破前低（48元）')).toBe(48);
     expect(parseStrategyPriceLevel('Stop-loss: ($48)')).toBe(48);
@@ -81,6 +89,14 @@ describe('ReportPriceLevelsChart helpers & component', () => {
     expect(parseStrategyPriceLevel('Stop-loss: below the Nov. 20 low at $48')).toBe(48);
     expect(parseStrategyPriceLevel('Stop-loss: below the Nov. 20, 2026 low at $48')).toBe(48);
     expect(parseStrategyPriceLevel('Stop-loss: below 20 Nov 2026 low at $48')).toBe(48);
+    expect(parseStrategyPriceLevel('止盈目标：60/65 港元，风险回报比 2/1')).toBe(60);
+    expect(parseStrategyPriceLevel('止盈目标：60/65 港元，计划分 2 批卖出（风险回报比 2/1）')).toBe(60);
+    expect(parseStrategyPriceLevel('Stop-loss: below the 20 Nov low at $48')).toBe(48);
+    expect(parseStrategyPriceLevel('止损：跌破 11/20 的前低 48 元')).toBe(48);
+    expect(parseStrategyPriceLevel('Ideal buy: $48; 20-day moving-average confirmation required')).toBe(48);
+    expect(parseStrategyPriceLevel('理想买入价：48；20日均线企稳后执行')).toBe(48);
+    expect(parseStrategyPriceLevel('止损：连续2根K线收于48元下方')).toBe(48);
+    expect(parseStrategyPriceLevel('Stop-loss: after 2 consecutive closes below $48')).toBe(48);
     expect(parseStrategyPriceLevel('+12%')).toBeNull();
     expect(parseStrategyPriceLevel('-2.5')).toBeNull();
   });
