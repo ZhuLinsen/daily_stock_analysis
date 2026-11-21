@@ -19,7 +19,7 @@ description: "分析股票和市场。当用户想要分析单个或多个股票
 5. **若无法定位或未部署**：停止分析，向用户说明本技能只驱动现有 DSA 安装，并指向部署指南：
    - 中文：[完整配置与部署指南](https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/full-guide.md)
    - English: [Full Guide](https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/full-guide_EN.md)
-6. **可选 HTTP**：若用户已启动 API（如 `python main.py --serve-only`），也可按 [OpenClaw / HTTP 对接](https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/openclaw-skill-integration.md) 通过 `DSA_BASE_URL` 调用 REST。**对话内分析须显式传 `"notify": false`**（API 默认 `notify: true`，省略会向已配置渠道推送）。
+6. **可选 HTTP**：若用户已启动 API（如 `python main.py --serve-only`），也可按 [OpenClaw / HTTP 对接](https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/openclaw-skill-integration.md) 与 [Grok Bot 对接](https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/grok-bot-integration.md) 通过 `DSA_BASE_URL` 调用 REST。对话内**不要推送**时：个股 `POST /api/v1/analysis/analyze` 须显式传 `"notify": false`（该接口默认 `notify: true`）；大盘复盘 `POST /api/v1/analysis/market-review` 须显式传 `"send_notification": false`（该接口读 `send_notification`，默认 `true`，**忽略** `notify`）。省略对应字段会向已配置渠道推送。
 
 本技能基于 `src/services/analyzer_service.py` 的逻辑，提供分析股票和整体市场的功能。
 
