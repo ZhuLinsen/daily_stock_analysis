@@ -80,7 +80,10 @@
 > 无需自备服务器，AI 模型调用按所选渠道计费。首次跑通**只需配置 1 个 AI 模型 Secret**，`STOCK_LIST` 默认兜底 `600519`，通知渠道可选。
 
 1. <a name="1-fork-本仓库"></a>**Fork 本仓库**：点击右上角 `Fork`。
-2. <a name="2-配置-secrets"></a>前往 `Settings` → `Secrets and variables` → `Actions` → `New repository secret`，任选一个模型 Key（`MODELFLARE_KEY`、`AIHUBMIX_KEY`、`GEMINI_API_KEY`、`ANTHROPIC_API_KEY` 或官方 `OPENAI_API_KEY`）。x6.ai 和其他兼容服务请参阅 [模型配置表](docs/full-guide.md#ai-模型配置至少配置一个)。
+2. <a name="2-配置-secrets"></a>前往 `Settings` → `Secrets and variables` → `Actions` → `New repository secret`，选择一个模型服务商并添加对应的 Key。
+   - **推荐** [注册 Modelflare](https://modelflare.dev/sign-up?utm_source=github&utm_campaign=daily_stock_analysis)，仅需添加 `MODELFLARE_KEY`。
+   - **推荐** [注册 x6.ai](https://console.x6pro.io/register?code=zJ2qSdns)，将 `LLM_X6AI_API_KEY` 添加到 Secrets，再按 [x6.ai 显式渠道配置](docs/llm-providers.md#x6ai-聚合平台) 设置 `LLM_CHANNELS=x6ai` 等 Variables。
+   - [AIHubMix](https://inferera.com/?aff=CfMq) 使用 `AIHUBMIX_KEY`，本项目用户可享 10% 充值优惠。也可使用 `GEMINI_API_KEY`、`ANTHROPIC_API_KEY` 或官方 `OPENAI_API_KEY`。其他兼容服务见 [模型配置表](docs/full-guide.md#ai-模型配置至少配置一个)。
 3. <a name="3-启用-actions"></a>**启用 Actions**：进入 Fork 仓库的 `Actions` 标签 → 点击 `I understand my workflows, go ahead and enable them`。
 4. <a name="完成"></a><a name="4-手动测试"></a>**手动测试与查看结果**：`Actions` → `每日股票分析` → `Run workflow`，运行结束后可在推送通知渠道查看结果或下载 `analysis-reports-*` 产物。之后每个工作日 **18:00（北京时间）** 自动执行（非交易日跳过及断点续传规则见 [定时任务配置](docs/full-guide.md#定时任务配置)）。非交易日试跑时，可在手动触发界面勾选强制运行。
 
@@ -90,21 +93,33 @@
 
 <a name="-web-界面"></a>
 
+先确认 [Python 与模型依赖](docs/full-guide.md#安装依赖)，再下载源码、安装依赖。
+
 ```bash
 git clone --depth 1 https://github.com/ZhuLinsen/daily_stock_analysis.git
 cd daily_stock_analysis
 python -m pip install -r requirements.txt
-
-# A. 本地 Web 工作台（需 Node.js；打开 http://127.0.0.1:8000 在「设置」填写 AI Key 和自选股）
-(cd apps/dsa-web && npm ci && npm run build)
-python main.py --serve-only
-
-# B. 或命令行快速试跑（复制 .env.example 为 .env 并填 1 个 AI Key + STOCK_LIST）
-python main.py --no-market-review --no-notify --force-run
-# 仅测试行情拉取（不消耗 AI 配额）：python main.py --dry-run --no-market-review --force-run
 ```
 
-> 具体 Python / Node.js 版本要求、OpenAI / LiteLLM 预设依赖差异与 Docker Compose 部署请参阅 [源码安装与环境要求](docs/full-guide.md#安装依赖) 与 [部署指南](docs/DEPLOY.md)。
+**Web 工作台**需满足 [Node.js 和 npm 版本要求](docs/DEPLOY.md#2-安装依赖)。启动后打开 `http://127.0.0.1:8000`，在「设置」填写 AI Key 和自选股。
+
+```bash
+(cd apps/dsa-web && npm ci && npm run build) && python main.py --serve-only
+```
+
+**命令行生成报告**前，复制 `.env.example` 为 `.env`，填写一个 AI Key 和 `STOCK_LIST`。
+
+```bash
+python main.py --no-market-review --no-notify --force-run
+```
+
+**行情试跑**可在 Bash 中指定一只股票，按需拉取并缓存行情，跳过 AI 分析、大盘复盘和本次自动回测。
+
+```bash
+BACKTEST_ENABLED=false python main.py --dry-run --no-market-review --force-run --stocks 600519
+```
+
+Docker Compose 见 [部署指南](docs/DEPLOY.md)。
 
 ### 📱 推送效果
 

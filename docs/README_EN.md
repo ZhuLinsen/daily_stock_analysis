@@ -82,7 +82,10 @@ Use [Agent strategy chat](./full-guide_EN.md#local-webui-management-interface) i
 > GitHub Actions runs the analysis on a hosted runner, and your model provider bills for API usage. Configure **one AI model Secret** to start. `STOCK_LIST` defaults to `600519`, and notifications are optional.
 
 1. <a name="1-fork-this-repository"></a>**Fork this repository**: Click `Fork` in the upper-right corner.
-2. <a name="2-configure-secrets"></a>Add one AI key under `Settings` → `Secrets and variables` → `Actions` → `New repository secret`. Choose `MODELFLARE_KEY`, `AIHUBMIX_KEY`, `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, or official `OPENAI_API_KEY`. See the [model setup table](./full-guide_EN.md#ai-model-configuration-configure-at-least-one) for x6.ai and other compatible endpoints.
+2. <a name="2-configure-secrets"></a>Choose a model provider and add its key under `Settings` → `Secrets and variables` → `Actions` → `New repository secret`.
+   - **Recommended** [Sign up for Modelflare](https://modelflare.dev/sign-up?utm_source=github&utm_campaign=daily_stock_analysis) and add `MODELFLARE_KEY` for a one-secret setup.
+   - **Recommended** [Sign up for x6.ai](https://console.x6pro.io/register?code=zJ2qSdns), add `LLM_X6AI_API_KEY` to Secrets, and set `LLM_CHANNELS=x6ai` and the other variables in the [x6.ai explicit channel setup (Chinese)](./llm-providers.md#x6ai-聚合平台).
+   - [AIHubMix](https://inferera.com/?aff=CfMq) uses `AIHUBMIX_KEY` and offers a 10% top-up discount for project users. You can also use `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, or an official `OPENAI_API_KEY`. See the [model setup table](./full-guide_EN.md#ai-model-configuration-configure-at-least-one) for other compatible endpoints.
 3. <a name="3-enable-actions"></a>**Enable Workflows**: Open `Actions` -> click `I understand my workflows, go ahead and enable them`.
 4. <a name="done"></a><a name="4-manual-test"></a>**Manual Test & Read Report**: `Actions` -> `每日股票分析` (Daily Stock Analysis workflow) -> `Run workflow`. Check pushed notifications or download the `analysis-reports-*` artifact after completion. Runs every weekday at **18:00 Beijing Time** (skip/resume rules in [Scheduled Task Configuration](./full-guide_EN.md#scheduled-task-configuration)). Enable the manual force-run option if you are testing on a non-trading day.
 
@@ -92,21 +95,33 @@ See the [full guide](./full-guide_EN.md#github-actions-configuration) for watchl
 
 <a name="-web-ui"></a>
 
+Check the [Python and model requirements](./full-guide_EN.md#install-dependencies), then clone the repository and install dependencies.
+
 ```bash
 git clone --depth 1 https://github.com/ZhuLinsen/daily_stock_analysis.git
 cd daily_stock_analysis
 python -m pip install -r requirements.txt
-
-# A. Local WebUI (requires Node.js; open http://127.0.0.1:8000 and set AI key + watchlist in Settings)
-(cd apps/dsa-web && npm ci && npm run build)
-python main.py --serve-only
-
-# B. Or CLI quick run (copy .env.example to .env and set 1 AI key + STOCK_LIST)
-python main.py --no-market-review --no-notify --force-run
-# Market-data dry run only (no LLM usage): python main.py --dry-run --no-market-review --force-run
 ```
 
-> For exact Python / Node.js version constraints, model preset requirements, and Docker Compose setup, see [Local Deployment](./full-guide_EN.md#local-deployment) and the [Deployment Guide](./DEPLOY_EN.md).
+**WebUI.** Check the [Node.js and npm requirements](./DEPLOY_EN.md#2-install-dependencies). After startup, open `http://127.0.0.1:8000` and enter your AI key and watchlist in Settings.
+
+```bash
+(cd apps/dsa-web && npm ci && npm run build) && python main.py --serve-only
+```
+
+**CLI report.** Copy `.env.example` to `.env`, then set one AI key and `STOCK_LIST`.
+
+```bash
+python main.py --no-market-review --no-notify --force-run
+```
+
+**Market-data dry run.** Run this in Bash to fetch and cache market data for one stock as needed, skipping AI analysis, market review, and automatic backtesting.
+
+```bash
+BACKTEST_ENABLED=false python main.py --dry-run --no-market-review --force-run --stocks 600519
+```
+
+For Docker Compose, see the [Deployment Guide](./DEPLOY_EN.md#option-1-docker-compose-deployment-recommended).
 
 ### 📱 Sample Output
 

@@ -60,9 +60,9 @@ Choose one setup below. Add API keys under Actions **Secrets**. Use **Variables*
 | Setup | Secrets | Related Variables |
 | --- | --- | --- |
 | [Modelflare](https://modelflare.dev/sign-up?utm_source=github&utm_campaign=daily_stock_analysis) (recommended, one secret) | `MODELFLARE_KEY` | Uses the default endpoint and model |
-| AIHubMix (one secret) | `AIHUBMIX_KEY` | Uses the default endpoint and model. Project users receive a 10% top-up discount |
+| [AIHubMix](https://inferera.com/?aff=CfMq) (one secret) | `AIHUBMIX_KEY` | Uses the default endpoint and model. Project users receive a 10% top-up discount |
 | Gemini, Anthropic, or the official OpenAI API (one secret) | `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, or `OPENAI_API_KEY` | Uses the project's default model for the selected provider |
-| [x6.ai](https://console.x6pro.io/register?code=zJ2qSdns) (explicit channel) | `LLM_X6AI_API_KEY` | `LLM_CHANNELS=x6ai`, `LLM_X6AI_BASE_URL`, and `LLM_X6AI_MODELS`. See the [x6.ai channel guide (Chinese)](llm-providers.md#x6ai-聚合平台) |
+| [x6.ai](https://console.x6pro.io/register?code=zJ2qSdns) (explicit channel) | `LLM_X6AI_API_KEY` | `LLM_CHANNELS=x6ai`, `LLM_X6AI_PROTOCOL=openai`, `LLM_X6AI_BASE_URL`, and `LLM_X6AI_MODELS`. See the [x6.ai channel guide (Chinese)](llm-providers.md#x6ai-聚合平台) |
 | OpenAI-compatible provider (such as DeepSeek or Qwen) | `OPENAI_API_KEY` (issued by that provider) | Set `OPENAI_BASE_URL` and `OPENAI_MODEL` to that provider's endpoint and model |
 | [Anspire](https://open.anspire.cn/dsa?share_code=QFBC0FYC) | `ANSPIRE_API_KEYS` | The same key can serve model and search requests, subject to account permissions |
 
@@ -661,6 +661,8 @@ docker run -d \
 
 ### Install Dependencies
 
+For a source build of the WebUI, check the [Node.js and npm requirements](DEPLOY_EN.md#2-install-dependencies).
+
 ```bash
 # Use Python 3.10 or later
 python -m pip install -r requirements.txt
@@ -692,12 +694,16 @@ python main.py --etf-rotation         # ETF rotation signal + rule backtest (no 
 python main.py --no-market-review     # Stock analysis only
 python main.py --stocks 600519,300750 # Specify stocks
 python main.py --portfolio futu       # Use real Futu LONG stock holdings (overrides --stocks/STOCK_LIST)
-python main.py --dry-run --no-market-review --force-run  # Fetch market data only
+BACKTEST_ENABLED=false python main.py --dry-run --no-market-review --force-run --stocks 600519  # Market-data dry run (Bash)
 python main.py --no-notify            # Don't send notifications
 python main.py --schedule             # Scheduled task mode
 python main.py --debug                # Debug mode (verbose logging)
 python main.py --workers 5            # Specify concurrency
 ```
+
+Automatic backtesting is enabled by default and may evaluate existing reports even during a dry run. In Bash, prefixing the command with `BACKTEST_ENABLED=false` disables automatic backtesting for that run. The dry run reuses cached market data and stores newly fetched data locally.
+
+With an existing deployment's `.env`, you can add `SCHEDULE_ENABLED=false WEBUI_ENABLED=false RUN_IMMEDIATELY=true` before the dry-run command to run it once from the CLI.
 
 > **`--doctor` semantics**: Both `python main.py --doctor` and `python main.py --doctor --json` run read-only offline diagnostics with secrets redacted (without creating log or database files). Exit codes: `0` when healthy or warnings only (e.g., having no notification channels configured is a warning, not a blocking error); `1` on blocking configuration, LLM, storage, or half-configured notification errors; `2` on flag misuse (`--json` requires `--doctor`).
 

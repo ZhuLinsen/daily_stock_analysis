@@ -60,9 +60,9 @@ daily_stock_analysis/
 | 接入方式 | Secrets | 配套 Variables |
 | --- | --- | --- |
 | [Modelflare](https://modelflare.dev/sign-up?utm_source=github&utm_campaign=daily_stock_analysis)（推荐，单 Secret） | `MODELFLARE_KEY` | 默认补齐地址和模型 |
-| AIHubMix（单 Secret） | `AIHUBMIX_KEY` | 默认补齐地址和模型。本项目可享 10% 优惠 |
+| [AIHubMix](https://inferera.com/?aff=CfMq)（单 Secret） | `AIHUBMIX_KEY` | 默认补齐地址和模型。本项目可享 10% 优惠 |
 | Gemini、Anthropic 或 OpenAI 官方接口（单 Secret） | `GEMINI_API_KEY`、`ANTHROPIC_API_KEY` 或 `OPENAI_API_KEY` | 使用项目为对应服务预设的模型 |
-| [x6.ai](https://console.x6pro.io/register?code=zJ2qSdns)（显式渠道） | `LLM_X6AI_API_KEY` | `LLM_CHANNELS=x6ai`、`LLM_X6AI_BASE_URL` 和 `LLM_X6AI_MODELS`，见 [x6.ai 渠道配置](llm-providers.md#x6ai-聚合平台) |
+| [x6.ai](https://console.x6pro.io/register?code=zJ2qSdns)（显式渠道） | `LLM_X6AI_API_KEY` | `LLM_CHANNELS=x6ai`、`LLM_X6AI_PROTOCOL=openai`、`LLM_X6AI_BASE_URL` 和 `LLM_X6AI_MODELS`，见 [x6.ai 渠道配置](llm-providers.md#x6ai-聚合平台) |
 | OpenAI 兼容服务（如 DeepSeek、通义千问） | `OPENAI_API_KEY`（该服务签发的 Key） | `OPENAI_BASE_URL` 和 `OPENAI_MODEL` 填写该服务的地址及模型 |
 | [Anspire](https://open.anspire.cn/dsa?share_code=QFBC0FYC) | `ANSPIRE_API_KEYS` | 模型和搜索可共用 Key，以账号权限为准 |
 
@@ -176,7 +176,7 @@ daily_stock_analysis/
 | `TICKFLOW_API_KEY` | [TickFlow](https://tickflow.org) API Key；可选，用于 A 股日 K、实时行情、股票列表/名称与大盘复盘增强；失败或权限不足时自动回退。 | 可选 |
 | `MX_APIKEY` / `MX_PRIORITY` | 妙想（东方财富 MX_API）补充数据源：在东财公开接口失败/限流时兜底获取筹码分布与个股资金流。**严格 opt-in 的第三方能力**：需用户自备 Key（妙想 Skills 页面），限时免费/会员配额策略可能调整、不承诺长期免费；未配置则不启用、行为不变。`MX_PRIORITY` 默认 `6`。GitHub Actions 需在 Secrets 配置 `MX_APIKEY` | 可选 |
 | `LONGBRIDGE_OAUTH_CLIENT_ID` | [Longbridge OpenAPI](https://open.longbridge.com/) OAuth client_id；留空且无 Legacy Access Token 时会兼容使用 `LONGBRIDGE_APP_KEY` | 可选 |
-| `LONGBRIDGE_OAUTH_TOKEN_CACHE_B64` | OAuth token 缓存文件的 base64 内容，供 GitHub Actions / Docker 等 headless 环境恢复 SDK token 缓存 | 可选 |
+| `LONGBRIDGE_OAUTH_TOKEN_CACHE_B64` | OAuth token 缓存文件的 base64 内容，供支持 OAuth 的无界面环境恢复 SDK token 缓存 | 可选 |
 | `LONGBRIDGE_APP_KEY` | Longbridge Legacy App Key；无 `LONGBRIDGE_ACCESS_TOKEN` 时也可作为 OAuth client_id 兼容别名 | 可选 |
 | `LONGBRIDGE_APP_SECRET` | Longbridge App Secret | 可选 |
 | `LONGBRIDGE_ACCESS_TOKEN` | Longbridge Legacy Access Token（不是 OAuth access token） | 可选 |
@@ -444,7 +444,7 @@ daily_stock_analysis/
 | `TICKFLOW_BATCH_SIZE` | TickFlow 日 K 与实时行情批量请求的单批最大标的数。 | `100` | 可选 |
 | `FUTU_HK_REALTIME_SOURCE_PRIORITY` | 港股实时行情独立优先级，可选 `futu`、`longbridge`、`akshare`、`yfinance`，按逗号分隔；失败自动回退。 | `futu,longbridge,akshare,yfinance` | 可选 |
 | `LONGBRIDGE_OAUTH_CLIENT_ID` | Longbridge OAuth client_id；留空且无 Legacy Access Token 时会兼容使用 `LONGBRIDGE_APP_KEY` | - | 可选 |
-| `LONGBRIDGE_OAUTH_TOKEN_CACHE_B64` | OAuth token 缓存文件的 base64 内容，供 GitHub Actions / Docker 等 headless 环境使用 | - | 可选 |
+| `LONGBRIDGE_OAUTH_TOKEN_CACHE_B64` | OAuth token 缓存文件的 base64 内容，供支持 OAuth 的无界面环境使用 | - | 可选 |
 | `LONGBRIDGE_APP_KEY` | Longbridge Legacy App Key；无 `LONGBRIDGE_ACCESS_TOKEN` 时也可作为 OAuth client_id 兼容别名 | - | 可选 |
 | `LONGBRIDGE_APP_SECRET` | Longbridge App Secret | - | 可选 |
 | `LONGBRIDGE_ACCESS_TOKEN` | Longbridge Legacy Access Token（不是 OAuth access token） | - | 可选 |
@@ -718,6 +718,8 @@ docker run -d \
 
 ### 安装依赖
 
+从源码构建 WebUI 前，请确认 [Node.js 和 npm 版本要求](DEPLOY.md#2-安装依赖)。
+
 ```bash
 # 使用 Python 3.10 或以上版本
 python -m pip install -r requirements.txt
@@ -750,13 +752,17 @@ python main.py --no-market-review     # 仅个股分析
 python main.py --etf-rotation         # ETF 轮动信号 + 规则回测（不调用 LLM，见 docs/etf-rotation.md）
 python main.py --stocks 600519,300750 # 指定股票
 python main.py --portfolio futu       # 使用 Futu 真实 LONG 正股持仓（覆盖 --stocks/STOCK_LIST）
-python main.py --dry-run --no-market-review --force-run  # 仅拉取行情
+BACKTEST_ENABLED=false python main.py --dry-run --no-market-review --force-run --stocks 600519  # 行情试跑（Bash）
 python main.py --no-notify            # 不发送推送
 python main.py --schedule             # 定时任务模式
 python main.py --force-run            # 非交易日也强制执行（Issue #373）
 python main.py --debug                # 调试模式（详细日志）
 python main.py --workers 5            # 指定并发数
 ```
+
+自动回测默认开启，干跑也可能对已有报告执行回测。Bash 命令前的 `BACKTEST_ENABLED=false` 仅为本次试跑关闭自动回测。已有行情会从本地缓存读取，新拉取的行情会写入缓存。
+
+使用现有部署的 `.env` 时，可在试跑命令前加上 `SCHEDULE_ENABLED=false WEBUI_ENABLED=false RUN_IMMEDIATELY=true`，以单次命令行模式运行。
 
 > **`--doctor` 语义说明**：`python main.py --doctor` 与 `python main.py --doctor --json` 仅运行离线只读脱敏检查（不写入日志或数据库文件）。退出码约定：`0` 表示通过或仅存在警告（例如未配置通知渠道仅作为警告不阻断）；`1` 表示存在配置、LLM、存储可写性或半配置通知渠道错误；`2` 表示参数误用（`--json` 必须配合 `--doctor` 使用）。
 

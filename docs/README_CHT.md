@@ -82,7 +82,10 @@
 > 無需自備伺服器，AI 模型呼叫依所選渠道計費。首次執行**只需配置 1 個 AI 模型 Secret**，`STOCK_LIST` 預設為 `600519`，通知渠道可選。
 
 1. <a name="1-fork-本倉庫"></a>**Fork 本倉庫**：點擊右上角 `Fork`。
-2. <a name="2-配置-secrets"></a>前往 `Settings` → `Secrets and variables` → `Actions` → `New repository secret`，擇一填寫 `MODELFLARE_KEY`、`AIHUBMIX_KEY`、`GEMINI_API_KEY`、`ANTHROPIC_API_KEY` 或官方 `OPENAI_API_KEY`。x6.ai 與其他相容服務請參閱 [模型配置表](./full-guide.md#ai-模型配置至少配置一个)。
+2. <a name="2-配置-secrets"></a>前往 `Settings` → `Secrets and variables` → `Actions` → `New repository secret`，選擇一個模型服務商並新增對應的 Key。
+   - **推薦** [註冊 Modelflare](https://modelflare.dev/sign-up?utm_source=github&utm_campaign=daily_stock_analysis)，僅需新增 `MODELFLARE_KEY`。
+   - **推薦** [註冊 x6.ai](https://console.x6pro.io/register?code=zJ2qSdns)，將 `LLM_X6AI_API_KEY` 新增至 Secrets，再依照 [x6.ai 顯式渠道配置](./llm-providers.md#x6ai-聚合平台) 設定 `LLM_CHANNELS=x6ai` 等 Variables。
+   - [AIHubMix](https://inferera.com/?aff=CfMq) 使用 `AIHUBMIX_KEY`，本專案使用者可享 10% 儲值優惠。也可使用 `GEMINI_API_KEY`、`ANTHROPIC_API_KEY` 或官方 `OPENAI_API_KEY`。其他相容服務請參閱 [模型配置表](./full-guide.md#ai-模型配置至少配置一个)。
 3. <a name="3-啟用-actions"></a>**啟用 Actions**：進入 Fork 倉庫的 `Actions` 標籤 -> 點擊 `I understand my workflows, go ahead and enable them`。
 4. <a name="完成"></a><a name="4-手動測試"></a>**手動測試與查看結果**：`Actions` -> `每日股票分析` -> `Run workflow`，執行完成後可在推送通知查看結果或下載 `analysis-reports-*` 產物。之後每個工作日 **18:00（北京時間）** 自動執行（非交易日跳過及斷點續傳規則見 [定時任務配置](./full-guide.md#定时任务配置)）。非交易日試跑時可在手動觸發畫面勾選強制執行。
 
@@ -92,21 +95,33 @@
 
 <a name="-web-介面"></a>
 
+先確認 [Python 與模型相依套件](./full-guide.md#安装依赖)，再下載原始碼並安裝相依套件。
+
 ```bash
 git clone --depth 1 https://github.com/ZhuLinsen/daily_stock_analysis.git
 cd daily_stock_analysis
 python -m pip install -r requirements.txt
-
-# A. 本地 Web 工作台（需 Node.js；開啟 http://127.0.0.1:8000 於「設定」填寫 AI Key 和自選股）
-(cd apps/dsa-web && npm ci && npm run build)
-python main.py --serve-only
-
-# B. 或命令行快速試跑（複製 .env.example 為 .env 並填寫 1 個 AI Key + STOCK_LIST）
-python main.py --no-market-review --no-notify --force-run
-# 僅測試行情擷取（不消耗 AI 配額）：python main.py --dry-run --no-market-review --force-run
 ```
 
-> 具體 Python / Node.js 版本需求、模型預設依賴差異與 Docker Compose 部署請參閱 [源碼安裝與環境需求](./full-guide.md#安装依赖) 與 [部署指南](./DEPLOY.md)。
+**Web 工作台**需符合 [Node.js 與 npm 版本需求](./DEPLOY.md#2-安装依赖)。啟動後開啟 `http://127.0.0.1:8000`，在「設定」填寫 AI Key 和自選股。
+
+```bash
+(cd apps/dsa-web && npm ci && npm run build) && python main.py --serve-only
+```
+
+**從命令列產生報告**前，複製 `.env.example` 為 `.env`，填寫一個 AI Key 和 `STOCK_LIST`。
+
+```bash
+python main.py --no-market-review --no-notify --force-run
+```
+
+**行情試跑**可在 Bash 中指定一檔股票，按需擷取並快取行情，略過 AI 分析、大盤復盤與本次自動回測。
+
+```bash
+BACKTEST_ENABLED=false python main.py --dry-run --no-market-review --force-run --stocks 600519
+```
+
+Docker Compose 請參閱 [部署指南](./DEPLOY.md)。
 
 ### 📱 推送效果
 
