@@ -1157,11 +1157,13 @@ class TushareFetcher(BaseFetcher):
 
         return None
 
-    def get_market_stats(self) -> Optional[dict]:
+    def get_market_stats(self, *, allow_cache: bool = True) -> Optional[dict]:
         """
         获取市场涨跌统计 (Tushare Pro)
         2000积分 每天访问该接口 ts.pro_api().rt_k 两次
         接口限制见：https://tushare.pro/document/1?doc_id=108
+
+        实时行情与日线均发起新请求，交易日历可从缓存读取。
         """
         if self._api is None:
             return None

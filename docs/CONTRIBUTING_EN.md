@@ -44,6 +44,8 @@ cp .env.example .env
 4. Push the branch: `git push origin feature/your-feature`
 5. Open a Pull Request against `main`.
 
+Use the PR title to describe what changes when it lands. Explain who benefits, which entry points are affected and how you verified the result. Include screenshots for visible Web, desktop or report changes. GitHub generates release notes from merged PR titles and labels. Maintainers confirm the category and archive the release, so contributors can skip editing `docs/CHANGELOG.md`.
+
 ### Commit Message Convention
 
 This project follows [Conventional Commits](https://www.conventionalcommits.org/):
@@ -78,13 +80,13 @@ docs: update README deployment section
 
 After opening a PR, CI will automatically run the following PR checks:
 
-PRs that only change ordinary `docs/**`, non-governance Markdown, or `LICENSE` keep lightweight change detection, governance validation, and gate summarization, while skipping the three backend test shards, Docker, Web, and desktop packaging. Contract documentation, static API specifications, and Markdown fixtures read directly by offline tests still trigger backend tests. Governance assets such as `AGENTS.md`, `.github/instructions/**`, and `.claude/skills/**` are still validated by `ai-governance`; runtime-affecting text files such as configuration, dependency, and workflow files still run their corresponding full checks.
+PRs that only change ordinary `docs/**`, non-governance Markdown, or `LICENSE` keep lightweight change detection, governance validation, and gate summarization, while skipping the three backend test shards, Docker, Web, and desktop packaging. Contract documentation, static API specifications, and Markdown fixtures read directly by offline tests still trigger backend tests. Governance assets such as `AGENTS.md`, `.github/instructions/**`, and `.agents/skills/**` are still validated by `ai-governance`; runtime-affecting text files such as configuration, dependency, and workflow files still run their corresponding full checks.
 
 | Check | Description | Required |
 |-------|-------------|:--------:|
 | `backend-gate` | `scripts/ci_gate.sh` — py_compile + flake8 critical errors + `./scripts/test.sh code` + `./scripts/test.sh yfinance` + offline pytest | ✅ |
 | `docker-build` | Docker image build and key module import smoke test | ✅ |
-| `web-gate` | `npm run lint` + `npm run build` (triggered when `apps/dsa-web/` changes) | ✅ (when triggered) |
+| `web-gate` | Path-based Web lint, build, tests and Playwright screenshots in the `web-ui-evidence-<head SHA>` artifact | ✅ (when triggered) |
 | `pr-review` | Automatic PR triggering is temporarily paused. Maintainers can still run it by PR number through `workflow_dispatch`; it reads PR metadata and diff through the GitHub API and never checks out or executes fork PR code. | ❌ (advisory) |
 
 Separately, the repository also has a non-blocking `network-smoke` workflow in `.github/workflows/network-smoke.yml`, but it is only triggered by `schedule` and `workflow_dispatch`, not by pull requests.
@@ -93,8 +95,7 @@ Separately, the repository also has a non-blocking `network-smoke` workflow in `
 
 ```bash
 # Backend gate (recommended)
-pip install -r requirements.txt
-pip install flake8 pytest
+python -m pip install -r .github/requirements-ci.txt
 ./scripts/ci_gate.sh
 
 # Frontend gate (only if you changed apps/dsa-web/)
@@ -108,13 +109,17 @@ npm run build
 
 When modifying a Chinese-language core document (e.g., `docs/full-guide.md`), your PR description **must state** whether the corresponding English document has been updated. If not updated, explain why.
 
-## 📋 Priority Areas for Contribution
+## 📋 Product Direction & Priority Areas for Contribution
 
-- 🔔 New notification channels (e.g., Slack, Matrix)
-- 🤖 New AI model integrations
-- 📊 New data source adapters
-- 🐛 Bug fixes and performance improvements
-- 📖 Documentation improvements and translations
+The project already has a complete end-to-end workflow and follows a **"do less, better"** principle: prioritize subtraction, simplicity, and core reliability over adding niche features, duplicate config templates, parallel entry points, or low-frequency toggles. **Before developing a substantial new feature, we recommend opening an Issue first to align on necessity and scope; regular bug fixes, UX improvements, and small focused enhancements can be submitted directly as PRs.**
+
+Priority areas (ordered by priority; see [README](../README.md) for core entry points):
+
+- 🐛 **Core bug fixes & reliability** (data ingestion, analysis quality, timeout/fallback isolation, notification delivery)
+- ✨ **Simplification & subtraction** (streamlining config/UX, removing redundant paths, improving diagnostics)
+- ⚡ **Performance & deterministic tests** (covering real risk paths)
+- 📖 **Accurate, concise documentation** (aligned with executable code without duplicating guides)
+- 🧩 **High-value core capabilities aligned in an Issue first** (clear, frequent user value without adding unnecessary complexity)
 
 ## ❓ Questions
 

@@ -5,16 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-> For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
+> Release notes are generated from merged PRs and archived here by version. For the published notes, see [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases).
 
 ## [Unreleased]
 
+- [新功能] 新增 A 股收盘情绪快照后端，支持手动提交后台任务、查看规则指标及按实际交易日查询历史趋势。
+- [新功能] 新增可选跨资产上下文通道（cross-asset-v1，Issue #1910 一期，默认关闭）：显式开启 `CROSS_ASSET_CONTEXT_ENABLED=true` 后，个股分析 Prompt 注入“外围环境与跨资产”低敏摘要（一期数据源为 yfinance：港/美/日/韩/台指数 + 富时A50 尽力而为 + VIX + 美债10Y），`risk_appetite` 由确定性投票规则生成，四级 fail-open 降级不中断主分析；Prompt 段落带 UNTRUSTED 哨兵、限行与数值溢出守卫，不配置时主流程零行为差异（Refs #1910）。
+- [文档] 在 `AGENTS.md`、中英文贡献指南、PR 模板与 `analyze-pr` 规范中确立“产品做减法、只做必要高价值改动、把核心功能做简单可靠”的演进与审查原则。
+- [新功能] 将分析报告组装逻辑下沉至共享服务层（`src/services/report_builder_service.py`），并新增可选的只读 stdio MCP 服务（`python -m src.mcp_server`，可选依赖 `mcp>=1.0.0,<2`，默认关闭持仓与配置写入且分析默认不推送）；文档补充分析会消耗模型额度并可能更新本地缓存的提示。
+- [新功能] Web 与桌面端已保存个股报告的策略点位区新增按需价格点位图，展示近 60 个交易日、MA5/MA20 及可解析的狙击点位参考线。
+- [修复] 数据源超时但个股按时完成时复用分析槽位，取消后跳过迟到的报告和新闻写入，保留 LiteLLM 同模型部署重试。识别英文止损点位倒挂，按发行人筛选同名公告，并保留复合风险警报。
+- [chore] 仓库协作 skill 迁至 `.agents/skills/` 并保留 `.claude/skills/` 同步副本兼容 Claude Code，重构 `analyze-pr` 审查规范（文件覆盖账本、14 维影响面清单与不可逆变更约束），精简 `AGENTS.md`、PR 模板与 `ai-governance` 校验脚本，本地审查产物默认直接对话输出（可选 `.reviews/`）。
+- [修复] Agent 工具返回顶层错误或显式 `success: false` 时，进度事件与调用轨迹正确标记失败，并与非重试错误缓存命中保持一致；保留成功空结果、原始工具返回内容及最终回复语义。
+- [新功能] 飞书 Webhook 和 App Bot 交互卡片显示报告标题、信号配色及独立风险警报面板，可通过 `FEISHU_CARD_WEB_URL` 或 `DSA_WEB_URL` 添加 Web 工作台按钮。两种发送模式均按完整请求体字节数分页。
+- [新功能] `AGENT_DEBATE_ENABLED` 默认关闭。多 Agent 出现方向分歧或高确信买入时，将带来源引用的多空简报传给决策 Agent，并在决策前运行或复用风险审查。必审未完成或启用的风控规则否决买入时，报告和问股回复暂缓买入。
 - [修复] 选股、告警与个股分析报告统一使用同一 Wilder RSI（`src/utils/rsi.py`，基于 `fin-primitives`，以前 period 个涨跌幅的简单均值起算，与 TA-Lib 一致）：选股不再使用简单滚动均值，告警与报告不再以首行零涨跌幅起算 ewm，短历史下三处的超买/超卖判断不再出现分歧。预热期与无波动时仍为中性值 50；RSI 告警不再用预热占位值判断穿越，最少历史改为 period+2 根。
 - [文档] 将 AlphaSift 与 AlphaEvo 的项目入口前移至 README 产品预览之后、功能特性之前，以 `[!TIP]` 提示框展示，同步简体、英文与繁体版本。
 
-<!-- 新条目格式：- [类型] 描述（类型取值：新功能/改进/修复/文档/测试/chore）-->
-
+- [修复] 修复 Telegram 报告包含 11 个及以上 Markdown 链接时，后续来源被替换为较早链接的问题。
+- [修复] 盘中回测与 Skill 观点评估从当日收盘起算，避免计入分析时已发生的日内涨跌；回测排除相对评估入场价失效的止盈止损方案的模拟收益及命中率，方向评估继续保留。
+- [修复] 钉钉和飞书凭据在 `.env.example` 中默认留空，避免首次配置时误报；模型缺失提示补充 `MODELFLARE_KEY`。
+- [修复] Agent 缺少真实历史置信度数据时保持中性校准，不再使用固定的估计值。
+- [文档] 将简体、英文和繁体 README 首页的 HelloGitHub 徽章替换为 Star History 全球排名徽章，与 Trendshift 徽章等高并排展示。
+- [改进] 历史个股栏批量统计展示股票的历史分析次数，减少刷新时的数据库查询。
 - [修复] 持仓交易、现金流水和公司行动拒绝 NaN / Infinity 等非有限数值；CSV 预览、预演和提交在写入前拒绝包含非有限数值或费税合计溢出的交易行，并返回行号和字段，避免污染账本和快照；API 校验错误中的非有限数值可安全返回 JSON。
+- [改进] Web 股票输入框的联想搜索为每只股票只规范化一次代码、名称、拼音和别名，后续搜索直接复用，不再每次都对约 3.2 万条索引重新做 Unicode 规范化。
 
 - [修复] 持仓页浮动盈亏与收益率改用 A 股习惯的红涨绿跌配色，新增 `text-price-up` / `text-price-down` 工具类并复用 `--home-price-up` / `--home-price-down` 变量，收益为 0 时保持中性色，与个股页保持一致。
 

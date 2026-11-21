@@ -26,17 +26,41 @@ type NavItem = {
   badge?: 'completion';
 };
 
-const NAV_ITEMS: NavItem[] = [
-  { key: 'home', labelKey: 'layout.nav.home', to: '/', icon: Home, exact: true },
-  { key: 'chat', labelKey: 'layout.nav.chat', to: '/chat', icon: MessageSquareQuote, badge: 'completion' },
-  { key: 'screening', labelKey: 'layout.nav.screening', to: '/screening', icon: Search },
-  { key: 'portfolio', labelKey: 'layout.nav.portfolio', to: '/portfolio', icon: BriefcaseBusiness },
-  { key: 'decision-signals', labelKey: 'layout.nav.decisionSignals', to: '/decision-signals', icon: Activity },
-  { key: 'backtest', labelKey: 'layout.nav.backtest', to: '/backtest', icon: BarChart3 },
-  { key: 'alerts', labelKey: 'layout.nav.alerts', to: '/alerts', icon: Bell },
-  { key: 'data', labelKey: 'layout.nav.dataCenter', to: '/data', icon: Database },
-  { key: 'usage', labelKey: 'layout.nav.usage', to: '/usage', icon: Gauge },
-  { key: 'settings', labelKey: 'layout.nav.settings', to: '/settings', icon: Settings2 },
+type NavGroup = {
+  key: 'research' | 'portfolio' | 'system';
+  labelKey: UiTextKey;
+  items: NavItem[];
+};
+
+const NAV_GROUPS: NavGroup[] = [
+  {
+    key: 'research',
+    labelKey: 'layout.navGroup.research',
+    items: [
+      { key: 'home', labelKey: 'layout.nav.home', to: '/', icon: Home, exact: true },
+      { key: 'chat', labelKey: 'layout.nav.chat', to: '/chat', icon: MessageSquareQuote, badge: 'completion' },
+      { key: 'screening', labelKey: 'layout.nav.screening', to: '/screening', icon: Search },
+    ],
+  },
+  {
+    key: 'portfolio',
+    labelKey: 'layout.navGroup.portfolio',
+    items: [
+      { key: 'portfolio', labelKey: 'layout.nav.portfolio', to: '/portfolio', icon: BriefcaseBusiness },
+      { key: 'decision-signals', labelKey: 'layout.nav.decisionSignals', to: '/decision-signals', icon: Activity },
+      { key: 'backtest', labelKey: 'layout.nav.backtest', to: '/backtest', icon: BarChart3 },
+      { key: 'alerts', labelKey: 'layout.nav.alerts', to: '/alerts', icon: Bell },
+    ],
+  },
+  {
+    key: 'system',
+    labelKey: 'layout.navGroup.system',
+    items: [
+      { key: 'data', labelKey: 'layout.nav.dataCenter', to: '/data', icon: Database },
+      { key: 'usage', labelKey: 'layout.nav.usage', to: '/usage', icon: Gauge },
+      { key: 'settings', labelKey: 'layout.nav.settings', to: '/settings', icon: Settings2 },
+    ],
+  },
 ];
 
 export const SidebarNav: React.FC<SidebarNavProps> = ({ collapsed = false, onNavigate, variant = 'default' }) => {
@@ -85,43 +109,59 @@ export const SidebarNav: React.FC<SidebarNavProps> = ({ collapsed = false, onNav
       </div>
 
       <nav className={cn('flex flex-col gap-1.5', isRail ? 'min-h-0 overflow-y-auto' : 'flex-1')} aria-label={t('layout.mainNav')}>
-        {NAV_ITEMS.map(({ key, labelKey, to, icon: Icon, exact, badge }) => {
-          const label = t(labelKey);
-          return (
-          <NavLink
-            key={key}
-            to={to}
-            end={exact}
-            onClick={onNavigate}
-            aria-label={label}
-            className={({ isActive }) =>
-              cn(
-                itemInteractiveClass,
-                'shrink-0',
-                isActive ? itemActiveClass : ''
-              )
-            }
-          >
-            {({ isActive }) => (
-              <>
-                <Icon className={cn(itemIconClass, isActive ? 'text-[var(--nav-icon-active)]' : 'text-current')} />
-                {!collapsed ? <span className={itemLabelClass}>{label}</span> : null}
-                {badge === 'completion' && completionBadge ? (
-                  <StatusDot
-                    tone="info"
-                    data-testid="chat-completion-badge"
-                    className={cn(
-                      'absolute right-3 border-2 border-background shadow-[0_0_10px_var(--nav-indicator-shadow)]',
-                      collapsed ? 'right-2 top-2' : ''
-                    )}
-                    aria-label={t('layout.newChatMessage')}
-                  />
-                ) : null}
-              </>
-            )}
-          </NavLink>
-        );
-        })}
+        {NAV_GROUPS.map((group, groupIndex) => (
+          <React.Fragment key={group.key}>
+            {!collapsed && !isRail ? (
+              <p
+                className={cn(
+                  'select-none px-3 pb-0.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-text/75',
+                  groupIndex > 0 ? 'pt-2.5' : 'pt-0.5',
+                )}
+              >
+                {t(group.labelKey)}
+              </p>
+            ) : groupIndex > 0 ? (
+              <div className="my-1 border-t border-border/40" aria-hidden="true" />
+            ) : null}
+            {group.items.map(({ key, labelKey, to, icon: Icon, exact, badge }) => {
+              const label = t(labelKey);
+              return (
+                <NavLink
+                  key={key}
+                  to={to}
+                  end={exact}
+                  onClick={onNavigate}
+                  aria-label={label}
+                  className={({ isActive }) =>
+                    cn(
+                      itemInteractiveClass,
+                      'shrink-0',
+                      isActive ? itemActiveClass : ''
+                    )
+                  }
+                >
+                  {({ isActive }) => (
+                    <>
+                      <Icon className={cn(itemIconClass, isActive ? 'text-[var(--nav-icon-active)]' : 'text-current')} />
+                      {!collapsed ? <span className={itemLabelClass}>{label}</span> : null}
+                      {badge === 'completion' && completionBadge ? (
+                        <StatusDot
+                          tone="info"
+                          data-testid="chat-completion-badge"
+                          className={cn(
+                            'absolute right-3 border-2 border-background shadow-[0_0_10px_var(--nav-indicator-shadow)]',
+                            collapsed ? 'right-2 top-2' : ''
+                          )}
+                          aria-label={t('layout.newChatMessage')}
+                        />
+                      ) : null}
+                    </>
+                  )}
+                </NavLink>
+              );
+            })}
+          </React.Fragment>
+        ))}
 
       </nav>
 

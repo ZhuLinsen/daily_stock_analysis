@@ -10,6 +10,7 @@ import pytest
 from src.analyzer import AnalysisResult
 from src.config import Config
 from src.services.decision_signal_extractor import (
+    _risk_summary,
     build_decision_signal_payload_from_report,
     extract_and_persist_from_analysis_result,
 )
@@ -18,6 +19,48 @@ from src.storage import DatabaseManager
 
 
 BUILD_PROFILE_SOURCE = "legacy_unknown"
+
+
+def test_risk_summary_preserves_negated_substring_alerts() -> None:
+    result = AnalysisResult(
+        code="600519",
+        name="贵州茅台",
+        sentiment_score=50,
+        trend_prediction="未知",
+        operation_advice="观望",
+        risk_warning="无退市风险",
+    )
+    dashboard = {"intelligence": {"risk_alerts": ["退市风险"]}}
+
+    assert _risk_summary(result, dashboard) == ["无退市风险", "退市风险"]
+
+
+def test_risk_summary_preserves_additional_risks_in_compound_alert() -> None:
+    result = _result(risk_warning="流动性风险")
+    dashboard = {"intelligence": {"risk_alerts": ["流动性风险。", "流动性风险与退市风险"]}}
+
+    assert _risk_summary(result, dashboard) == ["流动性风险", "流动性风险与退市风险"]
+
+
+@pytest.mark.parametrize("resolved, alert", [
+    ("目前不存在重大的退市风险", "退市风险"),
+    ("退市风险已解除", "退市风险"),
+    ("Delisting risk has been resolved", "Delisting risk"),
+    ("Delisting risk has been fully resolved", "Delisting risk"),
+    ("If delisting is announced, trading may be suspended", "trading may be suspended"),
+])
+def test_risk_summary_preserves_alert_alongside_qualified_risk(resolved, alert) -> None:
+    result = AnalysisResult(
+        code="600519",
+        name="贵州茅台",
+        sentiment_score=50,
+        trend_prediction="未知",
+        operation_advice="观望",
+        risk_warning=resolved,
+    )
+    dashboard = {"intelligence": {"risk_alerts": [alert]}}
+
+    assert _risk_summary(result, dashboard) == [resolved, alert]
 
 
 @pytest.fixture()
@@ -690,3 +733,29 @@ def test_extract_and_persist_index_signal_with_market_override(isolated_db) -> N
     latest = service.get_latest_active(stock_code="csi930955", market="cn")
     assert latest["total"] == 1
     assert latest["items"][0]["source_report_id"] == 955
+
+
+def test_risk_summary_preserves_long_negated_warning_and_positive_alert() -> None:
+    """Negated warning with longer qualifier prefix must not suppress opposite risk alert."""
+    result = _result(
+        code="600519",
+        risk_warning="目前不存在重大的退市风险",
+    )
+    result.dashboard = {
+        "core_conclusion": {"one_sentence": "观望"},
+        "intelligence": {"risk_alerts": ["退市风险", "原材料涨价压力"]},
+        "battle_plan": {"sniper_points": {}},
+    }
+    payload = build_decision_signal_payload_from_report(
+        result,
+        context_snapshot={},
+        source_report_id=101,
+        trace_id="trace-risk-negation",
+        query_source="cli",
+        report_type="detailed",
+        profile_source=BUILD_PROFILE_SOURCE,
+    )
+    assert payload is not None
+    assert "目前不存在重大的退市风险" in payload["risk_summary"]
+    assert "退市风险" in payload["risk_summary"]
+    assert "原材料涨价压力" in payload["risk_summary"]

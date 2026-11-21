@@ -276,6 +276,14 @@ const settingsHelpZhCN: SettingsHelpMap = {
     impact: ['影响部分 A 股基础数据、股票列表和相关增强数据获取。'],
     notes: ['不要把 token 提交到仓库或公开日志。'],
   },
+  'settings.data_source.CROSS_ASSET_CONTEXT_ENABLED': {
+    title: 'Cross-Asset Context',
+    summary: '是否注入跨资产外围（指数/VIX/美债10Y）低敏上下文摘要，用于风险偏好校准。',
+    usage: '默认关闭（opt-in）；不配置时主分析流程零行为差异。显式开启后，数据源失败自动降级为 unknown 最小上下文，不中断主分析。',
+    valueNotes: ['仅注入低敏背景摘要做风险偏好校准，不直接生成买卖规则。'],
+    impact: ['开启后每次个股分析增加少量外部行情请求。'],
+    notes: ['关闭后分析不包含跨资产背景信息。'],
+  },
   'settings.data_source.TICKPLUS_API_KEY': {
     title: 'TickPlus API Key（推荐）',
     summary: '首选推荐 A 股 / ETF 日 K、实时指标、名称查询；ETF 轮动使用前复权实例。',
@@ -991,10 +999,18 @@ const settingsHelpZhCN: SettingsHelpMap = {
   'settings.agent.AGENT_RISK_OVERRIDE': {
     title: '风险 Agent 否决权',
     summary: '允许风险 Agent 在检测到关键风险信号时否决买入信号。',
-    usage: '开启后，full/specialist 模式中的风险 Agent 可将买入建议降级为观望或卖出。',
-    valueNotes: ['仅在 AGENT_ORCHESTRATOR_MODE 包含风险阶段时生效。'],
+    usage: '开启后，重要风险信号可将买入建议降级为观望或卖出。',
+    valueNotes: ['full 和 specialist 包含风险阶段。quick 和 standard 在触发证据辩论时也会运行风险阶段。'],
     impact: ['影响最终投资建议的风险保守程度。'],
-    notes: ['关闭后风险 Agent 的意见仅作参考，不会否决决策。'],
+    notes: ['关闭后，已完成的风险审查仅作参考。证据辩论要求的审查未完成时仍暂缓买入。'],
+  },
+  'settings.agent.AGENT_DEBATE_ENABLED': {
+    title: '条件触发多空证据辩论',
+    summary: '在多策略分歧或高确信买入时触发结构化 Bull/Bear 证据对照与风控必审。',
+    usage: '默认关闭（false）。仅在 AGENT_ARCH=multi 时生效，前序意见出现方向分歧或买入置信度达到 0.75 时触发。',
+    valueNotes: ['quick 和 standard 在触发后运行风险阶段，full 使用已有风险阶段，specialist 在策略评估后运行风险阶段。'],
+    impact: ['影响多策略决策综合阶段的证据对照与风控审视强度。'],
+    notes: ['风险审查失败或因运行预算跳过时，系统暂缓买入。'],
   },
   'settings.agent.DEEP_RESEARCH': {
     title: 'Deep Research',
@@ -1527,6 +1543,14 @@ const settingsHelpEnUS: SettingsHelpMap = {
     valueNotes: ['Available APIs depend on your Tushare permission level.'],
     impact: ['Affects some A-share base data, stock lists, and enrichment data.'],
     notes: ['Do not commit the token or print it in public logs.'],
+  },
+  'settings.data_source.CROSS_ASSET_CONTEXT_ENABLED': {
+    title: 'Cross-Asset Context',
+    summary: 'Inject a low-sensitivity cross-asset summary (indices / VIX / US 10Y) into stock analysis for risk appetite calibration.',
+    usage: 'Disabled by default (opt-in) with zero behavior change when unset. When enabled, provider failures fail open to an unknown minimal context without interrupting analysis.',
+    valueNotes: ['Provides low-sensitivity risk appetite calibration only; never creates direct buy/sell rules.'],
+    impact: ['Adds a small number of external market-data requests per stock analysis when enabled.'],
+    notes: ['When disabled, stock analysis omits cross-asset context.'],
   },
   'settings.data_source.TICKPLUS_API_KEY': {
     title: 'TickPlus API Key (Recommended)',
@@ -2224,10 +2248,18 @@ const settingsHelpEnUS: SettingsHelpMap = {
   'settings.agent.AGENT_RISK_OVERRIDE': {
     title: 'Risk Agent Veto',
     summary: 'Allows the risk agent to veto buy signals when critical risk flags are detected.',
-    usage: 'When enabled, the risk agent in full/specialist mode can downgrade buy recommendations to hold or sell.',
-    valueNotes: ['Only effective when AGENT_ORCHESTRATOR_MODE includes the risk stage.'],
+    usage: 'When enabled, material risk signals can downgrade buy recommendations to hold or sell.',
+    valueNotes: ['Full and specialist include a risk stage. Quick and standard also run it when the evidence debate triggers.'],
     impact: ['Affects the risk conservatism of final investment recommendations.'],
-    notes: ['When disabled, the risk agent opinion is advisory only and cannot override decisions.'],
+    notes: ['When disabled, completed reviews are advisory. An incomplete review required by the evidence debate still defers buying.'],
+  },
+  'settings.agent.AGENT_DEBATE_ENABLED': {
+    title: 'Conditional Bull/Bear Evidence Debate',
+    summary: 'Triggers an evidence-bound Bull/Bear contrast brief and mandatory risk review on strategy disagreement or high-conviction buy signals.',
+    usage: 'Defaults to false. With AGENT_ARCH=multi, triggers on directional disagreement or a buy opinion with at least 0.75 confidence.',
+    valueNotes: ['Quick and standard run a risk stage when triggered. Full uses its existing risk stage. Specialist runs it after strategy evaluation.'],
+    impact: ['Enhances evidence traceability and risk review before final decision synthesis.'],
+    notes: ['If the review fails or runs out of time, the system defers buying.'],
   },
   'settings.agent.DEEP_RESEARCH': {
     title: 'Deep Research',
