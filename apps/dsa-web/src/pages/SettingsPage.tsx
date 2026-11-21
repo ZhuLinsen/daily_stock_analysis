@@ -1847,6 +1847,7 @@ const SettingsPage: React.FC = () => {
                   configVersion={configVersion}
                   maskToken={maskToken}
                   modelProviderPrefixes={llmModelProviders}
+                  llmYamlActive={llmYamlActive}
                   onDraftItemsChange={handleLlmChannelDraftItemsChange}
                   onSaved={async (updatedItems) => {
                     setLlmChannelDraftItems([]);

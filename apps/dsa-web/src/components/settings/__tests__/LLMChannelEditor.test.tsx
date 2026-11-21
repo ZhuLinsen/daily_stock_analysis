@@ -603,6 +603,100 @@ describe('LLMChannelEditor', () => {
     expect(screen.getByLabelText('Base URL')).toHaveValue('http://127.0.0.1:8643/v1');
   });
 
+  it('resets a rotated Hermes key when the refreshed masked fingerprint is unchanged', async () => {
+    update.mockResolvedValue({
+      success: true,
+      configVersion: 'v2',
+      appliedCount: 1,
+      skippedMaskedCount: 0,
+      reloadTriggered: true,
+      updatedKeys: ['LLM_HERMES_API_KEY'],
+      warnings: [],
+    });
+    const items = [
+      { key: 'LLM_CHANNELS', value: 'hermes' },
+      { key: 'LLM_HERMES_PROTOCOL', value: 'openai' },
+      { key: 'LLM_HERMES_BASE_URL', value: 'http://127.0.0.1:8642/v1' },
+      { key: 'LLM_HERMES_ENABLED', value: 'true' },
+      { key: 'LLM_HERMES_API_KEY', value: '******', rawValueExists: true },
+      { key: 'LLM_HERMES_MODELS', value: 'hermes-agent' },
+    ];
+    const onDirtyChange = vi.fn();
+    const onSaved = vi.fn();
+    const rendered = render(
+      <LLMChannelEditor
+        items={items}
+        configVersion="v1"
+        maskToken="******"
+        onSaved={onSaved}
+        onDirtyChange={onDirtyChange}
+      />,
+    );
+    onSaved.mockImplementation(async () => {
+      rendered.rerender(
+        <LLMChannelEditor
+          items={items}
+          configVersion="v2"
+          maskToken="******"
+          onSaved={onSaved}
+          onDirtyChange={onDirtyChange}
+        />,
+      );
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /Hermes/i }));
+    fireEvent.change(screen.getByLabelText('API Key'), { target: { value: 'sk-hermes-rotated' } });
+    fireEvent.click(screen.getByRole('button', { name: '保存 AI 配置' }));
+
+    await waitFor(() => {
+      expect(screen.getByText('AI 配置已保存')).toBeInTheDocument();
+      expect(onDirtyChange).toHaveBeenLastCalledWith(false);
+    });
+    expect(screen.getByLabelText('API Key')).toHaveValue('******');
+    expect(screen.getByLabelText('API Key')).not.toHaveValue('sk-hermes-rotated');
+  });
+
+  it('does not submit YAML-owned runtime aliases when saving a fallback channel', async () => {
+    update.mockResolvedValue({
+      success: true,
+      configVersion: 'v2',
+      appliedCount: 1,
+      skippedMaskedCount: 0,
+      reloadTriggered: true,
+      updatedKeys: ['LLM_FALLBACK_BASE_URL'],
+      warnings: [],
+    });
+    render(
+      <LLMChannelEditor
+        items={[
+          { key: 'LLM_CHANNELS', value: 'fallback', rawValueExists: false },
+          { key: 'LITELLM_CONFIG', value: '/etc/dsa/litellm.yaml', rawValueExists: false },
+          { key: 'LLM_FALLBACK_PROTOCOL', value: 'openai', rawValueExists: true },
+          { key: 'LLM_FALLBACK_BASE_URL', value: 'https://old.example/v1', rawValueExists: true },
+          { key: 'LLM_FALLBACK_ENABLED', value: 'true', rawValueExists: true },
+          { key: 'LLM_FALLBACK_API_KEY', value: 'sk-fallback', rawValueExists: true },
+          { key: 'LLM_FALLBACK_MODELS', value: 'openai/fallback', rawValueExists: true },
+        ]}
+        configVersion="v1"
+        maskToken="******"
+        llmYamlActive
+        onSaved={() => {}}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /fallback/i }));
+    fireEvent.change(await screen.findByLabelText('Base URL'), { target: { value: 'https://new.example/v1' } });
+    fireEvent.click(screen.getByRole('button', { name: '保存渠道配置' }));
+
+    await waitFor(() => expect(update).toHaveBeenCalled());
+    const keys = update.mock.calls[0][0].items.map((item: { key: string }) => item.key);
+    expect(keys).toContain('LLM_FALLBACK_BASE_URL');
+    expect(keys).not.toContain('LITELLM_MODEL');
+    expect(keys).not.toContain('VISION_MODEL');
+    expect(keys).not.toContain('AGENT_LITELLM_MODEL');
+    expect(keys).not.toContain('LITELLM_FALLBACK_MODELS');
+  });
+
   it('keeps pure non-Hermes route in Agent and Vision runtime selects', () => {
     render(
       <LLMChannelEditor
@@ -760,6 +854,31 @@ describe('LLMChannelEditor', () => {
     expect(screen.getByLabelText('API Key')).toHaveValue('sk-new');
   });
 
+  it('drops an unchanged inferred Modelflare row when its shorthand key is cleared externally', async () => {
+    const { rerender } = render(
+      <LLMChannelEditor
+        items={[{ key: 'MODELFLARE_KEY', value: 'sk-existing', rawValueExists: true }]}
+        configVersion="v1"
+        maskToken="******"
+        onSaved={() => {}}
+      />,
+    );
+
+    expect(screen.getByRole('button', { name: /Modelflare（聚合平台）/i })).toBeInTheDocument();
+    rerender(
+      <LLMChannelEditor
+        items={[{ key: 'MODELFLARE_KEY', value: '', rawValueExists: true }]}
+        configVersion="v2"
+        maskToken="******"
+        onSaved={() => {}}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.queryByRole('button', { name: /Modelflare（聚合平台）/i })).not.toBeInTheDocument();
+    });
+  });
+
   it('keeps a locally removed channel deleted when another channel draft changes', async () => {
     const initialItems = [
       { key: 'LLM_CHANNELS', value: 'modelflare,secondary' },
@@ -862,6 +981,39 @@ describe('LLMChannelEditor', () => {
       expect(update.mock.calls[0][0].items).toContainEqual({ key: 'MODELFLARE_KEY', value: '' });
       expect(screen.queryByRole('button', { name: /Modelflare（聚合平台）/i })).not.toBeInTheDocument();
     });
+  });
+
+  it('does not clear a shared Modelflare key when deleting a fallback channel beside active YAML', async () => {
+    update.mockResolvedValue({
+      success: true,
+      configVersion: 'v2',
+      appliedCount: 1,
+      skippedMaskedCount: 0,
+      reloadTriggered: true,
+      updatedKeys: ['LLM_CHANNELS'],
+      warnings: [],
+    });
+    render(
+      <LLMChannelEditor
+        items={[
+          { key: 'LLM_CHANNELS', value: 'modelflare', rawValueExists: true },
+          { key: 'MODELFLARE_KEY', value: 'sk-shared', rawValueExists: true },
+          { key: 'LITELLM_CONFIG', value: '/etc/dsa/litellm.yaml', rawValueExists: false },
+          { key: 'LLM_MODELFLARE_MODELS', value: 'openai/fallback', rawValueExists: true },
+        ]}
+        configVersion="v1"
+        maskToken="******"
+        llmYamlActive
+        onSaved={() => {}}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: /Modelflare（聚合平台）/i }));
+    fireEvent.click(screen.getByRole('button', { name: '✕' }));
+    fireEvent.click(screen.getByRole('button', { name: '保存渠道配置' }));
+
+    await waitFor(() => expect(update).toHaveBeenCalled());
+    expect(update.mock.calls[0][0].items).not.toContainEqual({ key: 'MODELFLARE_KEY', value: '' });
   });
 
   it('shows the selected sponsor registration link beside the provider selection', () => {

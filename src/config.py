@@ -2484,14 +2484,28 @@ class Config:
             _logger.warning(f"Failed to parse LITELLM_CONFIG: {e}")
             return []
 
+        if not isinstance(yaml_config, dict):
+            _logger.warning("LITELLM_CONFIG: root must be a mapping")
+            return []
         model_list = yaml_config.get('model_list', [])
         if not isinstance(model_list, list):
             _logger.warning("LITELLM_CONFIG: model_list must be a list")
             return []
 
+        valid_model_list: List[Dict[str, Any]] = []
+        for entry in model_list:
+            if not isinstance(entry, dict):
+                continue
+            params = entry.get('litellm_params', {})
+            if params is not None and not isinstance(params, dict):
+                _logger.warning("LITELLM_CONFIG: skipping model entry with non-mapping litellm_params")
+                continue
+            valid_model_list.append(entry)
+        model_list = valid_model_list
+
         # Resolve os.environ/ references in string params
         for entry in model_list:
-            params = entry.get('litellm_params', {})
+            params = entry.get('litellm_params', {}) or {}
             for key in list(params.keys()):
                 val = params.get(key)
                 if isinstance(val, str) and val.startswith('os.environ/'):

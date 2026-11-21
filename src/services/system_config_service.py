@@ -5121,11 +5121,11 @@ class SystemConfigService:
 
     @staticmethod
     def _uses_litellm_yaml(effective_map: Dict[str, str]) -> bool:
-        """Return True when a valid LiteLLM YAML config takes precedence over channels."""
+        """Return True when a usable LiteLLM YAML route takes precedence over channels."""
         config_path = (effective_map.get("LITELLM_CONFIG") or "").strip()
         if not config_path:
             return False
-        return bool(Config._parse_litellm_yaml(config_path))
+        return bool(get_configured_llm_models(Config._parse_litellm_yaml(config_path)))
 
     @staticmethod
     def _collect_yaml_models_from_map(effective_map: Dict[str, str]) -> List[str]:

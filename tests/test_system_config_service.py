@@ -858,6 +858,22 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertEqual(items["LITELLM_CONFIG"]["value"], str(yaml_path))
         self.assertFalse(items["LITELLM_CONFIG"]["raw_value_exists"])
 
+    def test_get_config_survives_malformed_litellm_yaml_shapes(self) -> None:
+        yaml_path = Path(self.temp_dir.name) / "malformed-litellm.yaml"
+        yaml_path.write_text("- not-a-mapping\n- null\n", encoding="utf-8")
+        self._rewrite_env(
+            "STOCK_LIST=600519",
+            f"LITELLM_CONFIG={yaml_path}",
+            "LLM_CHANNELS=fallback",
+            "LLM_FALLBACK_MODELS=openai/fallback",
+        )
+
+        with patch.dict(os.environ, {}, clear=True):
+            payload = self.service.get_config(include_schema=True)
+
+        self.assertFalse(payload["llm_yaml_active"])
+        self.assertIn("LITELLM_CONFIG", {item["key"] for item in payload["items"]})
+
     def test_get_config_runtime_env_fallback_does_not_persist_llm_fields_on_save(self) -> None:
         self._rewrite_env(
             "STOCK_LIST=600519",

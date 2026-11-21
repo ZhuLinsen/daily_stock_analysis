@@ -148,6 +148,7 @@ interface LLMChannelEditorProps {
   onDirtyChange?: (dirty: boolean) => void;
   onSavingChange?: (saving: boolean) => void;
   draftResetToken?: number;
+  llmYamlActive?: boolean;
   disabled?: boolean;
 }
 
@@ -1615,7 +1616,7 @@ function buildFilteredChannelUpdateItems({
   }
   const removedModelflare = initialNames.some((name) => name.toLowerCase() === 'modelflare')
     && !channels.some((channel) => channel.name.toLowerCase() === 'modelflare');
-  if (removedModelflare && (savedItemMap.get('MODELFLARE_KEY') || '').trim()) {
+  if (removedModelflare && managesRuntimeConfig && (savedItemMap.get('MODELFLARE_KEY') || '').trim()) {
     updates.push({ key: 'MODELFLARE_KEY', value: '' });
   }
   return updates;
@@ -1679,6 +1680,7 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
   onDirtyChange,
   onSavingChange,
   draftResetToken = 0,
+  llmYamlActive,
   disabled = false,
 }) => {
   const initialItemSourceByKey = useMemo(() => {
@@ -1713,13 +1715,14 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
   const hasPersistedHermesSecret = (channel: ChannelConfig): boolean => (
     isHermesChannel(channel) && initialItemSourceByKey.get('LLM_HERMES_API_KEY') === true
   );
-  const hasLitellmConfig = useMemo(
-    () => items.some((item) => item.key === 'LITELLM_CONFIG'
-      && item.value.trim().length > 0
-      && item.rawValueExists !== false),
-    [items],
-  );
-  const managesRuntimeConfig = !hasLitellmConfig;
+  // When a valid YAML source is active, the generic settings fields own the
+  // runtime model aliases. The channel editor must not submit empty values
+  // for aliases that only exist in YAML. If the API does not provide the
+  // source status, retain the legacy path-based fallback for older clients.
+  const hasActiveYaml = llmYamlActive ?? items.some((item) => item.key === 'LITELLM_CONFIG'
+    && item.value.trim().length > 0
+    && item.rawValueExists !== false);
+  const managesRuntimeConfig = !hasActiveYaml;
   const modelProviderPrefixSet = useMemo(
     () => new Set(modelProviderPrefixes.map((provider) => provider.trim().toLowerCase()).filter(Boolean)),
     [modelProviderPrefixes],
@@ -1842,7 +1845,14 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
         // external draft update.
         return [
           ...mergedChannels,
-          ...currentChannels.filter((channel) => !nextChannelNames.has(channel.name.toLowerCase())),
+          ...currentChannels.filter((channel) => {
+            if (nextChannelNames.has(channel.name.toLowerCase())) return false;
+            const previousInitial = previousInitialChannels.find((initial) => (
+              initial.id === channel.id || initial.name.toLowerCase() === channel.name.toLowerCase()
+            ));
+            if (!previousInitial) return true;
+            return !channelsAreEqual(channel, previousInitial);
+          }),
         ];
       });
       setRuntimeConfig((currentRuntime) => {
@@ -2203,15 +2213,25 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
         items: updateItems,
       });
       const responseWarnings = response.warnings || [];
+      const resetAfterSave = updateItems.some((item) => (
+        item.key.toUpperCase() === 'LLM_HERMES_API_KEY'
+        || (item.key.toUpperCase() === 'MODELFLARE_KEY' && !item.value.trim())
+      ));
       pendingSaveFeedbackFingerprintRef.current = {
         channels: JSON.stringify(parseChannelsFromItems(updateItems)),
         runtime: JSON.stringify(parseRuntimeConfigFromItems(updateItems)),
-        resetAfterSave: updateItems.some((item) => (
-          item.key.toUpperCase() === 'LLM_HERMES_API_KEY'
-          || (item.key.toUpperCase() === 'MODELFLARE_KEY' && !item.value.trim())
-        )),
+        resetAfterSave,
       };
       await onSaved(updateItems);
+      if (resetAfterSave) {
+        setChannels((currentChannels) => currentChannels.map((channel) => {
+          const initialChannel = initialChannels.find((initial) => (
+            initial.id === channel.id || initial.name.toLowerCase() === channel.name.toLowerCase()
+          ));
+          return initialChannel ? { ...channel, apiKey: initialChannel.apiKey } : channel;
+        }));
+        onDraftItemsChangeRef.current?.([]);
+      }
       setSaveWarnings(responseWarnings);
       setSaveMessage({ type: 'success', text: managesRuntimeConfig ? 'AI 配置已保存' : '渠道配置已保存' });
     } catch (error: unknown) {
