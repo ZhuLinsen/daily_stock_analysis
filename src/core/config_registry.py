@@ -1024,6 +1024,32 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         ],
         "warning_codes": [],
     },
+    "CROSS_ASSET_CONTEXT_ENABLED": {
+        "title": "Cross-Asset Context",
+        "description": "Inject a low-sensitivity cross-asset (indices / VIX / US 10Y rates) context summary into stock analysis and calibrate risk appetite. Disabled by default (opt-in): when unset, the main analysis flow has zero behaviour change. Providers fail open to 'unknown' and never interrupt the main analysis.",
+        "category": "data_source",
+        "data_type": "boolean",
+        "ui_control": "switch",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": "false",
+        "options": [],
+        "validation": {},
+        "display_order": 18,
+        "help_key": "settings.data_source.CROSS_ASSET_CONTEXT_ENABLED",
+        "examples": [
+            "CROSS_ASSET_CONTEXT_ENABLED=true",
+            "CROSS_ASSET_CONTEXT_ENABLED=false",
+        ],
+        "docs": [
+            {
+                "label": "Analysis Context Pack（跨资产上下文）",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/analysis-context-pack.md",
+            },
+        ],
+        "warning_codes": [],
+    },
     "SCREENING_ENABLED": {
         "title": "Built-in Stock Screening",
         "description": "Enable DSA's built-in stock screening tab. The implementation is based on AlphaSift and maintained as part of DSA. Disabled by default.",
