@@ -29,18 +29,51 @@
 
 </div>
 
+<details open>
+<summary><strong>💖 赞助商 (Sponsors)</strong></summary>
+<table>
+  <tr><td align="center"><a href="https://modelflare.dev/sign-up?utm_source=github&amp;utm_campaign=daily_stock_analysis"><img src="./docs/assets/modelflare_banner_zh.png" alt="Modelflare" width="720"></a><br>感谢 <strong>Modelflare</strong> 赞助本项目！由美国 Havenbyte LLC 运营，满血稳定不掺水，低成本接入 GPT、Claude、Gemini、Grok 及 40+ 图片/视频模型，支持大陆正规商务合作。指定 OpenAI 分组提供 <strong>65% / 75% / 85% 每日缓存命中率保障</strong>；单笔充值 <strong>US$20 解锁 GPT 0.015x</strong>，<strong>US$50 解锁 Claude 0.03x</strong>。<a href="https://modelflare.dev/sign-up?utm_source=github&amp;utm_campaign=daily_stock_analysis">专属链接注册</a></td></tr>
+  <tr><td align="center"><a href="https://console.x6pro.io/register?code=zJ2qSdns"><img src="./docs/assets/x6ai_banner.png" alt="x6.ai" width="720" height="187"></a><br>100+ 模型 $5 包月，Claude 1.9 折、GPT 0.9 折、DeepSeek 5.8 折，首充立减 20%。<a href="https://console.x6pro.io/register?code=zJ2qSdns">专属链接注册</a></td></tr>
+  <tr><td align="center"><a href="https://serpapi.com/github-daily-stock-analysis" target="_blank"><img src="./docs/assets/serpapi_banner_zh.png" alt="轻松抓取搜索引擎上的实时金融新闻数据 - SerpApi" width="300" height="141" style="width: 300px; height: 141px; object-fit: contain;"></a></td></tr>
+</table>
+</details>
+
+## 🖥️ 产品预览
+
+<p align="center">
+  <a href="docs/assets/readme_workspace_tour_20260510.gif"><img src="docs/assets/readme_workspace_preview.gif" alt="DSA Web 工作台演示" width="640"></a><br>
+  <sub>点击动图查看完整工作台演示（涵盖个股分析、智能选股、决策信号、持仓风控、回测与 Agent 问股）</sub>
+</p>
+
+> [!TIP]
+> 🚀 **作者配套开源项目**：[AlphaSift · 智能选股](https://github.com/ZhuLinsen/alphasift) ｜ [AlphaEvo · 策略回测与进化](https://github.com/ZhuLinsen/alphaevo)
+
+## ✨ 功能特性
+
+| 阶段 | 核心能力与 Web 工作台模块 | 专题文档 |
+|------|------|------|
+| **发现** | 多因子与自然语言智能选股（`/screening`）、市场热点雷达、规则化 ETF 双动量轮动（`--etf-rotation`） | [选股引擎](docs/screening-engine.md) · [ETF 轮动](docs/etf-rotation.md) |
+| **分析** | 6 市场「决策仪表盘」报告（`/`）、大盘复盘、15 种内置策略的多轮 Agent 策略问股（`/chat`） | [完整指南](docs/full-guide.md) · [市场边界](docs/market-support.md) |
+| **验证** | 决策信号池（`/decision-signals`）、历史胜率与方向回测（`/backtest`）、运行诊断可观测与数据源健康体检 | [决策信号](docs/decision-signals.md) · [数据中心](docs/data-center-diagnostics.md) |
+| **跟踪** | 持仓账本与风险暴露看板（`/portfolio`，支持 CSV 导入；CLI 支持只读富途持仓选股 `--portfolio futu`）、实时异动告警（`/alerts`）、Token 统计（`/usage`） | [组合风控](docs/portfolio-risk-exposure-dashboard.md) · [告警中心](docs/alerts.md) |
+| **触达** | GitHub Actions 零服务器定时任务、Electron 桌面端、企业微信 / 飞书 / Telegram / Discord / Slack / 邮件推送 | [通知配置](docs/notifications.md) · [Bot 接入](docs/bot-command.md) |
+
+<a name="-agent-策略问股"></a>
+
+在 Web 或桌面工作台使用 [策略问股](docs/full-guide.md#本地-webui-管理界面)。
+
 ## 🚀 快速开始
 
 <a name="-配置说明"></a>
 
-[通知配置](docs/notifications.md) · [完整配置与部署指南](docs/full-guide.md)
+[通知配置](docs/notifications.md) · [LLM 配置指南](docs/LLM_CONFIG_GUIDE.md) · [完整配置与部署指南](docs/full-guide.md)
 
 | 上手方式 | 适合人群 | 所需前置 | 入口 |
 |------|------|------|------|
 | **桌面客户端** | 不想折腾命令行的个人投资者 | 1 个 AI API Key | [Releases 下载](https://github.com/ZhuLinsen/daily_stock_analysis/releases) · [小白教程](docs/beginner-client-setup.md) |
 | **GitHub Actions** | 零服务器每日自动分析（推荐） | **仅 1 个 AI 模型 Secret** | [下方 4 步配置](#方式一github-actions推荐) |
-| **本地命令行** | 跑通首份报告或检查行情拉取 | Git、Python | [3 分钟快速上手](docs/QUICKSTART.md#本地-3-步快速起步) |
-| **Docker / 本地 WebUI** | 私有部署、持仓管理与 Agent 问股 | Docker 或 Git / Python / Node.js | [下方部署命令](#方式二客户端配置教程--本地运行--docker-部署) · [部署指南](docs/DEPLOY.md) |
+| **本地命令行 / WebUI** | 跑通首份报告或本地私有部署 | Git、Python（WebUI 另需 Node.js） | [下方本地命令](#方式二客户端配置教程--本地运行--docker-部署) |
+| **Docker 部署** | 服务器常驻 Web 工作台与定时任务 | Docker、1 个 AI Key | [部署指南](docs/DEPLOY.md) |
 
 ### 方式一：[GitHub Actions（推荐）](https://www.bilibili.com/video/BV11FEb66EXG/)
 
@@ -57,43 +90,21 @@
 
 <a name="-web-界面"></a>
 
-本地 WebUI 需要 Git、Python 3.10+、Node.js `^20.19.0 || ^22.12.0 || >=24.0.0 <27` 及 npm 10+。
-
-「OpenAI 官方」预设通过 Chat Completions 使用 `gpt-6.1-sol`。请用 Python 3.11+，并将下方的依赖安装命令换成 `python -m pip install -r requirements.txt "litellm>=1.98.1"`。使用 Python 3.10 时，在「设置」中将该预设的模型列表换成账户有权使用的 `gpt-5`，再测试连接。
-
 ```bash
 git clone --depth 1 https://github.com/ZhuLinsen/daily_stock_analysis.git
 cd daily_stock_analysis
 python -m pip install -r requirements.txt
+
+# A. 本地 Web 工作台（需 Node.js；打开 http://127.0.0.1:8000 在「设置」填写 AI Key 和自选股）
 (cd apps/dsa-web && npm ci && npm run build)
 python main.py --serve-only
+
+# B. 或命令行快速试跑（复制 .env.example 为 .env 并填 1 个 AI Key + STOCK_LIST）
+python main.py --no-market-review --no-notify --force-run
+# 仅测试行情拉取（不消耗 AI 配额）：python main.py --dry-run --no-market-review --force-run
 ```
 
-在浏览器访问 `http://127.0.0.1:8000`，在「设置」填写 AI Key 和自选股后开始分析。Docker 用户请参阅 [部署指南](docs/DEPLOY.md)。
-
-## ✨ 功能特性
-
-| 阶段 | 核心能力与 Web 工作台模块 | 专题文档 |
-|------|------|------|
-| **发现** | 多因子与自然语言智能选股（`/screening`）、市场热点雷达、规则化 ETF 双动量轮动（`--etf-rotation`） | [选股引擎](docs/screening-engine.md) · [ETF 轮动](docs/etf-rotation.md) |
-| **分析** | 6 市场「决策仪表盘」报告（`/`）、大盘复盘、15 种内置策略的多轮 Agent 策略问股（`/chat`） | [完整指南](docs/full-guide.md) · [市场边界](docs/market-support.md) |
-| **验证** | 决策信号池（`/decision-signals`）、历史胜率与方向回测（`/backtest`）、运行诊断可观测与数据源健康体检 | [决策信号](docs/decision-signals.md) · [数据中心](docs/data-center-diagnostics.md) |
-| **跟踪** | 持仓账本与风险暴露看板（`/portfolio`，支持 CSV 导入；CLI 支持只读富途持仓选股 `--portfolio futu`）、实时异动告警（`/alerts`）、Token 统计（`/usage`） | [组合风控](docs/portfolio-risk-exposure-dashboard.md) · [告警中心](docs/alerts.md) |
-| **触达** | GitHub Actions 零服务器定时任务、Electron 桌面端、企业微信 / 飞书 / Telegram / Discord / Slack / 邮件推送 | [通知配置](docs/notifications.md) · [Bot 接入](docs/bot-command.md) |
-
-<a name="-agent-策略问股"></a>
-
-在 Web 或桌面工作台使用 [策略问股](docs/full-guide.md#本地-webui-管理界面)。
-
-### 🖥️ 产品预览
-
-<p align="center">
-  <a href="docs/assets/readme_workspace_tour_20260510.gif"><img src="docs/assets/readme_workspace_preview.gif" alt="DSA Web 工作台演示" width="640"></a><br>
-  <sub>点击动图查看完整工作台演示（涵盖个股分析、智能选股、决策信号、持仓风控、回测与 Agent 问股）</sub>
-</p>
-
-> [!TIP]
-> 🚀 **作者配套开源项目**：[AlphaSift · 智能选股](https://github.com/ZhuLinsen/alphasift) ｜ [AlphaEvo · 策略回测与进化](https://github.com/ZhuLinsen/alphaevo)
+> 具体 Python / Node.js 版本要求、OpenAI / LiteLLM 预设依赖差异与 Docker Compose 部署请参阅 [源码安装与环境要求](docs/full-guide.md#安装依赖) 与 [部署指南](docs/DEPLOY.md)。
 
 ### 📱 推送效果
 
@@ -132,17 +143,6 @@ python main.py --serve-only
 | **AI 模型** | [Modelflare](https://modelflare.dev/sign-up?utm_source=github&utm_campaign=daily_stock_analysis)、[x6.ai](https://console.x6pro.io/register?code=zJ2qSdns)、AIHubMix、Gemini、OpenAI 兼容、DeepSeek、通义千问、Claude、Ollama 本地模型等 |
 | **行情数据** | [TickPlus（推荐）](http://www.tickplus.org/register?reg=5433cf922395)、AkShare、Tushare、Pytdx、Baostock、YFinance、Longbridge（内置免费源零配置可跑，批量/稳定建议配合 Token 源） |
 | **新闻与舆情** | [SerpAPI](https://serpapi.com/github-daily-stock-analysis)、Anspire、Tavily、Bocha、Brave、MiniMax、SearXNG。美股可选 Stock Sentiment API（Reddit / X / Polymarket） |
-
-**[3 分钟快速上手](docs/QUICKSTART.md) · [下载桌面客户端](https://github.com/ZhuLinsen/daily_stock_analysis/releases) · [GitHub Actions](#方式一github-actions推荐) · [Docker / 本地 WebUI](#方式二客户端配置教程--本地运行--docker-部署)**
-
-<details open>
-<summary><strong>💖 赞助商 (Sponsors)</strong></summary>
-<table>
-  <tr><td align="center"><a href="https://modelflare.dev/sign-up?utm_source=github&amp;utm_campaign=daily_stock_analysis"><img src="./docs/assets/modelflare_banner_zh.png" alt="Modelflare" width="720"></a><br>感谢 <strong>Modelflare</strong> 赞助本项目！由美国 Havenbyte LLC 运营，满血稳定不掺水，低成本接入 GPT、Claude、Gemini、Grok 及 40+ 图片/视频模型，支持大陆正规商务合作。指定 OpenAI 分组提供 <strong>65% / 75% / 85% 每日缓存命中率保障</strong>；单笔充值 <strong>US$20 解锁 GPT 0.015x</strong>，<strong>US$50 解锁 Claude 0.03x</strong>。<a href="https://modelflare.dev/sign-up?utm_source=github&amp;utm_campaign=daily_stock_analysis">专属链接注册</a></td></tr>
-  <tr><td align="center"><a href="https://console.x6pro.io/register?code=zJ2qSdns"><img src="./docs/assets/x6ai_banner.png" alt="x6.ai" width="720" height="187"></a><br>100+ 模型 $5 包月，Claude 1.9 折、GPT 0.9 折、DeepSeek 5.8 折，首充立减 20%。<a href="https://console.x6pro.io/register?code=zJ2qSdns">专属链接注册</a></td></tr>
-  <tr><td align="center"><a href="https://serpapi.com/github-daily-stock-analysis" target="_blank"><img src="./docs/assets/serpapi_banner_zh.png" alt="轻松抓取搜索引擎上的实时金融新闻数据 - SerpApi" width="300" height="141" style="width: 300px; height: 141px; object-fit: contain;"></a></td></tr>
-</table>
-</details>
 
 ## 📬 联系与合作
 

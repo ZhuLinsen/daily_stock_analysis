@@ -1,7 +1,7 @@
 # English Documentation Index
 
 > [!TIP]
-> Pick a setup in the [3-minute quickstart (Chinese)](QUICKSTART.md) or follow the [English quickstart](README_EN.md#-quick-start).
+> Pick a setup path in [README Quick Start](README_EN.md#-quick-start) (GitHub Actions, local CLI/WebUI, Docker, or Desktop App).
 
 > For Chinese documentation, see [docs/INDEX.md](INDEX.md).
 
@@ -13,7 +13,7 @@
 
 | Goal | Start with | Notes |
 | --- | --- | --- |
-| Run your first analysis | [Quickstart (Chinese)](QUICKSTART.md) · [Quickstart (English)](README_EN.md#-quick-start) | Choose desktop, GitHub Actions, local, or Docker setup |
+| Run your first analysis | [README Quick Start (EN)](README_EN.md#-quick-start) | Choose GitHub Actions, local CLI/WebUI, Docker, or Desktop App |
 | Explore DSA | [README (EN)](README_EN.md) | Project overview, features, sample outputs |
 | Desktop client beginner walkthrough | [Beginner Client Setup](beginner-client-setup.md) (Chinese-only) | Installer download, API key setup, FAQ |
 | Troubleshooting & diagnostics | [FAQ (EN)](FAQ_EN.md) | Common configuration, data-source & runtime FAQs |

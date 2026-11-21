@@ -31,18 +31,51 @@
 
 </div>
 
+<details open>
+<summary><strong>💖 贊助商 (Sponsors)</strong></summary>
+<table>
+  <tr><td align="center"><a href="https://modelflare.dev/sign-up?utm_source=github&amp;utm_campaign=daily_stock_analysis"><img src="assets/modelflare_banner_cht.png" alt="Modelflare" width="720"></a><br>感謝 <strong>Modelflare</strong> 贊助本項目！由美國 Havenbyte LLC 營運，滿血穩定不摻水，低成本接入 GPT、Claude、Gemini、Grok 及 40+ 圖片/影片模型。指定 OpenAI 分組提供 <strong>65% / 75% / 85% 每日快取命中率保障</strong>；單筆儲值 <strong>US$20 解鎖 GPT 0.015x</strong>，<strong>US$50 解鎖 Claude 0.03x</strong>。<a href="https://modelflare.dev/sign-up?utm_source=github&amp;utm_campaign=daily_stock_analysis">專屬連結註冊</a></td></tr>
+  <tr><td align="center"><a href="https://console.x6pro.io/register?code=zJ2qSdns"><img src="./assets/x6ai_banner.png" alt="x6.ai" width="720" height="187"></a><br>100+ 模型 $5 包月，Claude 1.9 折、GPT 0.9 折、DeepSeek 5.8 折，首充立減 20%。<a href="https://console.x6pro.io/register?code=zJ2qSdns">專屬連結註冊</a></td></tr>
+  <tr><td align="center"><a href="https://serpapi.com/github-daily-stock-analysis" target="_blank"><img src="assets/serpapi_banner_zh.png" alt="輕鬆抓取搜尋引擎上的即時金融新聞數據 - SerpApi" width="300" height="141" style="width: 300px; height: 141px; object-fit: contain;"></a></td></tr>
+</table>
+</details>
+
+## 🖥️ 產品預覽
+
+<p align="center">
+  <a href="assets/readme_workspace_tour_20260510.gif"><img src="assets/readme_workspace_preview.gif" alt="DSA Web 工作台演示" width="640"></a><br>
+  <sub>點擊動圖查看完整工作台演示（涵蓋個股分析、智能選股、決策信號、持倉風控、回測與 Agent 問股）</sub>
+</p>
+
+> [!TIP]
+> 🚀 **作者配套開源專案**：[AlphaSift · 智能選股](https://github.com/ZhuLinsen/alphasift) ｜ [AlphaEvo · 策略回測與進化](https://github.com/ZhuLinsen/alphaevo)
+
+## ✨ 功能特性
+
+| 階段 | 核心能力與 Web 工作台模組 | 專題文檔 |
+|------|------|------|
+| **發現** | 多因子與自然語言智能選股（`/screening`）、市場熱點雷達、規則化 ETF 雙動量輪動（`--etf-rotation`） | [選股引擎](./screening-engine.md) · [ETF 輪動](./etf-rotation.md) |
+| **分析** | 6 市場「決策儀表盤」報告（`/`）、大盤覆盤、15 種內建策略的多輪 Agent 策略問股（`/chat`） | [完整指南](./full-guide.md) · [市場邊界](./market-support.md) |
+| **驗證** | 決策信號池（`/decision-signals`）、歷史勝率與方向回測（`/backtest`） | [決策信號](./decision-signals.md) · [數據中心](./data-center-diagnostics.md) |
+| **跟蹤** | 持倉帳本與風險暴露看板（`/portfolio`，支援 CSV 匯入；CLI 支援唯讀富途持倉選股 `--portfolio futu`）、即時異動告警（`/alerts`）、Token 統計（`/usage`） | [組合風控](./portfolio-risk-exposure-dashboard.md) · [告警中心](./alerts.md) |
+| **觸達** | GitHub Actions 零伺服器定時任務、Electron 桌面端、企業微信 / 飛書 / Telegram / Discord / Slack / 郵件推送 | [通知配置](./notifications.md) · [Bot 接入](./bot-command.md) |
+
+<a name="-agent-策略問股"></a>
+
+在 Web 或桌面工作台使用 [策略問股](./full-guide.md#本地-webui-管理界面)。
+
 ## 🚀 快速開始
 
 <a name="-配置說明"></a>
 
-[通知配置](./notifications.md) · [完整配置與部署指南](./full-guide.md)
+[通知配置](./notifications.md) · [LLM 配置指南](./LLM_CONFIG_GUIDE.md) · [完整配置與部署指南](./full-guide.md)
 
 | 上手方式 | 適合人群 | 所需前置 | 入口 |
 |------|------|------|------|
 | **桌面客戶端** | 不想折騰命令行的個人投資者 | 1 個 AI API Key | [Releases 下載](https://github.com/ZhuLinsen/daily_stock_analysis/releases) · [小白教程](./beginner-client-setup.md) |
 | **GitHub Actions** | 零伺服器每日自動分析（推薦） | **僅 1 個 AI 模型 Secret** | [下方 4 步配置](#方式一github-actions推薦) |
-| **本地命令行** | 產出首份報告或檢查行情擷取 | Git、Python | [3 分鐘快速上手（簡中）](./QUICKSTART.md#本地-3-步快速起步) |
-| **Docker / 本地 WebUI** | 私有部署、持倉管理與 Agent 問股 | Docker 或 Git / Python / Node.js | [下方部署命令](#方式二客戶端配置教程--本地運行--docker-部署) · [部署指南](./DEPLOY.md) |
+| **本地命令行 / WebUI** | 產出首份報告或本地私有部署 | Git、Python（WebUI 另需 Node.js） | [下方本地命令](#方式二客戶端配置教程--本地運行--docker-部署) |
+| **Docker 部署** | 伺服器常駐 Web 工作台與定時任務 | Docker、1 個 AI Key | [部署指南](./DEPLOY.md) |
 
 ### 方式一：[GitHub Actions（推薦）](https://www.bilibili.com/video/BV11FEb66EXG/)
 
@@ -59,43 +92,21 @@
 
 <a name="-web-介面"></a>
 
-本地 WebUI 需要 Git、Python 3.10+、Node.js `^20.19.0 || ^22.12.0 || >=24.0.0 <27` 及 npm 10+。
-
-「OpenAI 官方」預設透過 Chat Completions 使用 `gpt-6.1-sol`。請使用 Python 3.11+，並將下方的相依套件安裝指令換成 `python -m pip install -r requirements.txt "litellm>=1.98.1"`。使用 Python 3.10 時，在「設定」中將該預設的模型清單換成帳戶有權使用的 `gpt-5`，再測試連線。
-
 ```bash
 git clone --depth 1 https://github.com/ZhuLinsen/daily_stock_analysis.git
 cd daily_stock_analysis
 python -m pip install -r requirements.txt
+
+# A. 本地 Web 工作台（需 Node.js；開啟 http://127.0.0.1:8000 於「設定」填寫 AI Key 和自選股）
 (cd apps/dsa-web && npm ci && npm run build)
 python main.py --serve-only
+
+# B. 或命令行快速試跑（複製 .env.example 為 .env 並填寫 1 個 AI Key + STOCK_LIST）
+python main.py --no-market-review --no-notify --force-run
+# 僅測試行情擷取（不消耗 AI 配額）：python main.py --dry-run --no-market-review --force-run
 ```
 
-在瀏覽器開啟 `http://127.0.0.1:8000`，於「設定」填寫 AI Key 和自選股後開始分析。Docker 使用者請參閱 [部署指南](./DEPLOY.md)。
-
-## ✨ 功能特性
-
-| 階段 | 核心能力與 Web 工作台模組 | 專題文檔 |
-|------|------|------|
-| **發現** | 多因子與自然語言智能選股（`/screening`）、市場熱點雷達、規則化 ETF 雙動量輪動（`--etf-rotation`） | [選股引擎](./screening-engine.md) · [ETF 輪動](./etf-rotation.md) |
-| **分析** | 6 市場「決策儀表盤」報告（`/`）、大盤覆盤、15 種內建策略的多輪 Agent 策略問股（`/chat`） | [完整指南](./full-guide.md) · [市場邊界](./market-support.md) |
-| **驗證** | 決策信號池（`/decision-signals`）、歷史勝率與方向回測（`/backtest`） | [決策信號](./decision-signals.md) · [數據中心](./data-center-diagnostics.md) |
-| **跟蹤** | 持倉帳本與風險暴露看板（`/portfolio`，支援 CSV 匯入；CLI 支援唯讀富途持倉選股 `--portfolio futu`）、即時異動告警（`/alerts`）、Token 統計（`/usage`） | [組合風控](./portfolio-risk-exposure-dashboard.md) · [告警中心](./alerts.md) |
-| **觸達** | GitHub Actions 零伺服器定時任務、Electron 桌面端、企業微信 / 飛書 / Telegram / Discord / Slack / 郵件推送 | [通知配置](./notifications.md) · [Bot 接入](./bot-command.md) |
-
-<a name="-agent-策略問股"></a>
-
-在 Web 或桌面工作台使用 [策略問股](./full-guide.md#本地-webui-管理界面)。
-
-### 🖥️ 產品預覽
-
-<p align="center">
-  <a href="assets/readme_workspace_tour_20260510.gif"><img src="assets/readme_workspace_preview.gif" alt="DSA Web 工作台演示" width="640"></a><br>
-  <sub>點擊動圖查看完整工作台演示（涵蓋個股分析、智能選股、決策信號、持倉風控、回測與 Agent 問股）</sub>
-</p>
-
-> [!TIP]
-> 🚀 **作者配套開源專案**：[AlphaSift · 智能選股](https://github.com/ZhuLinsen/alphasift) ｜ [AlphaEvo · 策略回測與進化](https://github.com/ZhuLinsen/alphaevo)
+> 具體 Python / Node.js 版本需求、模型預設依賴差異與 Docker Compose 部署請參閱 [源碼安裝與環境需求](./full-guide.md#安装依赖) 與 [部署指南](./DEPLOY.md)。
 
 ### 📱 推送效果
 
@@ -134,17 +145,6 @@ python main.py --serve-only
 | **AI 模型** | [Modelflare](https://modelflare.dev/sign-up?utm_source=github&utm_campaign=daily_stock_analysis)、[x6.ai](https://console.x6pro.io/register?code=zJ2qSdns)、AIHubMix、Gemini、OpenAI 兼容、DeepSeek、通義千問、Claude、Ollama 本地模型等 |
 | **行情數據** | [TickPlus（推薦）](http://www.tickplus.org/register?reg=5433cf922395)、AkShare、Tushare、Pytdx、Baostock、YFinance、Longbridge（內建免費源零配置可跑，批量/穩定建議配合 Token 源） |
 | **新聞與輿情** | [SerpAPI](https://serpapi.com/github-daily-stock-analysis)、Anspire、Tavily、Bocha、Brave、MiniMax、SearXNG。美股可選 Stock Sentiment API（Reddit / X / Polymarket） |
-
-**[3 分鐘快速上手（簡中）](./QUICKSTART.md) · [下載桌面客戶端](https://github.com/ZhuLinsen/daily_stock_analysis/releases) · [GitHub Actions](#方式一github-actions推薦) · [Docker / 本地 WebUI](#方式二客戶端配置教程--本地運行--docker-部署)**
-
-<details open>
-<summary><strong>💖 贊助商 (Sponsors)</strong></summary>
-<table>
-  <tr><td align="center"><a href="https://modelflare.dev/sign-up?utm_source=github&amp;utm_campaign=daily_stock_analysis"><img src="assets/modelflare_banner_cht.png" alt="Modelflare" width="720"></a><br>感謝 <strong>Modelflare</strong> 贊助本項目！由美國 Havenbyte LLC 營運，滿血穩定不摻水，低成本接入 GPT、Claude、Gemini、Grok 及 40+ 圖片/影片模型。指定 OpenAI 分組提供 <strong>65% / 75% / 85% 每日快取命中率保障</strong>；單筆儲值 <strong>US$20 解鎖 GPT 0.015x</strong>，<strong>US$50 解鎖 Claude 0.03x</strong>。<a href="https://modelflare.dev/sign-up?utm_source=github&amp;utm_campaign=daily_stock_analysis">專屬連結註冊</a></td></tr>
-  <tr><td align="center"><a href="https://console.x6pro.io/register?code=zJ2qSdns"><img src="./assets/x6ai_banner.png" alt="x6.ai" width="720" height="187"></a><br>100+ 模型 $5 包月，Claude 1.9 折、GPT 0.9 折、DeepSeek 5.8 折，首充立減 20%。<a href="https://console.x6pro.io/register?code=zJ2qSdns">專屬連結註冊</a></td></tr>
-  <tr><td align="center"><a href="https://serpapi.com/github-daily-stock-analysis" target="_blank"><img src="assets/serpapi_banner_zh.png" alt="輕鬆抓取搜尋引擎上的即時金融新聞數據 - SerpApi" width="300" height="141" style="width: 300px; height: 141px; object-fit: contain;"></a></td></tr>
-</table>
-</details>
 
 ## 📬 聯繫與合作
 

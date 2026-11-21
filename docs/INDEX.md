@@ -1,7 +1,7 @@
 # 文档中心
 
 > [!TIP]
-> 第一次使用请从 [3 分钟快速上手指南](QUICKSTART.md) 选择桌面客户端、GitHub Actions、本地命令行或 Docker。
+> 第一次使用请从 [README 快速开始](../README.md#-快速开始) 选择桌面客户端、GitHub Actions、本地命令行/WebUI 或 Docker。
 
 ---
 
@@ -12,7 +12,7 @@
 
 | 目标 | 推荐入口 | 说明 |
 | --- | --- | --- |
-| 跑通首次分析 | [3 分钟快速上手指南](QUICKSTART.md) | 从配置模型密钥到查看第一份报告 |
+| 跑通首次分析 | [README 快速开始](../README.md#-快速开始) | 选择桌面端、GitHub Actions、本地命令行或 Docker |
 | **图形化桌面端小白教程** | [小白客户端安装与配置](beginner-client-setup.md) | 零命令行安装与常见问题 |
 | **项目概览与核心功能** | [README](../README.md) | 项目定位、支持市场、快速开始 |
 | **排查报错与运行问题** | [FAQ](FAQ.md) | 常见配置、行情源与运行故障排查 |
