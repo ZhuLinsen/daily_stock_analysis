@@ -94,8 +94,27 @@ export function normalizeStockCode(stockCode: string): string {
   return code;
 }
 
+/**
+ * Whether the code belongs to the case-sensitive ``.V``/``.v`` suffix family.
+ *
+ * The suffix case IS the market identity (PR #2493 review OR-COM-bfe7c5f7):
+ * uppercase ``.V`` is TSXV (Canada, e.g. ``SHOP.V``), lowercase ``.v`` is the
+ * legacy US single-letter class share (e.g. ``shop.v``). These forms must
+ * never be case-folded — folding would merge the two identities and make a
+ * watchlist removal of one delete the other. Bases are 1-6 alphabetic ticker
+ * letters (same shape the backend parser enforces); every other code keeps
+ * the existing uppercase match-key behavior.
+ */
+export function isCaseSensitiveVSuffixCode(code: string): boolean {
+  return /^[A-Za-z]{1,6}\.[Vv]$/.test(code.trim());
+}
+
 function stockCodeMatchKey(stockCode: string): string {
-  return normalizeStockCode(stockCode).toUpperCase();
+  const normalized = normalizeStockCode(stockCode);
+  if (isCaseSensitiveVSuffixCode(normalized)) {
+    return normalized;
+  }
+  return normalized.toUpperCase();
 }
 
 export function areStockCodesEquivalent(left: string, right: string): boolean {
@@ -170,7 +189,11 @@ export function toAssetAwareCodeKey(
   if (assetType === 'index') {
     return foldIndexKey(trimmed);
   }
-  return normalizeStockCode(trimmed).toUpperCase();
+  const normalized = normalizeStockCode(trimmed);
+  if (isCaseSensitiveVSuffixCode(normalized)) {
+    return normalized;
+  }
+  return normalized.toUpperCase();
 }
 
 /**

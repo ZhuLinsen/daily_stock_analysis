@@ -1177,3 +1177,107 @@ def test_daily_market_context_keeps_jp_kr_regions_and_labels() -> None:
 
     assert "市场：日股（jp）" in jp_section
     assert "Region: Korea (kr)" in kr_section
+
+
+# ---------------------------------------------------------------------------
+# PR #2493 复审 #3（OR-COR-76be1d64）：加拿大是大盘上下文链路的唯一缺口——
+# get_market_for_stock 已把 SHOP.TO 判为 ca 并以 ca 调 get_context，但
+# _VALID_REGIONS 未含 ca → _normalize_context_region 返 None 静默跳过。
+# 修复后：ca 与 jp/kr 同口径复用 analysis history / 构建上下文。
+# ---------------------------------------------------------------------------
+def test_ca_region_accepted_by_context_region_normalizers() -> None:
+    from src.services.daily_market_context import (
+        _normalize_context_region,
+        _normalize_region,
+    )
+
+    assert _normalize_context_region("ca") == "ca"
+    assert _normalize_context_region("CA") == "ca"
+    assert _normalize_region("ca") == "ca", "ca 不得回退归一成 cn"
+
+
+def test_ca_region_reuses_analysis_history_context() -> None:
+    """评审场景：get_context 收到 ca 时走复用路径而非静默跳过（不返 None）"""
+    db = MagicMock()
+    db.get_analysis_history.side_effect = [
+        [
+            _history_record(
+                created_at=datetime(2026, 6, 6, 9, 45),
+                region="ca",
+                summary="TSX Composite 回落，风险偏好谨慎，建议控制仓位。",
+            )
+        ],
+    ]
+    service = DailyMarketContextService(
+        db_manager=db,
+        today_fn=lambda: date(2026, 6, 6),
+    )
+
+    context = service.get_context(
+        region="ca",
+        config=SimpleNamespace(report_language="zh"),
+        notifier=MagicMock(),
+        analyzer=MagicMock(),
+        search_service=MagicMock(),
+        allow_generate=False,
+    )
+
+    assert context is not None, "ca 必须复用大盘上下文，不得静默跳过"
+    assert context.region == "ca"
+    assert "TSX" in context.summary
+
+
+def test_ca_region_builds_context_with_localized_labels() -> None:
+    service = DailyMarketContextService(
+        db_manager=MagicMock(),
+        today_fn=lambda: date(2026, 6, 6),
+    )
+
+    ca_context = service._build_context_from_payload(
+        region="ca",
+        trade_date=date(2026, 6, 6),
+        payload={"summary": "TSX Composite 回落，风险偏好谨慎。"},
+        source="analysis_history",
+    )
+
+    assert ca_context is not None
+    assert ca_context.region == "ca"
+
+    zh_section = format_daily_market_context_prompt_section(
+        ca_context.to_safe_dict(),
+        report_language="zh",
+    )
+    en_section = format_daily_market_context_prompt_section(
+        ca_context.to_safe_dict(),
+        report_language="en",
+    )
+    assert "市场：加股（ca）" in zh_section
+    assert "Region: Canada (ca)" in en_section
+
+
+def test_pipeline_passes_ca_region_into_daily_market_context_service() -> None:
+    """pipeline 层：SHOP.TO 判 ca 后，_load_daily_market_context 以 ca 调服务"""
+    from types import SimpleNamespace as _NS
+
+    from src.core.pipeline import StockAnalysisPipeline
+
+    sentinel = object()
+    spy_service = MagicMock()
+    spy_service.get_context.return_value = sentinel
+
+    fake_self = _NS(
+        daily_market_context_enabled=True,
+        config=_NS(daily_market_context_enabled=True, market_review_enabled=True),
+        _daily_market_context_service=spy_service,
+        query_id="q-ca-1",
+        notifier=MagicMock(),
+        analyzer=MagicMock(),
+        search_service=MagicMock(),
+        db=MagicMock(),
+    )
+
+    result = StockAnalysisPipeline._load_daily_market_context(fake_self, "ca")
+
+    assert result is sentinel
+    kwargs = spy_service.get_context.call_args.kwargs
+    assert kwargs["region"] == "ca"

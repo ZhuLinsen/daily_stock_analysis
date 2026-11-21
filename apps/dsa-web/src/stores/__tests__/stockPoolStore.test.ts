@@ -582,6 +582,54 @@ describe('stockPoolStore', () => {
     }));
   });
 
+  // OR-COM-bfe7c5f7 (review #2): the lowercase .v form is the legacy US
+  // class-share identity; the analysis request must carry the ORIGINAL case
+  // so the backend keeps routing it through the US chain instead of flipping
+  // it to the Canada suffix routing.
+  it('sends the lowercase shop.v identity verbatim from autocomplete', async () => {
+    vi.mocked(analysisApi.analyzeAsync).mockResolvedValue({
+      taskId: 'task-us-v-1',
+      stockCode: 'shop.v',
+      status: 'pending',
+      message: 'accepted',
+    } as never);
+
+    await useStockPoolStore.getState().submitAnalysis({
+      stockCode: 'shop.v',
+      stockName: '',
+      originalQuery: 'shop.v',
+      selectionSource: 'autocomplete',
+    });
+
+    const state = useStockPoolStore.getState();
+    expect(state.inputError).toBeUndefined();
+    expect(analysisApi.analyzeAsync).toHaveBeenCalledWith(expect.objectContaining({
+      stockCode: 'shop.v',
+      reportType: 'detailed',
+      originalQuery: 'shop.v',
+      selectionSource: 'autocomplete',
+    }));
+  });
+
+  it('sends the lowercase shop.v identity verbatim when typed directly', async () => {
+    vi.mocked(analysisApi.analyzeAsync).mockResolvedValue({
+      taskId: 'task-us-v-2',
+      stockCode: 'shop.v',
+      status: 'pending',
+      message: 'accepted',
+    } as never);
+
+    useStockPoolStore.getState().setQuery('shop.v');
+    await useStockPoolStore.getState().submitAnalysis();
+
+    const state = useStockPoolStore.getState();
+    expect(state.inputError).toBeUndefined();
+    expect(analysisApi.analyzeAsync).toHaveBeenCalledWith(expect.objectContaining({
+      stockCode: 'shop.v',
+      reportType: 'detailed',
+    }));
+  });
+
   it('accepts a registered CSI index canonical from autocomplete', async () => {
     vi.mocked(analysisApi.analyzeAsync).mockResolvedValue({
       taskId: 'task-csi-1',

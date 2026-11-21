@@ -1149,3 +1149,99 @@ class TestIndexAliasMatrix:
         assert a.asset_type == ParseStatus.INDEX
         assert b.asset_type == ParseStatus.INDEX
         assert a.canonical_id == b.canonical_id
+
+
+# ---------------------------------------------------------------------------
+# Issue #2420: Canada TSX (.TO) / TSXV (uppercase-only .V) Yahoo suffix forms.
+# ---------------------------------------------------------------------------
+class TestCanadaSuffixRouting:
+    """``SHOP.TO``/``BANK.TO``/大写 ``SHOP.V`` 路由为 CA 股票；小写 ``.v`` 不误判。
+
+    - ``.TO`` 后缀大小写不敏感（对齐 .T/.KS 先例的宽松形态）；
+    - ``.V`` 仅大写形态视为 TSXV——小写 ``.v`` 与美股单字母分类后缀形态
+      （``BRK.B`` 族）存在歧义，保持既有 US 语义；
+    - 与既有 JP/KR/TW 后缀及美股形态零冲突。
+    """
+
+    @pytest.mark.parametrize(
+        "code,expected_exchange,expected_canonical",
+        [
+            ("SHOP.TO", "TO", "SHOP.TO"),
+            ("shop.to", "TO", "SHOP.TO"),
+            ("Shop.To", "TO", "SHOP.TO"),
+            ("BANK.TO", "TO", "BANK.TO"),
+            ("RY.TO", "TO", "RY.TO"),
+            ("SHOP.V", "V", "SHOP.V"),
+        ],
+    )
+    def test_ca_suffix_routes_to_stock(
+        self, code: str, expected_exchange: str, expected_canonical: str
+    ) -> None:
+        target = parse_analysis_target(code)
+        assert target.asset_type == ParseStatus.STOCK, (
+            f"{code!r} should parse as a CA stock, got "
+            f"{target.asset_type} (exchange={target.exchange!r})"
+        )
+        assert target.exchange == expected_exchange
+        assert target.canonical_id == expected_canonical
+        assert target.display_code == expected_canonical
+        assert target.unsupported_reason is None
+
+    @pytest.mark.parametrize(
+        "code,expected_exchange,expected_canonical",
+        [
+            # 小写 .v：保持既有美股语义，不得误判为 TSXV；规范形保留大小写
+            # （仿 csi930955 小写规范形先例），下游大小写敏感路由据此保持 US 身份
+            # （PR #2493 首评 OR-COM-bfe7c5f7）。
+            ("shop.v", "US", "shop.v"),
+            ("Shop.v", "US", "Shop.v"),
+            # 美股单字母分类后缀形态不受 CA 路由影响。
+            ("BRK.B", "US", "BRK.B"),
+            ("SHOP.U", "US", "SHOP.U"),
+        ],
+    )
+    def test_non_ca_forms_keep_existing_semantics(
+        self, code: str, expected_exchange: str, expected_canonical: str
+    ) -> None:
+        target = parse_analysis_target(code)
+        assert target.asset_type == ParseStatus.STOCK
+        assert target.exchange == expected_exchange
+        assert target.canonical_id == expected_canonical
+
+    @pytest.mark.parametrize(
+        "code,expected_exchange",
+        [
+            ("7203.T", "T"),
+            ("005930.KS", "KS"),
+            ("2330.TW", "TW"),
+            ("6505.TWO", "TWO"),
+        ],
+    )
+    def test_existing_foreign_suffixes_unaffected(
+        self, code: str, expected_exchange: str
+    ) -> None:
+        target = parse_analysis_target(code)
+        assert target.asset_type == ParseStatus.STOCK
+        assert target.exchange == expected_exchange
+
+    def test_numeric_base_with_to_suffix_not_ca(self) -> None:
+        """数字 base 的 .TO 形态不是合法 TSX ticker，不得落入 CA 路由。
+
+        TSX ticker 为纯字母；数字 base 的 dotted 形态沿用既有裸码分类语义
+        （US），本任务只保证不被误判为 CA 市场。
+        """
+        target = parse_analysis_target("1234.TO")
+        assert target.exchange not in ("TO", "V")
+        assert target.exchange == "US"
+
+    def test_ca_tokens_in_stock_list(self) -> None:
+        """混合清单中的 CA token 应全部解析为 STOCK（issue 的主用例形态）。"""
+        tokens = split_stock_list("AAPL,SHOP.TO,7203.T,SHOP.V")
+        targets = [parse_analysis_target(token) for token in tokens]
+        by_canonical = {t.canonical_id: t for t in targets}
+        assert by_canonical["SHOP.TO"].asset_type == ParseStatus.STOCK
+        assert by_canonical["SHOP.TO"].exchange == "TO"
+        assert by_canonical["SHOP.V"].asset_type == ParseStatus.STOCK
+        assert by_canonical["SHOP.V"].exchange == "V"
+        assert by_canonical["AAPL"].exchange == "US"
+        assert by_canonical["7203.T"].exchange == "T"

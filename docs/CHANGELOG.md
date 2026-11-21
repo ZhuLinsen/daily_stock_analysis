@@ -137,6 +137,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - Default new MiniMax channels to MiniMax-M3.1-Flash and MiniMax-M3, filter older text recommendations while retaining saved/custom models, and refresh fallback pricing.
 
+- [新功能] 新增加拿大市场支持（#2420）：股票代码 `.TO`（多伦多主板 TSX）与大写 `.V`（TSXV，小写 `.v` 不识别以避免与美股单字母后缀歧义）后缀解析走 yfinance 行情链路；大盘复盘新增 `MARKET_REVIEW_REGION=ca`，指数口径为 S&P/TSX Composite（`^GSPTSE`，不含 TSXV/CSE 大盘指数），交易日历按多伦多（XTSX）判定；Web 复盘区域选择器、API `region` 参数与文档同步（无新增环境变量键，仅扩展现有值域）。(feat: add Canada market support — `.TO`/uppercase `.V` TSXV suffix parsing routed through yfinance, `MARKET_REVIEW_REGION=ca` market review on the S&P/TSX Composite (`^GSPTSE`) with the Toronto calendar; Web selector, API `region` values, and docs updated. No new env key — existing value domain extended only.)
+
 ## [3.33.0] - 2026-10-15
 
 ### 发布亮点

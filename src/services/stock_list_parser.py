@@ -188,6 +188,41 @@ _KNOWN_PREFIXES_SORTED = tuple(
 _US_TICKER_SHAPE_RE = re.compile(r"^[A-Z]{1,5}(\.[A-Z]{1,2})?$")
 
 
+def _canada_suffix_exchange(raw: str) -> Optional[str]:
+    """Return ``"TO"``/``"V"`` for Canada TSX/TSXV Yahoo suffix tokens, else ``None``.
+
+    Issue #2420: ``.TO`` (TSX, e.g. ``SHOP.TO``) matches case-insensitively,
+    mirroring the ``.T``/``.KS`` foreign-suffix precedent; ``.V`` (TSXV) is
+    recognized ONLY in its uppercase form — a lowercase ``.v`` collides with
+    the US single-letter class-share suffix family (``BRK.B``/``SHOP.U``) and
+    keeps the legacy US semantics. The check runs on the RAW token (before
+    ``_normalize_code_and_exchange`` upper-cases it) so the ``.V`` case
+    distinction survives, and it must precede the US-ticker path that would
+    otherwise claim ``SHOP.V`` as a US stock.
+    """
+    from .market_symbol_utils import get_ca_suffix_market
+
+    if get_ca_suffix_market(raw) != "ca":
+        return None
+    return raw.strip().upper().rsplit(".", 1)[1]
+
+
+def _is_lowercase_v_us_form(raw: str) -> bool:
+    """Return True for the legacy US single-letter class form ending in ``.v``.
+
+    PR #2493 review OR-COM-bfe7c5f7: ``shop.v`` / ``Shop.v`` keep the US
+    identity the parser has always assigned them. The suffix case is the only
+    carrier of that identity after canonicalization, so the canonical id
+    preserves the raw token verbatim. Bases must be alphabetic 1-6 letters
+    (same shape as the TSXV rule) to avoid swallowing unrelated dotted tokens.
+    """
+    stripped = (raw or "").strip()
+    if not stripped.endswith(".v"):
+        return False
+    base = stripped[:-2]
+    return bool(base) and base.isalpha() and len(base) <= 6
+
+
 def _split_prefix(token: str) -> Tuple[Optional[str], str]:
     """Split ``token`` into ``(prefix, bare_code)`` when the leader matches
     one of the known exchange prefixes (``sh``/``sz``/``bj``/``hk``/``us``).
@@ -740,6 +775,41 @@ def parse_analysis_target(
     # normalization the downstream ``_split_prefix`` / ``_classify_bare_code``
     # pipeline receives the canonical uppercase code (and the explicit
     # exchange when present), so contract #1/#2/#3 stay intact.
+    # Issue #2420: Canada TSX (``.TO``)/TSXV (uppercase ``.V``) Yahoo suffix
+    # forms short-circuit before generic normalization — the same pattern the
+    # ``7203.T``/``005930.KS`` foreign-suffix round-trip uses below. The raw
+    # token is required here because the generic normalizer upper-cases its
+    # input and would erase the uppercase-only ``.V`` distinction.
+    ca_suffix_exchange = _canada_suffix_exchange(raw)
+    if ca_suffix_exchange:
+        canonical = f"{raw.strip().upper().rsplit('.', 1)[0]}.{ca_suffix_exchange}"
+        return AnalysisTarget(
+            raw_input=raw_input,
+            asset_type=ParseStatus.STOCK,
+            canonical_id=canonical,
+            display_code=canonical,
+            exchange=ca_suffix_exchange,
+            normalized_prefix=None,
+            normalized_code=canonical,
+        )
+
+    # PR #2493 review OR-COM-bfe7c5f7: a lowercase ``.v`` token keeps the
+    # legacy US single-letter class-share identity, and the case IS the
+    # identity carrier. Canonicalize to the case-preserved form (mirroring the
+    # ``csi930955`` lowercase-canonical precedent) so downstream routers —
+    # which re-derive the market from the code string — keep treating it as
+    # US instead of flipping to the Canada suffix routing.
+    if _is_lowercase_v_us_form(raw):
+        return AnalysisTarget(
+            raw_input=raw_input,
+            asset_type=ParseStatus.STOCK,
+            canonical_id=raw,
+            display_code=raw,
+            exchange="US",
+            normalized_prefix=None,
+            normalized_code=raw,
+        )
+
     from .stock_code_utils import _normalize_code_and_exchange
     norm_code, norm_exchange = _normalize_code_and_exchange(raw)
 

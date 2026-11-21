@@ -726,3 +726,37 @@ def test_profile_research_preserves_persisted_evidence_times() -> None:
     assert evidence["as_of"] == "2026-08-28T16:00:00-04:00"
     assert evidence["metadata"]["fetched_at"] == "2026-08-29T10:00:00+08:00"
     assert evidence["freshness"] == "unknown"
+
+
+def test_profile_endpoint_returns_ca_market_for_tsx_code() -> None:
+    """PR #2493 复审 #4（OR-COR-0a575f94）：StockProfileResponse.market Literal 缺 ca
+    → service 已返 ca 但 response_model 校验失败 → endpoint 统一 500。"""
+    service, _ = _service()
+    ca_payload = service.get_profile("SHOP.TO")
+    assert ca_payload["market"] == "ca"
+
+    _reset_auth_globals()
+    with tempfile.TemporaryDirectory() as temp_dir:
+        try:
+            os.environ["DATABASE_PATH"] = str(Path(temp_dir) / "profile-ca.db")
+            os.environ["ADMIN_AUTH_ENABLED"] = "false"
+            Config.reset_instance()
+            DatabaseManager.reset_instance()
+            app = create_app(static_dir=Path(temp_dir) / "empty-static")
+            client = TestClient(app)
+            with patch(
+                "api.v1.endpoints.stocks.StockProfileService.get_profile",
+                return_value=ca_payload,
+            ):
+                response = client.get("/api/v1/stocks/SHOP.TO/profile")
+        finally:
+            DatabaseManager.reset_instance()
+            Config.reset_instance()
+            os.environ.pop("DATABASE_PATH", None)
+            os.environ.pop("ADMIN_AUTH_ENABLED", None)
+            _reset_auth_globals()
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["market"] == "ca"
+    assert body["canonical_code"] == "SHOP.TO"
