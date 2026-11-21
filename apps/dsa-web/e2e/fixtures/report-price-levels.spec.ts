@@ -4,6 +4,7 @@ test('saved report fetches price levels on demand and recovers from empty and fa
   const report = {
     id: 1, stock_code: 'EXAMPLE', stock_name: 'Example', query_id: 'example',
     report_type: 'detailed', report_language: 'en', created_at: '2026-11-20T10:00:00Z',
+    current_price: 179,
   };
   const bars = Array.from({ length: 80 }, (_, i) => ({
     date: new Date(Date.UTC(2026, 6, 6 + Math.floor(i / 5) * 7 + i % 5)).toISOString().slice(0, 10),
