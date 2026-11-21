@@ -87,20 +87,32 @@ def ensure_symlink_target(path: Path, expected_target: str, description: str) ->
 def ensure_symlinks() -> None:
     ensure_file_exists(AGENTS, "canonical AGENTS.md")
     ensure_symlink_target(CLAUDE, "AGENTS.md", "CLAUDE.md")
-    ensure_symlink_target(
-        CLAUDE_SKILLS_LINK,
-        "../.agents/skills",
-        ".claude/skills",
-    )
+    if CLAUDE_SKILLS_LINK.is_symlink():
+        ensure_symlink_target(CLAUDE_SKILLS_LINK, "../.agents/skills", ".claude/skills")
+    elif CLAUDE_SKILLS_LINK.is_dir():
+        for skill_name in REQUIRED_SKILLS:
+            compatibility_skill = CLAUDE_SKILLS_LINK / skill_name / "SKILL.md"
+            canonical_skill = SKILLS_DIR / skill_name / "SKILL.md"
+            if not canonical_skill.is_file():
+                fail(f"canonical skill is missing: {canonical_skill.relative_to(ROOT)}")
+            if not compatibility_skill.is_file():
+                fail(
+                    "skill not accessible via .claude/skills compatibility entry: "
+                    f"{compatibility_skill.relative_to(ROOT)}"
+                )
+            if compatibility_skill.read_bytes() != canonical_skill.read_bytes():
+                fail(f".claude/skills compatibility entry is stale: {compatibility_skill.relative_to(ROOT)}")
+    else:
+        fail(".claude/skills must be a symlink or a materialized compatibility directory")
     if not CLAUDE.is_file():
         fail("CLAUDE.md symlink does not resolve to a readable file")
     if not CLAUDE_SKILLS_LINK.is_dir():
-        fail(".claude/skills symlink does not resolve to a readable directory")
+        fail(".claude/skills compatibility entry does not resolve to a readable directory")
     for skill_name in REQUIRED_SKILLS:
         via_link = CLAUDE_SKILLS_LINK / skill_name / "SKILL.md"
         if not via_link.is_file():
             fail(
-                f"skill not accessible via .claude/skills symlink: "
+                f"skill not accessible via .claude/skills compatibility entry: "
                 f"{via_link.relative_to(ROOT)}"
             )
 
@@ -193,7 +205,7 @@ def ensure_no_tracked_local_artifacts() -> None:
     tracked = [line.strip() for line in result.stdout.splitlines() if line.strip()]
     allowed = {".claude/skills"}
     for path in tracked:
-        if path in allowed:
+        if path in allowed or path.startswith(".claude/skills/"):
             continue
         fail(f"tracked local AI artifact outside allowed symlink: {path}")
 

@@ -28,7 +28,7 @@
 ## 2. AI 协作资产治理
 
 - 规则真源：根目录 `AGENTS.md`。
-- Claude 兼容入口：根目录 `CLAUDE.md`（指向 `AGENTS.md` 的软链接）与 `.claude/skills`（指向 `../.agents/skills` 的软链接）；Windows 若因 `core.symlinks=false` 检出为文本占位文件，执行 `git config core.symlinks true && git checkout -- CLAUDE.md .claude/skills` 恢复。
+- Claude 兼容入口：根目录 `CLAUDE.md`（指向 `AGENTS.md` 的软链接）与 `.claude/skills`（包含与 `.agents/skills/` 同步的兼容副本；支持软链接的平台也可使用指向 `../.agents/skills` 的软链接）。Windows 使用 `core.symlinks=false` 时直接读取 `.claude/skills/` 副本，不依赖创建软链接。
 - 仓库协作 skill 真源：`.agents/skills/`（含 `analyze-pr`、`analyze-issue`、`fix-issue`，须带 YAML frontmatter 并引用 `AGENTS.md`）。
 - Copilot 入口：`.github/copilot-instructions.md` 与 `.github/instructions/*.instructions.md`；如与本文件冲突，以 `AGENTS.md` 为准。
 - 本地审查/分析产物：**默认直接输出在对话中，不落盘**；仅当用户明确要求存档时写入 `.reviews/`（已加入 `.gitignore`）。
@@ -91,7 +91,7 @@ python scripts/check_ai_assets.py
 
 ## 7. Issue / PR / Skill 工作流
 
-- 仓库内置 skill：`.agents/skills/analyze-pr/SKILL.md`、`.agents/skills/analyze-issue/SKILL.md`、`.agents/skills/fix-issue/SKILL.md`（`.claude/skills` 软链兼容）。
+- 仓库内置 skill：`.agents/skills/analyze-pr/SKILL.md`、`.agents/skills/analyze-issue/SKILL.md`、`.agents/skills/fix-issue/SKILL.md`；`.claude/skills/` 保留同步副本，兼容 Claude Code。
 - 每次 PR 创建/更新、PR 审查或 Issue 分析前，必须先刷新基线：检查 `git status --short` 并执行 `git fetch --all --prune`；**仅当**工作区干净且当前分支可 fast-forward 时执行 `git pull --ff-only`。否则不得强行切分支、stash、reset 或覆盖本地状态，改用已 fetch 的远端 refs/PR head 分析并记录本地 HEAD 与远端基线。
 - 除上述安全 fast-forward 同步外，不得未经确认执行 `git pull`、`git push`、`git tag`、`gh pr create/merge/close`。
 - PR 审查遵循 `.agents/skills/analyze-pr/SKILL.md`（文件覆盖账本 + 14 维影响面清单 + 因果链 + 描述与 diff 核对）。

@@ -29,6 +29,23 @@ def test_ensure_symlink_target_rejects_windows_text_stub(tmp_path: Path, monkeyp
     assert exc_info.value.code == 1
 
 
+def test_materialized_claude_skills_compatibility_entry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(check_ai_assets, "ROOT", tmp_path)
+    check_ai_assets.SKILLS_DIR = tmp_path / ".agents" / "skills"
+    check_ai_assets.CLAUDE_SKILLS_LINK = tmp_path / ".claude" / "skills"
+    for skill_name in check_ai_assets.REQUIRED_SKILLS:
+        canonical = check_ai_assets.SKILLS_DIR / skill_name / "SKILL.md"
+        canonical.parent.mkdir(parents=True, exist_ok=True)
+        canonical.write_text(skill_name, encoding="utf-8")
+        compatibility = check_ai_assets.CLAUDE_SKILLS_LINK / skill_name / "SKILL.md"
+        compatibility.parent.mkdir(parents=True, exist_ok=True)
+        compatibility.write_text(skill_name, encoding="utf-8")
+    (tmp_path / "AGENTS.md").write_text("rules", encoding="utf-8")
+    (tmp_path / "CLAUDE.md").symlink_to("AGENTS.md")
+
+    check_ai_assets.ensure_symlinks()
+
+
 def test_ensure_gitignore_rules_detects_ignored_tracked_agents_skill(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

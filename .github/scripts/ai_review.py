@@ -14,6 +14,9 @@ from pathlib import Path
 
 
 MAX_DIFF_LENGTH = 18000
+MAX_GUIDANCE_LENGTH = 1800
+MAX_PROMPT_FILES_LENGTH = 6000
+FILTER_MARKER_PREFIX = '@@ Review path filter omitted changed files; coverage is incomplete: '
 REVIEW_PATHS = [
     '*.py',
     '*.md',
@@ -149,11 +152,23 @@ def _is_review_path(filename):
     return any(fnmatch.fnmatchcase(filename, pattern) for pattern in REVIEW_PATHS)
 
 
+def _filter_marker(filenames):
+    shown = filenames[:100]
+    marker = FILTER_MARKER_PREFIX + ', '.join(shown)
+    if len(filenames) > len(shown):
+        marker += f', ... ({len(filenames) - len(shown)} more omitted)'
+    return marker + ' @@'
+
+
 def _build_api_diff(files):
     chunks = []
+    filtered_files = []
     for file_info in files:
         filename = file_info.get('filename', '')
-        if not filename or not _is_review_path(filename):
+        if not filename:
+            continue
+        if not _is_review_path(filename):
+            filtered_files.append(filename)
             continue
 
         status = file_info.get('status')
@@ -169,6 +184,8 @@ def _build_api_diff(files):
             f'+++ {new_path}\n'
             f'{patch}'
         )
+    if filtered_files:
+        chunks.append(_filter_marker(filtered_files))
     return '\n'.join(chunks)
 
 
@@ -184,6 +201,9 @@ def get_review_data(pull_files=None):
         diff = run_git(['git', 'diff', f'origin/{base_ref}...HEAD', '--', *REVIEW_PATHS])
         output = run_git(['git', 'diff', '--name-only', f'origin/{base_ref}...HEAD'])
         files = output.split('\n') if output else []
+        filtered_files = [filename for filename in files if not _is_review_path(filename)]
+        if filtered_files:
+            diff = '\n'.join(part for part in (diff, _filter_marker(filtered_files)) if part)
 
     truncated = len(diff) > MAX_DIFF_LENGTH
     return diff[:MAX_DIFF_LENGTH], files, truncated
@@ -303,29 +323,56 @@ def get_review_evidence(pr):
 
 
 _FALLBACK_REVIEW_GUIDANCE = (
-    "聚焦前因后果、修改的既有运行时文件、改前改后行为、影响面（配置/API/Web/报告/通知）与真实阻断项，"
-    "禁止空泛套话。"
+    "逐文件核对完整文件清单，区分新增文件与修改的既有运行时文件；先说明前因、根因、改前后行为和受影响入口，"
+    "再按固定五段输出。核查环境变量/配置、Web 设置页、Web UI、API/Schema、Desktop、报告/渲染、通知、"
+    "Prompt/LLM、数据源/fallback、存储、CLI/调度、依赖、CI/Docker/发布、文档 14 个维度；命中项给出 "
+    "`path:line` 证据，未命中项说明检索依据。只把正确性/安全问题、阻断 CI 失败、描述与实现实质矛盾、"
+    "未说明恢复路径的不可逆变更和未收敛的契约漂移列为阻断。禁止空泛风险套话；未覆盖补丁、路径过滤、"
+    "缺失 CI/行内评审或未查看截图时，明确标注范围，不得给出整个 PR 的可合入结论。"
+)
+
+
+_AUTOMATED_REVIEW_APPENDIX = (
+    "自动化工作流无法补取缺失代码或行内评审线程；对截断、路径过滤、缺失补丁、过长文件清单或未查看截图，"
+    "明确标注覆盖范围，不得据此给出整个 PR 的可合入结论。"
 )
 
 
 def _load_review_guidance(root: Path) -> str:
-    """Load repository review guidance, degrading gracefully on legacy sparse-checkout reruns."""
+    """Use the skill's compact preamble plus automation limits."""
     candidate = root / '.agents/skills/analyze-pr/SKILL.md'
     if candidate.is_file():
-        return candidate.read_text(encoding='utf-8')
-    return _FALLBACK_REVIEW_GUIDANCE
+        content = candidate.read_text(encoding='utf-8')
+        preamble = content.split('## 内部检查步骤', 1)[0].strip()
+        guidance = f'{preamble}\n\n{_AUTOMATED_REVIEW_APPENDIX}'
+        if len(guidance) <= MAX_GUIDANCE_LENGTH:
+            return guidance
+    return _FALLBACK_REVIEW_GUIDANCE[:MAX_GUIDANCE_LENGTH]
 
 
 def build_prompt(diff_content, files, truncated, pr_title, pr_body, evidence):
     """Use the same maintained review guidance as interactive repository reviews."""
     root = Path(__file__).resolve().parents[2]
     guidance = _load_review_guidance(root)
+    file_list = ', '.join(files)
+    files_truncated = len(file_list) > MAX_PROMPT_FILES_LENGTH
+    if files_truncated:
+        file_list = (
+            file_list[:MAX_PROMPT_FILES_LENGTH]
+            + '\n[文件清单已截断，不能据此对整个 PR 给出合入结论。]'
+        )
     incomplete_patch = bool(
         truncated
         or not diff_content
         or '@@ Patch unavailable from GitHub API' in (diff_content or '')
+        or FILTER_MARKER_PREFIX in (diff_content or '')
+        or files_truncated
     )
-    coverage = '文本 diff 已截断或存在缺失补丁。' if incomplete_patch else '只提供支持格式的文本补丁。'
+    coverage = (
+        '文本 diff 已截断、存在缺失补丁或有文件被路径过滤，覆盖不完整。'
+        if incomplete_patch
+        else '只提供支持格式的文本补丁。'
+    )
     verdict_rule = (
         '当前自动审查发生截断、路径过滤或补丁缺失，且模型无法补取缺失代码或行内评审：'
         '请只输出已覆盖范围内发现的问题与待核实项，不得对整个 PR 给出“可合入”结论。'
@@ -349,7 +396,7 @@ def build_prompt(diff_content, files, truncated, pr_title, pr_body, evidence):
 {pr_body}
 
 ## 完整文件清单
-{', '.join(files)}
+{file_list}
 
 ## 可见 diff
 {coverage}
@@ -495,6 +542,8 @@ def main():
     if review:
         if truncated:
             review = f'> 文本 diff 已截断至 {MAX_DIFF_LENGTH} 字符，请核对未覆盖的补丁。\n\n{review}'
+        elif '@@ Review path filter omitted' in diff:
+            review = f'> 自动审查发现路径过滤造成覆盖缺口，请核对未覆盖的补丁。\n\n{review}'
         revision = _pr_revision(pr)
         head = revision['head_sha']
         heading = f"审查版本 `{head}`" if head else ''
