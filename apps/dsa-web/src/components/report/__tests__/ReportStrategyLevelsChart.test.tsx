@@ -90,6 +90,29 @@ describe('ReportStrategy Levels Chart', () => {
     expect(screen.queryByTestId(/^ref-line-/)).not.toBeInTheDocument();
   });
 
+  it.each([
+    { currentPrice: 105, close: 52.5, label: 'a two-for-one scale change' },
+    { currentPrice: undefined, close: 21, label: 'a historical report without a saved price' },
+  ])('hides levels for $label', async ({ currentPrice, close }) => {
+    mockGetStockHistory.mockResolvedValue({
+      data: [{ date: '2026-11-20', open: close, high: close, low: close, close }],
+    });
+
+    render(
+      <ReportStrategy
+        recordId={79}
+        stockCode="TSLA"
+        currentPrice={currentPrice}
+        historical
+        strategy={{ idealBuy: '95', stopLoss: '80', takeProfit: '120' }}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '价格点位图' }));
+    expect(await screen.findByText('报告点位与当前行情价格口径不一致，暂不叠加参考线。')).toBeInTheDocument();
+    expect(screen.queryByTestId(/^ref-line-/)).not.toBeInTheDocument();
+  });
+
   it('isolates chart state and discards stale responses when switching reports', async () => {
     let resolveTsla!: (v: unknown) => void;
     mockGetStockHistory.mockImplementation((code: string) => {

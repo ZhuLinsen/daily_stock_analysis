@@ -75,6 +75,7 @@ export const ReportSummary: React.FC<ReportSummaryProps> = ({
         recordId={recordId}
         stockCode={meta.stockCode}
         currentPrice={meta.currentPrice}
+        historical={isHistory}
       />
 
       {/* 资讯区 */}

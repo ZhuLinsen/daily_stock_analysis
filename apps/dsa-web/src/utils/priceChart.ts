@@ -17,9 +17,9 @@ const CURRENT_PRICE_CONTEXT_RE = /(?:current|latest|last|market)\s+price(?:\s+(?
 const CJK_CURRENT_PRICE_CONTEXT_RE = /(?:当前价(?:格)?|目前价(?:格)?|现价)\s*(?:(?:约|大约)\s*)?(?:(?:是|为|在)\s*)?(?:[:：]\s*)?(?:(?:约|大约)\s*)?(?:[$¥₩]|(?:USD|CNY|HKD|TWD|KRW|JPY)\s*)?$/iu;
 const KOREAN_CURRENT_PRICE_CONTEXT_RE = /(?:현재\s*가격?|시세)\s*(?:는|이|가)?\s*(?:[:：]\s*)?약?\s*(?:[$¥₩]|(?:USD|CNY|HKD|TWD|KRW|JPY)\s*)?$/iu;
 
-const PRICE_UNIT_AFTER_RE = /^\s*(?:[$¥₩]|(?:USD|CNY|HKD|TWD|KRW|JPY|dollars?|euros?)\b|元|美元|美金|港元|港币|港幣|円|원)/iu;
+const PRICE_UNIT_AFTER_RE = /^\s*(?:[$¥₩]|(?:USD|CNY|HKD|TWD|KRW|JPY|dollars?|euros?)\b|元|美元|美金|港元|港币|港幣|日元|新台币|新臺幣|円|원)/iu;
 const PRICE_UNIT_BEFORE_RE = /(?:[$¥₩]|(?:USD|CNY|HKD|TWD|KRW|JPY)\s*)$/iu;
-const RATIO_CONTEXT_RE = /(?:risk\s*[-/]?\s*(?:to\s*[-/]?\s*)?(?:reward|return)|reward\s*[-/]?\s*to\s*[-/]?\s*risk|risk\s*reward|ratio|R\s*\/\s*R|风险\s*(?:回报|收益)|回报比|收益比|比率|손익\s*비)/iu;
+const RATIO_CONTEXT_RE = /(?:risk\s*[-/]?\s*(?:to\s*[-/]?\s*)?(?:reward|return)|reward\s*(?:[-/]?\s*to\s*[-/]?\s*risk|[-/]\s*risk)|risk\s*reward|ratio|R\s*\/\s*R|风险\s*(?:回报|收益)|回报比|收益比|比率|손익\s*비)/iu;
 
 function isRatioCandidate(segment: string, start: number, end: number): boolean {
   for (const match of segment.matchAll(/\d+(?:\.\d+)?\s*([:：∶︓﹕꞉/／]|比|to)\s*\d+(?:\.\d+)?/gi)) {
@@ -48,9 +48,12 @@ function isRatioCandidate(segment: string, start: number, end: number): boolean 
 }
 
 function isDateCandidate(segment: string, start: number, end: number): boolean {
-  const dayMonthYear = /\b\d{1,2}[/-]\d{1,2}[/-]\d{4}\b/.exec(segment);
+  const dayMonthYear = [...segment.matchAll(/\b\d{1,2}[/-]\d{1,2}[/-]\d{4}\b/g)].find((match) => {
+    const matchStart = match.index ?? 0;
+    return start >= matchStart && end <= matchStart + match[0].length;
+  });
   if (dayMonthYear) {
-    const matchStart = dayMonthYear.index;
+    const matchStart = dayMonthYear.index ?? 0;
     const matchEnd = matchStart + dayMonthYear[0].length;
     if (start >= matchStart && end <= matchEnd) return true;
   }
@@ -76,8 +79,11 @@ function isMovingAveragePeriod(segment: string, start: number, end: number): boo
   if (INDICATOR_PREFIX_RE.test(prefix) || NON_PRICE_UNIT_RE.test(suffix)) {
     return true;
   }
-  if (/\d+(?:\.\d+)?\s*(?:及|以及|并)\s*\d+(?:\.\d+)?\s*(?:日|天|周期|periods?|days?)\s*(?:均线|均線|移动平均线|moving\s+averages?)/iu.test(segment)) {
-    return true;
+  const conjunctionMatch = /\d+(?:\.\d+)?\s*(?:及|與|与|以及|并)\s*\d+(?:\.\d+)?\s*(?:日|天|周期|periods?|days?)\s*(?:均线|均線|移动平均线|moving\s+averages?)/iu.exec(segment);
+  if (conjunctionMatch) {
+    const matchStart = conjunctionMatch.index;
+    const matchEnd = matchStart + conjunctionMatch[0].length;
+    if (start >= matchStart && end <= matchEnd) return true;
   }
   // In phrases such as "5- and 20-day" or "5/20 MA", the unit belongs to
   // the last number, but every number in the list is a moving-average period.
@@ -87,7 +93,7 @@ function isMovingAveragePeriod(segment: string, start: number, end: number): boo
       return false;
     }
     // Keep an explicitly labelled first price in "$48, 20-day ...".
-    if (start === matchStart && /(?:[$¥₩]|(?:buy|entry|price|stop\s*-?\s*loss|理想买入|买入价|买点|价格|止损)\s*[:：]?\s*)[^\d]*$/iu.test(prefix)) {
+    if (start === matchStart && /(?:[$¥₩]|(?:buy|entry|price|take\s*profit|stop\s*-?\s*loss|理想买入|次优买入|买入价|买点|价格|止盈|止损)\s*[:：]?\s*)[^\d]*$/iu.test(prefix)) {
       return false;
     }
     return true;
@@ -100,23 +106,23 @@ function isOrdinalCandidate(prefix: string, suffix: string): boolean {
 }
 
 function isCountCandidate(prefix: string, suffix: string): boolean {
-  return /^(?:根\s*K线|根\s*蜡烛|次(?:日线)?\s*收盘|daily\s+closes?\b|closes?\b|consecutive\s+closes?\b)/iu.test(suffix)
+  return /^(?:根\s*K线|根\s*蜡烛|次(?:日线)?\s*收盘|daily\s+closes?\b|consecutive\s+daily\s+closes?\b|closes?\b|consecutive\s+closes?\b)/iu.test(suffix)
     || /(?:连续|consecutive)\s*$/iu.test(prefix);
 }
 
 function isIndicatorThresholdCandidate(prefix: string): boolean {
-  return /(?:\bRSI|相对强弱指标)\s*(?:低于|小于|高于|超过|below|drops?\s+below|under|above|rises?\s+above|over|<|>)\s*$/iu.test(prefix);
+  return /(?:\bRSI|相对强弱指标)\s*(?:低于|小于|高于|超过|回落至|below|drops?\s+below|under|above|rises?\s+above|climbs?\s+above|over|<|>)\s*$/iu.test(prefix);
 }
 
 function isCurrentPriceCandidate(prefix: string): boolean {
   return CURRENT_PRICE_CONTEXT_RE.test(prefix)
     || CJK_CURRENT_PRICE_CONTEXT_RE.test(prefix)
-    || /(?:当前价(?:格)?|目前价(?:格)?|现价)\s*[:：]\s*(?:约|大约)?\s*(?:是|为|在)\s*$/u.test(prefix)
+    || /(?:当前价(?:格)?|目前价(?:格)?|现价)\s*[:：]\s*(?:约|大约)?\s*(?:是|为|在)\s*(?:[$¥₩]|(?:USD|CNY|HKD|TWD|KRW|JPY)\s*)?$/iu.test(prefix)
     || KOREAN_CURRENT_PRICE_CONTEXT_RE.test(prefix);
 }
 
 function isPercentageCandidate(prefix: string, suffix: string): boolean {
-  return /百分之\s*$/u.test(prefix) || /^(?:%|percent(?:age)?\b|퍼센트)/iu.test(suffix);
+  return /百分之\s*(?:约|約)?\s*$/u.test(prefix) || /^(?:%|percent(?:age)?\b|per\s+cent\b|퍼센트)/iu.test(suffix);
 }
 
 function extractFirstPriceToken(segment: string): number | null {
@@ -139,7 +145,7 @@ function extractFirstPriceToken(segment: string): number | null {
 
   for (const { match, suffix } of candidates) {
     let value = Number(match[0]);
-    if (/¢/u.test(suffix)) value /= 100;
+    if (/^¢/u.test(suffix)) value /= 100;
     if (Number.isFinite(value) && value > 0) {
       return value;
     }
@@ -155,21 +161,28 @@ export function parseStrategyPriceLevel(raw?: string | null): number | null {
   if (typeof raw !== 'string') {
     return null;
   }
-  const cleaned = raw.normalize('NFKC').replace(/(?<!\.)\b(\d{1,2}),(?=\d{3}(?:\D|$))/g, '$1').trim();
+  if (/(?:止损|stop\s*-?\s*loss)[^;；,，]*(?:暂无|不设|没有|无固定|none|no\s+fixed)/iu.test(raw)) return null;
+  const cleaned = raw.replace(/(?<!\d)\d{1,2}，(?=\d{3}\b)/g, match => match.replace('，', ''))
+    .replace(/，/g, '\uE000').normalize('NFKC')
+    .replace(/(?<![\d.])\d{1,2},\d{3}(?!,\d{3})\b/g, match => match.replace(',', ''))
+    .replace(/(?<![\d.])\d{1,3}(?:,\d{3})+(?:\.\d+)?(?=\s*(?:[$¥₩]|USD|CNY|HKD|TWD|KRW|JPY|元|美元|美金|港元|港币|港幣|日元|新台币|新臺幣|円|원))/giu, match => match.replace(/,/g, ''))
+    .replace(/\uE000/g, ',').trim();
   const parenthesizedPrice = /^\(\s*(?:[¥$₩]\s*)?(\d+(?:\.\d+)?)(?:\s*[元円원])?\s*\)$/.exec(cleaned);
   // Report templates put indicator values and supporting conditions in parentheses.
   // Strip indicator annotations, but retain explicit prices in parentheses such as
   // "stop-loss: ($48)" or "止损位：跌破前低（48元）".
   let priceText = parenthesizedPrice?.[1] ?? cleaned.replace(/\([^()]*\)/g, (match, offset: number, source: string) => {
     const prefix = source.slice(0, offset);
-    return /(?:\b(?:MA|BOLL|RSI|KDJ|MACD|WR|BIAS)\s*[\d\s/,-]*|均线|均線|移动平均线|moving\s+averages?|이동\s*평균선)\s*(?:附近|一带|一帶|부근)?\s*[（(]?\s*$/iu.test(prefix)
+    if (/(?:止损|止盈|买入|stop\s*-?\s*loss|take\s*profit|buy)[^()]*\d/iu.test(match)) return match;
+    return /(?:\b(?:MA|BOLL|RSI|KDJ|MACD|WR|BIAS)\s*[\d\s/,-]*|均线|均線|移动平均线|moving\s+averages?|이동\s*평균선)\s*(?:附近区域|附近區域|附近|一带|一帶|区域|區域|부근)?\s*[（(]?\s*$/iu.test(prefix)
       ? ' '
       : match;
   });
   if (!parenthesizedPrice) {
     priceText = priceText.replace(/\([^()]*$/g, (match, offset: number, source: string) => {
       const prefix = source.slice(0, offset);
-      return /(?:\b(?:MA|BOLL|RSI|KDJ|MACD|WR|BIAS)\s*[\d\s/,-]*|均线|均線|移动平均线|moving\s+averages?|이동\s*평균선)\s*(?:附近|一带|一帶|부근)?\s*[（(]?\s*$/iu.test(prefix)
+      if (/(?:止损|止盈|买入|stop\s*-?\s*loss|take\s*profit|buy)[^()]*\d/iu.test(match)) return match;
+      return /(?:\b(?:MA|BOLL|RSI|KDJ|MACD|WR|BIAS)\s*[\d\s/,-]*|均线|均線|移动平均线|moving\s+averages?|이동\s*평균선)\s*(?:附近区域|附近區域|附近|一带|一帶|区域|區域|부근)?\s*[（(]?\s*$/iu.test(prefix)
         ? ' '
         : match;
     });

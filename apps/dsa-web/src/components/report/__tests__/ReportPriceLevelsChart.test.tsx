@@ -157,6 +157,36 @@ describe('ReportPriceLevelsChart helpers & component', () => {
     expect(capped[59].date).toBe(bars[86].date);
   });
 
+  it('does not treat condition metadata as strategy prices', () => {
+    const cases: Array<[string, number | null]> = [
+      ['等待收復5與20日均線後再評估', null],
+      ['等待收复5与20日均线后再评估', null],
+      ['止损：跌破48元且跌破5及20日均线', 48],
+      ['Reward/risk 2 to 1, take profit at $60', 60],
+      ['当前价格：为$50，止损设在48元', 48],
+      ['等待站稳20日均线附近区域（52.68元）后再评估', null],
+      ['止盈目标：60/65日元，计划分 2 批卖出（风险回报比 2/1）', 60],
+      ['Stop-loss: below the 20/11/2026 and 19/11/2026 lows at $48', 48],
+      ['Take profit: 60, 20-day moving average confirmation required', 60],
+      ['次优买入：48，20日均线企稳后执行', 48],
+      ['Stop loss: after 2 consecutive daily closes below $48', 48],
+      ['理想买入：8/9新台币', 8],
+      ['止盈目标：123,456元', 123456],
+      ['止盈目标：1,234,567.89元', 1234567.89],
+      ['止损：较买入价下跌百分之约5', null],
+      ['Stop loss: 5 per cent below entry', null],
+      ['止损：若RSI回落至30以下且价格跌破48元则退出', 48],
+      ['止损：跌破 MA20（止损设在48元）', 48],
+      ['Take profit when RSI climbs above 70 and price reaches $60', 60],
+      ['Ideal buy: $1.20 (20¢ below current price)', 1.2],
+      ['止损：暂无固定止损位，持仓成本52元', null],
+      ['Stop-loss: none; entry price $52', null],
+    ];
+    for (const [input, expected] of cases) {
+      expect(parseStrategyPriceLevel(input), input).toBe(expected);
+    }
+  });
+
   it('preserves sub-cent moving-average precision', () => {
     const bars = Array.from({ length: 20 }, (_, i) => ({
       date: `2026-01-${String(i + 1).padStart(2, '0')}`,

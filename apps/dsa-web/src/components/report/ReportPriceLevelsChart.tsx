@@ -26,6 +26,7 @@ interface ReportPriceLevelsChartProps {
   strategy?: ReportStrategy;
   language?: ReportLanguage;
   reportCurrentPrice?: number;
+  historical?: boolean;
   onRetry?: () => void;
 }
 
@@ -56,6 +57,7 @@ export const ReportPriceLevelsChart: React.FC<ReportPriceLevelsChartProps> = ({
   strategy,
   language = 'zh',
   reportCurrentPrice,
+  historical = false,
   onRetry,
 }) => {
   const text = getReportText(language).priceLevelsChart;
@@ -68,13 +70,17 @@ export const ReportPriceLevelsChart: React.FC<ReportPriceLevelsChartProps> = ({
     parseStrategyPriceLevel(strategy?.takeProfit),
   ];
   const priceScaleMismatch = useMemo(() => {
-    if (reportCurrentPrice == null || !Number.isFinite(reportCurrentPrice) || reportCurrentPrice <= 0 || data.length === 0) {
+    if (data.length === 0) return false;
+    if (historical && (reportCurrentPrice == null || !Number.isFinite(reportCurrentPrice) || reportCurrentPrice <= 0)) {
+      return true;
+    }
+    if (reportCurrentPrice == null || !Number.isFinite(reportCurrentPrice) || reportCurrentPrice <= 0) {
       return false;
     }
     const latestClose = data[data.length - 1].close;
     const scaleRatio = reportCurrentPrice / latestClose;
-    return scaleRatio > 2 || scaleRatio < 0.5;
-  }, [data, reportCurrentPrice]);
+    return scaleRatio >= 2 || scaleRatio <= 0.5;
+  }, [data, historical, reportCurrentPrice]);
   const [idealBuy, secondaryBuy, stopLoss, takeProfit] = priceScaleMismatch
     ? [null, null, null, null]
     : rawLevels;
