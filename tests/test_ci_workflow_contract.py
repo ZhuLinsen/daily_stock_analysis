@@ -73,6 +73,13 @@ def test_heavy_ci_jobs_are_path_filtered_and_backend_tests_are_sharded() -> None
         str(frontend_filter_step["with"]["filters"]),
         Loader=yaml.BaseLoader,
     )
+    site_filter_step = next(
+        step for step in changes_job["steps"] if step.get("id") == "site-filter"
+    )
+    site_filters = yaml.load(
+        str(site_filter_step["with"]["filters"]),
+        Loader=yaml.BaseLoader,
+    )
 
     assert changes_job["outputs"]["backend"] == (
         "${{ steps.backend-filter.outputs.backend_non_web == 'true' || "
@@ -86,9 +93,12 @@ def test_heavy_ci_jobs_are_path_filtered_and_backend_tests_are_sharded() -> None
     assert filter_step["with"]["predicate-quantifier"] == "every"
     assert backend_filter_step["with"]["predicate-quantifier"] == "every"
     assert frontend_filter_step["with"]["predicate-quantifier"] == "every"
+    assert site_filter_step["with"]["predicate-quantifier"] == "every"
+    assert site_filters["site_code"] == ["apps/dsa-site/**"]
     assert backend_filters["backend_non_web"] == [
         "**",
         "!apps/dsa-web/**",
+        "!apps/dsa-site/**",
         "!docs/**",
         "!**/*.md",
         "!LICENSE",
@@ -180,6 +190,13 @@ def test_backend_filter_covers_mixed_changes_and_shared_web_assets() -> None:
         str(frontend_filter_step["with"]["filters"]),
         Loader=yaml.BaseLoader,
     )["frontend_code"]
+    site_filter_step = next(
+        step for step in changes_job["steps"] if step.get("id") == "site-filter"
+    )
+    site_filters = yaml.load(
+        str(site_filter_step["with"]["filters"]),
+        Loader=yaml.BaseLoader,
+    )["site_code"]
 
     def outputs(changed_paths: list[str]) -> tuple[bool, bool, bool, bool]:
         backend = (
@@ -222,6 +239,8 @@ def test_backend_filter_covers_mixed_changes_and_shared_web_assets() -> None:
     )
     assert outputs(["apps/dsa-web/public/stocks.index.json"])[0] is True
     assert outputs(["apps/dsa-web/public/runtime/new-asset.json"])[0] is True
+    assert _filter_output(["apps/dsa-site/src/pages/index.astro"], site_filters)
+    assert not _filter_output(["docs/CHANGELOG.md"], site_filters)
 
 
 def test_browser_fixture_and_default_smoke_entrypoints_stay_separate() -> None:

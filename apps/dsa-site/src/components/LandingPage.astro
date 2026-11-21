@@ -91,6 +91,7 @@ const stageSamples = (Array.isArray(rawSignals) ? rawSignals : []).slice(0, 4).m
 
 const shortVersion = (siteMeta.versionLabel || 'v3.35.0').split('-')[0];
 const docsBase = isEn ? '/en/docs' : '/docs';
+const localizeDoc = (path: string) => `${isEn ? '/en' : ''}${path}`;
 
 const quickstartChannels = isEn
   ? [
@@ -98,7 +99,7 @@ const quickstartChannels = isEn
         id: 'desktop',
         label: 'Desktop App (0-Code)',
         desc: 'Electron installer for Windows / macOS with full WebUI built in.',
-        docHref: '/docs/getting-started/beginner-client/',
+        docHref: localizeDoc('/docs/getting-started/beginner-client/'),
         codeTitle: 'Desktop App · Windows / macOS',
         code: `# 1. Download installer from GitHub Releases (no Python setup needed)
 https://github.com/ZhuLinsen/daily_stock_analysis/releases
@@ -113,7 +114,7 @@ GEMINI_API_KEY=...   # or OPENAI_API_KEY / ANTHROPIC_API_KEY
         id: 'actions',
         label: 'GitHub Actions',
         desc: 'Zero infrastructure cost, scheduled daily delivery on trading days.',
-        docHref: '/en/docs/getting-started/quick-start/',
+        docHref: localizeDoc('/docs/getting-started/quick-start/'),
         codeTitle: 'GitHub Actions · Serverless Workflow',
         code: `# 1. Fork https://github.com/ZhuLinsen/daily_stock_analysis
 # 2. Repo Settings -> Secrets and variables -> Actions -> New secret:
@@ -127,7 +128,7 @@ TELEGRAM_BOT_TOKEN=...    # or DISCORD_WEBHOOK_URL / EMAIL_SENDER
         id: 'docker',
         label: 'Docker Compose',
         desc: '24x7 self-hosted container with FastAPI, React WebUI, and scheduler.',
-        docHref: '/en/docs/deployment/docker/',
+        docHref: localizeDoc('/docs/deployment/docker/'),
         codeTitle: 'Docker Compose · Server Deployment',
         code: `git clone https://github.com/ZhuLinsen/daily_stock_analysis.git
 cd daily_stock_analysis
@@ -140,7 +141,7 @@ docker-compose -f ./docker/docker-compose.yml up -d server
         id: 'local',
         label: 'Local Python',
         desc: 'Best for debugging providers, LLM routers, strategies, and backtests.',
-        docHref: '/docs/deployment/local/',
+        docHref: localizeDoc('/docs/deployment/local/'),
         codeTitle: 'Python 3.10+ · CLI & WebUI',
         code: `git clone https://github.com/ZhuLinsen/daily_stock_analysis.git && cd daily_stock_analysis
 python -m venv .venv && source .venv/bin/activate
@@ -155,7 +156,7 @@ python main.py --stocks AAPL,NVDA --serve  # analyze + start WebUI`,
         id: 'desktop',
         label: '桌面客户端 (0 代码)',
         desc: 'Windows / macOS 安装包开箱即用，内置完整工作台与配置向导。',
-        docHref: '/docs/getting-started/beginner-client/',
+        docHref: localizeDoc('/docs/getting-started/beginner-client/'),
         codeTitle: 'Electron 桌面端 · Windows / macOS 一键安装',
         code: `# 1. 前往 GitHub Releases 下载安装包（无需配置 Python 环境）
 https://github.com/ZhuLinsen/daily_stock_analysis/releases
@@ -170,7 +171,7 @@ GEMINI_API_KEY=...   # 或 DeepSeek / OpenAI 兼容 / Claude Key
         id: 'actions',
         label: 'GitHub Actions',
         desc: '零服务器成本，每个交易日 18:00 自动研判并推送到微信/飞书/TG/邮箱。',
-        docHref: '/docs/deployment/github-actions/',
+        docHref: localizeDoc('/docs/deployment/github-actions/'),
         codeTitle: 'GitHub Actions · 零服务器定时推送',
         code: `# 1. Fork 仓库：https://github.com/ZhuLinsen/daily_stock_analysis
 # 2. 进入 Settings -> Secrets and variables -> Actions -> New repository secret
@@ -185,7 +186,7 @@ WECHAT_WEBHOOK_URL=...    # 或 FEISHU_WEBHOOK_URL / TELEGRAM_BOT_TOKEN
         id: 'docker',
         label: 'Docker Compose',
         desc: '适合云服务器或 NAS 长期托管，一键拉起 WebUI、API 与定时调度。',
-        docHref: '/docs/deployment/docker/',
+        docHref: localizeDoc('/docs/deployment/docker/'),
         codeTitle: 'Docker Compose · 自托管服务端',
         code: `git clone https://github.com/ZhuLinsen/daily_stock_analysis.git
 cd daily_stock_analysis
@@ -198,7 +199,7 @@ docker-compose -f ./docker/docker-compose.yml up -d server
         id: 'local',
         label: '本地 Python',
         desc: '适合开发者调试大模型路由、数据源优先级、自定义策略与回测。',
-        docHref: '/docs/deployment/local/',
+        docHref: localizeDoc('/docs/deployment/local/'),
         codeTitle: 'Python 3.10+ · CLI 与本地诊断',
         code: `git clone https://github.com/ZhuLinsen/daily_stock_analysis.git && cd daily_stock_analysis
 python -m venv .venv && source .venv/bin/activate
@@ -212,12 +213,12 @@ python main.py --serve                      # 启动 Web 工作台（8000 端口
 
 const docCards = isEn
   ? [
-      { tag: 'START', title: 'Quick Start & Runtimes', desc: 'Compare Desktop App, GitHub Actions, Docker, and CLI in one view.', href: '/en/docs/getting-started/quick-start/' },
-      { tag: 'MARKETS', title: '6-Market Support Matrix', desc: 'Coverage and fallback rules for A-shares, HK, US, JP, KR, TW, and ETFs.', href: '/docs/features/market-support/' },
-      { tag: 'LLM', title: 'LLM Router & Models', desc: 'Configure Gemini, Claude, DeepSeek, OpenAI-compatible gateways, and Ollama.', href: '/en/docs/configuration/llm-guide/' },
-      { tag: 'DATA', title: 'Data Sources & TickPlus', desc: 'Priority chains, circuit breakers, TickPlus, Tushare, and Longbridge setup.', href: '/docs/configuration/data-sources/' },
-      { tag: 'BOTS', title: 'Notifications & Bots', desc: 'Connect WeChat Work, Feishu, DingTalk, Telegram, Discord, Slack, and Email.', href: '/en/docs/configuration/bot-commands/' },
-      { tag: 'OPENAPI', title: `OpenAPI Explorer (${siteMeta.apiEndpointCount})`, desc: 'Searchable REST endpoint explorer and downloadable OpenAPI 3.1 spec.', href: '/en/docs/reference/api/' },
+      { tag: 'START', title: 'Quick Start & Runtimes', desc: 'Compare Desktop App, GitHub Actions, Docker, and CLI in one view.', href: localizeDoc('/docs/getting-started/quick-start/') },
+      { tag: 'MARKETS', title: '6-Market Support Matrix', desc: 'Coverage and fallback rules for A-shares, HK, US, JP, KR, TW, and ETFs.', href: localizeDoc('/docs/features/market-support/') },
+      { tag: 'LLM', title: 'LLM Router & Models', desc: 'Configure Gemini, Claude, DeepSeek, OpenAI-compatible gateways, and Ollama.', href: localizeDoc('/docs/configuration/llm-guide/') },
+      { tag: 'DATA', title: 'Data Sources & TickPlus', desc: 'Priority chains, circuit breakers, TickPlus, Tushare, and Longbridge setup.', href: localizeDoc('/docs/configuration/data-sources/') },
+      { tag: 'BOTS', title: 'Notifications & Bots', desc: 'Connect WeChat Work, Feishu, DingTalk, Telegram, Discord, Slack, and Email.', href: localizeDoc('/docs/configuration/bot-commands/') },
+      { tag: 'OPENAPI', title: `OpenAPI Explorer (${siteMeta.apiEndpointCount})`, desc: 'Searchable REST endpoint explorer and downloadable OpenAPI 3.1 spec.', href: localizeDoc('/docs/reference/api/') },
     ]
   : [
       { tag: 'START', title: '选择运行方式（快速开始）', desc: '桌面端、GitHub Actions、Docker 与本地 CLI 四路径对比与 5 分钟上手。', href: '/docs/getting-started/quick-start/' },
@@ -606,7 +607,7 @@ const initialSample = stageSamples[0];
                 ? 'Sanitized historical output from DSA analysis_history — research aid only, not investment advice.'
                 : '展示内容来自真实 DSA analysis_history 脱敏样例 — 仅作能力演示，不构成任何投资建议。'}
             </span>
-            <a href="/docs/features/decision-signals/" class="no-underline font-medium" style="color: var(--ob-accent);">
+            <a href={localizeDoc('/docs/features/decision-signals/')} class="no-underline font-medium" style="color: var(--ob-accent);">
               {isEn ? 'DecisionSignal Contract →' : '查看信号字段契约 →'}
             </a>
           </div>
@@ -646,7 +647,7 @@ const initialSample = stageSamples[0];
               {isEn ? 'Engineered around the real stock-research pipeline' : '围绕真实投研链路设计的工程能力'}
             </h2>
           </div>
-          <a href="/docs/features/market-support/" class="text-xs font-medium no-underline" style="color: var(--ob-accent);">
+          <a href={localizeDoc('/docs/features/market-support/')} class="text-xs font-medium no-underline" style="color: var(--ob-accent);">
             {isEn ? 'Explore market boundaries →' : '查看 6 大市场边界 →'}
           </a>
         </div>
@@ -925,7 +926,7 @@ const initialSample = stageSamples[0];
         </div>
         <div class="flex flex-wrap items-center gap-4">
           <a href={`${docsBase}/`} class="no-underline hover:underline" style="color: var(--ob-accent);">{isEn ? 'Docs' : '文档中心'}</a>
-          <a href="/docs/reference/api/" class="no-underline hover:underline" style="color: var(--ob-muted);">OpenAPI</a>
+          <a href={localizeDoc('/docs/reference/api/')} class="no-underline hover:underline" style="color: var(--ob-muted);">OpenAPI</a>
           <a href="https://github.com/ZhuLinsen/daily_stock_analysis/issues" target="_blank" rel="noopener noreferrer" class="no-underline hover:underline" style="color: var(--ob-muted);">Issues</a>
           <a href="mailto:zhuls345@gmail.com?subject=DSA%20Feedback" class="no-underline hover:underline" style="color: var(--ob-muted);">zhuls345@gmail.com</a>
         </div>
