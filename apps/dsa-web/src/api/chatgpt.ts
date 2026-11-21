@@ -21,6 +21,7 @@ export interface Revocation {
 
 export interface ChatGPTStatus {
   available: boolean;
+  restart_required?: boolean;
   connected: boolean;
   connection_id?: string;
   disconnect_retry_connection_id?: string | null;

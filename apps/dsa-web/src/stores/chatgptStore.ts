@@ -10,6 +10,7 @@ interface ChatGPTState {
   model: string;
   error: string | null;
   refresh: (refreshModels?: boolean) => Promise<void>;
+  recheckStatus: () => Promise<void>;
   selectModel: (model: string) => void;
   disconnect: (target: DisconnectTarget) => Promise<boolean | null | undefined>;
 }
@@ -72,6 +73,15 @@ export const useChatGPTStore = create<ChatGPTState>((set, get) => {
   return {
     status: null, models: [], model: '', error: null,
     selectModel: (model) => set({ model }),
+    recheckStatus: async () => {
+      const read = ++readSequence;
+      try {
+        const status = await chatgptApi.status();
+        if (read === readSequence) applyStatus(status);
+      } catch (error) {
+        if (read === readSequence) set({ error: getParsedApiError(error).message });
+      }
+    },
     refresh: async (refreshModels = false) => {
       const read = ++readSequence;
       try {

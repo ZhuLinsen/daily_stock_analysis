@@ -14,6 +14,15 @@ const disconnected: ChatGPTStatus = { actions: [{kind:"reauth", target:{registra
 const retryDisconnect: ChatGPTStatus = { ...disconnected, actions: [{kind:"retry_disconnect",target:{connection_id:"old"},label:null}], error: 'chatgpt_store_unavailable', disconnect_retry_connection_id: 'old' };
 const model = { slug: 'fixture', display_name: 'Fixture model' };
 
+const paused: ChatGPTStatus = { available: false, connected: false, error: 'chatgpt_store_unavailable', actions: [] };
+const warning = { state: 'unknown', owner_kind: 'registered', label: 'Earlier', operation_id: null } as const;
+
+function expectOnlyStatusReads() {
+  expect(api.models).not.toHaveBeenCalled();
+  expect(api.connect).not.toHaveBeenCalled();
+  expect(api.disconnect).not.toHaveBeenCalled();
+}
+
 function apiError(status: number, error: string) {
   return { isAxiosError: true, response: { status, data: { error, message: 'Fixture error' } } };
 }
@@ -31,6 +40,88 @@ describe('ChatGPT connection status', () => {
     useChatGPTStore.setState({ status: null, models: [], model: '', error: null });
     api.status.mockResolvedValue(connected);
     api.models.mockResolvedValue([model]);
+  });
+
+  it('rechecks the local status once and publishes the recovered account without fetching models', async () => {
+    useChatGPTStore.setState({ status: connected, model: model.slug, models: [model] });
+    api.status.mockResolvedValue({ ...paused, revocations: [warning] });
+    render(<ChatGPTConnectionCard />);
+    const check = await screen.findByRole('button', { name: '重新检查连接' });
+    expect(screen.queryByText(/已授权 ·/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/修复后重启 DSA/)).not.toBeInTheDocument();
+    let finish!: (s: ChatGPTStatus) => void;
+    api.status.mockClear().mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+    fireEvent.click(check);
+    expect(screen.getByRole('button', { name: '正在检查…' })).toBeDisabled();
+    await act(async () => { finish({ ...connected, revocations: [warning] }); });
+    expect(screen.getByText('已授权 · Test')).toBeVisible();
+    expect(screen.getByRole('button', { name: '断开连接' })).toBeVisible();
+    expect(screen.getByText(/Earlier 的远端撤销未确认/)).toBeVisible();
+    expect(screen.queryByText(/暂时无法确认本机/)).not.toBeInTheDocument();
+    expect(useChatGPTStore.getState()).toMatchObject({ models: [], model: '' });
+    expect(api.status).toHaveBeenCalledTimes(1);
+    expectOnlyStatusReads();
+  });
+
+  it('polls only status on both sides of recovery while a revocation is pending', async () => {
+    vi.useFakeTimers();
+    try {
+      const revocations: ChatGPTStatus['revocations'] = [{ ...warning, state: 'pending', operation_id: 'op' }];
+      api.status.mockResolvedValueOnce({ ...paused, revocations })
+        .mockResolvedValue({ ...connected, revocations });
+      await act(async () => { render(<ChatGPTConnectionCard />); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+      expect(screen.getByText('已授权 · Test')).toBeVisible();
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+      expect(api.status).toHaveBeenCalledTimes(3);
+      expectOnlyStatusReads();
+
+      let finish!: (models: ChatGPTModel[]) => void;
+      api.models.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+      await act(async () => { fireEvent.click(screen.getByRole('button', { name: '刷新模型' })); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+      await act(async () => { finish([model]); });
+      expect(screen.getByRole('option', { name: model.display_name })).toBeVisible();
+      expect(api.models).toHaveBeenCalledExactlyOnceWith(connected.connection_id, true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    { result: retryDisconnect, action: '重试断开' },
+    { result: disconnected, action: '重新授权 · Saved (saved)' },
+  ])('keeps the check available until the server offers $action', async ({ result, action }) => {
+    api.status.mockResolvedValue({ ...paused, restart_required: true });
+    render(<ChatGPTConnectionCard />);
+    const check = await screen.findByRole('button', { name: '重新检查连接' });
+    expect(screen.getByText(/修复后重启 DSA/)).toBeVisible();
+    api.status.mockResolvedValueOnce(paused).mockRejectedValueOnce(new AxiosError('timeout', 'ECONNABORTED'))
+      .mockResolvedValueOnce(result);
+    await act(async () => { fireEvent.click(check); });
+    expect(screen.queryByText(/修复后重启 DSA/)).not.toBeInTheDocument();
+    await act(async () => { fireEvent.click(check); });
+    expect(check).toBeEnabled();
+    expect(screen.getByRole('status')).toHaveTextContent(/超时/);
+    expect(screen.queryByRole('button', { name: action })).not.toBeInTheDocument();
+    await act(async () => { fireEvent.click(check); });
+    expect(screen.getByRole('button', { name: action })).toBeVisible();
+    expect(screen.queryByRole('button', { name: '重新检查连接' })).not.toBeInTheDocument();
+    expectOnlyStatusReads();
+  });
+
+  it.each(['success', 'error'])('discards an older status-only %s after a newer refresh', async outcome => {
+    let resolve!: (s: ChatGPTStatus) => void;
+    let reject!: (e: Error) => void;
+    api.status.mockReturnValueOnce(new Promise((ok, fail) => { resolve = ok; reject = fail; }))
+      .mockResolvedValueOnce(disconnected);
+    const old = useChatGPTStore.getState().recheckStatus();
+    await useChatGPTStore.getState().refresh();
+    if (outcome === 'success') resolve(connected);
+    else reject(new Error('stale error'));
+    await old;
+    expect(useChatGPTStore.getState()).toMatchObject({ status: disconnected, error: null });
+    expectOnlyStatusReads();
   });
 
   it('continues the pending retry read from status and starts fresh only on explicit request', async () => {

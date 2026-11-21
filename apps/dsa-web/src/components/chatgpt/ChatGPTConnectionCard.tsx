@@ -19,18 +19,45 @@ const messages: Record<string, string> = {
 const disconnectStatusUnknown = '断开结果待确认。请刷新页面查看当前连接状态。';
 
 export function ChatGPTConnectionCard() {
-  const { status, models, model, error, refresh, selectModel, disconnect } = useChatGPTStore();
+  const { status, models, model, error, refresh, recheckStatus, selectModel, disconnect } = useChatGPTStore();
   const { t } = useUiLanguage();
   const [working, setWorking] = useState(false);
+  const [manualRead, setManualRead] = useState<'status' | 'models' | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const disconnectRetryId = status?.disconnect_retry_connection_id;
 
+  const storagePaused = status?.available === false && status.error === 'chatgpt_store_unavailable';
+  const authorizationPending = status?.pending && !storagePaused;
+  const revocationPending = status?.revocations?.some(record => record.state === 'pending');
+
   useEffect(() => { void refresh(); }, [refresh]);
   useEffect(() => {
-    if (!status?.pending && !status?.revocations?.some(record => record.state === 'pending')) return;
-    const timer = window.setInterval(() => { void refresh(); }, 1000);
+    if (manualRead || (!authorizationPending && !revocationPending)) return;
+    const poll = authorizationPending ? refresh : recheckStatus;
+    let reading = false;
+    const timer = window.setInterval(async () => {
+      if (reading) return;
+      reading = true;
+      try {
+        if (storagePaused) setNotice(null);
+        await poll();
+      } finally {
+        reading = false;
+      }
+    }, 1000);
     return () => window.clearInterval(timer);
-  }, [refresh, status?.pending, status?.revocations]);
+  }, [authorizationPending, manualRead, recheckStatus, refresh, revocationPending, storagePaused]);
+
+  async function readFromButton(target: 'status' | 'models') {
+    setManualRead(target);
+    setNotice(null);
+    try {
+      if (target === 'status') await recheckStatus();
+      else await refresh(true);
+    } finally {
+      setManualRead(null);
+    }
+  }
 
   async function connect(target?: ConnectTarget) {
     const tab = window.open('about:blank', '_blank');
@@ -79,16 +106,23 @@ export function ChatGPTConnectionCard() {
   const currentLabel = status?.account_label;
   const statusMessage = status?.error ? messages[status.error] || '授权未完成，请检查账号后重试。' : status?.reauth_reason === 'legacy_import' ? t('chat.reauthImported')
     : status?.reauth_reason === 'credential_invalid' ? t('chat.reauthInvalid') : null;
+  const feedback = storagePaused ? error : notice || error;
   const button = 'rounded-lg border border-subtle bg-surface px-3 py-1.5 text-sm disabled:opacity-50';
 
   return (
     <section aria-labelledby="chatgpt-connection-title" className="space-y-3 border-t border-subtle pt-4">
       <h3 id="chatgpt-connection-title" className="text-sm font-semibold">ChatGPT 授权</h3>
       <p aria-live="polite" className="text-sm text-secondary-text">
-        {disconnectRetryId ? t('chat.fixStorageBeforeRetryingDisconnect') : notice === disconnectStatusUnknown ? null : status?.cancelling ? t('chat.finishingAuthorization') : status?.pending ? '请在 ChatGPT 页面完成授权。' : status?.connected
+        {storagePaused ? t(status.restart_required ? 'chat.restartBeforeRecheck' : 'chat.fixStorageBeforeRecheck')
+          : disconnectRetryId ? t('chat.fixStorageBeforeRetryingDisconnect') : notice === disconnectStatusUnknown ? null : status?.cancelling ? t('chat.finishingAuthorization') : status?.pending ? '请在 ChatGPT 页面完成授权。' : status?.connected
           ? `已授权 · ${currentLabel || 'ChatGPT'}`
           : statusMessage || (status?.available ? '连接后可在普通单股分析或问股中选择 ChatGPT。' : null)}
       </p>
+      {storagePaused && (
+        <button type="button" className={button} disabled={working || manualRead !== null} onClick={() => void readFromButton('status')}>
+          {t(manualRead === 'status' ? 'chat.checkingConnection' : 'chat.recheckConnection')}
+        </button>
+      )}
       {status?.available && (
         <div className="flex flex-wrap items-center gap-2">
           {status.connected ? (
@@ -100,7 +134,7 @@ export function ChatGPTConnectionCard() {
                   {models.map(({ slug, display_name }) => <option key={slug} value={slug}>{display_name}</option>)}
                 </select>
               </label>
-              <button type="button" className={button} disabled={working} onClick={() => void refresh(true)}>刷新模型</button>
+              <button type="button" className={button} disabled={working || manualRead !== null} onClick={() => void readFromButton('models')}>刷新模型</button>
             </>
           ) : null}
           {status.actions?.map(action => {
@@ -132,7 +166,7 @@ export function ChatGPTConnectionCard() {
             : t('chat.unverifiedRevocation')}
         </p>
       ))}
-      {(notice || error) && <p role="status" className="break-words text-sm text-secondary-text">{notice || error}</p>}
+      {feedback && <p role="status" className="break-words text-sm text-secondary-text">{feedback}</p>}
     </section>
   );
 }

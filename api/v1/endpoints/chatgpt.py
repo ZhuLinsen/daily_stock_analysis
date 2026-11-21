@@ -56,7 +56,10 @@ def _operation(request, action, *args, **kwargs):
 def status(request: Request):
     reason = chatgpt_unavailable_reason(request)
     if reason:
-        return {"available": False, "connected": False, "error": reason}
+        result = {"available": False, "connected": False, "error": reason}
+        if reason == "chatgpt_store_unavailable" and getattr(request.app.state, "chatgpt_start_error", False):
+            result["restart_required"] = True
+        return result
     return _operation(request, "status")
 
 

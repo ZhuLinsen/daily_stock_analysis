@@ -327,6 +327,7 @@ def test_uncertain_refresh_write_blocks_second_request_until_reconciled(oauth, m
             oauth.start_request(SOURCE, dispatch)
         after_failure = record.read_bytes()
         status = oauth.status()
+        assert "restart_required" not in status
         assert not status["connected"] and status["error"] == "chatgpt_store_unavailable"
         with pytest.raises(ChatGPTError, match="chatgpt_store_unavailable"):
             oauth.start_request(SOURCE, dispatch)
@@ -726,11 +727,22 @@ def test_connection_endpoints_require_local_admin_and_same_origin(oauth, monkeyp
     app = create_app(tmp_path / "no-static")
     monkeypatch.setattr("api.middlewares.auth.is_auth_enabled", lambda: False)
     path = "/api/v1/chatgpt"
-    app.state.chatgpt_origin = "http://127.0.0.1:8765"
     from src.auth import COOKIE_NAME
     monkeypatch.setattr("src.auth.is_auth_enabled", lambda: False)
-    client = TestClient(app, base_url=app.state.chatgpt_origin)
-    assert client.get(path + "/status").json()["error"] == "chatgpt_admin_auth_required"
+    origin = "http://127.0.0.1:8765"
+    client = TestClient(app, base_url=origin)
+    app.state.chatgpt_start_error = True
+    assert client.get(path + "/status").json() == {
+        "available": False, "connected": False, "error": "chatgpt_deployment_unsupported",
+    }
+    app.state.chatgpt_origin = origin
+    assert client.get(path + "/status").json() == {
+        "available": False, "connected": False, "error": "chatgpt_store_unavailable", "restart_required": True,
+    }
+    app.state.chatgpt_start_error = False
+    assert client.get(path + "/status").json() == {
+        "available": False, "connected": False, "error": "chatgpt_admin_auth_required",
+    }
     monkeypatch.setattr("src.auth.is_auth_enabled", lambda: True)
     monkeypatch.setattr("src.auth.verify_session", lambda cookie: cookie == "valid")
     assert client.get(path + "/status").status_code == 401
