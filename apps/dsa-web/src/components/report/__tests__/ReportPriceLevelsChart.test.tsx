@@ -3,6 +3,7 @@ import React from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import {
   enrichBarsWithMovingAverages,
+  formatChartAxisPrice,
   parseStrategyPriceLevel,
 } from '../../../utils/priceChart';
 import { ReportPriceLevelsChart } from '../ReportPriceLevelsChart';
@@ -284,5 +285,27 @@ describe('ReportPriceLevelsChart helpers & component', () => {
 
     expect(screen.getByRole('status')).toHaveTextContent('价格口径不一致');
     expect(screen.queryByTestId(/^ref-line-/)).not.toBeInTheDocument();
+  });
+
+  it('formats axis prices cleanly and merges identical reference lines with historical report notice', () => {
+    expect(formatChartAxisPrice(71.7832)).toBe('71.78');
+    expect(formatChartAxisPrice(1523.45)).toBe('1523');
+    expect(formatChartAxisPrice(0.4567)).toBe('0.457');
+
+    render(
+      <ReportPriceLevelsChart
+        bars={[
+          { date: '2026-08-21', open: 68, high: 70, low: 66, close: 69 },
+          { date: '2026-11-20', open: 33, high: 34, low: 32, close: 32.86 },
+        ]}
+        strategy={{ secondaryBuy: '47.47元', stopLoss: '跌破47.47元离场', takeProfit: '55.13元' }}
+        reportDate="2026-08-02 21:01:53"
+        language="zh"
+      />,
+    );
+
+    expect(screen.getByRole('status')).toHaveTextContent('2026-08-02');
+    expect(screen.getByTestId('ref-line-47.47')).toHaveTextContent('次/损 47.47');
+    expect(screen.getByTestId('ref-line-55.13')).toHaveTextContent('盈 55.13');
   });
 });

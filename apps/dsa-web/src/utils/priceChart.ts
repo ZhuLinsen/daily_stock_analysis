@@ -190,6 +190,20 @@ export function parseStrategyPriceLevel(raw?: string | null): number | null {
   return extractFirstPriceToken(priceText);
 }
 
+export function formatChartAxisPrice(value: number): string {
+  if (!Number.isFinite(value)) {
+    return '';
+  }
+  const abs = Math.abs(value);
+  if (abs >= 1000) {
+    return value.toFixed(0);
+  }
+  if (abs >= 1) {
+    return value.toFixed(2);
+  }
+  return value.toFixed(3);
+}
+
 /**
  * Enrich chronological daily bars with rolling MA5 / MA20 overlays computed on full input,
  * then keep at most the latest `displayLimit` trading sessions (default 60D).
