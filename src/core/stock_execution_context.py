@@ -12,6 +12,14 @@ from typing import Callable, List, Optional, TypeVar
 
 
 _T = TypeVar("_T")
+_WORKER_ABANDONMENT: ContextVar[tuple[threading.Event, ...]] = ContextVar(
+    "stock_worker_abandonment", default=()
+)
+
+
+def track_stock_worker_abandonment(event: threading.Event) -> None:
+    """Cancel work in this context when its caller stops waiting for it."""
+    _WORKER_ABANDONMENT.set((*_WORKER_ABANDONMENT.get(), event))
 
 
 class StockCancellationToken:
@@ -23,12 +31,16 @@ class StockCancellationToken:
         self._lock = threading.Lock()
         self._callbacks: List[Callable[[], None]] = []
         self._workers_lock = threading.Lock()
-        self._workers: List[threading.Thread] = []
+        self._workers: List[tuple[threading.Thread, tuple[threading.Event, ...]]] = []
 
     def is_cancelled(self) -> bool:
         return self._event.is_set() or (
             self._deadline is not None and time.monotonic() >= self._deadline
         )
+
+    def is_worker_cancelled(self) -> bool:
+        """Check stock cancellation and cancellation of this worker's task."""
+        return self.is_cancelled() or any(event.is_set() for event in _WORKER_ABANDONMENT.get())
 
     def remaining_seconds(self) -> Optional[float]:
         if self._deadline is None:
@@ -38,7 +50,7 @@ class StockCancellationToken:
     def start_with_cleanup(self, start: Callable[[], _T], cleanup: Callable[[_T], None]) -> _T:
         """Make starting a local process and registering its cleanup atomic."""
         with self._lock:
-            if self.is_cancelled():
+            if self.is_worker_cancelled():
                 raise CancelledError()
             resource = start()
             self._callbacks.append(lambda: cleanup(resource))
@@ -57,29 +69,40 @@ class StockCancellationToken:
                     continue
             self._callbacks.clear()
 
-    def start_worker(self, worker: threading.Thread) -> None:
+    def start_worker(self, worker: threading.Thread, *, abandon_when: Optional[threading.Event] = None) -> None:
+        abandonment = _WORKER_ABANDONMENT.get()
+        if abandon_when is not None:
+            abandonment = (*abandonment, abandon_when)
         with self._workers_lock:
             worker.start()
-            self._workers.append(worker)
+            self._workers.append((worker, abandonment))
 
-    def join_workers(self) -> None:
+    def join_workers(self, *, include_abandoned: bool = True) -> None:
         index = 0
         while True:
             with self._workers_lock:
                 if index == len(self._workers):
                     return
-                worker = self._workers[index]
-            worker.join()
+                worker, abandonment = self._workers[index]
+            if include_abandoned or not any(event.is_set() for event in abandonment):
+                worker.join()
             index += 1
 
 
 class _StockChildThreadPool(Executor):
     """Run nested work on daemon threads tracked by the enclosing stock slot."""
 
-    def __init__(self, token: StockCancellationToken, max_workers: int, thread_name_prefix: str):
+    def __init__(
+        self,
+        token: StockCancellationToken,
+        max_workers: int,
+        thread_name_prefix: str,
+        abandon_workers_when: Optional[threading.Event],
+    ) -> None:
         self._token = token
         self._max_workers = max_workers
         self._name = thread_name_prefix
+        self._abandon_workers_when = abandon_workers_when
         self._lock = threading.Lock()
         self._tasks = SimpleQueue()
         self._workers: List[threading.Thread] = []
@@ -90,12 +113,12 @@ class _StockChildThreadPool(Executor):
             if self._closed:
                 raise RuntimeError("stock child thread pool has been shut down")
             future = Future()
-            if self._token.is_cancelled():
+            if self._token.is_worker_cancelled():
                 future.set_exception(CancelledError("Stock analysis cancelled"))
                 return future
             if len(self._workers) < self._max_workers:
                 worker = threading.Thread(target=self._run, name=self._name, daemon=True)
-                self._token.start_worker(worker)
+                self._token.start_worker(worker, abandon_when=self._abandon_workers_when)
                 self._workers.append(worker)
             self._tasks.put((future, copy_context(), fn, args, kwargs))
             return future
@@ -105,7 +128,7 @@ class _StockChildThreadPool(Executor):
             future, context, fn, args, kwargs = task
             if future.set_running_or_notify_cancel():
                 try:
-                    if self._token.is_cancelled():
+                    if context.run(self._token.is_worker_cancelled):
                         raise CancelledError("Stock analysis cancelled")
                     result = context.run(fn, *args, **kwargs)
                 except BaseException as exc:
@@ -132,10 +155,15 @@ class _StockChildThreadPool(Executor):
                 worker.join()
 
 
-def stock_child_thread_pool(max_workers: int, thread_name_prefix: str) -> Executor:
+def stock_child_thread_pool(
+    max_workers: int,
+    thread_name_prefix: str,
+    *,
+    abandon_workers_when: Optional[threading.Event] = None,
+) -> Executor:
     token = get_current_stock_cancellation()
     if token is not None:
-        return _StockChildThreadPool(token, max_workers, thread_name_prefix)
+        return _StockChildThreadPool(token, max_workers, thread_name_prefix, abandon_workers_when)
     return ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix=thread_name_prefix)
 
 
@@ -150,7 +178,7 @@ def get_current_stock_cancellation() -> Optional[StockCancellationToken]:
 
 def is_current_stock_cancelled() -> bool:
     token = get_current_stock_cancellation()
-    return bool(token is not None and token.is_cancelled())
+    return token is not None and token.is_worker_cancelled()
 
 
 def raise_if_stock_cancelled() -> None:

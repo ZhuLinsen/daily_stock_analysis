@@ -411,6 +411,104 @@ def test_agent_tool_observes_stock_cancellation_and_skips_writes_and_next_model(
     adapter.call_with_tools.assert_called_once()
 
 
+@pytest.mark.parametrize("nested_provider", [False, True])
+def test_pipeline_reuses_completed_stock_slot_after_agent_tool_timeout(monkeypatch, nested_provider):
+    from src.agent.llm_adapter import LLMResponse, ToolCall
+    from src.agent.runner import run_agent_loop
+    from src.agent.tools import search_tools
+    from src.agent.tools.registry import ToolRegistry
+    from src.core.stock_execution_context import (
+        get_current_stock_cancellation,
+        is_current_stock_cancelled,
+        stock_child_thread_pool,
+    )
+    from src.services.stock_list_parser import default_index_registry
+
+    default_index_registry()  # Warm the index rows before starting the tool timer.
+
+    pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
+    pipeline.config = Config(per_stock_timeout_seconds=3, analysis_delay=0.0, single_stock_notify=False)
+    pipeline.max_workers = 1
+    pipeline.fetcher_manager = MagicMock()
+    pipeline._save_local_report = MagicMock()
+    pipeline._send_notifications = MagicMock()
+
+    started_search = threading.Event()
+    check_search_cancellation = threading.Event()
+    checked_search_cancellation = threading.Event()
+    release_search = threading.Event()
+    search_worker = []
+    search_cancellation = []
+    db = MagicMock()
+
+    def hung_provider():
+        started_search.set()
+        if check_search_cancellation.wait(timeout=5):
+            stock_token = get_current_stock_cancellation()
+            search_cancellation.append((is_current_stock_cancelled(), stock_token.is_cancelled()))
+            checked_search_cancellation.set()
+        release_search.wait(timeout=10)
+        return SimpleNamespace(success=True, query="news", results=[object()])
+
+    def search(*args, **kwargs):
+        search_worker.append(threading.current_thread())
+        if nested_provider:
+            with stock_child_thread_pool(1, "search-provider") as pool:
+                return pool.submit(hung_provider).result()
+        return hung_provider()
+
+    registry = ToolRegistry(category_timeout_map={"search": 0.5})
+    registry.register(search_tools.search_stock_news_tool)
+    monkeypatch.setattr(search_tools, "_get_db", lambda: db)
+    monkeypatch.setattr(
+        search_tools, "_get_search_service",
+        lambda: SimpleNamespace(is_available=True, search_stock_news=search),
+    )
+    call = ToolCall("news", "search_stock_news", {"stock_code": "600519", "stock_name": "贵州茅台"})
+
+    def respond(*args, **kwargs):
+        if adapter.call_with_tools.call_count == 1:
+            return LLMResponse(provider="mock", tool_calls=[call])
+        check_search_cancellation.set()
+        assert checked_search_cancellation.wait(timeout=2)
+        assert not is_current_stock_cancelled()
+        return LLMResponse(provider="mock", content="complete")
+
+    adapter = MagicMock()
+    adapter.call_with_tools.side_effect = respond
+
+    def process_stock(code, **kwargs):
+        if code == "600519":
+            result = run_agent_loop(messages=[], tool_registry=registry, llm_adapter=adapter)
+            assert result.success
+            assert result.content == "complete"
+            assert result.tool_calls_log[0]["timeout"] is True
+        else:
+            assert started_search.is_set()
+            assert search_worker[0].is_alive()
+        return SimpleNamespace(code=code, success=True)
+
+    pipeline.process_single_stock = process_stock
+    try:
+        results = pipeline.run(stock_codes=["600519", "AAPL"], send_notification=True)
+        assert sorted(result.code for result in results) == ["600519", "AAPL"]
+        pipeline._save_local_report.assert_called_once_with(results, ReportType.SIMPLE)
+        pipeline._send_notifications.assert_called_once_with(results, ReportType.SIMPLE)
+    finally:
+        check_search_cancellation.set()
+        release_search.set()
+        for worker in search_worker:
+            worker.join(timeout=3)
+            assert not worker.is_alive()
+        with _DaemonThreadStockExecutor._condition:
+            assert _DaemonThreadStockExecutor._condition.wait_for(
+                lambda: not _DaemonThreadStockExecutor._occupied, timeout=3,
+            )
+
+    assert search_cancellation == [(True, False)]
+    db.save_news_intel.assert_not_called()
+
+
 @pytest.mark.parametrize("entrypoint", ["tool", "discovery", "efinance"])
 def test_hung_nested_worker_does_not_keep_cli_process_alive(entrypoint):
     script = """

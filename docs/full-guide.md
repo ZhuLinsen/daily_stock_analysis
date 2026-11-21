@@ -511,7 +511,7 @@ daily_stock_analysis/
 | `ADMIN_AUTH_ENABLED` | Web 登录：设为 `true` 启用密码保护；首次访问在网页设置初始密码，可在「系统设置 > 修改密码」修改；忘记密码执行 `python -m src.auth reset_password`。Web 的 `.env` 备份导入导出仅在开启该开关后可用（桌面端不受此限制）。 | `false` |
 | `TRUST_X_FORWARDED_FOR` | 单层可信反向代理部署时设为 `true`，取 `X-Forwarded-For` 最右值作为真实客户端 IP（用于登录限流等）；直连公网时保持 `false` 防伪造。多级代理/CDN 场景下限流 key 可能退化为边缘代理 IP，需额外评估 | `false` |
 | `MAX_WORKERS` | 并发线程数 | `3` |
-| `PER_STOCK_TIMEOUT_SECONDS` | 批量分析的单股超时隔离上限（秒）；超时后标记取消、丢弃后续结果与写入，执行槽位在工作线程退出后才复用，以保持实际并发上限；设为 `0` 关闭限制 | `300` |
+| `PER_STOCK_TIMEOUT_SECONDS` | 批量分析的单股时限（秒）。达到单股时限后取消分析，丢弃后续结果，槽位在相关工作线程退出后复用。设为 `0` 关闭限制 | `300` |
 | `GUARD_ENABLED` | 启用可选的 [fastapi-guard](https://github.com/Guard-Core/fastapi-guard) 安全中间件：按 IP 限流、IP 白/黑名单、路径/查询参数/请求头特征拦截（除 `ssrf` 外的全部检测类别：浏览器会把页面地址作为 `Referer` 发送，而 guard-core 4.4.0 会把其中的 localhost 和局域网地址判为 ssrf）、扫描器自动封禁。与登录失败限流叠加而非替代；状态在进程内存中，无需 Redis；修改后需重启。CORS 仍由原 CORS 中间件处理（位于 guard 外层，429/403 也带 CORS 头）。需要依赖 `fastapi-guard`（已在 `requirements.txt`，未安装时启用会报错） | `false` |
 | `GUARD_RATE_LIMIT` / `GUARD_RATE_LIMIT_WINDOW` | 每个 IP 在窗口（秒）内的最大请求数，静态资源与健康检查同样计数，冷缓存加载一个 WebUI 页面约 14 至 34 个请求 | `300` / `60` |
 | `GUARD_WHITELIST` / `GUARD_BLACKLIST` | IP 白/黑名单（逗号分隔，支持 CIDR）。白名单非空时，名单外 IP 一律 403；名单内 IP 不受限流约束 | 空 |
@@ -531,7 +531,9 @@ daily_stock_analysis/
 | `LOG_DIR` | 日志目录 | `./logs` |
 | `SAVE_CONTEXT_SNAPSHOT` | 保存分析历史 `context_snapshot`；设为 `false` 时新历史不保存 enhanced_context、market_phase_summary、AnalysisContextPack overview 或诊断快照，但不关闭当次 Prompt 低敏摘要 | `true` |
 
-同一进程内，超时任务占用的槽位要等工作线程及其在途调用退出后才可复用，下一批分析也受此限制。预取数据使用同一个超时上限，所有槽位都忙时跳过预取。已经启动的其他标的各自计时，仍可正常完成。若剩余标的全在排队，等待空闲槽位达到单股时限后跳过这些标的。取消时会清理已启动的本地生成命令，在途请求返回后会再次检查取消状态。设为 `0` 可关闭批量超时隔离。完整撤销点位、新闻和风险摘要的改动需要回滚相关代码。
+同一进程内，单股分析达到单股时限后，槽位要等工作线程及其在途调用退出后才可复用，下一批分析也受此限制。预取数据使用同一个超时上限，所有槽位都忙时跳过预取。已经启动的其他标的各自计时，仍可正常完成。若剩余标的全在排队，等待空闲槽位达到单股时限后跳过这些标的。取消时会清理已启动的本地生成命令，在途请求返回后会再次检查取消状态。设为 `0` 可关闭批量超时隔离。完整撤销点位、新闻和风险摘要的改动需要回滚相关代码。
+
+若只有 Agent 工具达到自身时限，个股分析在单股时限内完成后可复用槽位。工具取消采用协作式机制，在途请求可能继续运行到服务端返回或网络超时。
 
 启用超时隔离时，LiteLLM 请求使用剩余的单股时限。模型切换和参数重试会先检查截止时间。
 

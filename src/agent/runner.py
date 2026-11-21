@@ -47,6 +47,7 @@ from src.core.stock_execution_context import (
     get_current_stock_cancellation,
     raise_if_stock_cancelled,
     stock_child_thread_pool,
+    track_stock_worker_abandonment,
 )
 from src.llm.usage import should_persist_usage_telemetry
 from src.utils.data_processing import normalize_report_signal_attribution
@@ -812,7 +813,8 @@ def _execute_tools(
         _record(plan[0][0], timed_out=False, out=_exec_single(plan[0][0]))
         return results
 
-    pool = stock_child_thread_pool(min(len(plan), 5), "agent-tool")
+    abandoned_tools = threading.Event()
+    pool = stock_child_thread_pool(min(len(plan), 5), "agent-tool", abandon_workers_when=abandoned_tools)
     stock_token = get_current_stock_cancellation()
     futures: Dict[Any, Any] = {}
     cancel_of: Dict[Any, threading.Event] = {}
@@ -832,9 +834,11 @@ def _execute_tools(
             ctx = contextvars.copy_context()
             ctx.run(TOOL_CANCEL_EVENT.set, cancel_event)
             deadline_holder: List[Optional[float]] = [None]
-            fut = pool.submit(
-                ctx.run, _exec_with_deadline, tc, per_tool_timeout, deadline_holder,
-            )
+            if stock_token is not None:
+                # A reusable pool thread follows the pool's lifetime. Work
+                # spawned by this call follows the individual tool lifetime.
+                ctx.run(track_stock_worker_abandonment, cancel_event)
+            fut = pool.submit(ctx.run, _exec_with_deadline, tc, per_tool_timeout, deadline_holder)
             futures[fut] = tc
             cancel_of[fut] = cancel_event
             timeout_of[fut] = per_tool_timeout or 0.0
@@ -905,6 +909,8 @@ def _execute_tools(
                 timeout_triggered = True
         # Do not wait when a timeout fired — the timed-out handler may still be
         # running in a worker and would otherwise block this call indefinitely.
+        if timeout_triggered:
+            abandoned_tools.set()
         pool.shutdown(wait=not timeout_triggered, cancel_futures=True)
 
     return results

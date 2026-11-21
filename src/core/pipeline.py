@@ -225,12 +225,13 @@ class _DaemonThreadStockExecutor:
             set_current_stock_cancellation(previous)
             with self._condition:
                 work_done.set()
-                if not token.is_cancelled() and not future.done():
+                completed_in_time = not token.is_cancelled() and not future.done()
+                if completed_in_time:
                     future.set_result(result)
                     self._condition.notify_all()
-            # A child provider call can still be running after the stock
-            # result is ready. It continues to occupy this stock's slot.
-            token.join_workers()
+            # A stock that completes on time can leave cancelled tools to drain.
+            # A stock that timed out keeps its slot until all its workers exit.
+            token.join_workers(include_abandoned=not completed_in_time)
             with self._condition:
                 if token.is_cancelled() and not future.done():
                     # Cancellation publishes the result after subprocess cleanup.
