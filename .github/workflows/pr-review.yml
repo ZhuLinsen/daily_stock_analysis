@@ -90,7 +90,7 @@ jobs:
           ref: ${{ github.event.repository.default_branch }}
           sparse-checkout: |
             .github/scripts
-            .claude/skills/analyze-pr/SKILL.md
+            .agents/skills/analyze-pr/SKILL.md
           sparse-checkout-cone-mode: false
           path: main-scripts
           persist-credentials: false
