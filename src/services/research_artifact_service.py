@@ -10,9 +10,41 @@ from typing import Any, Dict, Iterable, List, Optional
 from api.v1.schemas.research_artifact import ResearchArtifact
 
 
-_BULLISH_ACTIONS = {"buy", "add"}
-_BEARISH_ACTIONS = {"reduce", "sell", "avoid"}
-_NEUTRAL_ACTIONS = {"hold", "watch"}
+_BULLISH_ACTIONS = {"buy", "add", "strong_buy", "شراء", "شراء قوي", "تعزيز"}
+_BEARISH_ACTIONS = {"reduce", "sell", "avoid", "strong_sell", "بيع", "بيع قوي", "تخفيض", "تجنب"}
+_NEUTRAL_ACTIONS = {"hold", "watch", "احتفاظ", "انتظار", "مراقبة", "محايد"}
+_CANONICAL_ACTION_ALIASES = {
+    "buy": "buy",
+    "strong_buy": "buy",
+    "شراء": "buy",
+    "شراء قوي": "buy",
+    "add": "add",
+    "تعزيز": "add",
+    "hold": "hold",
+    "احتفاظ": "hold",
+    "محايد": "hold",
+    "watch": "watch",
+    "انتظار": "watch",
+    "مراقبة": "watch",
+    "reduce": "reduce",
+    "تخفيض": "reduce",
+    "sell": "sell",
+    "strong_sell": "sell",
+    "بيع": "sell",
+    "بيع قوي": "sell",
+    "avoid": "avoid",
+    "تجنب": "avoid",
+    "alert": "alert",
+    "تنبيه": "alert",
+}
+
+
+def _normalize_artifact_action(raw_action: Optional[str]) -> Optional[str]:
+    if not raw_action:
+        return None
+    cleaned = re.sub(r"[\u064B-\u065F\u0670]", "", raw_action.strip().lower())
+    cleaned = re.sub(r"[أإآ]", "ا", cleaned)
+    return _CANONICAL_ACTION_ALIASES.get(cleaned, raw_action)
 
 
 def build_research_artifact(
@@ -71,8 +103,9 @@ def build_research_artifact(
 
 
 def _build_thesis(summary: Any) -> Dict[str, Any]:
-    action = _as_text(_value(summary, "action")) or None
-    action_label = _as_text(_value(summary, "action_label")) or _as_text(_value(summary, "operation_advice")) or None
+    raw_action = _as_text(_value(summary, "action")) or None
+    action = _normalize_artifact_action(raw_action)
+    action_label = _as_text(_value(summary, "action_label")) or _as_text(_value(summary, "operation_advice")) or raw_action or None
     score = _as_int(_value(summary, "sentiment_score"))
     analysis_summary = _as_text(_value(summary, "analysis_summary"))
     trend_prediction = _as_text(_value(summary, "trend_prediction"))
@@ -230,8 +263,9 @@ def _manual_reassessment_condition() -> Dict[str, Any]:
 
 
 def _build_next_actions(summary: Any, invalidations: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    action = _as_text(_value(summary, "action")) or "watch"
-    label = _as_text(_value(summary, "action_label")) or _as_text(_value(summary, "operation_advice")) or action
+    raw_action = _as_text(_value(summary, "action")) or "watch"
+    action = _normalize_artifact_action(raw_action) or "watch"
+    label = _as_text(_value(summary, "action_label")) or _as_text(_value(summary, "operation_advice")) or raw_action
     next_actions = [{
         "action": action,
         "label": label,

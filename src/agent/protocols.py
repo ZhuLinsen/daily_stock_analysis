@@ -10,10 +10,19 @@ they can be serialised, logged, and passed across process boundaries.
 from __future__ import annotations
 
 import math
+import re
 import time
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional
+
+_ARABIC_DIACRITICS_RE = re.compile(r"[\u064B-\u065F\u0670]")
+
+
+def _normalize_arabic_signal_token(value: str) -> str:
+    text = _ARABIC_DIACRITICS_RE.sub("", value)
+    text = re.sub(r"[أإآ]", "ا", text)
+    return re.sub(r"\s+", " ", text).strip()
 
 
 # ============================================================
@@ -35,6 +44,17 @@ _CANONICAL_DECISION_SIGNAL_MAP: Dict[str, str] = {
     "hold": "hold",
     "sell": "sell",
     "strong_sell": "sell",
+    "شراء قوي": "buy",
+    "شراء": "buy",
+    "تعزيز": "buy",
+    "احتفاظ": "hold",
+    "انتظار": "hold",
+    "مراقبة": "hold",
+    "محايد": "hold",
+    "بيع": "sell",
+    "بيع قوي": "sell",
+    "تخفيض": "sell",
+    "تجنب": "sell",
 }
 
 _STRATEGY_SIGNAL_ALIASES: Dict[str, str] = {
@@ -50,6 +70,17 @@ _STRATEGY_SIGNAL_ALIASES: Dict[str, str] = {
     "strong sell": "strong_sell",
     "strong-sell": "strong_sell",
     "strongsell": "strong_sell",
+    "شراء قوي": "strong_buy",
+    "شراء": "buy",
+    "تعزيز": "buy",
+    "احتفاظ": "hold",
+    "انتظار": "hold",
+    "مراقبة": "hold",
+    "محايد": "hold",
+    "بيع": "sell",
+    "بيع قوي": "strong_sell",
+    "تخفيض": "sell",
+    "تجنب": "strong_sell",
 }
 
 
@@ -70,7 +101,7 @@ def normalize_strategy_signal(signal: Any, default: str = "hold") -> tuple[str, 
         original = str(signal.value).strip()
     else:
         original = str(signal).strip()
-    normalized = original.lower().replace("/", "_")
+    normalized = _normalize_arabic_signal_token(original.lower().replace("/", "_"))
     canonical = _STRATEGY_SIGNAL_ALIASES.get(normalized)
     if canonical is not None:
         return canonical, False, original
@@ -105,7 +136,7 @@ def normalize_decision_signal(signal: Any, default: str = "hold") -> str:
     """Map model-facing signal labels to the dashboard's stable enum."""
     if not isinstance(signal, str):
         return default
-    normalized = signal.strip().lower()
+    normalized = _normalize_arabic_signal_token(signal.strip().lower())
     return _CANONICAL_DECISION_SIGNAL_MAP.get(normalized, default)
 
 
