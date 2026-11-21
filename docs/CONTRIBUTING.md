@@ -43,6 +43,8 @@ cp .env.example .env
 4. 推送分支：`git push origin feature/your-feature`
 5. 创建 Pull Request
 
+用 PR 标题描述合入后发生的变化，在正文写清谁受益、哪些入口受影响，以及如何验证。Web、桌面端或报告有展示变化时，附上对应页面或报告的截图。发布说明按合入 PR 的标题和标签自动汇总，维护者确认分类并归档，贡献者无需手写 `docs/CHANGELOG.md`。
+
 ### Commit 规范
 
 使用 [Conventional Commits](https://www.conventionalcommits.org/) 规范：
@@ -76,13 +78,13 @@ docs: 更新 README 部署说明
 
 提交 PR 后，CI 会自动运行以下检查：
 
-仅修改普通 `docs/**`、非治理类 Markdown 或 `LICENSE` 时，CI 保留轻量的变更检测、治理校验和门禁汇总，但跳过 3 个后端测试 shard、Docker、Web 与桌面打包。被离线测试直接读取的契约文档、静态 API 规格与 Markdown fixture 仍会触发后端测试。`AGENTS.md`、`.github/instructions/**`、`.claude/skills/**` 等治理资产仍会由 `ai-governance` 校验；配置、依赖、工作流等会影响运行的文本文件仍执行对应完整检查。
+仅修改普通 `docs/**`、非治理类 Markdown 或 `LICENSE` 时，CI 保留轻量的变更检测、治理校验和门禁汇总，但跳过 3 个后端测试 shard、Docker、Web 与桌面打包。被离线测试直接读取的契约文档、静态 API 规格与 Markdown fixture 仍会触发后端测试。`AGENTS.md`、`.github/instructions/**`、`.agents/skills/**` 等治理资产仍会由 `ai-governance` 校验；配置、依赖、工作流等会影响运行的文本文件仍执行对应完整检查。
 
 | 检查项 | 说明 | 必须通过 |
 |--------|------|:--------:|
 | backend-gate | `scripts/ci_gate.sh`（py_compile + flake8 严重错误 + 本地核心脚本 + offline pytest） | ✅ |
 | docker-build | Docker 镜像构建与关键模块导入 smoke | ✅ |
-| web-gate | 前端变更时执行 `npm run lint` + `npm run build` | ✅（触发时） |
+| web-gate | 按路径执行前端 lint、构建、测试与 Playwright 截图，产物名为 `web-ui-evidence-<head SHA>` | ✅（触发时） |
 | pr-review | 暂停 PR 自动触发，仅保留维护者通过 `workflow_dispatch` 按 PR 编号手动运行；通过 GitHub API 读取 PR 元数据和 diff，不检出或执行 fork PR 代码 | ❌（辅助项） |
 | network-smoke | 定时/手动执行 `pytest -m network` + `scripts/test.sh quick`（非阻断） | ❌（观测项） |
 
@@ -90,8 +92,7 @@ docs: 更新 README 部署说明
 
 ```bash
 # backend gate（推荐）
-pip install -r requirements.txt
-pip install flake8 pytest
+python -m pip install -r .github/requirements-ci.txt
 ./scripts/ci_gate.sh
 
 # 前端 gate（如修改了 apps/dsa-web）

@@ -8,10 +8,11 @@ import logging
 import os
 import re
 import threading
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Iterable, List, Literal, Optional, Set, Tuple
+from typing import Callable, Dict, Iterable, Iterator, List, Literal, Optional, Set, Tuple
 
 from dotenv import dotenv_values
 
@@ -112,9 +113,38 @@ class ConfigLineEntry:
 class ConfigManager:
     """Manage `.env` read/write operations with optimistic versioning."""
 
+    # Separate services can manage the same file and process environment.
+    _lock = threading.RLock()
+
     def __init__(self, env_path: Optional[Path] = None):
         self._env_path = env_path or self._resolve_env_path()
-        self._lock = threading.RLock()
+
+    @contextmanager
+    def locked(self) -> Iterator[None]:
+        """Keep related config operations together within this process."""
+        with self._lock:
+            yield
+
+    @contextmanager
+    def _write_locked(self) -> Iterator[None]:
+        """Serialize writers on a stable lock file that survives atomic replacement."""
+        env_path = self._env_path.parent.resolve() / self._env_path.name
+        lock_path = env_path.with_name(f"{env_path.name}.lock")
+        with self.locked():
+            lock_path.parent.mkdir(parents=True, exist_ok=True)
+            with lock_path.open("a+b") as handle:
+                if os.name == "nt":
+                    import msvcrt
+
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+                # Closing the handle releases the OS lock. Keep the sidecar in
+                # place so every waiting writer locks the same file.
+                yield
 
     @property
     def env_path(self) -> Path:
@@ -179,9 +209,13 @@ class ConfigManager:
         updates: Iterable[Tuple[str, str]],
         sensitive_keys: Set[str],
         mask_token: str,
+        *,
+        check_current: Optional[Callable[[], None]] = None,
     ) -> Tuple[List[str], List[str], str]:
-        """Apply updates into `.env` file using atomic replace when possible."""
-        with self._lock:
+        """Check the current state and persist updates under the same writer lock."""
+        with self._write_locked():
+            if check_current is not None:
+                check_current()
             current_values = self.read_config_map()
             stored_values = self._read_config_map(normalize_values=False)
             mutable_updates: Dict[str, str] = {}
@@ -226,9 +260,6 @@ class ConfigManager:
                 entries[key_to_index[key]] = ConfigLineEntry.assignment(key, line_value)
             else:
                 entries.append(ConfigLineEntry.assignment(key, line_value))
-
-        if not self._env_path.parent.exists():
-            self._env_path.parent.mkdir(parents=True, exist_ok=True)
 
         temp_path = self._env_path.with_suffix(self._env_path.suffix + ".tmp")
         content = "\n".join(entry.render() for entry in entries)

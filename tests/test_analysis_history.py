@@ -54,6 +54,14 @@ from src.services.history_service import HistoryService
 import src.auth as auth
 
 
+def test_history_lookup_matches_both_class_share_spellings():
+    for code in ("BRK-B", "BRK.B"):
+        db = MagicMock()
+        db.get_analysis_history_paginated.return_value = ([], 0)
+        HistoryService(db).get_history_list(stock_code=code)
+        assert set(db.get_analysis_history_paginated.call_args.kwargs["code"]) == {"BRK-B", "BRK.B"}
+
+
 class TestHistoryCsiCandidateConvergence(unittest.TestCase):
     """PR #2267 review remediation: registered CSI explicit identities must
     converge in history filter candidates so a record saved under any

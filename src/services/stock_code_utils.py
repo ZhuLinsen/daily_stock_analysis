@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import List, Optional
 
 from data_provider.base import canonical_stock_code
+from data_provider.us_index_mapping import get_us_stock_yf_symbol, is_us_stock_code, normalize_us_hyphen_symbol
 from src.services.market_symbol_utils import (
     get_suffix_market,
     normalize_suffix_market_symbol,
@@ -205,9 +206,7 @@ def is_code_like(value: str) -> bool:
     explicit_parts = _split_explicit_exchange(text)
     if explicit_parts is not None:
         return _normalize_explicit_exchange_parts(explicit_parts) is not None
-    if re.match(r"^[A-Z]{1,5}(?:\.(?:US|[A-Z]))?$", text):
-        return True
-    return False
+    return is_us_stock_code(text) or bool(re.fullmatch(r"[A-Z]{1,5}(?:\.(?:US|[A-Z]))?", text))
 
 
 def normalize_code(raw: str) -> Optional[str]:
@@ -240,6 +239,9 @@ def _normalize_code_and_exchange(raw: str) -> tuple[Optional[str], str]:
         return suffix_symbol, explicit_exchange
     if any(text.endswith(suffix) for suffix in _PRESERVE_SUFFIXES):
         return None, explicit_exchange
+    us_symbol = normalize_us_hyphen_symbol(text)
+    if us_symbol:
+        return us_symbol, explicit_exchange
     if re.match(r"^[A-Z]{1,5}(?:\.(?:US|[A-Z]))?$", text):
         return text, explicit_exchange
     if explicit_code is not None:
@@ -430,7 +432,7 @@ def resolve_daily_stock_identity(
         market = suffix_market
     elif _is_us_index_code(normalized_code):
         market = "us"
-    elif re.fullmatch(r"[A-Z]{1,5}(?:\.(?:US|[A-Z]))?", normalized_code):
+    elif is_us_stock_code(normalized_code) or re.fullmatch(r"[A-Z]{1,5}\.US", normalized_code):
         market = "us"
     elif normalized_code.isdigit() and len(normalized_code) == 6:
         market = "cn"
@@ -453,6 +455,10 @@ def resolve_daily_stock_identity(
         candidates.extend(_build_hk_market_variants(normalized_code))
     else:
         candidates = [raw_code, normalized_code, refill_code]
+        if market == "us":
+            yahoo_symbol = get_us_stock_yf_symbol(normalized_code)
+            if yahoo_symbol and yahoo_symbol != normalized_code:
+                candidates.append(yahoo_symbol)
         if suffix_base_lookup_allowed(normalized_code):
             candidates.append(normalized_code.rsplit(".", 1)[0])
     if market not in {"jp", "kr", "tw"}:
@@ -497,6 +503,9 @@ def resolve_index_stock_code_for_analysis(raw: str) -> str:
     text = (raw or "").strip()
     if not text:
         return ""
+    us_symbol = normalize_us_hyphen_symbol(text)
+    if us_symbol:
+        return us_symbol
 
     # PR #2267 review remediation: converge registered CSI aliases
     # (``csi930955`` / ``930955.CSI`` / ``CSI930955``) to the parser canonical so

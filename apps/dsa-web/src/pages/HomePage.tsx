@@ -262,11 +262,8 @@ const HomePage: React.FC = () => {
   // (load failure), which keeps the existing fail-open stock semantics.
   const isStockIndexReady = isStockIndexLoaded || isStockIndexFallback;
 
-  // PR #2312: raw watchlist strings carry no asset type — only an exact
-  // canonical/display/alias hit on a loaded ``assetType=index`` registry row
-  // buckets the code as an index; anything else keeps the legacy stock
-  // normalization (fail-open). Backend-tagged items/tasks/reports never touch
-  // the registry — they use their explicit asset type directly.
+  // Raw watchlist strings use the index registry, then fall back to stock
+  // normalization. Backend-tagged items already carry an explicit asset type.
   const getWatchlistCodeIdentity = useCallback(
     (code: string | null | undefined): { key: string; assetType: AssetAwareAssetType } => {
       const trimmed = (code ?? '').trim();
@@ -708,7 +705,7 @@ const HomePage: React.FC = () => {
     }
   }, [isLoadingStockBar, stockBarItems.length]);
 
-  const watchlistState = useWatchlist();
+  const watchlistState = useWatchlist(getWatchlistCodeKey);
   const refreshWatchlist = watchlistState.refresh;
   const watchlistCodesByNormalized = useMemo(() => {
     const codesByNormalized = new Map<string, string>();

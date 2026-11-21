@@ -771,6 +771,9 @@ def _execute_tools(
             "success": success, "duration": dur, "result_length": len(result_str),
             "cached": cached,
         }
+        call_id = getattr(tc_item, "id", None)
+        if call_id:
+            log_entry["tool_call_id"] = call_id
         if timed_out:
             log_entry["timeout"] = True
         if guard_result is not None:

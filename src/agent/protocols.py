@@ -189,13 +189,18 @@ class AgentContext:
             opinion.timestamp = time.time()
         self.opinions.append(opinion)
 
-    def add_risk_flag(self, category: str, description: str, severity: str = "medium") -> None:
-        self.risk_flags.append({
+    def add_risk_flag(
+        self, category: str, description: str, severity: str = "medium", *, source: Optional[str] = None,
+    ) -> None:
+        flag = {
             "category": category,
             "description": description,
             "severity": severity,
             "timestamp": time.time(),
-        })
+        }
+        if isinstance(source, str) and source.strip():
+            flag["source"] = source.strip()
+        self.risk_flags.append(flag)
 
     def get_data(self, key: str, default: Any = None) -> Any:
         return self.data.get(key, default)
@@ -229,6 +234,7 @@ class AgentOpinion:
     raw_data: Dict[str, Any] = field(default_factory=dict)
     # Any extra payload the agent wants to pass downstream
     timestamp: float = 0.0
+    source_evidence_ids: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         """Clamp confidence while retaining whether its input was sample-safe."""

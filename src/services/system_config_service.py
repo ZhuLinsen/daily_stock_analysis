@@ -132,6 +132,48 @@ class _LLMDiagnostic:
     details: Dict[str, Any] = field(default_factory=dict)
 
 
+def _inspect_dir_writable(path_value: Optional[str]) -> Tuple[bool, Optional[Path]]:
+    """Inspect whether target dir (or deepest existing ancestor) is writable without creating dirs."""
+    if not path_value:
+        return False, None
+    try:
+        target = Path(path_value).expanduser()
+        for node in (target, *target.parents):
+            if node.is_symlink() and not node.exists():
+                return False, node
+            if node.exists():
+                if not node.is_dir():
+                    return False, node
+                return os.access(node, os.W_OK | os.X_OK), node
+        return False, None
+    except OSError:
+        return False, None
+
+
+def check_dir_writable(path_value: Optional[str]) -> bool:
+    """Return True if path (or its deepest existing ancestor) is a writable directory."""
+    ok, _ = _inspect_dir_writable(path_value)
+    return ok
+
+
+def check_database_path_usable(db_path_value: Optional[str]) -> bool:
+    """Return True if DATABASE_PATH is a writable file or creatable under a writable directory."""
+    if not db_path_value:
+        return False
+    try:
+        target = Path(db_path_value).expanduser()
+        if target.is_symlink() and not target.exists():
+            return False
+        if target.exists():
+            if target.is_dir() or not target.is_file():
+                return False
+            return os.access(target, os.R_OK | os.W_OK) and check_dir_writable(str(target.parent))
+        parent = target.parent if target.parent != Path("") else Path(".")
+        return check_dir_writable(str(parent))
+    except OSError:
+        return False
+
+
 class SystemConfigService:
     """Service layer for reading, validating, and updating runtime configuration."""
 
@@ -459,8 +501,11 @@ class SystemConfigService:
 
     def get_config(self, include_schema: bool = True, mask_token: str = "******") -> Dict[str, Any]:
         """Return display config values with mask metadata for server-masked fields."""
-        saved_config_map = self._build_display_config_map(self._manager.read_config_map())
-        runtime_config_map = self._build_runtime_display_config_map(saved_config_map)
+        with self._manager.locked():
+            config_version = self._manager.get_config_version()
+            saved_config_map = self._build_display_config_map(self._manager.read_config_map())
+            runtime_config_map = self._build_runtime_display_config_map(saved_config_map)
+            updated_at = self._manager.get_updated_at()
         config_map = {
             **runtime_config_map,
             **saved_config_map,
@@ -509,12 +554,24 @@ class SystemConfigService:
         )
 
         return {
-            "config_version": self._manager.get_config_version(),
+            "config_version": config_version,
             "mask_token": mask_token,
             "items": items,
             "llm_model_providers": sorted(get_litellm_model_providers()),
-            "updated_at": self._manager.get_updated_at(),
+            "updated_at": updated_at,
         }
+
+    def get_watchlist_snapshot(self) -> Tuple[List[str], str]:
+        """Read the effective STOCK_LIST and its version in one snapshot."""
+        with self._manager.locked():
+            version = self._manager.get_config_version()
+            value = self._manager.read_config_map().get("STOCK_LIST", "")
+            if not value.strip():
+                value = os.getenv("STOCK_LIST", "")
+            current_version = self._manager.get_config_version()
+            if current_version != version:
+                raise ConfigConflictError(current_version=current_version)
+        return split_stock_list(value), version
 
     def validate(self, items: Sequence[Dict[str, str]], mask_token: str = "******") -> Dict[str, Any]:
         """Validate submitted items without writing to `.env`."""
@@ -2062,6 +2119,8 @@ class SystemConfigService:
         items: Sequence[Dict[str, str]],
         mask_token: str = "******",
         reload_now: bool = True,
+        *,
+        expected_watchlist: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """Validate and persist updates into `.env`, then reload runtime config."""
         current_version = self._manager.get_config_version()
@@ -2087,36 +2146,45 @@ class SystemConfigService:
             if bool(field_schema.get("is_sensitive", False)):
                 sensitive_keys.add(key)
 
-        updated_keys, skipped_masked_keys, new_version = self._manager.apply_updates(
-            updates=updates,
-            sensitive_keys=sensitive_keys,
-            mask_token=mask_token,
-        )
-
         warnings: List[str] = []
         reload_triggered = False
-        if reload_now:
-            try:
-                if submitted_keys == {"STOCK_LIST"}:
-                    # Watchlist edits need no global dotenv/singleton reload: it
-                    # would also overwrite unrelated container env overrides.
-                    # STOCK_LIST itself must still be mirrored, because
-                    # refresh_stock_list() falls back to os.environ whenever the
-                    # file value is empty -- without this a cleared watchlist
-                    # would resurrect the previous list from the environment.
-                    os.environ["STOCK_LIST"] = self._manager.read_config_map().get("STOCK_LIST", "")
-                    config = Config.get_instance()
-                    config.refresh_stock_list()
-                else:
-                    Config.reset_instance()
-                    self._reload_runtime_singletons()
-                    setup_env(override=True)
-                    config = Config.get_instance()
-                warnings.extend(config.validate())
-                reload_triggered = True
-            except Exception as exc:  # pragma: no cover - defensive branch
-                logger.error("Configuration reload failed: %s", exc, exc_info=True)
-                warnings.append("Configuration updated but reload failed")
+
+        def check_current() -> None:
+            if expected_watchlist is None:
+                current_version = self._manager.get_config_version()
+            else:
+                # An environment fallback can change while the file stays unchanged.
+                current_watchlist, current_version = self.get_watchlist_snapshot()
+                if current_watchlist != expected_watchlist:
+                    raise ConfigConflictError(current_version=current_version)
+            if current_version != config_version:
+                raise ConfigConflictError(current_version=current_version)
+
+        with self._manager.locked():
+            updated_keys, skipped_masked_keys, new_version = self._manager.apply_updates(
+                updates=updates,
+                sensitive_keys=sensitive_keys,
+                mask_token=mask_token,
+                check_current=check_current,
+            )
+
+            if reload_now:
+                try:
+                    if submitted_keys == {"STOCK_LIST"}:
+                        saved_list = self._manager.read_config_map().get("STOCK_LIST", "")
+                        os.environ["STOCK_LIST"] = saved_list if split_stock_list(saved_list) else ""
+                        config = Config.get_instance()
+                        config.refresh_stock_list()
+                    else:
+                        Config.reset_instance()
+                        self._reload_runtime_singletons()
+                        setup_env(override=True)
+                        config = Config.get_instance()
+                    warnings.extend(config.validate())
+                    reload_triggered = True
+                except Exception as exc:  # pragma: no cover - defensive branch
+                    logger.error("Configuration reload failed: %s", exc, exc_info=True)
+                    warnings.append("Configuration updated but reload failed")
 
         warnings.extend(
             self._build_explainability_warnings(
@@ -3991,13 +4059,73 @@ class SystemConfigService:
         )
 
     def _build_setup_storage_check(self, effective_map: Dict[str, str]) -> Dict[str, Any]:
-        db_path = Path((effective_map.get("DATABASE_PATH") or "./data/stock_analysis.db").strip()).expanduser()
+        raw_db_path = (effective_map.get("DATABASE_PATH") or "./data/stock_analysis.db").strip()
+        db_path = Path(raw_db_path).expanduser()
         parent = db_path.parent if db_path.parent != Path("") else Path(".")
-        probe = parent
-        while not probe.exists() and probe != probe.parent:
-            probe = probe.parent
 
-        if not probe.exists() or not probe.is_dir():
+        try:
+            if db_path.is_symlink() and not db_path.exists():
+                return self._setup_check(
+                    "storage",
+                    "数据库 / 本地存储",
+                    "system",
+                    True,
+                    "needs_action",
+                    f"数据库路径软链接无效: {db_path}",
+                    "请将 DATABASE_PATH 设置为可用的 SQLite 文件路径。",
+                )
+            if db_path.exists():
+                if db_path.is_dir() or not db_path.is_file():
+                    return self._setup_check(
+                        "storage",
+                        "数据库 / 本地存储",
+                        "system",
+                        True,
+                        "needs_action",
+                        f"数据库路径指向目录或非常规文件: {db_path}",
+                        "请将 DATABASE_PATH 设置为具体 SQLite 文件路径（如 ./data/stock_analysis.db）。",
+                    )
+                if not check_database_path_usable(str(db_path)):
+                    return self._setup_check(
+                        "storage",
+                        "数据库 / 本地存储",
+                        "system",
+                        True,
+                        "needs_action",
+                        f"数据库文件或所在目录不可写: {db_path}",
+                        "请调整 DATABASE_PATH 或目录权限。",
+                    )
+                return self._setup_check(
+                    "storage",
+                    "数据库 / 本地存储",
+                    "system",
+                    True,
+                    "configured",
+                    f"数据库路径可用: {db_path}",
+                )
+        except OSError as exc:
+            return self._setup_check(
+                "storage",
+                "数据库 / 本地存储",
+                "system",
+                True,
+                "needs_action",
+                f"数据库路径检查失败: {exc}",
+                "请检查 DATABASE_PATH 或上级目录权限。",
+            )
+
+        writable, probe = _inspect_dir_writable(str(parent))
+        if not writable:
+            if probe is not None and probe.exists() and probe.is_dir():
+                return self._setup_check(
+                    "storage",
+                    "数据库 / 本地存储",
+                    "system",
+                    True,
+                    "needs_action",
+                    f"数据库路径上级目录不可写: {probe}",
+                    "请调整 DATABASE_PATH 或目录权限。",
+                )
             return self._setup_check(
                 "storage",
                 "数据库 / 本地存储",
@@ -4008,27 +4136,14 @@ class SystemConfigService:
                 "请检查 DATABASE_PATH 或上级目录权限。",
             )
 
-        if os.access(probe, os.W_OK):
-            detail = f"数据库路径可用: {db_path}"
-            if not parent.exists():
-                detail = f"数据库上级目录可创建: {parent}"
-            return self._setup_check(
-                "storage",
-                "数据库 / 本地存储",
-                "system",
-                True,
-                "configured",
-                detail,
-            )
-
+        detail = f"数据库路径可用: {db_path}" if parent.exists() else f"数据库上级目录可创建: {parent}"
         return self._setup_check(
             "storage",
             "数据库 / 本地存储",
             "system",
             True,
-            "needs_action",
-            f"数据库路径上级目录不可写: {probe}",
-            "请调整 DATABASE_PATH 或目录权限。",
+            "configured",
+            detail,
         )
 
     @staticmethod

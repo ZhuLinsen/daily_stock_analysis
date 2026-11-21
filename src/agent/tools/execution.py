@@ -524,7 +524,12 @@ def execute_runner_tool_call(
     try:
         res = tool_registry.execute(tool_call.name, **arguments)
         res_str = serialize_tool_result(res)
-        ok = True
+        # Handlers can report failure without raising. Empty or partial data
+        # alone does not make a tool call unsuccessful.
+        ok = not (
+            isinstance(res, dict)
+            and (bool(res.get("error")) or res.get("success") is False)
+        )
         if cache_key and non_retriable_tool_results is not None and _is_non_retriable_tool_result(res):
             non_retriable_tool_results[cache_key] = res_str
     except Exception as e:

@@ -687,6 +687,7 @@ python scripts/check_env.py --config
 
 ```bash
 python main.py                        # Full analysis (stocks + market review)
+python main.py --doctor               # Offline redacted config/LLM/notification/storage check (--json supported)
 python main.py --market-review        # Market review only
 python main.py --etf-rotation         # ETF rotation signal + rule backtest (no LLM; see docs/etf-rotation.md, Chinese-only)
 python main.py --no-market-review     # Stock analysis only
@@ -698,6 +699,8 @@ python main.py --schedule             # Scheduled task mode
 python main.py --debug                # Debug mode (verbose logging)
 python main.py --workers 5            # Specify concurrency
 ```
+
+> **`--doctor` semantics**: Both `python main.py --doctor` and `python main.py --doctor --json` run read-only offline diagnostics with secrets redacted (without creating log or database files). Exit codes: `0` when healthy or warnings only (e.g., having no notification channels configured is a warning, not a blocking error); `1` on blocking configuration, LLM, storage, or half-configured notification errors; `2` on flag misuse (`--json` requires `--doctor`).
 
 ### One-shot index analysis (Phase 1)
 
@@ -931,6 +934,10 @@ After a Multi-Agent result enters `StockAnalysisPipeline`, the Pipeline complete
 
 Any model-authored explanation at the top-level or nested dashboard location is removed at the shared Agent dashboard parsing boundary, so only the Pipeline constructs the final field. Invalid Agent signals follow the existing strategy-opinion validity rules and are excluded from runtime facts and public disagreement counts instead of being silently converted to `hold`. If free-form advice cannot resolve uniquely to an eight-state action, the shared resolver remains fail-closed: the report and history retain `action=None`, no explanation is generated, and no DecisionSignal is created; the Pipeline does not synthesize an action from `decision_type`. When a canonical action exists, the field is persisted with the dashboard in report history and completed before DecisionSignal extraction. Legacy reports, single-Agent/non-Agent paths, and compatibility callers without `runtime_facts` do not require this field. This phase does not add dedicated Web/Desktop rendering, a full trace, or the P2-P4 weighting and audit features.
 
+#### AGENT_DEBATE_ENABLED
+
+`AGENT_DEBATE_ENABLED` defaults to `false` and takes effect only with `AGENT_ARCH=multi`. When upstream strategy opinions disagree on direction or a buy or strong-buy opinion reaches 0.75 confidence, the Decision Agent receives a Bull/Bear brief with source references and a separate risk assessment. `quick` and `standard` run the Risk Agent before the decision when triggered. `full` and `specialist` use their existing risk stage. Enabling debate moves the `specialist` risk stage after strategy evaluation so it can consider those opinions. The run records the trigger reason and risk review status. A mandatory review must provide explicit `veto_buy` and `signal_adjustment` values. If the review fails, is incomplete, or runs out of time, the system defers buying and updates the report's position advice and intraday watch conditions. `AGENT_RISK_OVERRIDE` controls how a completed review vetoes buying in reports, stock chat replies, and chat history.
+
 ### AnalysisContextPack Low-Sensitivity Visibility (Issue #1389 P4)
 
 P4 adds `report.details.analysis_context_pack_overview`. History detail and completed `/api/v1/analysis/status/{task_id}` responses read the same low-sensitivity overview from the persisted `context_snapshot`; sync analysis responses also extract the overview from the just-persisted `analysis_history.context_snapshot`, so new records do not guarantee this field when `SAVE_CONTEXT_SNAPSHOT=false`. The Web report page renders a collapsed data-block summary after Strategy and News, with available/missing counts, non-zero other status counts, and trigger source in the header and data-block status, source, warnings, missing reasons, status counts, and news result count after expansion. API `details.context_snapshot` strips the top-level `analysis_context_pack_overview` so the raw snapshot panel does not duplicate the public overview.
@@ -1038,6 +1045,8 @@ The notification channel matrix and `--check-notify` CLI details are documented 
 3. Set `WECHAT_WEBHOOK_URL`
 
 ### Feishu
+
+Webhook and App Bot interactive cards can include a button to the Web workspace. The sender reads `FEISHU_CARD_WEB_URL` first and uses `DSA_WEB_URL` when it is unset or empty. Use an `http://` or `https://` address reachable by recipients. Clear both values to remove the button. `FEISHU_MAX_BYTES` sets the content budget per page. Pagination also checks the full JSON request body against a budget of 20,000 bytes for Webhook and 30,000 bytes for App Bot. If the workspace URL leaves too little room to paginate, the sender omits the button. [Feishu custom bot guide](https://open.feishu.cn/document/client-docs/bot-v3/add-custom-bot) · [Lark message limits](https://open.larksuite.com/document/server-docs/im-v1/faq)
 
 > ⚠️ **Key distinction**: `FEISHU_WEBHOOK_SECRET` (webhook signing secret) and `FEISHU_APP_SECRET` (Feishu App Secret) are two completely different configuration variables and cannot be used interchangeably.
 
@@ -1535,6 +1544,8 @@ Backtesting triggers automatically after the daily analysis flow completes (non-
 
 The WebUI and FastAPI API share the same service process. After startup, use the browser workspace for configuration management, manual analysis, task progress, historical reports, backtesting, portfolio management, and smart import. Authentication, cloud-server access, and API usage details are covered below.
 
+Smart Import accepts CSV and TXT watchlists saved as UTF-8 (with or without a byte-order mark), GBK, or UTF-16 (little- or big-endian with a byte-order mark).
+
 ### FastAPI API Service
 
 FastAPI provides RESTful API service for configuration management and triggering analysis.
@@ -1736,6 +1747,8 @@ A: AkShare uses scraping mechanism, may be temporarily rate-limited. System has 
 
 ### Q: How to add watchlist stocks?
 A: Modify the `STOCK_LIST` environment variable. English commas are recommended between codes. Chinese commas, enumeration commas, semicolons, spaces, and newlines are also recognized and are normalized to English commas after saving in Web settings or using watchlist add/remove actions.
+
+Removing the last code through the watchlist API saves `STOCK_LIST=,`. Each API worker reads this as an explicitly empty list. A manually set `STOCK_LIST=` falls back to the current process environment.
 
 Watchlist actions and saves containing only `STOCK_LIST` refresh the stock list while preserving other runtime settings and container environment overrides. Partial configuration saves are not blocked by existing, unrelated LLM channel or model selection errors. Changes to models, channels, routing files, or related credentials still validate the full model dependencies, and so does any save that enables an Agent path: switching `AGENT_BACKEND` / `AGENT_GENERATION_BACKEND` to LiteLLM (including `auto`), setting `AGENT_MODE=true`, or configuring `AGENT_SKILLS` to anything other than `all`. The last two drive the regular analysis Agent branch, which builds its own `LLMToolAdapter` and is not governed by `AGENT_BACKEND`. Saves that only disable `AGENT_MODE`, set `AGENT_SKILLS` to `all` or empty, or change unrelated keys are unaffected by the LLM configuration. An existing retired `codex_app_server` value may remain without blocking unrelated saves; explicitly saving or importing that value is still rejected. Existing model errors require a separate correction; a successful watchlist save does not establish that the model configuration is valid.
 
