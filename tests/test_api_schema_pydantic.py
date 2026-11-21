@@ -142,6 +142,17 @@ def test_request_models_accept_report_language_camel_case_alias() -> None:
     assert market_review_request.report_language == "en"
 
 
+def test_market_review_request_accepts_notify_alias_for_send_notification() -> None:
+    """Chat agents may send notify=false; market-review must honor it as send_notification."""
+    via_alias = MarketReviewRequest.model_validate({"notify": False})
+    assert via_alias.send_notification is False
+
+    via_canonical = MarketReviewRequest.model_validate({"send_notification": False})
+    assert via_canonical.send_notification is False
+
+    assert MarketReviewRequest().send_notification is True
+
+
 def test_request_models_accept_korean_report_language() -> None:
     analyze_request = AnalyzeRequest.model_validate({
         "stock_code": "005930.KS",
