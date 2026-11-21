@@ -111,7 +111,7 @@ When modifying a Chinese-language core document (e.g., `docs/full-guide.md`), yo
 
 ## 📋 Product Direction & Priority Areas for Contribution
 
-The project already has a complete end-to-end workflow and follows a **"do less, better"** principle: prioritize subtraction, simplicity, and core reliability over adding niche features, duplicate config templates, parallel entry points, or low-frequency toggles. **Please open an Issue to align on necessity before building a new feature PR.**
+The project already has a complete end-to-end workflow and follows a **"do less, better"** principle: prioritize subtraction, simplicity, and core reliability over adding niche features, duplicate config templates, parallel entry points, or low-frequency toggles. **Before developing a substantial new feature, we recommend opening an Issue first to align on necessity and scope; regular bug fixes, UX improvements, and small focused enhancements can be submitted directly as PRs.**
 
 Priority areas (ordered by priority; see [README](../README.md) for core entry points):
 

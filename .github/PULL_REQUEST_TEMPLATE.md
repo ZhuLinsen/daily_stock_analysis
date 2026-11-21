@@ -15,7 +15,7 @@ For English contributors: please fill in English.
 
 ## Background And Problem
 
-描述当前问题现象、触发条件、关联 Issue（`Fixes #xxx` / `Refs #xxx`，无 Issue 时写动机与验收标准）以及根因定位（`path:line`）；如新增能力/配置/入口，请说明为何必须新增而非复用或精简现有能力（项目坚持做减法、聚焦核心价值，不接收低价值边角料堆砌）。
+描述当前问题现象、触发条件、关联 Issue（`Fixes #xxx` / `Refs #xxx`，无 Issue 时写动机与验收标准）以及根因定位（`path:line`）；如新增配置、开关或独立入口，请说明为何不能直接复用或精简既有能力。
 
 ## Scope Of Change
 
