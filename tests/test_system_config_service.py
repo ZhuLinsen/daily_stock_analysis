@@ -827,6 +827,77 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertNotIn("LLM_UNUSED_API_KEY", raw_items)
         self.assertNotIn("UNRELATED_API_KEY", raw_items)
 
+    def test_get_config_reports_active_process_env_litellm_yaml(self) -> None:
+        yaml_path = Path(self.temp_dir.name) / "litellm.yaml"
+        yaml_path.write_text(
+            json.dumps({
+                "model_list": [{
+                    "model_name": "openai/yaml-model",
+                    "litellm_params": {
+                        "model": "openai/yaml-model",
+                        "api_base": "https://yaml.example/v1",
+                    },
+                }],
+            }),
+            encoding="utf-8",
+        )
+        self._rewrite_env("STOCK_LIST=600519")
+
+        with patch.dict(
+            os.environ,
+            {
+                "LITELLM_CONFIG": str(yaml_path),
+                "LLM_CHANNELS": "fallback",
+            },
+            clear=False,
+        ):
+            payload = self.service.get_config(include_schema=True)
+
+        items = {item["key"]: item for item in payload["items"]}
+        self.assertTrue(payload["llm_yaml_active"])
+        self.assertEqual(items["LITELLM_CONFIG"]["value"], str(yaml_path))
+        self.assertFalse(items["LITELLM_CONFIG"]["raw_value_exists"])
+
+    def test_get_config_survives_malformed_litellm_yaml_shapes(self) -> None:
+        yaml_path = Path(self.temp_dir.name) / "malformed-litellm.yaml"
+        yaml_path.write_text("- not-a-mapping\n- null\n", encoding="utf-8")
+        self._rewrite_env(
+            "STOCK_LIST=600519",
+            f"LITELLM_CONFIG={yaml_path}",
+            "LLM_CHANNELS=fallback",
+            "LLM_FALLBACK_MODELS=openai/fallback",
+        )
+
+        with patch.dict(os.environ, {}, clear=True):
+            payload = self.service.get_config(include_schema=True)
+
+        self.assertFalse(payload["llm_yaml_active"])
+        self.assertIn("LITELLM_CONFIG", {item["key"] for item in payload["items"]})
+
+    def test_empty_litellm_yaml_entries_fall_back_to_llm_channels_consistently(self) -> None:
+        yaml_path = Path(self.temp_dir.name) / "empty-entry-litellm.yaml"
+        yaml_path.write_text(
+            "model_list:\n  - {}\n  - litellm_params: {}\n",
+            encoding="utf-8",
+        )
+        self._rewrite_env(
+            "STOCK_LIST=600519",
+            f"LITELLM_CONFIG={yaml_path}",
+            "LLM_CHANNELS=fallback",
+            "LLM_FALLBACK_PROTOCOL=openai",
+            "LLM_FALLBACK_API_KEY=sk-fallback",
+            "LLM_FALLBACK_MODELS=openai/fallback-model",
+        )
+
+        with patch.dict(os.environ, {"ENV_FILE": str(self.env_path)}, clear=True):
+            Config.reset_instance()
+            runtime_cfg = Config.get_instance()
+            payload = self.service.get_config(include_schema=True)
+
+        self.assertFalse(payload["llm_yaml_active"])
+        self.assertEqual(runtime_cfg.llm_models_source, "llm_channels")
+        self.assertEqual(runtime_cfg.litellm_model, "openai/fallback-model")
+
     def test_get_config_runtime_env_fallback_does_not_persist_llm_fields_on_save(self) -> None:
         self._rewrite_env(
             "STOCK_LIST=600519",
@@ -1874,6 +1945,23 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         storage_check = next(check for check in status["checks"] if check["key"] == "storage")
         self.assertEqual(storage_check["status"], "configured")
         self.assertFalse(missing_parent.exists())
+
+    def test_get_setup_status_storage_check_rejects_directory_and_file_ancestor(self) -> None:
+        blocker_file = Path(self.temp_dir.name) / "main.py"
+        blocker_file.write_text("# regular file", encoding="utf-8")
+
+        for invalid_db in (Path(self.temp_dir.name), blocker_file / "stock_analysis.db"):
+            self._rewrite_env(
+                "LITELLM_MODEL=gemini/gemini-3-flash-preview",
+                "GEMINI_API_KEY=secret-key-value",
+                "STOCK_LIST=600519",
+                f"DATABASE_PATH={invalid_db}",
+            )
+            with patch.dict(os.environ, {}, clear=True):
+                status = self.service.get_setup_status()
+            storage_check = next(check for check in status["checks"] if check["key"] == "storage")
+            self.assertEqual(storage_check["status"], "needs_action")
+            self.assertFalse(status["is_complete"])
 
     def test_export_desktop_env_returns_raw_text(self) -> None:
         self.env_path.write_text(

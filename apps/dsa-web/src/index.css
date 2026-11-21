@@ -2928,3 +2928,8 @@ textarea {
     text-align: left;
   }
 }
+
+.num {
+  font-variant-numeric: tabular-nums slashed-zero;
+  font-feature-settings: "tnum" 1, "zero" 1;
+}
