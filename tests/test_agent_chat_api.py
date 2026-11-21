@@ -167,21 +167,19 @@ def test_chat_send_reports_cooldown_not_duplicate_when_distinct_chats_overlap(tm
          patch("src.notification.get_config", return_value=config), \
          patch("src.notification.NotificationService._send_to_static_channel", autospec=True, side_effect=slow_send) as send:
         def send_first():
-            with TestClient(app) as first_client:
-                first_result["response"] = first_client.post(
-                    "/api/v1/agent/chat/send",
-                    json={"content": "# Conversation A"},
-                )
+            first_result["response"] = TestClient(app).post(
+                "/api/v1/agent/chat/send",
+                json={"content": "# Conversation A"},
+            )
 
         worker = threading.Thread(target=send_first)
         worker.start()
         assert started.wait(timeout=5)
         try:
-            with TestClient(app) as second_client:
-                second_response = second_client.post(
-                    "/api/v1/agent/chat/send",
-                    json={"content": "# Conversation B"},
-                )
+            second_response = TestClient(app).post(
+                "/api/v1/agent/chat/send",
+                json={"content": "# Conversation B"},
+            )
         finally:
             release.set()
             worker.join(timeout=5)
