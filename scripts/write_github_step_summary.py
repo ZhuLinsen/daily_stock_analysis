@@ -30,13 +30,36 @@ _MARKDOWN_AUTHORIZATION_FIELD_PATTERN = re.compile(
 )
 _PADDED_BEARER_CODE_PATTERN = re.compile(
     rf"(?<![A-Za-z0-9_-])(?P<prefix>{_AUTHORIZATION_FIELD}[ \t]*[:=][ \t]*bearer[ \t]+)"
-    r"(?P<backticks>`+)[ \t]+(?P<token>[^`\s]+)[ \t]+(?P=backticks)(?!`)",
+    r"[*_]*(?P<backticks>`+)[ \t]+(?P<token>[^`\s]+)[ \t]+(?P=backticks)(?!`)[*_]*",
     re.IGNORECASE,
+)
+_MARKDOWN_AUTHORIZATION_LABEL = (
+    rf"(?:{_MARKDOWN_FIELD_MARKER}[ \t]*)?(?P<field>{_AUTHORIZATION_FIELD})"
+    rf"(?:[ \t]*[:=])?(?:[ \t]*{_MARKDOWN_FIELD_MARKER})?(?:[ \t]*[:=])?"
+)
+_MARKDOWN_BREAK = r"<br[ \t]*/?>"
+_MARKDOWN_BEARER_PREFIX = (
+    r"""(?:[*_`"']+[ \t]*)?bearer[*_`"']*"""
+    rf"(?=[^\S\r\n]|{_MARKDOWN_BREAK})"
+)
+_MARKDOWN_QUOTE_PREFIX = r"[ \t]*(?:>[ \t]*)*"
+_MARKDOWN_MULTILINE_BEARER_PATTERN = re.compile(
+    rf"(?<![A-Za-z0-9_*`-]){_MARKDOWN_AUTHORIZATION_LABEL}[ \t]*"
+    rf"(?:(?:\\[ \t]*)?\r?\n|{_MARKDOWN_BREAK}(?:[ \t]*\r?\n)?)"
+    rf"(?:{_MARKDOWN_QUOTE_PREFIX}\r?\n)*{_MARKDOWN_QUOTE_PREFIX}"
+    rf"{_MARKDOWN_BEARER_PREFIX}[^\r\n]+",
+    re.IGNORECASE,
+)
+_MARKDOWN_TABLE_BEARER_PATTERN = re.compile(
+    rf"(?P<indent>(?:^|(?<=\|))[ \t]*){_MARKDOWN_AUTHORIZATION_LABEL}[ \t]*\|[ \t]*"
+    # An escaped pipe belongs to the value cell.
+    rf"{_MARKDOWN_BEARER_PREFIX}(?P<value>(?:\\[^\r\n]|[^|\\\r\n]|\\(?![^\r\n]))*)",
+    re.IGNORECASE | re.MULTILINE,
 )
 
 
-def _normalize_markdown_authorization(text: str) -> str:
-    """Expose Markdown-formatted authorization fields to the diagnostic scrubber."""
+def _prepare_markdown_authorization(text: str) -> str:
+    """Handle Markdown authorization fields before line-based diagnostic redaction."""
 
     def normalize(match: re.Match[str]) -> str:
         separator = match.group("separator_before") or match.group("separator_inside")
@@ -44,7 +67,15 @@ def _normalize_markdown_authorization(text: str) -> str:
         boundary = " " if match.group("attached") is not None else ""
         return f"{boundary}{match.group('field')}{separator}"
 
+    def redact_table_cell(match: re.Match[str]) -> str:
+        value = match.group("value")
+        padding = value[len(value.rstrip(" \t")):]
+        return f"{match.group('indent')}{match.group('field')} | `<redacted>`{padding}"
+
+    # Mask the value cell before normalizing labels that contain a colon.
+    text = _MARKDOWN_TABLE_BEARER_PATTERN.sub(redact_table_cell, text)
     normalized = _MARKDOWN_AUTHORIZATION_FIELD_PATTERN.sub(normalize, text)
+    normalized = _MARKDOWN_MULTILINE_BEARER_PATTERN.sub(r"\g<field>: <redacted>", normalized)
     return _PADDED_BEARER_CODE_PATTERN.sub(r"\g<prefix>\g<token>", normalized)
 
 
@@ -54,7 +85,7 @@ def _redact_text(text: str) -> Optional[str]:
         from src.llm.local_cli_backend import redact_diagnostic_text
 
         return redact_diagnostic_text(
-            _normalize_markdown_authorization(text),
+            _prepare_markdown_authorization(text),
             limit=sys.maxsize,
         )
     except Exception:
@@ -234,7 +265,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             return 0
         summary_path = Path(summary_path_raw)
         summary_path.parent.mkdir(parents=True, exist_ok=True)
-        with summary_path.open("a", encoding="utf-8") as fh:
+        with summary_path.open("a", encoding="utf-8", newline="\n") as fh:
             fh.write(markdown)
     except Exception as exc:  # pragma: no cover - never fail Actions workflow on summary formatting
         print(f"WARN: failed to write GITHUB_STEP_SUMMARY: {exc}", file=sys.stderr)

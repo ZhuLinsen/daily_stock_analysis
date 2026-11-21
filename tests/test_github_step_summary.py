@@ -42,6 +42,7 @@ def test_noop_when_github_step_summary_unset(tmp_path: Path) -> None:
         "* `Authorization`: Bearer {credential}",
         "Authorization: Bearer `` {credential} ``",
         "**Authorization:** Bearer `` {credential} ``",
+        "Authorization: Bearer **` {credential} `**",
     ],
 )
 def test_writes_redacted_reports_to_step_summary(tmp_path: Path, authorization_line: str) -> None:
@@ -67,6 +68,71 @@ def test_writes_redacted_reports_to_step_summary(tmp_path: Path, authorization_l
     assert credential not in written
     assert "Authorization: <redacted>" in written
     assert "analysis-reports-*" in written
+
+
+@pytest.mark.parametrize(
+    ("authorization_markdown", "redacted_markdown"),
+    [
+        ("**Authorization**:  \nBearer {credential}", "Authorization: <redacted>"),
+        ("**Authorization**\nBearer {credential}", "Authorization: <redacted>"),
+        ("*Authorization:*\n  `Bearer {credential}`", "Authorization: <redacted>"),
+        ("> **Authorization:**\\\n> Bearer {credential}", "> Authorization: <redacted>"),
+        ("> **Authorization:**\n>\n> `Bearer {credential}`", "> Authorization: <redacted>"),
+        ("**Authorization:**<br>\nBearer {credential}", "Authorization: <redacted>"),
+        ("**Authorization:**<br />`Bearer {credential}`", "Authorization: <redacted>"),
+        (
+            "| `Authorization` | Bearer {credential} | 保留 |",
+            "| Authorization | `<redacted>` | 保留 |",
+        ),
+        (
+            "| _Authorization_ | **Bearer** {credential} | 保留 |",
+            "| Authorization | `<redacted>` | 保留 |",
+        ),
+        (
+            "| `Proxy-Authorization:` | Bearer `` {credential} `` | 保留 |",
+            "| Proxy-Authorization | `<redacted>` | 保留 |",
+        ),
+        (
+            '| `Authorization` | "Bearer {credential}" | 保留 |',
+            "| Authorization | `<redacted>` | 保留 |",
+        ),
+        (
+            "| `Authorization` | Bearer {credential}\\|token-suffix | 保留 |",
+            "| Authorization | `<redacted>` | 保留 |",
+        ),
+        (
+            "| `Authorization` | Bearer<br>{credential} | 保留 |",
+            "| Authorization | `<redacted>` | 保留 |",
+        ),
+    ],
+)
+def test_writes_redacted_multiline_and_table_authorization(
+    tmp_path: Path,
+    authorization_markdown: str,
+    redacted_markdown: str,
+) -> None:
+    reports_dir = tmp_path / "reports"
+    reports_dir.mkdir()
+    credential = "short-bearer-token"
+    table_header = "| 字段 | 值 | 备注 |\n| --- | --- | --- |\n"
+    if not authorization_markdown.startswith("|"):
+        table_header = ""
+    market_notes = "沪指收涨。\n\nBearer bonds also gained."
+    report = f"# 大盘复盘\n\n{table_header}{authorization_markdown.format(credential=credential)}\n\n{market_notes}"
+    report_path = reports_dir / "market_review_20261120.md"
+    report_path.write_text(report, encoding="utf-8")
+    summary_file = tmp_path / "step_summary.md"
+
+    with patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": str(summary_file)}, clear=True):
+        code = main(["--reports-dir", str(reports_dir), "--date", "20261120"])
+
+    assert code == 0
+    written = summary_file.read_text(encoding="utf-8")
+    assert credential not in written
+    assert redacted_markdown in written
+    assert written.startswith(f"<!-- dsa-step-summary -->\n# 大盘复盘\n\n{table_header}")
+    assert market_notes in written
+    assert report_path.read_text(encoding="utf-8") == report
 
 
 def test_short_stock_report_leaves_remaining_budget_for_market_review(tmp_path: Path) -> None:
@@ -153,13 +219,17 @@ def test_script_entrypoint_redacts_without_pythonpath(tmp_path: Path) -> None:
     reports_dir = tmp_path / "reports"
     reports_dir.mkdir()
     (reports_dir / "report_20261120.md").write_text(
-        "Authorization: Bearer sk-secret-token-123456\n", encoding="utf-8"
+        "# 个股汇总\n**Authorization**:  \nBearer short-stock-token\n", encoding="utf-8"
+    )
+    (reports_dir / "market_review_20261120.md").write_text(
+        "# 大盘复盘\n\n| 字段 | 值 |\n| --- | --- |\n| `Authorization` | `Bearer short-market-token` |\n",
+        encoding="utf-8",
     )
     summary_file = tmp_path / "step_summary.md"
     env = {"GITHUB_STEP_SUMMARY": str(summary_file), "PATH": os.environ["PATH"]}
 
     result = subprocess.run(
-        [sys.executable, "scripts/write_github_step_summary.py", "--reports-dir", str(reports_dir)],
+        [sys.executable, "scripts/write_github_step_summary.py", "--reports-dir", str(reports_dir), "--date", "20261120"],
         cwd=Path(__file__).resolve().parents[1],
         env=env,
         check=False,
@@ -168,7 +238,11 @@ def test_script_entrypoint_redacts_without_pythonpath(tmp_path: Path) -> None:
     )
 
     assert result.returncode == 0
-    assert "sk-secret-token-123456" not in summary_file.read_text(encoding="utf-8")
+    written = summary_file.read_text(encoding="utf-8")
+    assert "# 个股汇总" in written
+    assert "# 大盘复盘" in written
+    assert "short-stock-token" not in written
+    assert "short-market-token" not in written
 
 
 def test_redaction_preserves_report_beyond_diagnostic_preview_limit(tmp_path: Path) -> None:
@@ -187,11 +261,15 @@ def test_small_max_bytes_is_an_exact_utf8_limit(tmp_path: Path) -> None:
     reports_dir = tmp_path / "reports"
     reports_dir.mkdir()
     (reports_dir / "report_20261120.md").write_text("贵州茅台走势稳健。" * 300, encoding="utf-8")
+    summary_file = tmp_path / "step_summary.md"
 
-    rendered = build_step_summary_markdown(reports_dir, max_bytes=1024, target_date="20261120")
+    with patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": str(summary_file)}, clear=True):
+        code = main(["--reports-dir", str(reports_dir), "--max-bytes", "1024", "--date", "20261120"])
 
-    assert len(rendered.encode("utf-8")) <= 1024
-    assert "Summary preview truncated" in rendered
+    assert code == 0
+    written = summary_file.read_bytes()
+    assert len(written) <= 1024
+    assert "Summary preview truncated" in written.decode("utf-8")
 
 
 def test_date_fallback_keeps_latest_stock_and_market_reports(tmp_path: Path) -> None:
