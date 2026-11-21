@@ -1690,8 +1690,9 @@ class Config:
 
         # Priority 1: LITELLM_CONFIG (standard LiteLLM YAML config file)
         if litellm_config_path:
-            llm_model_list = cls._parse_litellm_yaml(litellm_config_path)
-            if llm_model_list:
+            parsed_yaml_models = cls._parse_litellm_yaml(litellm_config_path)
+            if get_configured_llm_models(parsed_yaml_models):
+                llm_model_list = parsed_yaml_models
                 llm_models_source = "litellm_config"
 
         # Priority 2: LLM_CHANNELS (env var based channel config)
@@ -2506,19 +2507,36 @@ class Config:
             _logger.warning(f"Failed to parse LITELLM_CONFIG: {e}")
             return []
 
+        if not isinstance(yaml_config, dict):
+            _logger.warning("LITELLM_CONFIG: root must be a mapping")
+            return []
         model_list = yaml_config.get('model_list', [])
         if not isinstance(model_list, list):
             _logger.warning("LITELLM_CONFIG: model_list must be a list")
             return []
 
-        # Resolve os.environ/ references in string params
+        valid_model_list: List[Dict[str, Any]] = []
         for entry in model_list:
+            if not isinstance(entry, dict):
+                continue
             params = entry.get('litellm_params', {})
-            for key in list(params.keys()):
-                val = params.get(key)
+            if params is not None and not isinstance(params, dict):
+                _logger.warning("LITELLM_CONFIG: skipping model entry with non-mapping litellm_params")
+                continue
+            resolved_params = params or {}
+            # Resolve os.environ/ references in string params
+            for key in list(resolved_params.keys()):
+                val = resolved_params.get(key)
                 if isinstance(val, str) and val.startswith('os.environ/'):
                     env_name = val.split('/', 1)[1]
-                    params[key] = os.getenv(env_name, '')
+                    resolved_params[key] = os.getenv(env_name, '')
+            route_name = str(entry.get('model_name') or '').strip()
+            wire_model = str(resolved_params.get('model') or '').strip()
+            if not route_name and not wire_model:
+                _logger.warning("LITELLM_CONFIG: skipping model entry without model_name or litellm_params.model")
+                continue
+            valid_model_list.append(entry)
+        model_list = valid_model_list
 
         _logger.info(f"LITELLM_CONFIG: loaded {len(model_list)} model deployment(s) from {path}")
         return model_list

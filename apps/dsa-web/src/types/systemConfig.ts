@@ -81,6 +81,7 @@ export interface SystemConfigResponse {
   configVersion: string;
   maskToken: string;
   items: SystemConfigItem[];
+  llmYamlActive?: boolean;
   llmModelProviders?: string[];
   updatedAt?: string;
 }
