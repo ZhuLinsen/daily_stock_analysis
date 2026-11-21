@@ -46,6 +46,58 @@ def test_materialized_claude_skills_compatibility_entry(tmp_path: Path, monkeypa
     check_ai_assets.ensure_symlinks()
 
 
+def test_ensure_product_skill_copies_rejects_symlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plugin = tmp_path / "plugin" / "skills" / "stock_analyzer" / "SKILL.md"
+    plugin.parent.mkdir(parents=True)
+    plugin.write_text("skill body\n", encoding="utf-8")
+    root = tmp_path / "SKILL.md"
+    root.symlink_to(plugin.relative_to(tmp_path))
+
+    monkeypatch.setattr(check_ai_assets, "ROOT", tmp_path)
+    check_ai_assets.PRODUCT_SKILL_ROOT = root
+    check_ai_assets.PRODUCT_SKILL_PLUGIN = plugin
+
+    with pytest.raises(SystemExit) as exc_info:
+        check_ai_assets.ensure_product_skill_copies()
+    assert exc_info.value.code == 1
+
+
+def test_ensure_product_skill_copies_rejects_drift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plugin = tmp_path / "plugin" / "skills" / "stock_analyzer" / "SKILL.md"
+    plugin.parent.mkdir(parents=True)
+    plugin.write_text("plugin\n", encoding="utf-8")
+    root = tmp_path / "SKILL.md"
+    root.write_text("root\n", encoding="utf-8")
+
+    monkeypatch.setattr(check_ai_assets, "ROOT", tmp_path)
+    check_ai_assets.PRODUCT_SKILL_ROOT = root
+    check_ai_assets.PRODUCT_SKILL_PLUGIN = plugin
+
+    with pytest.raises(SystemExit) as exc_info:
+        check_ai_assets.ensure_product_skill_copies()
+    assert exc_info.value.code == 1
+
+
+def test_ensure_product_skill_copies_accepts_matching_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plugin = tmp_path / "plugin" / "skills" / "stock_analyzer" / "SKILL.md"
+    plugin.parent.mkdir(parents=True)
+    plugin.write_text("same body\n", encoding="utf-8")
+    root = tmp_path / "SKILL.md"
+    root.write_text("same body\n", encoding="utf-8")
+
+    monkeypatch.setattr(check_ai_assets, "ROOT", tmp_path)
+    check_ai_assets.PRODUCT_SKILL_ROOT = root
+    check_ai_assets.PRODUCT_SKILL_PLUGIN = plugin
+
+    check_ai_assets.ensure_product_skill_copies()
+
+
 def test_ensure_gitignore_rules_detects_ignored_tracked_agents_skill(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

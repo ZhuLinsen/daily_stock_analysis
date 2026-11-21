@@ -193,6 +193,26 @@ python main.py --serve-only
 
 > Docker 部署、定时任务、云服务器访问请参考 [完整指南](docs/full-guide.md)；桌面客户端打包请参考 [桌面端打包说明](docs/desktop-package.md)。
 
+### 作为 Agent 插件安装
+
+本仓库提供 agent-agnostic 市场入口 [`.agents/plugins/marketplace.json`](.agents/plugins/marketplace.json)，插件目录为 [`plugin/`](plugin/)。`stock_analyzer` 技能**驱动已部署并配置好的 DSA 检出**（或正在运行的 DSA 服务），不自带 `src/` 运行时；插件安装缓存通常只有 `plugin/`。技能正文在 `plugin/skills/stock_analyzer/SKILL.md`，根目录 `SKILL.md` 为其普通文件副本（兼容 `core.symlinks=false` / OpenClaw 等根路径导入）。仓库维护用 skill（`analyze-issue` 等）不进入插件。
+
+**Codex：**
+
+```bash
+codex plugin marketplace add ZhuLinsen/daily_stock_analysis
+codex plugin add daily-stock-analysis@daily-stock-analysis
+```
+
+**Claude Code：**
+
+```bash
+/plugin marketplace add ZhuLinsen/daily_stock_analysis
+/plugin install daily-stock-analysis@daily-stock-analysis
+```
+
+本地 checkout：`codex plugin marketplace add /path/to/daily_stock_analysis`。使用技能前请先按 [完整指南](docs/full-guide.md) 部署并配置 DSA，或通过 `DSA_REPO_ROOT` / 询问用户定位已有检出后再调用分析示例（示例会 `chdir` 到检出根目录，以便与 Web 共用相对 `DATABASE_PATH` / 复盘锁）。对话内大盘复盘（`send_notification=False`）需要检出已支持该参数；仅有 v3.35.0 等旧检出时应先更新，避免 `TypeError` 或意外推送。HTTP 对接见 [OpenClaw 集成](docs/openclaw-skill-integration.md) / [Grok Bot 对接](docs/grok-bot-integration.md)（对话内个股须 `"notify": false`，大盘复盘须 `"send_notification": false`）。只读 MCP（`python -m src.mcp_server`，可选依赖 `mcp>=1.0.0,<2`）同样需在完整仓库 checkout 中按 [完整指南](docs/full-guide.md#只读-mcp-stdio-服务可选) 手动配置，不写入插件清单。
+
 ## 📱 推送效果
 
 ### 决策仪表盘

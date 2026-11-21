@@ -193,6 +193,26 @@ python main.py --serve-only
 
 > Docker deployment, scheduling, and cloud-server WebUI access are documented in the [Full Guide](./full-guide_EN.md).
 
+### Install as an agent plugin
+
+This repo ships an agent-agnostic marketplace at [`.agents/plugins/marketplace.json`](../.agents/plugins/marketplace.json). The plugin lives in [`plugin/`](../plugin/). The `stock_analyzer` skill **drives an already deployed and configured DSA checkout** (or a running DSA service); it does not ship the `src/` runtime. Marketplace installs typically cache only `plugin/`. The skill body is at `plugin/skills/stock_analyzer/SKILL.md`; repo-root `SKILL.md` is a plain-file copy for OpenClaw/docs and `core.symlinks=false` checkouts. Repo-maintenance skills (`analyze-issue`, etc.) are not shipped in the plugin.
+
+**Codex:**
+
+```bash
+codex plugin marketplace add ZhuLinsen/daily_stock_analysis
+codex plugin add daily-stock-analysis@daily-stock-analysis
+```
+
+**Claude Code:**
+
+```bash
+/plugin marketplace add ZhuLinsen/daily_stock_analysis
+/plugin install daily-stock-analysis@daily-stock-analysis
+```
+
+Local checkout: `codex plugin marketplace add /path/to/daily_stock_analysis`. Before using the skill, deploy and configure DSA per the [Full Guide](./full-guide_EN.md), or point the agent at an existing checkout via `DSA_REPO_ROOT` / asking the user (examples `chdir` into that root so relative `DATABASE_PATH` / market-review locks match the Web process). In-chat market review with `send_notification=False` requires a checkout that supports that parameter; older checkouts such as v3.35.0 should be updated first to avoid `TypeError` or accidental pushes. For HTTP, see [OpenClaw integration](./openclaw-skill-integration.md) / [Grok Bot integration](./grok-bot-integration.md): in-chat stock analysis must send `"notify": false`, and market review must send `"send_notification": false`. The optional read-only MCP server (`python -m src.mcp_server`, dependency `mcp>=1.0.0,<2`) is likewise configured manually from a full checkout per the [Full Guide](./full-guide_EN.md#read-only-mcp-stdio-server-optional); it is not bundled in the plugin package.
+
 ## 📱 Sample Output
 
 ### Decision Dashboard
