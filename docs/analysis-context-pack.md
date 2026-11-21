@@ -130,7 +130,7 @@ P3 当时不持久化完整 pack，不新增 API/Web/Bot/Desktop 字段，不改
 
 **四级降级语义（全部 fail-open）：**1) 开关关 → 不抓数不注入；2) service 异常/超时 → `risk_appetite="unknown"` 最小上下文，渲染降级文案；3) 单组资产失败 → 该组 `data_quality.error` + `limitations` 登记，其余组照常；4) 单 ticker 失败 → 该项 `status="not_supported"`，不阻塞同组其他项。
 
-**限制：**risk_off 判定基于收盘/延迟数据（以 `as_of`/`stale` 显式标注）；免费源 A50 为尽力而为；`CROSS_ASSET_CONTEXT_TIMEOUT_SECONDS` 是条目/组之间的协作式软上限（单次 yfinance 请求无硬超时）；一期不含 risk-off 后验置信度校准（prompt 内约束行先行）、不含 Agent 链注入与 Web/API 展示。回滚方式为关闭 `CROSS_ASSET_CONTEXT_ENABLED`（全链路短路）或撤销本节相关提交。
+**限制：**risk_off 判定基于收盘/延迟数据（以 `as_of`/`stale` 显式标注）；免费源 A50 为尽力而为；一期单 provider 下 `cn`/`jp`/`kr`/`tw` 最多产出 2 票（单指数 + VIX），按 3 票阈值 `risk_appetite` 保持 `unknown`；`yfinance` 固定拉取近 5 日窗口，早于窗口的历史目标日期会降级为无数据；`CROSS_ASSET_CONTEXT_TIMEOUT_SECONDS` 是条目/组之间的协作式软上限（单次 yfinance 请求无硬超时），`timeout`/`stale` 调整在缓存未命中时生效；一期不含 risk-off 后验置信度校准（prompt 内约束行先行）、不含 Agent 链注入与 Web/API 展示。回滚方式为关闭 `CROSS_ASSET_CONTEXT_ENABLED`（全链路短路）或撤销本节相关提交。
 
 ## P4 历史记录、任务状态与 Web 可见性
 

@@ -1544,6 +1544,14 @@ const settingsHelpEnUS: SettingsHelpMap = {
     impact: ['Affects some A-share base data, stock lists, and enrichment data.'],
     notes: ['Do not commit the token or print it in public logs.'],
   },
+  'settings.data_source.CROSS_ASSET_CONTEXT_ENABLED': {
+    title: 'Cross-Asset Context',
+    summary: 'Inject a low-sensitivity cross-asset summary (indices / VIX / US 10Y) into stock analysis for risk appetite calibration.',
+    usage: 'Disabled by default (opt-in) with zero behavior change when unset. When enabled, provider failures fail open to an unknown minimal context without interrupting analysis.',
+    valueNotes: ['Provides low-sensitivity risk appetite calibration only; never creates direct buy/sell rules.'],
+    impact: ['Adds a small number of external market-data requests per stock analysis when enabled.'],
+    notes: ['When disabled, stock analysis omits cross-asset context.'],
+  },
   'settings.data_source.TICKPLUS_API_KEY': {
     title: 'TickPlus API Key (Recommended)',
     summary: 'Preferred A-share/ETF daily bars, realtime indicators and names; ETF rotation uses forward adjustment.',
