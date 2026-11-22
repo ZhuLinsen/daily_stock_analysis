@@ -25,6 +25,7 @@ from src.schemas.factor_contract import (
     FactorFieldStatus,
     FactorScoreMap,
     FactorSnapshot,
+    FiniteFloatMap,
     normalize_contract_timestamp,
 )
 from src.services.screening.factor_mapping import (
@@ -741,6 +742,92 @@ def test_non_finite_floats_rejected_on_all_float_surfaces() -> None:
             FactorDataQuality(coverage=bad_value)
         with pytest.raises(ValidationError):
             FactorDataQuality(missing_rate=bad_value)
+
+
+@pytest.mark.unit
+def test_in_place_non_finite_writes_are_rejected_on_float_dicts() -> None:
+    """Regression for OR-COR-57d4e9b1: an in-place non-finite write
+    into effective_factor_weights or params must fail —
+    allow_inf_nan=False only bites at field validation, so a plain
+    dict accepted the write and the dumped JSON exported the entry
+    as null, which the same contract then refused to read back."""
+    run = screen_result_to_pool_run(
+        _screen_result(effective_factor_weights={"value": 1.0})
+    )
+    definition = factor_definitions()[0]
+    assert isinstance(run.effective_factor_weights, FiniteFloatMap)
+    assert isinstance(definition.params, FiniteFloatMap)
+
+    for bad_value in (float("nan"), float("inf"), float("-inf")):
+        with pytest.raises(ValueError, match="non-finite"):
+            run.effective_factor_weights["value"] = bad_value
+        with pytest.raises(ValueError, match="non-finite"):
+            definition.params["base"] = bad_value
+    assert run.effective_factor_weights == {"value": 1.0}
+    assert definition.params == {}
+    CandidatePoolRun.model_validate_json(run.model_dump_json())
+    FactorDefinition.model_validate_json(definition.model_dump_json())
+
+    # The same guard applies to the other mutating dict writes.
+    with pytest.raises(ValueError, match="non-finite"):
+        run.effective_factor_weights.update({"value": float("nan")})
+    assert run.effective_factor_weights == {"value": 1.0}
+    CandidatePoolRun.model_validate_json(run.model_dump_json())
+
+
+@pytest.mark.unit
+def test_omitted_float_dicts_still_get_the_validating_map() -> None:
+    """Regression for OR-COR-57d4e9b1 (omitted path): a run or
+    definition built — or JSON-read — with the float dict omitted
+    must still guard in-place writes. The default used to skip
+    field validation, so both omitted paths returned a plain dict."""
+    omitted_run = CandidatePoolRun(
+        run_id="a1b2c3d4e5f6", strategy="balanced_alpha", market="cn"
+    )
+    omitted_definition = FactorDefinition(
+        factor_id="value",
+        name="Value",
+        category=FactorCategory.VALUATION,
+        unit="score_0_100",
+        definition="PE/PB cross-sectional rank score.",
+        source="screening.scorer:factor_value_score",
+    )
+    from_json_run = CandidatePoolRun.model_validate_json(
+        json.dumps(
+            {
+                "run_id": "a1b2c3d4e5f6",
+                "strategy": "balanced_alpha",
+                "market": "cn",
+            }
+        )
+    )
+    from_json_definition = FactorDefinition.model_validate_json(
+        json.dumps(
+            {
+                "factor_id": "value",
+                "name": "Value",
+                "category": "valuation",
+                "unit": "score_0_100",
+                "definition": "PE/PB cross-sectional rank score.",
+                "source": "screening.scorer:factor_value_score",
+            }
+        )
+    )
+    for mapping in (
+        omitted_run.effective_factor_weights,
+        from_json_run.effective_factor_weights,
+        omitted_definition.params,
+        from_json_definition.params,
+    ):
+        assert isinstance(mapping, FiniteFloatMap)
+        assert mapping == {}
+        with pytest.raises(ValueError, match="non-finite"):
+            mapping["value"] = float("nan")
+        assert mapping == {}
+    CandidatePoolRun.model_validate_json(omitted_run.model_dump_json())
+    FactorDefinition.model_validate_json(
+        omitted_definition.model_dump_json()
+    )
 
 
 @pytest.mark.unit

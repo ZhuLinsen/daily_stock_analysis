@@ -15,6 +15,7 @@ is guarded, so updates are trusted-only.
 
 from __future__ import annotations
 
+import math
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Literal, Mapping
@@ -94,6 +95,63 @@ class FactorFieldStatus(str, Enum):
     STALE = "stale"
 
 
+class FiniteFloatMap(dict[str, float]):
+    """A float mapping that refuses non-finite values on every write.
+
+    ``allow_inf_nan=False`` only bites at field validation, so an
+    in-place ``run.effective_factor_weights[key] = float("nan")``
+    (or ``definition.params[key] = float("nan")``) used to be
+    accepted and the dumped JSON exported the entry as null, which
+    the same contract then refused to read back (OR-COR-57d4e9b1).
+    This mapping enforces finiteness on every mutating write; reads
+    behave like a plain dict.
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        data = dict(*args, **kwargs)
+        for key, value in data.items():
+            self._check(key, value)
+        super().__init__(data)
+
+    @staticmethod
+    def _check(key: str, value: float) -> None:
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+        ):
+            raise ValueError(f"non-finite value for {key!r}: {value!r}")
+
+    def __setitem__(self, key: str, value: float) -> None:
+        self._check(key, value)
+        super().__setitem__(key, value)
+
+    def update(self, *args: Any, **kwargs: Any) -> None:
+        # Check every pair first so a rejected update applies nothing.
+        data = dict(*args, **kwargs)
+        for key, value in data.items():
+            self._check(key, value)
+        super().update(data)
+
+    def setdefault(
+        self, key: str, default: float | None = None
+    ) -> float | None:
+        if key in self:
+            return self[key]
+        if default is None:
+            raise ValueError(f"cannot set {key!r} to a None value")
+        self._check(key, default)
+        super().__setitem__(key, default)
+        return default
+
+    def __ior__(self, other: Any) -> "FiniteFloatMap":
+        data = dict(other)
+        for key, value in data.items():
+            self._check(key, value)
+        super().__ior__(data)
+        return self
+
+
 class FactorDefinition(_FactorContractModel):
     """Identity and computation provenance of one factor.
 
@@ -110,8 +168,30 @@ class FactorDefinition(_FactorContractModel):
     version: str = "1"
     source: str
     window: str | None = None
-    params: dict[str, float] = Field(default_factory=dict)
+    # validate_default=True: the default must run through the field
+    # validator too — otherwise a definition built (or JSON-read)
+    # with params omitted gets a plain dict, and an in-place
+    # ``definition.params[key] = float("nan")`` is accepted while
+    # the dumped JSON exports the entry as null and the same
+    # contract refuses to read it back (OR-COR-57d4e9b1). The
+    # validator installs FiniteFloatMap, so the default is guarded
+    # as well.
+    params: dict[str, float] = Field(default_factory=dict, validate_default=True)
     factor_set_version: str = FACTOR_SET_VERSION
+
+    @field_validator("params", mode="after")
+    @classmethod
+    def _params_are_finite(
+        cls, params: dict[str, float]
+    ) -> dict[str, float]:
+        # A field validator, not a model validator: with
+        # validate_assignment=True a model validator runs after the
+        # field is already set, so a rejected assignment left the
+        # invalid params in place. The value is returned as a
+        # FiniteFloatMap so later in-place writes
+        # (``definition.params[key] = value``) keep enforcing the
+        # same invariant — the validator never runs for those.
+        return FiniteFloatMap(params)
 
 
 class FactorDataQuality(_FactorContractModel):
@@ -298,7 +378,17 @@ class CandidatePoolRun(_FactorContractModel):
     strategy_category: str = ""
     market: str
     factor_set_version: str = FACTOR_SET_VERSION
-    effective_factor_weights: dict[str, float] = Field(default_factory=dict)
+    # validate_default=True: the default must run through the field
+    # validator too — otherwise a run built (or JSON-read) with
+    # effective_factor_weights omitted gets a plain dict, and an
+    # in-place ``run.effective_factor_weights[key] = float("nan")``
+    # is accepted while the dumped JSON exports the entry as null
+    # and the same contract refuses to read it back
+    # (OR-COR-57d4e9b1). The validator installs FiniteFloatMap, so
+    # the default is guarded as well.
+    effective_factor_weights: dict[str, float] = Field(
+        default_factory=dict, validate_default=True
+    )
     candidate_count: int = Field(default=0, ge=0)
     snapshot_count: int = Field(default=0, ge=0)
     after_filter_count: int = Field(default=0, ge=0)
@@ -311,6 +401,18 @@ class CandidatePoolRun(_FactorContractModel):
     normalize_created_at = field_validator("created_at", mode="after")(
         _normalize_timestamp_field
     )
+
+    @field_validator("effective_factor_weights", mode="after")
+    @classmethod
+    def _weights_are_finite(
+        cls, weights: dict[str, float]
+    ) -> dict[str, float]:
+        # Same pattern as FactorDefinition._params_are_finite: the
+        # value is returned as a FiniteFloatMap so later in-place
+        # writes (``run.effective_factor_weights[key] = value``)
+        # keep enforcing finiteness — the validator never runs for
+        # those.
+        return FiniteFloatMap(weights)
 
     def to_safe_dict(self) -> dict[str, Any]:
         """Return a JSON-safe dict with sensitive mapping values redacted."""
