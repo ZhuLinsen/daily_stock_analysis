@@ -291,7 +291,36 @@ class SearchResponse:
 
 class BaseSearchProvider(ABC):
     """搜索引擎基类"""
-    
+
+    # 单个 Key 连续错误达到该次数后，轮询时优先跳过
+    _KEY_MAX_ERRORS = 3
+
+    # 命中这些特征的失败视为 Key 级失效（鉴权 / 配额 / 限流），
+    # 允许在同一次搜索内切到下一个 Key 重试，而不是直接返回失败。
+    _KEY_FAILURE_MARKERS = (
+        "api key",
+        "apikey",
+        "api_key",
+        "invalid key",
+        "unauthorized",
+        "forbidden",
+        "authentication",
+        "permission",
+        "quota",
+        "rate limit",
+        "ratelimit",
+        "run out of searches",
+        "out of searches",
+        "insufficient",
+        "not enough",
+        "exceeded",
+        "plan limit",
+        "401",
+        "402",
+        "403",
+        "429",
+    )
+
     def __init__(self, api_keys: List[str], name: str):
         """
         初始化搜索引擎
@@ -329,8 +358,8 @@ class BaseSearchProvider(ABC):
             # 最多尝试所有 key
             for _ in range(len(self._api_keys)):
                 key = next(self._key_cycle)
-                # 跳过错误次数过多的 key（超过 3 次）
-                if self._key_errors.get(key, 0) < 3:
+                # 跳过错误次数过多的 key
+                if self._key_errors.get(key, 0) < self._KEY_MAX_ERRORS:
                     return key
             
             # 所有 key 都有问题，重置错误计数并返回第一个
@@ -358,6 +387,14 @@ class BaseSearchProvider(ABC):
         """执行搜索（子类实现）"""
         pass
     
+    @classmethod
+    def _is_key_failure(cls, error_message: Optional[str]) -> bool:
+        """判断失败是否属于 Key 级问题（可用另一个 Key 重试）。"""
+        text = (error_message or "").strip().lower()
+        if not text:
+            return False
+        return any(marker in text for marker in cls._KEY_FAILURE_MARKERS)
+
     def _execute_search(
         self,
         query: str,
@@ -367,9 +404,9 @@ class BaseSearchProvider(ABC):
         api_key: Optional[str] = None,
         **search_kwargs: Any,
     ) -> SearchResponse:
-        """Run the shared search flow with an optional preselected API key."""
-        api_key = api_key or self._get_next_key()
-        if not api_key:
+        """Run the shared search flow, failing over to another key when one is unusable."""
+        primary_key = api_key or self._get_next_key()
+        if not primary_key:
             return SearchResponse(
                 query=query,
                 results=[],
@@ -379,31 +416,60 @@ class BaseSearchProvider(ABC):
             )
 
         start_time = time.time()
-        try:
-            response = self._do_search(query, api_key, max_results, days=days, **search_kwargs)
-            response.search_time = time.time() - start_time
+        attempted_keys: List[str] = []
+        max_attempts = max(len(self._api_keys), 1)
+        current_key: Optional[str] = primary_key
+        last_response: Optional[SearchResponse] = None
+
+        while current_key and current_key not in attempted_keys and len(attempted_keys) < max_attempts:
+            attempted_keys.append(current_key)
+
+            try:
+                response = self._do_search(
+                    query, current_key, max_results, days=days, **search_kwargs
+                )
+                response.search_time = time.time() - start_time
+            except Exception as e:
+                logger.error("[%s] 搜索 '%s' 使用当前 Key 失败: %s", self._name, query, e)
+                response = SearchResponse(
+                    query=query,
+                    results=[],
+                    provider=self._name,
+                    success=False,
+                    error_message=str(e),
+                    search_time=time.time() - start_time,
+                )
 
             if response.success:
                 response.mark_retrieved()
-                self._record_success(api_key)
+                self._record_success(current_key)
                 logger.info(f"[{self._name}] 搜索 '{query}' 成功，返回 {len(response.results)} 条结果，耗时 {response.search_time:.2f}s")
-            else:
-                self._record_error(api_key)
+                return response
 
-            return response
+            self._record_error(current_key)
+            last_response = response
+            next_key = self._get_next_key() if self._is_key_failure(response.error_message) else None
+            if not next_key or next_key in attempted_keys:
+                break
+            logger.warning(
+                "[%s] API Key %s... 不可用（%s），切换到下一个 Key 重试",
+                self._name,
+                current_key[:8],
+                response.error_message,
+            )
+            current_key = next_key
 
-        except Exception as e:
-            self._record_error(api_key)
-            elapsed = time.time() - start_time
-            logger.error(f"[{self._name}] 搜索 '{query}' 失败: {e}")
-            return SearchResponse(
+        if last_response is None:
+            last_response = SearchResponse(
                 query=query,
                 results=[],
                 provider=self._name,
                 success=False,
-                error_message=str(e),
-                search_time=elapsed
+                error_message=f"{self._name} 未配置可用的 API Key",
+                search_time=time.time() - start_time,
             )
+        return last_response
+
 
     def search(self, query: str, max_results: int = 5, days: int = 7) -> SearchResponse:
         """
@@ -521,43 +587,13 @@ class TavilySearchProvider(BaseSearchProvider):
         if topic is None:
             return super().search(query, max_results=max_results, days=days)
 
-        api_key = self._get_next_key()
-        if not api_key:
-            return SearchResponse(
-                query=query,
-                results=[],
-                provider=self._name,
-                success=False,
-                error_message=f"{self._name} 未配置 API Key"
-            )
+        return self._execute_search(
+            query,
+            max_results=max_results,
+            days=days,
+            topic=topic,
+        )
 
-        start_time = time.time()
-        try:
-            response = self._do_search(query, api_key, max_results, days=days, topic=topic)
-            response.search_time = time.time() - start_time
-
-            if response.success:
-                response.mark_retrieved()
-                self._record_success(api_key)
-                logger.info(f"[{self._name}] 搜索 '{query}' 成功，返回 {len(response.results)} 条结果，耗时 {response.search_time:.2f}s")
-            else:
-                self._record_error(api_key)
-
-            return response
-
-        except Exception as e:
-            self._record_error(api_key)
-            elapsed = time.time() - start_time
-            logger.error(f"[{self._name}] 搜索 '{query}' 失败: {e}")
-            return SearchResponse(
-                query=query,
-                results=[],
-                provider=self._name,
-                success=False,
-                error_message=str(e),
-                search_time=elapsed
-            )
-    
     @staticmethod
     def _extract_domain(url: str) -> str:
         """从 URL 提取域名作为来源"""
@@ -667,6 +703,17 @@ class SerpAPISearchProvider(BaseSearchProvider):
             
             # 记录原始响应到日志
             logger.debug(f"[SerpAPI] 原始响应 keys: {response.keys()}")
+
+            # SerpAPI 鉴权失败 / 配额用尽时不会抛异常，而是在响应里返回 error
+            response_error = response.get('error')
+            if response_error:
+                return SearchResponse(
+                    query=query,
+                    results=[],
+                    provider=self.name,
+                    success=False,
+                    error_message=str(response_error),
+                )
             
             # 解析结果
             results = []

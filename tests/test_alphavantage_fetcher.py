@@ -113,6 +113,34 @@ class TestAlphaVantageFetcherFetchRaw(unittest.TestCase):
         with self.assertRaises(DataFetchError):
             self.fetcher._fetch_raw_data('AAPL', '2024-06-10', '2024-06-11')
 
+    @patch('data_provider.alphavantage_fetcher.requests.get')
+    def test_fetch_raw_fails_over_when_key_is_rate_limited(self, mock_get):
+        from data_provider.api_key_pool import ApiKeyPool
+        self.fetcher._key_pool = ApiKeyPool(["key-day-limit", "key-ok"])
+        self.fetcher.random_sleep = lambda *args, **kwargs: None
+        mock_get.side_effect = [
+            _make_mock_response({
+                'Note': 'Our standard API call frequency is 25 calls per day.',
+            }),
+            _make_mock_response({
+                'Time Series (Daily)': {
+                    '2024-06-11': {
+                        '1. open': '151.0', '2. high': '153.0',
+                        '3. low': '150.0', '4. close': '152.0',
+                        '5. volume': '1200000',
+                    },
+                },
+            }),
+        ]
+
+        df = self.fetcher._fetch_raw_data('AAPL', '2024-06-10', '2024-06-11')
+
+        self.assertFalse(df.empty)
+        self.assertEqual(
+            [call.kwargs['params']['apikey'] for call in mock_get.call_args_list],
+            ["key-day-limit", "key-ok"],
+        )
+
 
 class TestAlphaVantageFetcherRealtimeQuote(unittest.TestCase):
     """Test get_realtime_quote with mocked HTTP."""
@@ -190,6 +218,14 @@ class TestAlphaVantageFetcherInit(unittest.TestCase):
         from data_provider.alphavantage_fetcher import AlphaVantageFetcher
         f = AlphaVantageFetcher()
         self.assertIsNone(f._api_key)
+
+    @patch('src.config.get_config')
+    def test_init_with_multiple_keys(self, mock_config):
+        mock_config.return_value = MagicMock(alphavantage_api_key='key-a,key-b,key-c')
+        from data_provider.alphavantage_fetcher import AlphaVantageFetcher
+        f = AlphaVantageFetcher()
+        self.assertEqual(f._key_pool.keys, ['key-a', 'key-b', 'key-c'])
+        self.assertEqual(f._api_key, 'key-a')
 
 
 class TestAlphaVantageFetcherNewestFirst(unittest.TestCase):

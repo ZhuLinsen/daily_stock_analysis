@@ -326,6 +326,9 @@ jobs:
           LONGBRIDGE_PRINT_QUOTE_PACKAGES: ${{ vars.LONGBRIDGE_PRINT_QUOTE_PACKAGES || secrets.LONGBRIDGE_PRINT_QUOTE_PACKAGES }}
           # FXMacroData（Agent 宏观数据工具的可选授权；不设则仅使用公开 USD 数据）
           FXMACRODATA_API_KEY: ${{ secrets.FXMACRODATA_API_KEY }}
+          # Finnhub / AlphaVantage（美股数据源；可用英文逗号分隔多个 Key，失效自动切换）
+          FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
+          ALPHAVANTAGE_API_KEY: ${{ secrets.ALPHAVANTAGE_API_KEY }}
           
           # ==========================================
           # 搜索服务

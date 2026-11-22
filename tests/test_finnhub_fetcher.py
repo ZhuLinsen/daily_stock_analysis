@@ -103,6 +103,33 @@ class TestFinnhubFetcherFetchRaw(unittest.TestCase):
         with self.assertRaises(DataFetchError):
             self.fetcher._fetch_raw_data('AAPL', '2024-06-10', '2024-06-11')
 
+    @patch('data_provider.finnhub_fetcher.requests.get')
+    def test_fetch_raw_fails_over_to_next_key(self, mock_get):
+        from data_provider.api_key_pool import ApiKeyPool
+        self.fetcher._key_pool = ApiKeyPool(["bad_key", "good_key"])
+        self.fetcher.random_sleep = lambda *args, **kwargs: None
+        mock_get.side_effect = [
+            Exception("401 Client Error: Unauthorized"),
+            _make_mock_response({
+                'c': [150.0],
+                'h': [151.0],
+                'l': [149.0],
+                'o': [149.5],
+                't': [1718000000],
+                'v': [1000000],
+                's': 'ok',
+            }),
+        ]
+
+        df = self.fetcher._fetch_raw_data('AAPL', '2024-06-10', '2024-06-11')
+
+        self.assertFalse(df.empty)
+        self.assertEqual(
+            [call.kwargs['params']['token'] for call in mock_get.call_args_list],
+            ["bad_key", "good_key"],
+        )
+        self.assertEqual(self.fetcher._key_pool.error_counts()["bad_key"], 1)
+
 
 class TestFinnhubFetcherRealtimeQuote(unittest.TestCase):
     """Test get_realtime_quote with mocked HTTP."""
@@ -188,6 +215,14 @@ class TestFinnhubFetcherInit(unittest.TestCase):
         from data_provider.finnhub_fetcher import FinnhubFetcher
         f = FinnhubFetcher()
         self.assertIsNone(f._api_key)
+
+    @patch('src.config.get_config')
+    def test_init_with_multiple_keys(self, mock_config):
+        mock_config.return_value = Config(finnhub_api_key='key-a,key-b')
+        from data_provider.finnhub_fetcher import FinnhubFetcher
+        f = FinnhubFetcher()
+        self.assertEqual(f._key_pool.keys, ['key-a', 'key-b'])
+        self.assertEqual(f._api_key, 'key-a')
 
 
 class TestFinnhubFetcherRegistration(unittest.TestCase):

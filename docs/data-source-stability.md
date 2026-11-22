@@ -195,6 +195,8 @@ FINNHUB_API_KEY=your_finnhub_key
 ALPHAVANTAGE_API_KEY=your_alphavantage_key
 ```
 
+> Finnhub / AlphaVantage 都支持配置多个 Key（英文逗号分隔，例如 `FINNHUB_API_KEY=key_a,key_b`）。当前 Key 鉴权失败、配额用尽或被限流时，同一次请求内会自动切换到下一个 Key；连续失败 3 次的 Key 在后续轮询中优先跳过。
+
 如果仍使用 Legacy Longbridge 凭证，也可以继续配置：
 
 ```env

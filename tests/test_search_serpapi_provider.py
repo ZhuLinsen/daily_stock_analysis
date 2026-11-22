@@ -40,6 +40,25 @@ def _fake_serpapi_module() -> ModuleType:
     return module
 
 
+class _KeyedFakeGoogleSearch:
+    """Fake GoogleSearch returning a payload per api_key."""
+
+    responses_by_key = {}
+    init_params = []
+
+    def __init__(self, params):
+        self.params = params
+        type(self).init_params.append(params)
+
+    def get_dict(self):
+        return type(self).responses_by_key.get(self.params.get("api_key"), {})
+
+    @classmethod
+    def reset(cls, responses_by_key=None) -> None:
+        cls.responses_by_key = dict(responses_by_key or {})
+        cls.init_params = []
+
+
 class TestSerpAPISearchProvider(unittest.TestCase):
     """Tests for provider-specific organic content fetch behavior."""
 
@@ -47,6 +66,12 @@ class TestSerpAPISearchProvider(unittest.TestCase):
         _FakeGoogleSearch.reset()
         _FakeGoogleSearch.response_payload = payload
         return patch.dict(sys.modules, {"serpapi": _fake_serpapi_module()})
+
+    def _patch_keyed_serpapi(self, responses_by_key):
+        _KeyedFakeGoogleSearch.reset(responses_by_key)
+        module = ModuleType("serpapi")
+        module.GoogleSearch = _KeyedFakeGoogleSearch
+        return patch.dict(sys.modules, {"serpapi": module})
 
     def test_provider_skips_body_fetch_when_snippet_is_sufficient(self) -> None:
         provider = SerpAPISearchProvider(["dummy_key"])
@@ -533,6 +558,47 @@ class TestSerpAPISearchProvider(unittest.TestCase):
         )
         self.assertEqual(resp.results[0].snippet, "摘要过短")
         self.assertEqual(resp.results[1].snippet, "仍然很短")
+
+    def test_response_error_is_reported_as_failure(self) -> None:
+        provider = SerpAPISearchProvider(["dummy_key"])
+
+        with self._patch_serpapi(
+            {"error": "Your account has run out of searches."}
+        ):
+            resp = provider.search("贵州茅台 最新消息", max_results=3)
+
+        self.assertFalse(resp.success)
+        self.assertEqual(resp.results, [])
+        self.assertIn("run out of searches", resp.error_message or "")
+
+    def test_exhausted_key_fails_over_to_next_key(self) -> None:
+        provider = SerpAPISearchProvider(["exhausted_key", "healthy_key"])
+
+        with self._patch_keyed_serpapi(
+            {
+                "exhausted_key": {"error": "Your account has run out of searches."},
+                "healthy_key": {
+                    "organic_results": [
+                        {
+                            "title": "茅台发布季度报告",
+                            "link": "https://example.com/moutai",
+                            "snippet": "这是一段足够长的摘要。 " * 12,
+                            "source": "Example",
+                        }
+                    ]
+                },
+            }
+        ), patch("src.search_service.fetch_url_content") as mock_fetch:
+            resp = provider.search("贵州茅台 最新消息", max_results=3)
+
+        self.assertTrue(resp.success)
+        self.assertEqual(len(resp.results), 1)
+        self.assertEqual(resp.results[0].url, "https://example.com/moutai")
+        self.assertEqual(
+            [params["api_key"] for params in _KeyedFakeGoogleSearch.init_params],
+            ["exhausted_key", "healthy_key"],
+        )
+        mock_fetch.assert_not_called()
 
 
 if __name__ == "__main__":

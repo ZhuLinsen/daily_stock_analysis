@@ -221,8 +221,8 @@ journalctl -u stock-analyzer -f
 | `SCHEDULE_ENABLED` | `false` | Enable scheduled tasks |
 | `SCHEDULE_TIME` | `18:00` | Daily execution time |
 | `MARKET_REVIEW_ENABLED` | `true` | Enable market review |
-| `AIHUBMIX_KEY` | - | AIHubMix one-key multi-model access |
-| `SERPAPI_API_KEYS` | - | SerpAPI realtime financial news search (recommended) |
+| `AIHUBMIX_KEY` | - | AIHubMix one-key multi-model access (recommended) |
+| `SERPAPI_API_KEYS` | - | SerpAPI realtime financial news search (recommended; comma-separated keys fail over automatically when one is invalid or out of quota) |
 | `ANSPIRE_API_KEYS` | - | [Anspire](https://open.anspire.cn/dsa?share_code=QFBC0FYC) API key (optional; shared by LLM and search; availability depends on account permissions) |
 | `TAVILY_API_KEYS` | - | Tavily news search (optional) |
 | `MINIMAX_API_KEYS` | - | MiniMax search (optional) |

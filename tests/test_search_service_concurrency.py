@@ -72,6 +72,100 @@ class _DummyProvider(BaseSearchProvider):
         )
 
 
+class _KeyAwareProvider(BaseSearchProvider):
+    """Provider used to verify intra-request failover between API keys."""
+
+    def __init__(self, api_keys, failing_key, error_message="Your account has run out of searches."):
+        super().__init__(api_keys, "KeyAwareProvider")
+        self.failing_key = failing_key
+        self.error_message = error_message
+        self.calls = []
+
+    def _do_search(self, query: str, api_key: str, max_results: int, days: int = 7) -> SearchResponse:
+        self.calls.append(api_key)
+        if api_key == self.failing_key:
+            return SearchResponse(
+                query=query,
+                results=[],
+                provider=self.name,
+                success=False,
+                error_message=self.error_message,
+            )
+        return SearchResponse(
+            query=query,
+            results=[
+                SearchResult(
+                    title=f"{api_key}:{query}",
+                    snippet="snippet",
+                    url=f"https://example.com/{api_key}",
+                    source="example.com",
+                )
+            ],
+            provider=self.name,
+            success=True,
+        )
+
+
+class SearchProviderKeyFailoverTestCase(unittest.TestCase):
+    """Key-level failures should fail over to the next configured key."""
+
+    def test_fails_over_to_next_key_when_current_key_is_exhausted(self):
+        provider = _KeyAwareProvider(["key-1", "key-2"], failing_key="key-1")
+
+        response = provider.search("query", max_results=1)
+
+        self.assertTrue(response.success)
+        self.assertEqual(provider.calls, ["key-1", "key-2"])
+        self.assertEqual(provider._key_errors["key-1"], 1)
+        self.assertEqual(provider._key_usage["key-2"], 1)
+
+    def test_does_not_fail_over_on_non_key_error(self):
+        provider = _KeyAwareProvider(
+            ["key-1", "key-2"],
+            failing_key="key-1",
+            error_message="Connection timed out",
+        )
+
+        response = provider.search("query", max_results=1)
+
+        self.assertFalse(response.success)
+        self.assertEqual(provider.calls, ["key-1"])
+
+    def test_failed_key_is_skipped_after_error_threshold(self):
+        provider = _KeyAwareProvider(["key-1", "key-2"], failing_key="key-1")
+
+        for _ in range(provider._KEY_MAX_ERRORS):
+            self.assertTrue(provider.search("query", max_results=1).success)
+
+        provider.calls.clear()
+        response = provider.search("query", max_results=1)
+
+        self.assertTrue(response.success)
+        self.assertEqual(provider.calls, ["key-2"])
+
+    def test_returns_last_error_when_all_keys_fail(self):
+        provider = _KeyAwareProvider(
+            ["key-1", "key-2"],
+            failing_key="key-1",
+            error_message="Invalid API key",
+        )
+        provider._do_search = MagicMock(
+            side_effect=lambda query, api_key, max_results, days=7: SearchResponse(
+                query=query,
+                results=[],
+                provider=provider.name,
+                success=False,
+                error_message=f"Invalid API key: {api_key}",
+            )
+        )
+
+        response = provider.search("query", max_results=1)
+
+        self.assertFalse(response.success)
+        self.assertEqual(provider._do_search.call_count, 2)
+        self.assertIn("Invalid API key", response.error_message or "")
+
+
 class SearchServiceConcurrencyTestCase(unittest.TestCase):
     def tearDown(self) -> None:
         reset_search_service()

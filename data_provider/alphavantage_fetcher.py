@@ -15,6 +15,7 @@ from typing import Optional
 import pandas as pd
 import requests
 
+from .api_key_pool import ApiKeyPool, describe_request_error, parse_api_keys
 from .base import BaseFetcher, DataFetchError, STANDARD_COLUMNS
 from .realtime_types import UnifiedRealtimeQuote, RealtimeSource
 from .us_index_mapping import is_us_stock_code
@@ -31,9 +32,22 @@ class AlphaVantageFetcher(BaseFetcher):
     def __init__(self):
         from src.config import get_config
         config = get_config()
-        self._api_key = getattr(config, 'alphavantage_api_key', None) or os.getenv('ALPHAVANTAGE_API_KEY')
-        if not self._api_key:
+        self._key_pool = ApiKeyPool(
+            parse_api_keys(getattr(config, 'alphavantage_api_keys', None))
+            or parse_api_keys(getattr(config, 'alphavantage_api_key', None))
+            or parse_api_keys(os.getenv('ALPHAVANTAGE_API_KEY'))
+        )
+        if not self._key_pool.is_configured:
             logger.debug("[AlphaVantage] API key not configured, fetcher disabled")
+
+    @property
+    def _api_key(self) -> Optional[str]:
+        """当前主 Key（兼容单 Key 读取）。"""
+        return self._key_pool.primary
+
+    @_api_key.setter
+    def _api_key(self, value: Optional[str]) -> None:
+        self._key_pool = ApiKeyPool(parse_api_keys(value))
 
     def _is_us_stock(self, stock_code: str) -> bool:
         return is_us_stock_code(stock_code)
@@ -45,11 +59,24 @@ class AlphaVantageFetcher(BaseFetcher):
             raise DataFetchError(f"[AlphaVantage] {stock_code} is not a US stock")
 
         symbol = stock_code.strip().upper()
+        return self._key_pool.call(
+            lambda api_key: self._request_daily_series(
+                symbol, start_date, end_date, api_key
+            )
+        )
+
+    def _request_daily_series(
+        self,
+        symbol: str,
+        start_date: str,
+        end_date: str,
+        api_key: str,
+    ) -> pd.DataFrame:
         params = {
             'function': 'TIME_SERIES_DAILY',
             'symbol': symbol,
             'outputsize': 'compact',
-            'apikey': self._api_key,
+            'apikey': api_key,
         }
 
         try:
@@ -58,7 +85,9 @@ class AlphaVantageFetcher(BaseFetcher):
             resp.raise_for_status()
             data = resp.json()
         except Exception as e:
-            raise DataFetchError(f"[AlphaVantage] HTTP request failed for {symbol}: {e}") from e
+            raise DataFetchError(
+                f"[AlphaVantage] HTTP request failed for {symbol}: {describe_request_error(e)}"
+            ) from e
 
         if 'Note' in data:
             raise DataFetchError(f"[AlphaVantage] Rate limited: {data['Note']}")
@@ -119,16 +148,11 @@ class AlphaVantageFetcher(BaseFetcher):
 
         symbol = stock_code.strip().upper()
         try:
-            self.random_sleep(0.5, 1.5)
-            resp = requests.get(_AV_BASE_URL, params={
-                'function': 'GLOBAL_QUOTE',
-                'symbol': symbol,
-                'apikey': self._api_key,
-            }, timeout=15)
-            resp.raise_for_status()
-            data = resp.json()
+            data = self._key_pool.call(
+                lambda api_key: self._request_global_quote(symbol, api_key)
+            )
         except Exception as e:
-            logger.warning(f"[AlphaVantage] Realtime quote failed for {symbol}: {e}")
+            logger.warning(f"[AlphaVantage] Realtime quote failed for {symbol}: {describe_request_error(e)}")
             return None
 
         gq = data.get('Global Quote', {})
@@ -164,18 +188,41 @@ class AlphaVantageFetcher(BaseFetcher):
 
         symbol = stock_code.strip().upper()
         try:
-            resp = requests.get(_AV_BASE_URL, params={
-                'function': 'SYMBOL_SEARCH',
-                'keywords': symbol,
-                'apikey': self._api_key,
-            }, timeout=10)
-            resp.raise_for_status()
-            data = resp.json()
+            data = self._key_pool.call(
+                lambda api_key: self._request_symbol_search(symbol, api_key)
+            )
         except Exception as e:
-            logger.debug(f"[AlphaVantage] Symbol search failed for {symbol}: {e}")
+            logger.debug(f"[AlphaVantage] Symbol search failed for {symbol}: {describe_request_error(e)}")
             return None
 
         for match in data.get('bestMatches', []):
             if match.get('1. symbol') == symbol and match.get('2. name'):
                 return match['2. name']
         return None
+
+    def _request_global_quote(self, symbol: str, api_key: str) -> dict:
+        self.random_sleep(0.5, 1.5)
+        resp = requests.get(_AV_BASE_URL, params={
+            'function': 'GLOBAL_QUOTE',
+            'symbol': symbol,
+            'apikey': api_key,
+        }, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+        if 'Note' in data:
+            raise DataFetchError(f"[AlphaVantage] Rate limited: {data['Note']}")
+        if 'Error Message' in data:
+            raise DataFetchError(f"[AlphaVantage] API error: {data['Error Message']}")
+        return data
+
+    def _request_symbol_search(self, symbol: str, api_key: str) -> dict:
+        resp = requests.get(_AV_BASE_URL, params={
+            'function': 'SYMBOL_SEARCH',
+            'keywords': symbol,
+            'apikey': api_key,
+        }, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        if 'Note' in data:
+            raise DataFetchError(f"[AlphaVantage] Rate limited: {data['Note']}")
+        return data

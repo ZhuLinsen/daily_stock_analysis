@@ -15,6 +15,7 @@ from typing import Optional
 import pandas as pd
 import requests
 
+from .api_key_pool import ApiKeyPool, describe_request_error, parse_api_keys
 from .base import BaseFetcher, DataFetchError, STANDARD_COLUMNS
 from .realtime_types import UnifiedRealtimeQuote, RealtimeSource
 from .us_index_mapping import is_us_stock_code
@@ -31,9 +32,22 @@ class FinnhubFetcher(BaseFetcher):
     def __init__(self):
         from src.config import get_config
         config = get_config()
-        self._api_key = getattr(config, 'finnhub_api_key', None) or os.getenv('FINNHUB_API_KEY')
-        if not self._api_key:
+        self._key_pool = ApiKeyPool(
+            parse_api_keys(getattr(config, 'finnhub_api_keys', None))
+            or parse_api_keys(getattr(config, 'finnhub_api_key', None))
+            or parse_api_keys(os.getenv('FINNHUB_API_KEY'))
+        )
+        if not self._key_pool.is_configured:
             logger.debug("[Finnhub] API key not configured, fetcher disabled")
+
+    @property
+    def _api_key(self) -> Optional[str]:
+        """当前主 Key（兼容单 Key 读取）。"""
+        return self._key_pool.primary
+
+    @_api_key.setter
+    def _api_key(self, value: Optional[str]) -> None:
+        self._key_pool = ApiKeyPool(parse_api_keys(value))
 
     def _is_us_stock(self, stock_code: str) -> bool:
         return is_us_stock_code(stock_code)
@@ -48,13 +62,24 @@ class FinnhubFetcher(BaseFetcher):
         start_ts = int(datetime.strptime(start_date, '%Y-%m-%d').timestamp())
         end_ts = int(datetime.strptime(end_date, '%Y-%m-%d').timestamp())
 
+        return self._key_pool.call(
+            lambda api_key: self._request_candles(symbol, start_ts, end_ts, api_key)
+        )
+
+    def _request_candles(
+        self,
+        symbol: str,
+        start_ts: int,
+        end_ts: int,
+        api_key: str,
+    ) -> pd.DataFrame:
         url = f"{_FINNHUB_BASE_URL}/stock/candle"
         params = {
             'symbol': symbol,
             'resolution': 'D',
             'from': start_ts,
             'to': end_ts,
-            'token': self._api_key,
+            'token': api_key,
         }
 
         try:
@@ -63,7 +88,9 @@ class FinnhubFetcher(BaseFetcher):
             resp.raise_for_status()
             data = resp.json()
         except Exception as e:
-            raise DataFetchError(f"[Finnhub] HTTP request failed for {symbol}: {e}") from e
+            raise DataFetchError(
+                f"[Finnhub] HTTP request failed for {symbol}: {describe_request_error(e)}"
+            ) from e
 
         if data.get('s') != 'ok' or not data.get('c'):
             raise DataFetchError(f"[Finnhub] No data returned for {symbol}")
@@ -102,16 +129,11 @@ class FinnhubFetcher(BaseFetcher):
 
         symbol = stock_code.strip().upper()
         try:
-            self.random_sleep(0.3, 0.8)
-            resp = requests.get(
-                f"{_FINNHUB_BASE_URL}/quote",
-                params={'symbol': symbol, 'token': self._api_key},
-                timeout=15,
+            data = self._key_pool.call(
+                lambda api_key: self._request_quote(symbol, api_key)
             )
-            resp.raise_for_status()
-            data = resp.json()
         except Exception as e:
-            logger.warning(f"[Finnhub] Realtime quote failed for {symbol}: {e}")
+            logger.warning(f"[Finnhub] Realtime quote failed for {symbol}: {describe_request_error(e)}")
             return None
 
         price = data.get('c')
@@ -152,18 +174,33 @@ class FinnhubFetcher(BaseFetcher):
 
         symbol = stock_code.strip().upper()
         try:
-            resp = requests.get(
-                f"{_FINNHUB_BASE_URL}/search",
-                params={'q': symbol, 'token': self._api_key},
-                timeout=10,
+            data = self._key_pool.call(
+                lambda api_key: self._request_symbol_search(symbol, api_key)
             )
-            resp.raise_for_status()
-            data = resp.json()
         except Exception as e:
-            logger.debug(f"[Finnhub] Symbol search failed for {symbol}: {e}")
+            logger.debug(f"[Finnhub] Symbol search failed for {symbol}: {describe_request_error(e)}")
             return None
 
         for item in data.get('result', []):
             if item.get('symbol') == symbol and item.get('description'):
                 return item['description']
         return None
+
+    def _request_quote(self, symbol: str, api_key: str) -> dict:
+        self.random_sleep(0.3, 0.8)
+        resp = requests.get(
+            f"{_FINNHUB_BASE_URL}/quote",
+            params={'symbol': symbol, 'token': api_key},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def _request_symbol_search(self, symbol: str, api_key: str) -> dict:
+        resp = requests.get(
+            f"{_FINNHUB_BASE_URL}/search",
+            params={'q': symbol, 'token': api_key},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        return resp.json()
