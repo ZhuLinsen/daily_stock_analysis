@@ -144,15 +144,8 @@ def _iter_trades(statement: ET.Element) -> Iterable[ET.Element]:
     if section is None:
         return
     for row in section.findall("Trade"):
-        asset_category = row.get("assetCategory")
-        if asset_category is None:
-            # Optional Flex field: absent means the query did not select Asset
-            # Class, not "not a stock". Without this the whole Trades section
-            # would import zero rows and still look like a clean run.
-            raise IbkrPortfolioError(
-                "IBKR Trades 缺少 assetCategory 字段，请在 Flex Query 中勾选 Asset Class"
-            )
-        if str(asset_category).strip().upper() != "STK":
+        asset_category = _require_flex_field(row, "assetCategory", "Trades").strip().upper()
+        if asset_category != "STK":
             continue
         if (row.get("levelOfDetail") or "").strip().upper() != "EXECUTION":
             continue
@@ -164,16 +157,18 @@ def _iter_trades(statement: ET.Element) -> Iterable[ET.Element]:
 def _require_flex_field(row: ET.Element, attribute: str, section: str) -> str:
     """Return an attribute's value, or fail when the template omits it.
 
-    Freely customisable Flex fields are absent (not empty) when the template
-    does not select them. Treating "absent" as "not a stock" / "unknown
-    exchange" silently drops real data, so the contract is fail-closed.
+    Flex fields are freely selectable, so a field the template does not include
+    is **absent** rather than empty; an included but empty value is equally
+    unusable. Both are template problems that would affect every row, so the
+    contract is fail-closed: only a present, non-empty value is accepted.
+    Row-level skips are reserved for present-but-invalid values.
     """
     value = row.get(attribute)
-    if value is None:
+    if value is None or not str(value).strip():
         raise IbkrPortfolioError(
             f"IBKR {section} 缺少 {attribute} 字段，请在 Flex Query 中勾选 {attribute}"
         )
-    return value
+    return str(value)
 
 
 def _iter_cash(statement: ET.Element) -> Iterable[ET.Element]:
@@ -189,9 +184,7 @@ def _iter_cash(statement: ET.Element) -> Iterable[ET.Element]:
 
 def _parse_trade(row: ET.Element) -> Tuple[Optional[TradeRecord], Optional[str]]:
     """Return ``(record, skip_reason)``; exactly one is non-None."""
-    symbol = (row.get("symbol") or "").strip()
-    if not symbol:
-        return None, "missing symbol"
+    symbol = _require_flex_field(row, "symbol", "Trades").strip().upper()
     exchange = _require_flex_field(row, "listingExchange", "Trades").strip().upper()
     market = _EXCHANGE_MARKET.get(exchange)
     if market is None:
@@ -201,16 +194,12 @@ def _parse_trade(row: ET.Element) -> Tuple[Optional[TradeRecord], Optional[str]]
     if canonical is None:
         return None, f"{symbol}@{exchange}"
 
-    trade_date = _parse_flex_date(row.get("tradeDate"))
+    trade_date = _parse_flex_date(_require_flex_field(row, "tradeDate", "Trades"))
     if trade_date is None:
         return None, f"{symbol}:bad date"
 
-    trade_uid = (row.get("tradeID") or "").strip()
-    if not trade_uid:
-        return None, f"{symbol}:missing tradeID"
-    currency = (row.get("currency") or "").strip().upper()
-    if not currency:
-        return None, f"{symbol}:missing currency"
+    trade_uid = _require_flex_field(row, "tradeID", "Trades").strip()
+    currency = _require_flex_field(row, "currency", "Trades").strip().upper()
 
     # Required, not optional: without it a short cover (BUY/C) is
     # indistinguishable from a long open (BUY/O) and would be booked as a long.
@@ -223,8 +212,8 @@ def _parse_trade(row: ET.Element) -> Tuple[Optional[TradeRecord], Optional[str]]
         )
 
     try:
-        quantity = float(row.get("quantity"))
-        price = float(row.get("tradePrice"))
+        quantity = float(_require_flex_field(row, "quantity", "Trades"))
+        price = float(_require_flex_field(row, "tradePrice", "Trades"))
         fee = abs(float(row.get("ibCommission") or 0))
         tax = abs(float(row.get("taxes") or 0))
     except (TypeError, ValueError):
@@ -266,22 +255,21 @@ def _parse_trade(row: ET.Element) -> Tuple[Optional[TradeRecord], Optional[str]]
 
 def _parse_cash(row: ET.Element) -> Tuple[Optional[CashRecord], Optional[str]]:
     """Return ``(record, skip_reason)``; exactly one is non-None."""
-    cash_type = (row.get("type") or "").strip()
+    cash_type = _require_flex_field(row, "type", "CashTransactions").strip()
     if cash_type not in _CASH_TYPES_IMPORTED:
-        return None, f"{cash_type or 'unknown type'}"
+        return None, cash_type
 
-    event_date = _parse_flex_date(row.get("dateTime") or row.get("reportDate"))
+    raw_date = row.get("dateTime")
+    if raw_date is None or not str(raw_date).strip():
+        raw_date = row.get("reportDate")
+    event_date = _parse_flex_date(raw_date)
     if event_date is None:
         return None, f"{cash_type}:bad date"
-    source_uid = (row.get("transactionID") or "").strip()
-    if not source_uid:
-        return None, f"{cash_type}:missing transactionID"
-    currency = (row.get("currency") or "").strip().upper()
-    if not currency:
-        return None, f"{cash_type}:missing currency"
+    source_uid = _require_flex_field(row, "transactionID", "CashTransactions").strip()
+    currency = _require_flex_field(row, "currency", "CashTransactions").strip().upper()
 
     try:
-        amount = float(row.get("amount"))
+        amount = float(_require_flex_field(row, "amount", "CashTransactions"))
     except (TypeError, ValueError):
         return None, f"{cash_type}:bad amount"
 

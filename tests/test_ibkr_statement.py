@@ -151,9 +151,7 @@ class IbkrStatementParseTest(unittest.TestCase):
 
     def test_malformed_trades_skipped_with_reason(self) -> None:
         cases = {
-            "missing symbol": _trade(symbol=""),
             "bad date": _trade(tradeDate="not-a-date"),
-            "missing tradeID": _trade(tradeID=""),
             "bad quantity": _trade(quantity="abc"),
             "zero quantity": _trade(buySell="BUY", quantity="0"),
         }
@@ -348,3 +346,112 @@ class IbkrOpenCloseValidationTest(unittest.TestCase):
     def test_lowercase_open_close_is_accepted(self) -> None:
         result = s.parse_statement(self._with_value("c"))
         self.assertEqual(result.trades[0].open_close, "C")
+
+
+class IbkrLedgerContractMatrixTest(unittest.TestCase):
+    """Table-driven check of the parser contract.
+
+    Two rules, applied uniformly:
+      * a field the template did not select (absent) or emitted empty is a
+        template problem -> explicit error, never a silent skip;
+      * a present-but-invalid value is a bad row -> recorded in skipped_*.
+    """
+
+    TRADE_REQUIRED = (
+        "assetCategory", "accountId", "symbol", "listingExchange", "currency",
+        "tradeDate", "tradeID", "openCloseIndicator", "quantity", "tradePrice",
+    )
+    CASH_REQUIRED = ("type", "accountId", "currency", "transactionID", "amount")
+
+    def _trade(self, **overrides) -> str:
+        attrs = {
+            "assetCategory": "STK", "levelOfDetail": "EXECUTION",
+            "accountId": "U0000000", "symbol": "AAPL", "listingExchange": "NASDAQ",
+            "currency": "USD", "buySell": "BUY", "quantity": "10",
+            "tradePrice": "100", "tradeDate": "20260102", "tradeID": "T1",
+            "openCloseIndicator": "O",
+        }
+        attrs.update(overrides)
+        return "<Trade " + " ".join(f'{k}="{v}"' for k, v in attrs.items()) + " />"
+
+    def _cash(self, **overrides) -> str:
+        attrs = {
+            "type": "Deposits/Withdrawals", "accountId": "U0000000", "currency": "EUR",
+            "transactionID": "C1", "amount": "1000", "dateTime": "20260105",
+            "description": "TRANSFER",
+        }
+        attrs.update(overrides)
+        return "<CashTransaction " + " ".join(f'{k}="{v}"' for k, v in attrs.items()) + " />"
+
+    def _parse(self, trades=(), cash=()):
+        return s.parse_statement(
+            _statement(
+                "<Trades>" + "".join(trades) + "</Trades>"
+                "<CashTransactions>" + "".join(cash) + "</CashTransactions>"
+            )
+        )
+
+    def test_absent_trade_fields_are_template_errors(self) -> None:
+        for field in self.TRADE_REQUIRED:
+            with self.subTest(field=field):
+                attrs = {"assetCategory": "STK", "levelOfDetail": "EXECUTION",
+                         "accountId": "U", "symbol": "AAPL", "listingExchange": "NASDAQ",
+                         "currency": "USD", "quantity": "10", "tradePrice": "100",
+                         "tradeDate": "20260102", "tradeID": "T", "openCloseIndicator": "O"}
+                attrs.pop(field)
+                row = "<Trade " + " ".join(f'{k}="{v}"' for k, v in attrs.items()) + " />"
+                with self.assertRaises(IbkrPortfolioError, msg=field):
+                    s.parse_statement(
+                        _statement(f"<Trades>{row}</Trades><CashTransactions></CashTransactions>")
+                    )
+
+    def test_empty_trade_fields_are_template_errors(self) -> None:
+        for field in self.TRADE_REQUIRED:
+            with self.subTest(field=field):
+                with self.assertRaises(IbkrPortfolioError, msg=field):
+                    self._parse(trades=[self._trade(**{field: ""})])
+
+    def test_absent_cash_fields_are_template_errors(self) -> None:
+        for field in self.CASH_REQUIRED:
+            with self.subTest(field=field):
+                attrs = {"type": "Deposits/Withdrawals", "accountId": "U", "currency": "EUR",
+                         "transactionID": "C", "amount": "1", "dateTime": "20260105"}
+                attrs.pop(field)
+                row = "<CashTransaction " + " ".join(f'{k}="{v}"' for k, v in attrs.items()) + " />"
+                with self.assertRaises(IbkrPortfolioError, msg=field):
+                    s.parse_statement(
+                        _statement(f"<Trades></Trades><CashTransactions>{row}</CashTransactions>")
+                    )
+
+    def test_all_four_trade_shapes_parse_with_their_flags(self) -> None:
+        cases = {
+            ("BUY", "O"): ("buy", "O"),
+            ("BUY", "C"): ("buy", "C"),   # short cover: skipped later by the sync
+            ("SELL", "C"): ("sell", "C"),  # long close: imported
+            ("SELL", "O"): ("sell", "O"),  # short open: skipped later by the sync
+        }
+        for (side, flag), (expected_side, expected_flag) in cases.items():
+            with self.subTest(side=side, flag=flag):
+                result = self._parse(trades=[self._trade(buySell=side, openCloseIndicator=flag)])
+                self.assertEqual(result.trades[0].side, expected_side)
+                self.assertEqual(result.trades[0].open_close, expected_flag)
+
+    def test_bad_values_are_row_skips_not_errors(self) -> None:
+        cases = {
+            "unknown exchange": {"listingExchange": "BM"},
+            "zero quantity": {"quantity": "0"},
+            "garbage date": {"tradeDate": "garbage"},
+            "non-numeric price": {"tradePrice": "abc"},
+        }
+        for name, overrides in cases.items():
+            with self.subTest(case=name):
+                result = self._parse(trades=[self._trade(**overrides)])
+                self.assertEqual(result.trades, [], name)
+                self.assertTrue(result.skipped_trades, name)
+
+    def test_non_stock_rows_are_filtered_without_an_error(self) -> None:
+        # Options/futures are deliberately outside the ledger's scope: filtered,
+        # not reported as a config problem and not recorded as a bad row.
+        result = self._parse(trades=[self._trade(assetCategory="OPT")])
+        self.assertEqual(result.trades, [])
+        self.assertEqual(result.skipped_trades, [])
