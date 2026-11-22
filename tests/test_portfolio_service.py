@@ -231,6 +231,27 @@ class PortfolioServiceTestCase(unittest.TestCase):
             amount=1, currency="EUR", source_uid=None,
         )
 
+    def test_non_unique_integrity_error_is_not_mislabeled_as_duplicate(self) -> None:
+        from unittest.mock import patch as _patch
+        from sqlalchemy.exc import IntegrityError
+
+        kid = self.service.create_account(
+            name="ibkr-fk", broker="IBKR", market="us", base_currency="EUR"
+        )["id"]
+        original = IntegrityError("INSERT", {}, Exception("FOREIGN KEY constraint failed"))
+        with _patch.object(self.service.repo, "add_cash_ledger_in_session", side_effect=original):
+            with self.assertRaises(IntegrityError) as ctx:
+                self.service.record_cash_ledger(
+                    account_id=kid,
+                    event_date=date(2026, 1, 5),
+                    direction="in",
+                    amount=10,
+                    currency="EUR",
+                    source_uid="uid-fk",
+                )
+        # An unrelated integrity failure must surface unchanged, not as a conflict.
+        self.assertIs(ctx.exception, original)
+
     def test_current_snapshot_uses_realtime_price_when_close_missing(self) -> None:
         today = date.today()
         account = self.service.create_account(name="Main", broker="Demo", market="cn", base_currency="CNY")

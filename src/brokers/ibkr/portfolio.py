@@ -7,7 +7,7 @@ import logging
 import math
 import os
 import xml.etree.ElementTree as ET
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Iterable, List, Optional, Tuple
 
 from data_provider.us_index_mapping import is_us_stock_code
@@ -110,15 +110,34 @@ def parse_open_position_codes(xml_bytes: bytes) -> Tuple[List[str], List[str]]:
     return codes, skipped
 
 
-_STATEMENT_MAX_AGE_DAYS = 3
+_STATEMENT_TRUE_FRESHNESS_SLACK_DAYS = 7
+
+
+def _latest_us_trading_day_on_or_before(day: date) -> date:
+    """Return the most recent US trading day at or before ``day``.
+
+    Walks back a bounded number of days so weekends and exchange holidays (e.g.
+    Thanksgiving Thursday+Friday) do not look like a stale statement.
+    ``is_market_open`` fails open when calendars are unavailable, which degrades
+    to "any recent weekday is acceptable".
+    """
+    from src.core.trading_calendar import is_market_open
+
+    candidate = day
+    for _ in range(10):
+        if is_market_open("us", candidate):
+            return candidate
+        candidate -= timedelta(days=1)
+    return day
 
 
 def _validate_statement_freshness(xml_bytes: bytes) -> None:
-    """Fail when the Flex statement period ends too far in the past.
+    """Fail when the Flex statement period does not reach the latest session.
 
-    A Flex query preset to e.g. "Last Month" yields a ``toDate`` a month old;
-    holdings would silently reflect that stale point in time. Reject it so the
-    caller is told to set the query period to the latest business day.
+    A Flex query preset to e.g. "Last Month" yields a ``toDate`` a month old, so
+    holdings would silently reflect a stale point in time. The comparison is
+    against the latest US trading day (statements lag one day), not a fixed day
+    count: a long market break must not reject a correctly configured query.
     """
     try:
         root = ET.fromstring(xml_bytes)
@@ -128,15 +147,18 @@ def _validate_statement_freshness(xml_bytes: bytes) -> None:
         (statement.get("toDate") or "").strip()
         for statement in root.findall("./FlexStatements/FlexStatement")
     ]
-    today = date.today()
+    yesterday = date.today() - timedelta(days=1)
+    expected = _latest_us_trading_day_on_or_before(yesterday)
     for to_date in to_dates:
         try:
             parsed = datetime.strptime(to_date[:8], "%Y%m%d").date()
         except ValueError:
             continue
-        if (today - parsed).days > _STATEMENT_MAX_AGE_DAYS:
+        # ``expected`` already accounts for weekends/holidays; the slack only
+        # tolerates IBKR's own statement lag, never a wrong query period.
+        if (expected - parsed).days > _STATEMENT_TRUE_FRESHNESS_SLACK_DAYS:
             raise IbkrPortfolioError(
-                f"IBKR Flex 报表期间过旧（toDate={parsed}，距今 {(today - parsed).days} 天）；"
+                f"IBKR Flex 报表期间过旧（toDate={parsed}，最近交易日 {expected}）；"
                 "请把 Flex Query 期间设为最近交易日"
             )
 

@@ -174,10 +174,13 @@ def sync_ibkr_portfolio(
     blocked_symbols: Set[str] = set()
 
     for record in trades:
-        # A BUY marked "C" closes a short. The ledger is long-only, so booking it
-        # would create a phantom long — including when the short opened before the
-        # sync window, where no earlier oversell can be observed.
-        if record.open_close == "C" and record.side == "buy":
+        # A BUY marked "C" closes a short and a SELL marked "O" opens one. The
+        # ledger is long-only, so neither is representable: booking them would
+        # create a phantom long or silently reduce/close a residual long that was
+        # acquired before --since. Block the symbol for the rest of the run.
+        if (record.open_close == "C" and record.side == "buy") or (
+            record.open_close == "O" and record.side == "sell"
+        ):
             blocked_symbols.add(record.symbol)
             summary["trades_skipped_unbalanced"] += 1
             continue
@@ -211,6 +214,7 @@ def sync_ibkr_portfolio(
             blocked_symbols.add(record.symbol)
             summary["errors"].append(f"oversell {record.symbol}@{record.trade_date}: {exc}")
         except Exception as exc:  # defensive: one bad row must not abort the sync
+            logger.exception("IBKR trade import failed for %s", record.symbol)
             summary["errors"].append(f"trade {record.symbol}: {exc}")
 
     for record in parsed.cash_events:
@@ -231,6 +235,7 @@ def sync_ibkr_portfolio(
         except PortfolioConflictError:
             summary["cash_duplicate"] += 1
         except Exception as exc:  # defensive
+            logger.exception("IBKR cash import failed for %s", record.source_uid)
             summary["errors"].append(f"cash {record.source_uid}: {exc}")
 
     summary["errors"] = summary["errors"][:20]  # type: ignore[assignment]

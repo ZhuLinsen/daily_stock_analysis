@@ -299,13 +299,20 @@ class PortfolioService:
                     source_uid=source_uid_norm,
                 )
                 return {"id": int(row.id)}
-        except IntegrityError:
+        except IntegrityError as exc:
             # The partial UNIQUE index on (account_id, source_uid) is the
             # authoritative guard: a concurrent sync can pass the pre-insert
-            # check and then collide at flush/commit time.
-            raise PortfolioConflictError(
-                f"Duplicate cash source_uid for account_id={account_id}: {source_uid_norm}"
-            ) from None
+            # check and then collide at flush/commit time. Only that collision may
+            # be reported as a duplicate — unrelated integrity failures (FK/NOT
+            # NULL/CHECK from the same block) must surface unchanged.
+            err_text = str(getattr(exc, "orig", exc)).lower()
+            if source_uid_norm and (
+                "ix_portfolio_cash_source_uid" in err_text or "unique" in err_text
+            ):
+                raise PortfolioConflictError(
+                    f"Duplicate cash source_uid for account_id={account_id}: {source_uid_norm}"
+                ) from exc
+            raise
 
     def record_corporate_action(
         self,

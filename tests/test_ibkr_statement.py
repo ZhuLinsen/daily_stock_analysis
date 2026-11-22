@@ -263,3 +263,20 @@ class IbkrStatementParseTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class IbkrStatementStrictnessTest(unittest.TestCase):
+    def test_missing_asset_category_on_trades_raises(self) -> None:
+        row = (
+            '<Trade levelOfDetail="EXECUTION" symbol="AAPL" listingExchange="NASDAQ" '
+            'currency="USD" buySell="BUY" quantity="10" tradePrice="100" '
+            'tradeDate="20260102" tradeID="1" />'
+        )
+        with self.assertRaisesRegex(IbkrPortfolioError, "assetCategory"):
+            s.parse_statement(_statement(f"<Trades>{row}</Trades><CashTransactions></CashTransactions>"))
+
+    def test_us_symbol_is_validated_not_taken_verbatim(self) -> None:
+        # A non-US-shaped code must not slip into the ledger just because IBKR
+        # listed it on a US exchange.
+        self.assertIsNone(s._canonical_symbol("SPX", "us"))
+        self.assertEqual(s._canonical_symbol("AAPL", "us"), "AAPL")

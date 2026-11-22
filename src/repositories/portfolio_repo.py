@@ -269,16 +269,6 @@ class PortfolioRepository:
         with self.db.get_session() as session:
             return self.has_trade_uid_in_session(session=session, account_id=account_id, trade_uid=uid)
 
-    def has_cash_source_uid(self, account_id: int, source_uid: Optional[str]) -> bool:
-        """Return True when a cash event with this source_uid already exists."""
-        uid = (source_uid or "").strip()
-        if not uid:
-            return False
-        with self.db.get_session() as session:
-            return self.has_cash_source_uid_in_session(
-                session=session, account_id=account_id, source_uid=uid
-            )
-
     def has_cash_source_uid_in_session(
         self, *, session: Any, account_id: int, source_uid: str
     ) -> bool:

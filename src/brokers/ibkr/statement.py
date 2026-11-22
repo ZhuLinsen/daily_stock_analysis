@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Iterable, List, Optional, Tuple
 
+from data_provider.us_index_mapping import is_us_stock_code
 from src.brokers.ibkr.flex import IbkrPortfolioError
 
 logger = logging.getLogger(__name__)
@@ -99,7 +100,9 @@ def _canonical_symbol(symbol: str, market: str) -> Optional[str]:
     if market == "us":
         if " " in code:
             return None  # IBKR class share (e.g. "BRK B") — not supported by the ledger
-        return code
+        # Same validation as the analysis list, so the ledger and the analysis
+        # path cannot accept different symbol sets for the same statement.
+        return code if is_us_stock_code(code) else None
     if market == "hk":
         return f"HK{code.zfill(5)}" if code.isdigit() and len(code) <= 5 else None
     if market == "jp":
@@ -129,7 +132,15 @@ def _iter_trades(statement: ET.Element) -> Iterable[ET.Element]:
     if section is None:
         return
     for row in section.findall("Trade"):
-        if (row.get("assetCategory") or "").strip().upper() != "STK":
+        asset_category = row.get("assetCategory")
+        if asset_category is None:
+            # Optional Flex field: absent means the query did not select Asset
+            # Class, not "not a stock". Without this the whole Trades section
+            # would import zero rows and still look like a clean run.
+            raise IbkrPortfolioError(
+                "IBKR Trades 缺少 assetCategory 字段，请在 Flex Query 中勾选 Asset Class"
+            )
+        if str(asset_category).strip().upper() != "STK":
             continue
         if (row.get("levelOfDetail") or "").strip().upper() != "EXECUTION":
             continue

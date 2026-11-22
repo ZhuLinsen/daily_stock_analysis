@@ -203,3 +203,45 @@ class IbkrSyncTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class IbkrSyncShortSymmetryTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.env = patch.dict(
+            "os.environ",
+            {"IBKR_FLEX_TOKEN": "tok", "IBKR_FLEX_STATEMENT_QUERY_ID": "1712897"},
+            clear=False,
+        )
+        self.env.start()
+
+    def tearDown(self) -> None:
+        self.env.stop()
+
+    def _service(self):
+        service = MagicMock()
+        service.list_accounts.return_value = [{"id": 1, "broker": "IBKR"}]
+        service.record_trade.return_value = {"id": 1}
+        service.record_cash_ledger.return_value = {"id": 1}
+        return service
+
+    def test_short_open_sell_is_skipped_not_booked_as_a_sale(self) -> None:
+        service = self._service()
+        short_open = _trade("AAPL", "SELL", "100")[:-2] + ' openCloseIndicator="O" />'
+        with patch.object(sync, "PortfolioService", return_value=service), patch.object(
+            sync, "download_flex_statement", side_effect=[_statement(short_open), _statement()]
+        ):
+            summary = sync.sync_ibkr_portfolio()
+
+        service.record_trade.assert_not_called()
+        self.assertEqual(summary["trades_skipped_unbalanced"], 1)
+
+    def test_long_sale_marked_close_is_still_imported(self) -> None:
+        service = self._service()
+        long_sale = _trade("AAPL", "SELL", "100")[:-2] + ' openCloseIndicator="C" />'
+        with patch.object(sync, "PortfolioService", return_value=service), patch.object(
+            sync, "download_flex_statement", side_effect=[_statement(long_sale), _statement()]
+        ):
+            summary = sync.sync_ibkr_portfolio()
+
+        self.assertEqual(service.record_trade.call_count, 1)
+        self.assertEqual(summary["trades_inserted"], 1)

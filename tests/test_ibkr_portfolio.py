@@ -326,3 +326,31 @@ class IbkrPortfolioLoaderTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class IbkrStatementFreshnessTest(unittest.TestCase):
+    def _statement_with_to_date(self, to_date: date) -> bytes:
+        return (
+            '<FlexQueryResponse queryName="t" type="AF"><FlexStatements count="1">'
+            f'<FlexStatement accountId="U" fromDate="20260101" toDate="{to_date.strftime("%Y%m%d")}" period="YTD">'
+            f'<OpenPositions>{_position("AAPL", "NASDAQ")}</OpenPositions>'
+            "</FlexStatement></FlexStatements></FlexQueryResponse>"
+        ).encode()
+
+    def test_accepts_statement_ending_on_the_latest_trading_day(self) -> None:
+        # The expected boundary already accounts for weekends/holidays, so a
+        # correctly configured "last business day" query must pass even after a
+        # long market break.
+        from datetime import timedelta
+        from src.brokers.ibkr import portfolio as pmod
+
+        expected = pmod._latest_us_trading_day_on_or_before(date.today() - timedelta(days=1))
+        pmod._validate_statement_freshness(self._statement_with_to_date(expected))
+
+    def test_rejects_month_old_statement(self) -> None:
+        from datetime import timedelta
+        from src.brokers.ibkr import portfolio as pmod
+
+        stale = date.today() - timedelta(days=40)
+        with self.assertRaisesRegex(IbkrPortfolioError, "过旧"):
+            pmod._validate_statement_freshness(self._statement_with_to_date(stale))
