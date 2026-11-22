@@ -1,0 +1,40 @@
+---
+title: "最小环境变量配置"
+description: "跑通 DSA 只需要股票池与一个 AI Key，其余通知、数据源和告警按需增量开启。"
+---
+
+DSA 遵循**“零配置可试跑，按需增量增强”**原则。默认已内置 AkShare、Baostock、YFinance 等免费行情源，首次跑通只需关注以下三组核心变量。
+
+## 1. 必配核心（仅 2 项）
+
+| 变量名 | 说明 | 示例 |
+| --- | --- | --- |
+| `STOCK_LIST` | 自选股列表，逗号分隔，支持 A/H/US/JP/KR/TW | `600519,hk00700,AAPL,7203.T,005930.KS,2330.TW` |
+| **AI 模型 Key（任选其一）** | 支持 Gemini / DeepSeek / Claude / OpenAI 兼容网关 / 本地 Ollama | `GEMINI_API_KEY=...` 或 `DEEPSEEK_API_KEY=...` |
+
+:::tip[DeepSeek 与 OpenAI 兼容接口补充]
+- **DeepSeek 官方接口**：直接配置 `DEEPSEEK_API_KEY=...`（系统默认使用 `deepseek/deepseek-v4-flash`），或配合渠道模式显式指定 `deepseek-v4-flash` / `deepseek-v4-pro`。
+- **第三方 OpenAI 兼容网关**：同时设置 `OPENAI_API_KEY`、`OPENAI_BASE_URL`（通常需以 `/v1` 结尾）与 `LITELLM_MODEL=openai/<模型名>`（或 `OPENAI_MODEL`）。
+
+更多渠道与多模型路由写法见 [LLM 大模型配置指南](/docs/configuration/llm-guide/) 与 [LLM 服务商配置参考](/docs/configuration/llm-providers/)。
+:::
+
+## 2. 推荐增强项（显著提升稳定性与资讯质量）
+
+| 类别 | 变量名 | 作用 |
+| --- | --- | --- |
+| **新闻搜索（强烈推荐）** | `SERPAPI_API_KEYS` / `TAVILY_API_KEYS` / `BOCHA_API_KEYS` | 补充最新财经新闻、公告与舆情上下文 |
+| **A 股 / ETF 稳定行情** | `TICKPLUS_API_KEY` 或 `TUSHARE_TOKEN` | 规避免费源高峰限流，提升日 K 与实时行情稳定性 |
+| **港美股增强行情** | `LONGBRIDGE_OAUTH_CLIENT_ID` 等 | 补齐港美股量比、换手率、PE 等高阶指标 |
+
+## 3. 通知推送渠道（按需填写）
+
+只看本地报告或 WebUI 时可以不配；需要每日定时推送时任选其一即可：
+
+- **企业微信**：`WECHAT_WEBHOOK_URL`
+- **飞书**：`FEISHU_WEBHOOK_URL`（支持可选签名与关键词）
+- **Telegram**：`TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID`
+- **Discord / Slack**：`DISCORD_WEBHOOK_URL` / `SLACK_BOT_TOKEN` + `SLACK_CHANNEL_ID`
+- **邮件**：`EMAIL_SENDER` + `EMAIL_PASSWORD`
+
+完整渠道列表及签名校验详见 [通知渠道配置基线](/docs/configuration/notifications/) 与 [完整配置与部署大全](/docs/reference/full-guide/)。

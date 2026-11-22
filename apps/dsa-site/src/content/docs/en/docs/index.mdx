@@ -1,0 +1,41 @@
+---
+title: "DSA Documentation Center"
+description: "Official Daily Stock Analysis docs organized across Getting Started, Core Features, Configuration, Deployment, and API Reference."
+---
+
+import { CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+Welcome to the **Daily Stock Analysis (DSA)** documentation center. Choose a path below to go from zero to your first multi-market decision report, configure LLM routers and market-data fallbacks, or explore the FastAPI OpenAPI specification.
+
+<CardGrid>
+  <LinkCard
+    title="1. Quick Start & Runtime Matrix"
+    description="Compare Desktop App, GitHub Actions, Docker Compose, and Local Python CLI side by side."
+    href="/en/docs/getting-started/quick-start/"
+  />
+  <LinkCard
+    title="2. Minimal Env Configuration"
+    description="Configure STOCK_LIST, one AI API key, and optional notification webhooks in 3 minutes."
+    href="/en/docs/getting-started/env-config/"
+  />
+  <LinkCard
+    title="3. LLM Configuration Guide"
+    description="Connect Gemini, Claude, DeepSeek, OpenAI-compatible gateways, Ollama, and LiteLLM routing."
+    href="/en/docs/configuration/llm-guide/"
+  />
+  <LinkCard
+    title="4. Docker & Server Deployment"
+    description="Run long-lived FastAPI + React WebUI services with Compose, official images, or Linux supervisors."
+    href="/en/docs/deployment/docker/"
+  />
+  <LinkCard
+    title="5. Bot Commands & Webhooks"
+    description="Trigger on-demand stock analysis and market reviews from Feishu, DingTalk, Discord, and more."
+    href="/en/docs/configuration/bot-commands/"
+  />
+  <LinkCard
+    title="6. OpenAPI Explorer"
+    description="Browse curated core endpoints from docs/architecture/api_spec.json, inspect schemas, and download the snapshot spec."
+    href="/en/docs/reference/api/"
+  />
+</CardGrid>
