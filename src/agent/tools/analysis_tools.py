@@ -7,6 +7,7 @@ Tools:
 """
 
 import logging
+import math
 from typing import Optional
 
 from src.agent.tools.registry import ToolParameter, ToolDefinition, ToolPolicy
@@ -367,16 +368,19 @@ def _handle_analyze_pattern(stock_code: str, days: int = 60) -> dict:
         bd = body(i)
         us = upper_shadow(i)
         ls = lower_shadow(i)
-        # Long-shadow candles are named by the trend before them. Direction is decided as
-        # StockTrendAnalyzer decides it, MA5 against MA10, here on the closes before the candle, and
-        # only when the last of those closes is on the same side of MA5. Otherwise, or with fewer
-        # than 10 closes, the trend is unclear and the candle gets no name.
+        # Long-shadow candles are named by the trend before them: MA5 against MA10 on the closes
+        # before the candle, and only when the last of those closes is beyond MA5 the same way
+        # (below it in a decline, above it in an advance). Otherwise, or with fewer than 10 closes,
+        # the trend is unclear and the candle gets no name.
         end = len(history_close) - n + i
-        recent, earlier = history_close[max(end - 5, 0):end], history_close[max(end - 10, 0):max(end - 5, 0)]
-        averages = sum(a - b for a, b in zip(recent, earlier)) if len(earlier) == 5 else 0  # (MA5 - MA10) * 10
-        last = sum(recent[-1] - close for close in recent)  # (last close - MA5) * 5
-        falling = averages < 0 and last < 0
-        rising = averages > 0 and last > 0
+        falling = rising = False
+        if end >= 10:
+            before = history_close[end - 10:end]
+            ma5, ma10, prev_close = sum(before[5:]) / 5, sum(before) / 10, before[-1]
+            # isclose: values that tie as quoted can differ by float rounding once summed; a tie is no direction.
+            if not (math.isclose(ma5, ma10) or math.isclose(prev_close, ma5)):
+                falling = ma5 < ma10 and prev_close < ma5
+                rising = ma5 > ma10 and prev_close > ma5
 
         # Doji
         if bd < avg_body * 0.1 and (us + ls) > bd * 3:
@@ -388,12 +392,12 @@ def _handle_analyze_pattern(stock_code: str, days: int = 60) -> dict:
 
         # Hammer after a decline / Hanging Man after an advance
         if ls > body(i) * 2 and us < body(i) * 0.5 and (falling or rising):
-            label, signal, desc = (
-                ("锤子线 (Hammer)", "bullish_reversal", "下影线长，下跌后的潜在支撑/反转") if falling
-                else ("上吊线 (Hanging Man)", "bearish_reversal", "下影线长，上涨后的潜在见顶")
+            label, desc = (
+                ("锤子线 (Hammer)", "下影线长，潜在支撑/反转") if falling
+                else ("上吊线 (Hanging Man)", "下影线长，上涨后的潜在见顶")
             )
             patterns_detected.append({
-                "pattern": label, "type": signal,
+                "pattern": label, "type": "reversal_signal",
                 "day_offset": -(n - 1 - i),
                 "strength": "中", "desc": desc
             })
@@ -401,8 +405,8 @@ def _handle_analyze_pattern(stock_code: str, days: int = 60) -> dict:
         # Inverted Hammer after a decline / Shooting Star after an advance
         if us > body(i) * 2 and ls < body(i) * 0.5 and (falling or rising):
             label, signal, desc = (
-                ("倒锤子", "bullish_reversal", "上影线长，下跌后的潜在反转") if falling
-                else ("流星线 (Shooting Star)", "bearish_reversal", "上影线长，上涨后的潜在压力/反转")
+                ("倒锤子", "reversal_signal", "上影线长，下跌后的潜在反转") if falling
+                else ("流星线 (Shooting Star)", "bearish_signal", "上影线长，潜在压力/反转")
             )
             patterns_detected.append({
                 "pattern": label, "type": signal,

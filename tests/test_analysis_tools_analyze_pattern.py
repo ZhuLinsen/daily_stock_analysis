@@ -20,6 +20,15 @@ def _trend(n, start, step):
     return rows
 
 
+def _candles(closes):
+    """Ordinary candles with the given closes; each opens at the previous close."""
+    rows, open_ = [], closes[0]
+    for close in closes:
+        rows.append([open_, round(max(open_, close) * 1.002, 4), round(min(open_, close) * 0.998, 4), close])
+        open_ = close
+    return rows
+
+
 def _patterns(monkeypatch, rows, days=60):
     df = pd.DataFrame(rows, columns=["open", "high", "low", "close"])
     df["date"] = pd.date_range("2026-01-05", periods=len(df), freq="B").date
@@ -47,7 +56,10 @@ def test_long_lower_shadow_after_a_decline_is_a_hammer(monkeypatch):
     # The candle closes below the previous close, which used to make it a Hanging Man.
     rows = _trend(20, 20.0, -0.012)
     found = _patterns(monkeypatch, rows + [_long_lower_shadow(rows[-1][3], -0.015)])
-    assert (found["锤子线 (Hammer)"]["type"], found["锤子线 (Hammer)"]["day_offset"]) == ("bullish_reversal", 0)
+    assert found["锤子线 (Hammer)"] == {  # the entry itself is what it always was
+        "pattern": "锤子线 (Hammer)", "type": "reversal_signal", "day_offset": 0,
+        "strength": "中", "desc": "下影线长，潜在支撑/反转",
+    }
     assert "上吊线 (Hanging Man)" not in found
 
 
@@ -55,8 +67,10 @@ def test_long_lower_shadow_after_an_advance_is_a_hanging_man(monkeypatch):
     # The candle closes above the previous close, which used to make it a Hammer.
     rows = _trend(20, 20.0, 0.012)
     found = _patterns(monkeypatch, rows + [_long_lower_shadow(rows[-1][3], 0.015)])
-    assert found["上吊线 (Hanging Man)"]["type"] == "bearish_reversal"
-    assert "支撑" not in found["上吊线 (Hanging Man)"]["desc"]  # support is the hammer's reading
+    assert found["上吊线 (Hanging Man)"] == {  # same type as before; support was the hammer's reading
+        "pattern": "上吊线 (Hanging Man)", "type": "reversal_signal", "day_offset": 0,
+        "strength": "中", "desc": "下影线长，上涨后的潜在见顶",
+    }
     assert "锤子线 (Hammer)" not in found
 
 
@@ -64,7 +78,10 @@ def test_long_lower_shadow_after_an_advance_is_a_hanging_man(monkeypatch):
 def test_long_upper_shadow_after_a_decline_is_an_inverted_hammer(monkeypatch, white):
     rows = _trend(20, 20.0, -0.012)
     found = _patterns(monkeypatch, rows + [_long_upper_shadow(rows[-1][3], -0.015, white)])
-    assert found["倒锤子"]["type"] == "bullish_reversal"
+    assert found["倒锤子"] == {  # it was bearish_signal, wrong after a decline
+        "pattern": "倒锤子", "type": "reversal_signal", "day_offset": 0,
+        "strength": "中", "desc": "上影线长，下跌后的潜在反转",
+    }
     assert "流星线 (Shooting Star)" not in found
 
 
@@ -72,7 +89,10 @@ def test_long_upper_shadow_after_a_decline_is_an_inverted_hammer(monkeypatch, wh
 def test_long_upper_shadow_after_an_advance_is_a_shooting_star(monkeypatch, white):
     rows = _trend(20, 20.0, 0.012)
     found = _patterns(monkeypatch, rows + [_long_upper_shadow(rows[-1][3], 0.015, white)])
-    assert found["流星线 (Shooting Star)"]["type"] == "bearish_reversal"
+    assert found["流星线 (Shooting Star)"] == {  # the entry itself is what it always was
+        "pattern": "流星线 (Shooting Star)", "type": "bearish_signal", "day_offset": 0,
+        "strength": "中", "desc": "上影线长，潜在压力/反转",
+    }
     assert "倒锤子" not in found
 
 
@@ -100,18 +120,49 @@ def test_one_bar_against_the_trend_does_not_change_it(monkeypatch):
     assert "锤子线 (Hammer)" in _patterns(monkeypatch, rows + [_long_lower_shadow(rows[-1][3], 0)])
 
 
-def test_a_turn_too_short_to_be_a_trend_gives_no_name(monkeypatch):
-    # Three falling bars after twenty rising ones: MA5 is still above MA10, the last close below MA5.
-    rows = _trend(20, 20.0, 0.01)
-    rows += _trend(3, rows[-1][3], -0.03)
+@pytest.mark.parametrize("step", [0.01, -0.01])
+def test_a_turn_too_short_to_be_a_trend_gives_no_name(monkeypatch, step):
+    # Twenty bars one way, then one bar twice the size the other way: MA5 is still on its old side of
+    # MA10, and the last close is between the two.
+    rows = _trend(20, 20.0, step)
+    rows += _trend(1, rows[-1][3], -2 * step)
     assert not LONG_SHADOW_NAMES & set(_patterns(monkeypatch, rows + [_long_lower_shadow(rows[-1][3], 0)]))
 
 
-@pytest.mark.parametrize("price", [20.0, 0.1])  # sums of 0.1 are not exact
-def test_a_flat_history_gives_no_name(monkeypatch, price):
-    rows = _trend(12, price, 0.0)  # every close is the same
-    for candle in (_long_lower_shadow(price, 0), _long_upper_shadow(price, 0)):
+def test_a_flat_history_gives_no_name(monkeypatch):
+    rows = _trend(12, 20.0, 0.0)  # every close is the same
+    for candle in (_long_lower_shadow(20.0, 0), _long_upper_shadow(20.0, 0)):
         assert not LONG_SHADOW_NAMES & set(_patterns(monkeypatch, rows + [candle]))
+
+
+# Ten closes that tie as quoted: in the first three the last close equals MA5, in the other two MA5
+# equals MA10. Summed as floats they can miss the tie by about 1e-15. The first row is the series from
+# the review of #2597.
+@pytest.mark.parametrize("closes", [
+    [10.25, 10.25, 10.25, 10.25, 10.25, 9.85, 9.87, 9.97, 10.07, 9.94],
+    [9.9, 10.35, 10.13, 9.8, 9.74, 10.17, 9.81, 9.9, 9.8, 9.92],
+    [9.62, 9.87, 9.64, 10.23, 10.27, 10.38, 10.16, 10.03, 9.95, 10.13],
+    [9.97, 9.8, 9.92, 10.35, 10.2, 10.11, 9.99, 10.4, 9.79, 9.95],
+    [9.97, 10.21, 10.04, 9.97, 9.8, 9.92, 10.36, 9.7, 9.77, 10.24],
+])
+def test_a_tie_in_quoted_prices_gives_no_name(monkeypatch, closes):
+    rows = _candles(closes)
+    for candle in (_long_lower_shadow(closes[-1], 0), _long_upper_shadow(closes[-1], 0)):
+        assert not LONG_SHADOW_NAMES & set(_patterns(monkeypatch, rows + [candle]))
+
+
+@pytest.mark.parametrize("base, tick", [(1700.0, 0.01), (30000.0, 0.01), (0.5, 0.0001)])
+def test_a_one_tick_difference_is_a_direction(monkeypatch, base, tick):
+    # MA5 is a tenth of a tick above MA10 and four tenths of a tick below the last close.
+    closes = [round(base + k * tick, 4) for k in (0, 1, 2, 3, 1, 0, 1, 2, 3, 2)]
+    found = _patterns(monkeypatch, _candles(closes) + [_long_lower_shadow(closes[-1], 0)])
+    assert "上吊线 (Hanging Man)" in found
+
+
+def test_a_missing_close_among_the_ten_before_the_candle_gives_no_name(monkeypatch):
+    rows = _trend(20, 20.0, -0.012)
+    rows[-4][3] = float("nan")
+    assert not LONG_SHADOW_NAMES & set(_patterns(monkeypatch, rows + [_long_lower_shadow(rows[-1][3], -0.015)]))
 
 
 def test_the_name_does_not_depend_on_how_many_days_are_scanned(monkeypatch):
@@ -129,9 +180,10 @@ def test_fewer_than_ten_closes_before_the_candle_give_no_name(monkeypatch):
     assert not LONG_SHADOW_NAMES & set(_patterns(monkeypatch, rows[1:] + [candle]))
 
 
-def test_a_candle_one_bar_back_is_named_by_the_trend_before_it(monkeypatch):
+@pytest.mark.parametrize("candle, name", [(_long_lower_shadow, "锤子线 (Hammer)"), (_long_upper_shadow, "倒锤子")])
+def test_a_candle_one_bar_back_is_named_by_the_trend_before_it(monkeypatch, candle, name):
     rows = _trend(20, 20.0, -0.012)
-    rows.append(_long_lower_shadow(rows[-1][3], -0.015))
+    rows.append(candle(rows[-1][3], -0.015))
     rows += _trend(1, rows[-1][3], 0.012)
     found = _patterns(monkeypatch, rows)
-    assert found["锤子线 (Hammer)"]["day_offset"] == -1
+    assert found[name]["day_offset"] == -1
