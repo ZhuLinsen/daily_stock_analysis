@@ -228,7 +228,16 @@ class FactorSnapshot(_FactorContractModel):
     name: str | None = None
     rank: int | None = Field(default=None, ge=1)
     factor_set_version: str = FACTOR_SET_VERSION
-    scores: dict[str, CandidateFactorScore] = Field(default_factory=dict)
+    # validate_default=True: the default must run through the field
+    # validator too — otherwise a snapshot built (or JSON-read) with
+    # scores omitted gets a plain dict, and an in-place
+    # ``snapshot.scores[key] = score`` with a mismatched id desyncs
+    # the key from the id and the dumped snapshot fails its own JSON
+    # round-trip (OR-COR-2f8b65a1, omitted-scores path). The validator
+    # installs FactorScoreMap, so the default is guarded as well.
+    scores: dict[str, CandidateFactorScore] = Field(
+        default_factory=dict, validate_default=True
+    )
     screen_score: float | None = None
     quality: FactorDataQuality = Field(default_factory=FactorDataQuality)
     source: str = "screening.pipeline"

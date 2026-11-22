@@ -23,6 +23,7 @@ from src.schemas.factor_contract import (
     FactorDataQuality,
     FactorDefinition,
     FactorFieldStatus,
+    FactorScoreMap,
     FactorSnapshot,
     normalize_contract_timestamp,
 )
@@ -836,6 +837,34 @@ def test_snapshot_scores_item_assignment_is_rejected() -> None:
         )
     assert snapshot.scores["value"].factor_id == "value"
     FactorSnapshot.model_validate_json(snapshot.model_dump_json())
+
+
+@pytest.mark.unit
+def test_snapshot_omitted_scores_still_gets_the_validating_map() -> None:
+    """Regression for OR-COR-2f8b65a1 (third form): a snapshot built
+    — or JSON-read — with ``scores`` omitted must still guard
+    in-place writes. The default used to skip field validation, so
+    both omitted paths returned a plain dict and a mismatched
+    ``snapshot.scores[key] = score`` desynced the key from the id
+    while the dumped snapshot failed its own JSON round-trip."""
+    omitted = FactorSnapshot(
+        candidate_pool_run_id="a1b2c3d4e5f6",
+        code="600519",
+    )
+    from_json = FactorSnapshot.model_validate_json(
+        json.dumps(
+            {"candidate_pool_run_id": "a1b2c3d4e5f6", "code": "600519"}
+        )
+    )
+    for snapshot in (omitted, from_json):
+        assert isinstance(snapshot.scores, FactorScoreMap)
+        assert snapshot.scores == {}
+        with pytest.raises(ValueError, match="does not match factor_id"):
+            snapshot.scores["value"] = CandidateFactorScore(
+                factor_id="momentum", value=70.0
+            )
+        assert list(snapshot.scores) == []
+        FactorSnapshot.model_validate_json(snapshot.model_dump_json())
 
 
 @pytest.mark.unit
