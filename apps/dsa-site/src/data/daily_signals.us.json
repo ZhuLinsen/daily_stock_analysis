@@ -1,0 +1,114 @@
+[
+  {
+    "code": "NVDA",
+    "name": "NVIDIA",
+    "market": "us",
+    "sector": "Semiconductors",
+    "sentiment_score": 76,
+    "operation_advice": "Hold",
+    "decision_type": "hold",
+    "confidence_level": "Medium",
+    "trend_prediction": "Strong Bullish",
+    "analysis_summary": "Trend remains intact above the 50DMA, but RSI is extended. Existing holders sit tight; new entries wait for a controlled pullback toward the 118 area before scaling in.",
+    "risk_alerts": [
+      "RSI is extended; crowded long positioning amplifies any pullback.",
+      "Valuation is sensitive to any growth re-rating from hyperscaler capex commentary."
+    ],
+    "positive_catalysts": [
+      "Hyperscaler AI capex guidance remains strong into the next cycle.",
+      "Data-center GPU demand visibility extends through next-gen platform ramp."
+    ],
+    "sniper_points": {
+      "ideal_buy": 118.50,
+      "secondary_buy": 108.00,
+      "stop_loss": 102.00,
+      "take_profit": null
+    },
+    "model_used": "openai-compatible/gemini",
+    "data_sources": "YFinance + news sentiment + technical context"
+  },
+  {
+    "code": "MSFT",
+    "name": "Microsoft",
+    "market": "us",
+    "sector": "Software",
+    "sentiment_score": 68,
+    "operation_advice": "Watch",
+    "decision_type": "hold",
+    "confidence_level": "Medium",
+    "trend_prediction": "Bullish",
+    "analysis_summary": "Azure and Copilot monetization underpin a constructive medium-term setup; price is consolidating near support, wait for clearer risk/reward.",
+    "risk_alerts": [
+      "Near-term upside hinges on next earnings guidance and megacap breadth.",
+      "Capex acceleration may pressure operating margins short-term."
+    ],
+    "positive_catalysts": [
+      "Azure AI consumption cohorts are expanding quarter over quarter.",
+      "Copilot attach across M365 enterprise seats remains a structural lever."
+    ],
+    "sniper_points": {
+      "ideal_buy": 392.00,
+      "secondary_buy": 378.00,
+      "stop_loss": 360.00,
+      "take_profit": null
+    },
+    "model_used": "openai-compatible/gemini",
+    "data_sources": "YFinance + news sentiment + fundamentals"
+  },
+  {
+    "code": "AAPL",
+    "name": "Apple",
+    "market": "us",
+    "sector": "Consumer Electronics",
+    "sentiment_score": 63,
+    "operation_advice": "Buy",
+    "decision_type": "buy",
+    "confidence_level": "Medium",
+    "trend_prediction": "Bullish",
+    "analysis_summary": "Price has stabilized above the 20DMA and reclaimed the 50DMA, suggesting an improving setup; staged entries preferred over chasing strength.",
+    "risk_alerts": [
+      "China demand and FX exposure remain key watch items.",
+      "Services growth normalization could cap multiple expansion."
+    ],
+    "positive_catalysts": [
+      "Apple Intelligence rollout supports a multi-year device upgrade cycle.",
+      "Services gross margin remains structurally accretive."
+    ],
+    "sniper_points": {
+      "ideal_buy": 218.00,
+      "secondary_buy": 208.00,
+      "stop_loss": 198.00,
+      "take_profit": 245.00
+    },
+    "model_used": "openai-compatible/gemini",
+    "data_sources": "YFinance + news sentiment + technical context"
+  },
+  {
+    "code": "TSLA",
+    "name": "Tesla",
+    "market": "us",
+    "sector": "EV",
+    "sentiment_score": 44,
+    "operation_advice": "Reduce",
+    "decision_type": "sell",
+    "confidence_level": "Low",
+    "trend_prediction": "Sideways",
+    "analysis_summary": "Trend confirmation is weak and volatility is elevated; reduce exposure if the 240 support breaks on volume, re-evaluate after a base forms.",
+    "risk_alerts": [
+      "Auto gross margin pressure can compound delivery uncertainty.",
+      "ATR is wide; intraday volatility regularly exceeds 4%."
+    ],
+    "positive_catalysts": [
+      "FSD adoption and energy-storage bookings remain optional upside.",
+      "Cost-down roadmap could re-rate margins on a successful execution."
+    ],
+    "sniper_points": {
+      "ideal_buy": null,
+      "secondary_buy": null,
+      "stop_loss": 240.00,
+      "take_profit": null
+    },
+    "model_used": "openai-compatible/gemini",
+    "data_sources": "YFinance + news sentiment + technical context"
+  }
+]

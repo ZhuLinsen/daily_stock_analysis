@@ -1,0 +1,1090 @@
+---
+import '../styles/landing.css';
+import siteMeta from '../data/site-meta.json';
+import zhSignals from '../data/daily_signals.json';
+import enSignals from '../data/daily_signals.us.json';
+
+interface Props {
+  lang: 'zh' | 'en';
+}
+
+const { lang } = Astro.props;
+const isEn = lang === 'en';
+const rawSignals = isEn ? enSignals : zhSignals;
+
+// Format sanitized sample records for the interactive Hero Stage (no synthetic scores)
+const stageSamples = (Array.isArray(rawSignals) ? rawSignals : []).slice(0, 4).map((item, idx) => {
+  const score = Number(item.sentiment_score ?? 60);
+  const marketMap: Record<string, string> = {
+    cn: isEn ? 'A-Share' : 'A股',
+    hk: isEn ? 'HK' : '港股',
+    us: isEn ? 'US' : '美股',
+  };
+  const market = marketMap[String(item.market || '').toLowerCase()] || (item.market || 'Stock');
+  const sp = (item.sniper_points || {}) as Record<string, number | null | undefined>;
+  const fmt = (v: number | null | undefined) => (typeof v === 'number' ? v.toFixed(2) : '—');
+  const dt = String(item.decision_type || 'hold').toLowerCase();
+  const catalysts = (Array.isArray(item.positive_catalysts) ? item.positive_catalysts : []).filter(
+    (entry): entry is string => typeof entry === 'string' && entry.trim().length > 0,
+  );
+  const risks = (Array.isArray(item.risk_alerts) ? item.risk_alerts : []).filter(
+    (entry): entry is string => typeof entry === 'string' && entry.trim().length > 0,
+  );
+
+  return {
+    code: item.code || `STK${idx}`,
+    name: item.name || item.code || '-',
+    market,
+    sector: item.sector || (isEn ? 'Equity' : '行业'),
+    score,
+    scoreDesc:
+      score >= 70
+        ? isEn
+          ? 'Constructive momentum'
+          : '景气多头偏强'
+        : score >= 50
+          ? isEn
+            ? 'Watch & discipline'
+            : '谨慎观察区间'
+          : isEn
+            ? 'Risk-off caution'
+            : '注意波动风控',
+    advice: item.operation_advice || (isEn ? 'Watch' : '观望'),
+    decisionType: dt,
+    trend: item.trend_prediction || (isEn ? 'Bullish' : '看多'),
+    confidence: item.confidence_level || (isEn ? 'Medium' : '中'),
+    summary: item.analysis_summary || '-',
+    catalysts: catalysts.length ? catalysts : ['-'],
+    risks: risks.length ? risks : ['-'],
+    idealBuy: fmt(sp.ideal_buy),
+    secBuy: fmt(sp.secondary_buy),
+    stopLoss: fmt(sp.stop_loss),
+    takeProfit: fmt(sp.take_profit),
+    model: item.model_used || 'openai-compatible/gemini',
+    dataSources: item.data_sources || (isEn ? 'Multi-source market & news' : '行情 + 新闻舆情 + 技术面 + 基本面'),
+  };
+});
+
+const shortVersion = (siteMeta.versionLabel || 'v3.35.0').split('-')[0];
+const docsBase = isEn ? '/en/docs' : '/docs';
+const localizeDoc = (path: string) => `${isEn ? '/en' : ''}${path}`;
+
+const quickstartChannels = isEn
+  ? [
+      {
+        id: 'desktop',
+        label: 'Desktop App (0-Code)',
+        desc: 'Electron installer for Windows / macOS with full WebUI built in.',
+        docHref: localizeDoc('/docs/getting-started/beginner-client/'),
+        codeTitle: 'Desktop App · Windows / macOS',
+        code: `# 1. Download installer from GitHub Releases (no Python setup needed)
+https://github.com/ZhuLinsen/daily_stock_analysis/releases
+
+# 2. Open Settings inside the app and fill:
+STOCK_LIST=AAPL,NVDA,hk00700,600519
+GEMINI_API_KEY=...   # or OPENAI_API_KEY / ANTHROPIC_API_KEY
+
+# 3. Click "Analyze Now" to generate your first Decision Dashboard`,
+      },
+      {
+        id: 'actions',
+        label: 'GitHub Actions',
+        desc: 'Zero infrastructure cost, scheduled daily delivery on trading days.',
+        docHref: localizeDoc('/docs/getting-started/quick-start/'),
+        codeTitle: 'GitHub Actions · Serverless Workflow',
+        code: `# 1. Fork https://github.com/ZhuLinsen/daily_stock_analysis
+# 2. Repo Settings -> Secrets and variables -> Actions -> New secret:
+GEMINI_API_KEY=...        # or DEEPSEEK_API_KEY / ANTHROPIC_API_KEY (for OpenAI gateways also set OPENAI_BASE_URL + OPENAI_MODEL)
+STOCK_LIST=AAPL,NVDA,hk00700
+TELEGRAM_BOT_TOKEN=...    # Telegram requires BOTH TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID
+TELEGRAM_CHAT_ID=...      # or DISCORD_WEBHOOK_URL, or EMAIL_SENDER + EMAIL_PASSWORD
+
+# 3. Enable Workflows -> Run "Daily Stock Analysis" manually to test`,
+      },
+      {
+        id: 'docker',
+        label: 'Docker Compose',
+        desc: '24x7 self-hosted container with FastAPI, React WebUI, and scheduler.',
+        docHref: localizeDoc('/docs/deployment/docker/'),
+        codeTitle: 'Docker Compose · Server Deployment',
+        code: `git clone https://github.com/ZhuLinsen/daily_stock_analysis.git
+cd daily_stock_analysis
+cp .env.example .env
+# Edit .env: set STOCK_LIST and at least one AI API key
+
+docker-compose -f ./docker/docker-compose.yml up -d server
+# Open http://127.0.0.1:8000`,
+      },
+      {
+        id: 'local',
+        label: 'Local Python',
+        desc: 'Best for debugging providers, LLM routers, strategies, and backtests.',
+        docHref: localizeDoc('/docs/deployment/local/'),
+        codeTitle: 'Python 3.10+ · CLI & WebUI',
+        code: `git clone https://github.com/ZhuLinsen/daily_stock_analysis.git && cd daily_stock_analysis
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt && cp .env.example .env
+# Edit .env: set STOCK_LIST and at least one AI key (e.g. GEMINI_API_KEY or DEEPSEEK_API_KEY)
+
+python main.py --doctor                    # offline health diagnostics
+python main.py --stocks AAPL,NVDA --serve  # analyze + start WebUI`,
+      },
+    ]
+  : [
+      {
+        id: 'desktop',
+        label: '桌面客户端 (0 代码)',
+        desc: 'Windows / macOS 安装包开箱即用，内置完整工作台与配置向导。',
+        docHref: localizeDoc('/docs/getting-started/beginner-client/'),
+        codeTitle: 'Electron 桌面端 · Windows / macOS 一键安装',
+        code: `# 1. 前往 GitHub Releases 下载安装包（无需配置 Python 环境）
+https://github.com/ZhuLinsen/daily_stock_analysis/releases
+
+# 2. 打开客户端 →「设置」页填入：
+STOCK_LIST=600519,hk00700,AAPL,7203.T
+GEMINI_API_KEY=...   # 或 DeepSeek / OpenAI 兼容 / Claude Key
+
+# 3. 回到首页点击「立即分析」，30 秒内生成首份决策仪表盘`,
+      },
+      {
+        id: 'actions',
+        label: 'GitHub Actions',
+        desc: '零服务器成本，每个交易日 18:00 自动研判并推送到微信/飞书/TG/邮箱。',
+        docHref: localizeDoc('/docs/deployment/github-actions/'),
+        codeTitle: 'GitHub Actions · 零服务器定时推送',
+        code: `# 1. Fork 仓库：https://github.com/ZhuLinsen/daily_stock_analysis
+# 2. 进入 Settings -> Secrets and variables -> Actions -> New repository secret
+
+GEMINI_API_KEY=...        # 或 MODELFLARE_KEY / DEEPSEEK_API_KEY（OpenAI 兼容网关需加配 BASE_URL 与 MODEL）
+STOCK_LIST=600519,hk00700,AAPL
+WECHAT_WEBHOOK_URL=...    # 或 FEISHU_WEBHOOK_URL / DISCORD_WEBHOOK_URL
+# Telegram 需成对配置：TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID
+# 邮件需成对配置：EMAIL_SENDER + EMAIL_PASSWORD
+
+# 3. Actions 标签页启用 Workflow -> 手动点击 Run workflow 测试`,
+      },
+      {
+        id: 'docker',
+        label: 'Docker Compose',
+        desc: '适合云服务器或 NAS 长期托管，一键拉起 WebUI、API 与定时调度。',
+        docHref: localizeDoc('/docs/deployment/docker/'),
+        codeTitle: 'Docker Compose · 自托管服务端',
+        code: `git clone https://github.com/ZhuLinsen/daily_stock_analysis.git
+cd daily_stock_analysis
+cp .env.example .env      # 编辑填写 STOCK_LIST 与 AI Key
+
+docker-compose -f ./docker/docker-compose.yml up -d server
+# 浏览器访问 http://127.0.0.1:8000`,
+      },
+      {
+        id: 'local',
+        label: '本地 Python',
+        desc: '适合开发者调试大模型路由、数据源优先级、自定义策略与回测。',
+        docHref: localizeDoc('/docs/deployment/local/'),
+        codeTitle: 'Python 3.10+ · CLI 与本地诊断',
+        code: `git clone https://github.com/ZhuLinsen/daily_stock_analysis.git && cd daily_stock_analysis
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt && cp .env.example .env
+# 编辑 .env：填写 STOCK_LIST 与至少一个 AI Key（如 GEMINI_API_KEY / DEEPSEEK_API_KEY / MODELFLARE_KEY）
+
+python main.py --doctor                     # 离线检查环境与数据源就绪度
+python main.py --stocks 600519,hk00700,AAPL # 立即分析指定标的
+python main.py --serve                      # 启动 Web 工作台（8000 端口）`,
+      },
+    ];
+
+const docCards = isEn
+  ? [
+      { tag: 'START', title: 'Quick Start & Runtimes', desc: 'Compare Desktop App, GitHub Actions, Docker, and CLI in one view.', href: localizeDoc('/docs/getting-started/quick-start/') },
+      { tag: 'MARKETS', title: '6-Market Support Matrix', desc: 'Coverage and fallback rules for A-shares, HK, US, JP, KR, TW, and ETFs.', href: localizeDoc('/docs/features/market-support/') },
+      { tag: 'LLM', title: 'LLM Router & Models', desc: 'Configure Gemini, Claude, DeepSeek, OpenAI-compatible gateways, and Ollama.', href: localizeDoc('/docs/configuration/llm-guide/') },
+      { tag: 'DATA', title: 'Data Sources & TickPlus', desc: 'Priority chains, circuit breakers, TickPlus, Tushare, and Longbridge setup.', href: localizeDoc('/docs/configuration/data-sources/') },
+      { tag: 'BOTS', title: 'Notifications & Bots', desc: 'Connect WeChat Work, Feishu, DingTalk, Telegram, Discord, Slack, and Email.', href: localizeDoc('/docs/configuration/bot-commands/') },
+      { tag: 'OPENAPI', title: `OpenAPI Explorer (${siteMeta.apiEndpointCount})`, desc: 'Searchable viewer for the curated static OpenAPI 3.1 snapshot (docs/architecture/api_spec.json).', href: localizeDoc('/docs/reference/api/') },
+    ]
+  : [
+      { tag: 'START', title: '选择运行方式（快速开始）', desc: '桌面端、GitHub Actions、Docker 与本地 CLI 四路径对比与 5 分钟上手。', href: '/docs/getting-started/quick-start/' },
+      { tag: 'MARKETS', title: '6 大市场支持边界', desc: '明确 A 股、港股、美股、日股、韩股、台股及 ETF 的字段可用性与降级规则。', href: '/docs/features/market-support/' },
+      { tag: 'LLM', title: 'LLM 大模型路由配置', desc: '接入 Gemini、Claude、DeepSeek、OpenAI 兼容网关、Ollama 本地模型与 LiteLLM。', href: '/docs/configuration/llm-guide/' },
+      { tag: 'DATA', title: '数据源稳定性与 TickPlus', desc: '多源 Fallback 优先级、短期熔断恢复与 TickPlus / Tushare / Longbridge 指南。', href: '/docs/configuration/data-sources/' },
+      { tag: 'BOTS', title: '通知渠道与 Bot 平台', desc: '企业微信、飞书、钉钉、Telegram、Discord、Slack、邮件与 OpenClaw / Grok 集成。', href: '/docs/configuration/notifications/' },
+      { tag: 'OPENAPI', title: `OpenAPI 接口浏览器 (${siteMeta.apiEndpointCount})`, desc: '交互式检索主仓静态 OpenAPI 3.1 架构快照（docs/architecture/api_spec.json）中的核心端点与 Schema。', href: '/docs/reference/api/' },
+    ];
+
+const initialSample = stageSamples[0];
+---
+
+<!doctype html>
+<html lang={isEn ? 'en' : 'zh-CN'} data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <script is:inline>
+      (() => {
+        try {
+          const saved = localStorage.getItem('starlight-theme');
+          const theme = saved === 'light' ? 'light' : 'dark';
+          document.documentElement.dataset.theme = theme;
+        } catch {
+          document.documentElement.dataset.theme = 'dark';
+        }
+      })();
+    </script>
+    <title>
+      {isEn
+        ? 'DSA - LLM-Driven Multi-Market Stock Analysis System'
+        : 'DSA - LLM 驱动的多市场智能股票分析系统'}
+    </title>
+    <meta
+      name="description"
+      content={isEn
+        ? 'Open-source LLM stock analysis across A-shares, HK, US, JP, KR, and TW markets with decision dashboards, 15 Agent strategies, backtesting, and multi-channel delivery.'
+        : '基于 AI 大模型的 A股/港股/美股/日股/韩股/台股智能分析系统，提供每日决策仪表盘、大盘复盘、15 种 Agent 策略问股、告警风控与多渠道推送。'}
+    />
+    <link rel="canonical" href={isEn ? 'https://dsa.zhulinsen.tech/en/' : 'https://dsa.zhulinsen.tech/'} />
+    <link rel="alternate" hreflang="zh-CN" href="https://dsa.zhulinsen.tech/" />
+    <link rel="alternate" hreflang="en" href="https://dsa.zhulinsen.tech/en/" />
+    <link rel="icon" type="image/svg+xml" href="/assets/favicon.svg" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Daily Stock Analysis" />
+    <meta property="og:title" content="Daily Stock Analysis (DSA)" />
+    <meta property="og:image" content="https://dsa.zhulinsen.tech/assets/dsa-webui.png" />
+    <meta name="twitter:card" content="summary_large_image" />
+  </head>
+  <body>
+    <!-- Top Sticky Minimalist Header -->
+    <header
+      class="sticky top-0 z-40 border-b backdrop-blur-md"
+      style="border-color: var(--ob-border); background: color-mix(in srgb, var(--ob-bg) 82%, transparent);"
+    >
+      <div class="max-w-[1180px] mx-auto px-4 sm:px-6 h-15 flex items-center justify-between gap-4">
+        <div class="flex items-center gap-7">
+          <a href={isEn ? '/en/' : '/'} class="flex items-center gap-2.5 no-underline" style="color: var(--ob-ink);">
+            <svg viewBox="0 0 36 32" class="w-6 h-6 shrink-0" aria-hidden="true">
+              <rect x="2" y="20" width="6" height="10" rx="2" fill="#EA4335" />
+              <rect x="11" y="13" width="6" height="10" rx="2" fill="#FBBC05" />
+              <rect x="11" y="25" width="6" height="5" rx="2" fill="#FBBC05" />
+              <rect x="20" y="7" width="6" height="6" rx="2" fill="#34A853" />
+              <rect x="20" y="15" width="6" height="6" rx="2" fill="#34A853" />
+              <rect x="20" y="23" width="6" height="7" rx="2" fill="#34A853" />
+              <rect x="29" y="2" width="6" height="11" rx="2" fill="#4285F4" />
+              <rect x="29" y="15" width="6" height="8" rx="2" fill="#4285F4" />
+              <rect x="29" y="25" width="6" height="5" rx="2" fill="#4285F4" />
+            </svg>
+            <span class="font-bold text-sm tracking-tight">DSA</span>
+            <span class="hidden sm:inline text-xs" style="color: var(--ob-muted);">Daily Stock Analysis</span>
+          </a>
+
+          <nav class="hidden md:flex items-center gap-6 text-xs font-medium" style="color: var(--ob-muted);">
+            <a href="#stage" class="no-underline hover:opacity-80" style="color: inherit;">{isEn ? 'Product' : '产品体验'}</a>
+            <a href="#capabilities" class="no-underline hover:opacity-80" style="color: inherit;">{isEn ? 'Capabilities' : '核心能力'}</a>
+            <a href="#quickstart" class="no-underline hover:opacity-80" style="color: inherit;">{isEn ? 'Quick Start' : '快速开始'}</a>
+            <a href={`${docsBase}/`} class="no-underline hover:opacity-80" style="color: inherit;">{isEn ? 'Docs' : '文档中心'}</a>
+          </nav>
+        </div>
+
+        <div class="flex items-center gap-2">
+          <a
+            href={`${docsBase}/`}
+            class="hidden sm:inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border text-xs no-underline transition"
+            style="border-color: var(--ob-border); background: var(--ob-surface); color: var(--ob-muted);"
+          >
+            <span>{isEn ? 'Search Docs' : '搜索文档'}</span>
+            <kbd class="mono-num text-[11px] px-1.5 py-0.5 rounded" style="background: var(--ob-surface-soft); color: var(--ob-ink);">⌘K</kbd>
+          </a>
+
+          <a
+            href={isEn ? '/' : '/en/'}
+            class="px-2.5 py-1.5 rounded-lg border text-xs font-medium no-underline transition"
+            style="border-color: var(--ob-border); background: var(--ob-surface); color: var(--ob-muted);"
+            title={isEn ? '切换到简体中文' : 'Switch to English'}
+          >
+            {isEn ? '中文' : 'EN'}
+          </a>
+
+          <button
+            type="button"
+            id="themeToggleBtn"
+            class="w-8 h-8 rounded-lg border flex items-center justify-center cursor-pointer transition text-sm"
+            style="border-color: var(--ob-border); background: var(--ob-surface); color: var(--ob-ink);"
+            aria-label={isEn ? 'Toggle theme' : '切换明暗主题'}
+          >
+            <span id="themeIconSun" class="hidden">☀</span>
+            <span id="themeIconMoon">☾</span>
+          </button>
+
+          <a
+            href="https://github.com/ZhuLinsen/daily_stock_analysis"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold no-underline transition"
+            style="border-color: var(--ob-border); background: var(--ob-surface); color: var(--ob-ink);"
+          >
+            <svg class="w-3.5 h-3.5" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+              <path d="M8 0C3.58 0 0 3.67 0 8.2c0 3.63 2.29 6.7 5.47 7.79.4.08.55-.18.55-.4 0-.2-.01-.86-.01-1.56-2.01.38-2.53-.5-2.69-.96-.09-.24-.48-.96-.82-1.15-.28-.16-.68-.55-.01-.56.63-.01 1.08.59 1.23.84.72 1.24 1.87.89 2.33.68.07-.53.28-.89.51-1.09-1.78-.21-3.64-.91-3.64-4.04 0-.89.31-1.62.82-2.19-.08-.21-.36-1.04.08-2.16 0 0 .67-.22 2.2.84A7.42 7.42 0 0 1 8 3.96c.68 0 1.36.09 2 .28 1.53-1.06 2.2-.84 2.2-.84.44 1.12.16 1.95.08 2.16.51.57.82 1.3.82 2.19 0 3.14-1.87 3.83-3.65 4.04.29.26.54.75.54 1.52 0 1.09-.01 1.97-.01 2.24 0 .22.15.48.55.4A8.12 8.12 0 0 0 16 8.2C16 3.67 12.42 0 8 0Z" />
+            </svg>
+            <span class="hidden sm:inline">GitHub</span>
+          </a>
+
+          <button
+            type="button"
+            id="mobileMenuBtn"
+            class="md:hidden w-8 h-8 rounded-lg border flex items-center justify-center cursor-pointer"
+            style="border-color: var(--ob-border); background: var(--ob-surface); color: var(--ob-ink);"
+            aria-label="Menu"
+            aria-expanded="false"
+          >
+            ☰
+          </button>
+        </div>
+      </div>
+
+      <!-- Mobile Nav Drawer -->
+      <div id="mobileMenuDrawer" class="hidden md:hidden border-t px-4 py-3 space-y-2 text-xs" style="border-color: var(--ob-border); background: var(--ob-bg);">
+        <a href="#stage" class="block py-1.5 no-underline" style="color: var(--ob-ink);">{isEn ? 'Product Preview' : '产品体验'}</a>
+        <a href="#capabilities" class="block py-1.5 no-underline" style="color: var(--ob-ink);">{isEn ? 'Capabilities' : '核心能力'}</a>
+        <a href="#quickstart" class="block py-1.5 no-underline" style="color: var(--ob-ink);">{isEn ? 'Quick Start' : '快速开始'}</a>
+        <a href={`${docsBase}/`} class="block py-1.5 no-underline font-semibold" style="color: var(--ob-accent);">{isEn ? 'Documentation Center' : '文档中心'}</a>
+      </div>
+    </header>
+
+    <main class="max-w-[1180px] mx-auto px-4 sm:px-6 pt-12 pb-16 space-y-16">
+      <!-- HERO SECTION -->
+      <section class="text-center space-y-6">
+        <!-- Trust Badges -->
+        <div class="flex flex-wrap items-center justify-center gap-2 text-xs">
+          <a
+            href="https://github.com/ZhuLinsen/daily_stock_analysis/releases"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="px-3 py-1 rounded-full border font-medium mono-num no-underline"
+            style="border-color: var(--ob-border-strong); background: var(--ob-accent-soft); color: var(--ob-accent);"
+          >
+            {shortVersion}
+          </a>
+          <a
+            href="https://arxiv.org/abs/2608.26990"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="px-3 py-1 rounded-full border font-medium mono-num no-underline"
+            style="border-color: var(--ob-border); background: var(--ob-surface); color: var(--ob-muted);"
+          >
+            arXiv:2608.26990
+          </a>
+          <span
+            class="px-3 py-1 rounded-full border font-medium"
+            style="border-color: var(--ob-border); background: var(--ob-surface); color: var(--ob-muted);"
+          >
+            {isEn ? '6 Markets · A / HK / US / JP / KR / TW' : '6 大市场 · A / H / US / JP / KR / TW'}
+          </span>
+          <span
+            class="px-3 py-1 rounded-full border font-medium"
+            style="border-color: var(--ob-border); background: var(--ob-surface); color: var(--ob-muted);"
+          >
+            MIT Open Source
+          </span>
+        </div>
+
+        <!-- Headline -->
+        <h1 class="text-4xl sm:text-6xl font-bold tracking-tight leading-[1.1] max-w-4xl mx-auto" style="color: var(--ob-ink);">
+          {isEn ? (
+            <>
+              LLM-Driven{' '}
+              <span style="color: var(--ob-accent);">Decision Dashboards</span>
+              <br />
+              for Every Trading Day
+            </>
+          ) : (
+            <>
+              让大模型每天为你完成
+              <br />
+              <span style="color: var(--ob-accent);">自选股决策研判</span>与大盘复盘
+            </>
+          )}
+        </h1>
+
+        <p class="text-sm sm:text-lg leading-relaxed max-w-2xl mx-auto" style="color: var(--ob-muted);">
+          {isEn
+            ? 'Synthesize multi-source quotes, live financial news, technicals, and 15 built-in Agent strategies. Deploy in 5 minutes via Desktop App, GitHub Actions, or Docker.'
+            : '聚合多源行情、实时金融新闻、筹码技术面与 15 种 Agent 交易策略。无需昂贵服务器，5 分钟通过桌面客户端、GitHub Actions 或 Docker 跑通每日推送闭环。'}
+        </p>
+
+        <!-- Primary / Secondary CTAs -->
+        <div class="flex flex-wrap items-center justify-center gap-3 pt-1">
+          <a href="#quickstart" class="ob-primary-btn px-5 py-2.5 text-sm font-semibold no-underline inline-flex items-center gap-2">
+            <span>{isEn ? 'Deploy in 5 Minutes / Desktop App' : '下载桌面端 / 5 分钟部署'}</span>
+            <span aria-hidden="true">→</span>
+          </a>
+          <a
+            href="https://github.com/ZhuLinsen/daily_stock_analysis"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="ob-secondary-btn px-4 py-2.5 text-sm font-medium no-underline"
+          >
+            {isEn ? 'View on GitHub' : 'GitHub 仓库'}
+          </a>
+          <a href={`${docsBase}/`} class="px-3 py-2.5 text-sm font-medium no-underline" style="color: var(--ob-accent);">
+            {isEn ? 'Read Docs →' : '浏览文档中心 →'}
+          </a>
+        </div>
+
+        <!-- INTERACTIVE PURE-CSS PRODUCT STAGE -->
+        <div id="stage" class="ob-stage p-4 sm:p-6 text-left mt-8 space-y-5">
+          <!-- Symbol Tabs + Model Label -->
+          <div class="flex flex-wrap items-center justify-between gap-3 pb-4 border-b" style="border-color: var(--ob-border);">
+            <div class="flex flex-wrap items-center gap-2" role="tablist" aria-label="Sample Stocks">
+              {stageSamples.map((s, idx) => (
+                <button
+                  type="button"
+                  data-sample-idx={idx}
+                  class={`sample-tab-btn px-3 py-1.5 rounded-lg text-xs font-medium border cursor-pointer transition ${idx === 0 ? 'is-active' : ''}`}
+                >
+                  <span class="mono-num">{s.code}</span> · {s.name} ({s.market})
+                </button>
+              ))}
+            </div>
+            <div class="flex items-center gap-2 text-xs" style="color: var(--ob-muted);">
+              <span class="w-2 h-2 rounded-full" style="background: var(--ob-up);"></span>
+              <span id="stageModel" class="mono-num">{initialSample?.model}</span>
+            </div>
+          </div>
+
+          <!-- Stage Grid -->
+          {initialSample && (
+            <div class="grid grid-cols-1 lg:grid-cols-12 gap-5 items-stretch">
+              <!-- Left 8 cols -->
+              <div class="lg:col-span-8 space-y-4">
+                <div class="flex flex-wrap items-start justify-between gap-4">
+                  <div>
+                    <div class="flex items-center gap-2 mb-1.5">
+                      <span id="stageMarket" class="px-2 py-0.5 rounded text-xs font-semibold" style="background: var(--ob-accent-soft); color: var(--ob-accent);">
+                        {initialSample.market}
+                      </span>
+                      <span id="stageSector" class="text-xs font-medium" style="color: var(--ob-muted);">{initialSample.sector}</span>
+                      <span id="stageCode" class="text-xs mono-num" style="color: var(--ob-subtle);">{initialSample.code}</span>
+                    </div>
+                    <h2 id="stageName" class="text-2xl sm:text-3xl font-bold tracking-tight m-0" style="color: var(--ob-ink);">
+                      {initialSample.name}
+                    </h2>
+                    <div class="flex flex-wrap items-center gap-2 mt-2.5 text-xs">
+                      <span id="stageAdvice" class="px-2.5 py-1 rounded-full border font-semibold" style="border-color: var(--ob-border); background: var(--ob-surface-soft); color: var(--ob-warn);">
+                        {isEn ? 'Advice' : '建议'} · {initialSample.advice}
+                      </span>
+                      <span id="stageTrend" class="px-2.5 py-1 rounded-full border font-medium" style="border-color: var(--ob-border); background: var(--ob-surface-2); color: var(--ob-ink);">
+                        {isEn ? 'Trend' : '趋势'} · {initialSample.trend}
+                      </span>
+                      <span id="stageConf" class="px-2.5 py-1 rounded-full border font-medium" style="border-color: var(--ob-border); background: var(--ob-surface-2); color: var(--ob-muted);">
+                        {isEn ? 'Confidence' : '置信度'} · {initialSample.confidence}
+                      </span>
+                    </div>
+                  </div>
+
+                  <!-- SVG Sentiment Score Ring -->
+                  <div class="ob-card-soft px-4 py-3 flex items-center gap-3">
+                    <div class="relative w-14 h-14 shrink-0">
+                      <svg viewBox="0 0 60 60" class="w-14 h-14 -rotate-90">
+                        <circle cx="30" cy="30" r="24" fill="none" stroke-width="5" style="stroke: var(--ob-border);" />
+                        <circle
+                          id="stageGaugeArc"
+                          class="gauge-ring"
+                          cx="30"
+                          cy="30"
+                          r="24"
+                          fill="none"
+                          stroke-width="5"
+                          stroke-linecap="round"
+                          stroke-dasharray="150.8"
+                          stroke-dashoffset={(150.8 * (1 - initialSample.score / 100)).toFixed(1)}
+                          style="stroke: var(--ob-accent);"
+                        />
+                      </svg>
+                      <div class="absolute inset-0 flex items-center justify-center">
+                        <span id="stageScore" class="mono-num text-base font-bold" style="color: var(--ob-ink);">{initialSample.score}</span>
+                      </div>
+                    </div>
+                    <div class="text-xs">
+                      <div style="color: var(--ob-muted);">{isEn ? 'Sentiment Score' : '情绪综合评分'}</div>
+                      <div id="stageScoreDesc" class="font-semibold mt-0.5" style="color: var(--ob-accent);">{initialSample.scoreDesc}</div>
+                    </div>
+                  </div>
+                </div>
+
+                <p
+                  id="stageSummary"
+                  class="text-xs sm:text-sm leading-relaxed p-4 rounded-xl border m-0"
+                  style="border-color: var(--ob-border); background: var(--ob-surface-2); color: var(--ob-ink);"
+                >
+                  {initialSample.summary}
+                </p>
+
+                <!-- Sniper Price Levels -->
+                <div class="space-y-2">
+                  <div class="flex flex-wrap items-center justify-between gap-2 text-xs">
+                    <span class="font-semibold uppercase tracking-wider mono-num" style="color: var(--ob-muted);">
+                      STRATEGY POINTS · {isEn ? 'Price Level Ruler' : '狙击点位标尺'}
+                    </span>
+                    <span id="stageDataSources" class="text-xs" style="color: var(--ob-subtle);">{initialSample.dataSources}</span>
+                  </div>
+                  <div class="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                    <div class="ob-card-soft p-3">
+                      <div class="text-xs" style="color: var(--ob-muted);">{isEn ? 'Ideal Buy' : '理想买入'}</div>
+                      <div id="stageIdealBuy" class="mono-num text-base font-bold mt-1" style="color: var(--ob-up);">{initialSample.idealBuy}</div>
+                    </div>
+                    <div class="ob-card-soft p-3">
+                      <div class="text-xs" style="color: var(--ob-muted);">{isEn ? 'Secondary Buy' : '次级买入'}</div>
+                      <div id="stageSecBuy" class="mono-num text-base font-bold mt-1" style="color: var(--ob-accent);">{initialSample.secBuy}</div>
+                    </div>
+                    <div class="ob-card-soft p-3">
+                      <div class="text-xs" style="color: var(--ob-muted);">{isEn ? 'Stop Loss' : '止损价位'}</div>
+                      <div id="stageStopLoss" class="mono-num text-base font-bold mt-1" style="color: var(--ob-down);">{initialSample.stopLoss}</div>
+                    </div>
+                    <div class="ob-card-soft p-3">
+                      <div class="text-xs" style="color: var(--ob-muted);">{isEn ? 'Take Profit' : '目标参考'}</div>
+                      <div id="stageTakeProfit" class="mono-num text-base font-bold mt-1" style="color: var(--ob-warn);">{initialSample.takeProfit}</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Right 4 cols -->
+              <div class="lg:col-span-4 flex flex-col gap-3">
+                <div class="ob-card-soft p-3.5 space-y-1.5">
+                  <div class="text-xs font-semibold uppercase tracking-wider" style="color: var(--ob-up);">
+                    {isEn ? '✦ Positive Catalysts' : '✦ 利好催化'}
+                  </div>
+                  <ul id="stageCatalysts" class="list-disc pl-4 space-y-1 text-xs leading-relaxed m-0" style="color: var(--ob-muted);">
+                    {initialSample.catalysts.map((item) => (
+                      <li>{item}</li>
+                    ))}
+                  </ul>
+                </div>
+
+                <div class="ob-card-soft p-3.5 space-y-1.5">
+                  <div class="text-xs font-semibold uppercase tracking-wider" style="color: var(--ob-down);">
+                    {isEn ? '⚠ Risk Alerts' : '⚠ 风险警报'}
+                  </div>
+                  <ul id="stageRisks" class="list-disc pl-4 space-y-1 text-xs leading-relaxed m-0" style="color: var(--ob-muted);">
+                    {initialSample.risks.map((item) => (
+                      <li>{item}</li>
+                    ))}
+                  </ul>
+                </div>
+
+                <div class="ob-card-soft p-3.5 space-y-2.5 flex-1 flex flex-col justify-between">
+                  <div class="space-y-2">
+                    <div class="flex items-center justify-between text-xs">
+                      <span class="font-semibold" style="color: var(--ob-ink);">{isEn ? 'Report Context' : '研报字段来源'}</span>
+                      <span id="stageDecisionType" class="mono-num uppercase px-1.5 py-0.5 rounded text-[11px]" style="background: var(--ob-accent-soft); color: var(--ob-accent);">
+                        {initialSample.decisionType}
+                      </span>
+                    </div>
+                    <div class="space-y-1.5 text-xs">
+                      <div class="flex items-start justify-between gap-2">
+                        <span style="color: var(--ob-subtle);">{isEn ? 'Model' : '分析模型'}</span>
+                        <span id="stageContextModel" class="mono-num text-right break-all" style="color: var(--ob-ink);">{initialSample.model}</span>
+                      </div>
+                      <div class="flex items-start justify-between gap-2">
+                        <span style="color: var(--ob-subtle);">{isEn ? 'Sources' : '数据维度'}</span>
+                        <span id="stageContextSources" class="text-right" style="color: var(--ob-muted);">{initialSample.dataSources}</span>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="pt-2 border-t flex items-center justify-between text-xs" style="border-color: var(--ob-border);">
+                    <span style="color: var(--ob-subtle);">{isEn ? 'Strategy Skills' : '策略框架'}</span>
+                    <a href={localizeDoc('/docs/features/strategies/')} class="no-underline font-medium" style="color: var(--ob-accent);">
+                      {isEn ? '15 Built-in Strategies →' : '15 种 Agent 策略 →'}
+                    </a>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          <div class="pt-3 border-t flex flex-wrap items-center justify-between gap-2 text-xs" style="border-color: var(--ob-border); color: var(--ob-subtle);">
+            <span>
+              {isEn
+                ? 'Static sanitized sample matching the DSA analysis_history schema (daily_signals.us.json) — demo only, not investment advice.'
+                : '展示字段来自静态脱敏样例（daily_signals.json，对应 DSA analysis_history 输出结构）— 仅作能力演示，不构成任何投资建议。'}
+            </span>
+            <a href={localizeDoc('/docs/features/decision-signals/')} class="no-underline font-medium" style="color: var(--ob-accent);">
+              {isEn ? 'DecisionSignal Contract →' : '查看信号字段契约 →'}
+            </a>
+          </div>
+        </div>
+      </section>
+
+      <!-- ECOSYSTEM STRIP -->
+      <section class="ob-card p-4 flex flex-wrap items-center justify-between gap-3 text-xs">
+        <div class="flex flex-wrap items-center gap-2">
+          <span class="font-semibold" style="color: var(--ob-ink);">{isEn ? 'LLM Routing' : '模型路由'}</span>
+          <span class="px-2.5 py-1 rounded-md border mono-num" style="border-color: var(--ob-border); color: var(--ob-muted);">
+            Gemini · Claude · DeepSeek · GPT · Qwen · Ollama
+          </span>
+        </div>
+        <div class="flex flex-wrap items-center gap-2">
+          <span class="font-semibold" style="color: var(--ob-ink);">{isEn ? 'Market Data' : '多源行情'}</span>
+          <span class="px-2.5 py-1 rounded-md border mono-num" style="border-color: var(--ob-border); color: var(--ob-muted);">
+            TickPlus · Tushare · AkShare · YFinance · Longbridge
+          </span>
+        </div>
+        <div class="flex flex-wrap items-center gap-2">
+          <span class="font-semibold" style="color: var(--ob-ink);">{isEn ? 'Delivery' : '推送渠道'}</span>
+          <span class="px-2.5 py-1 rounded-md border mono-num" style="border-color: var(--ob-border); color: var(--ob-muted);">
+            {isEn ? 'WeChat Work · Feishu · TG · Discord · Slack · Email' : '企微 · 飞书 · TG · Discord · Slack · Email'}
+          </span>
+        </div>
+      </section>
+
+      <!-- ASYMMETRIC BENTO GRID -->
+      <section id="capabilities" class="space-y-5">
+        <div class="flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <div class="text-xs font-semibold uppercase tracking-wider mono-num" style="color: var(--ob-accent);">
+              01 / CAPABILITIES BENTO
+            </div>
+            <h2 class="text-2xl sm:text-3xl font-bold tracking-tight mt-1 m-0" style="color: var(--ob-ink);">
+              {isEn ? 'Engineered around the real stock-research pipeline' : '围绕真实投研链路设计的工程能力'}
+            </h2>
+          </div>
+          <a href={localizeDoc('/docs/features/market-support/')} class="text-xs font-medium no-underline" style="color: var(--ob-accent);">
+            {isEn ? 'Explore market boundaries →' : '查看 6 大市场边界 →'}
+          </a>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-6 gap-4">
+          <!-- Wide Card 1 -->
+          <article class="md:col-span-3 ob-card ob-card-hover p-5 flex flex-col justify-between gap-4">
+            <div class="ob-card-soft p-4 space-y-3">
+              <div class="flex items-center justify-between text-xs mono-num">
+                <span style="color: var(--ob-muted);">PROVIDER FALLBACK CHAIN</span>
+                <span style="color: var(--ob-up);">● 0-CONFIG READY</span>
+              </div>
+              <div class="flex flex-wrap items-center gap-1.5 text-xs mono-num">
+                <span class="px-2.5 py-1 rounded-md border font-semibold" style="border-color: var(--ob-border-strong); background: var(--ob-accent-soft); color: var(--ob-accent);">TickPlus</span>
+                <span style="color: var(--ob-subtle);">→</span>
+                <span class="px-2.5 py-1 rounded-md border" style="border-color: var(--ob-border); background: var(--ob-surface); color: var(--ob-ink);">Tushare</span>
+                <span style="color: var(--ob-subtle);">→</span>
+                <span class="px-2.5 py-1 rounded-md border" style="border-color: var(--ob-border); background: var(--ob-surface); color: var(--ob-ink);">AkShare</span>
+                <span style="color: var(--ob-subtle);">→</span>
+                <span class="px-2.5 py-1 rounded-md border" style="border-color: var(--ob-border); background: var(--ob-surface); color: var(--ob-muted);">YFinance</span>
+              </div>
+              <div class="flex flex-wrap gap-1.5 text-xs mono-num">
+                {['A股', '港股', '美股', '日股 .T', '韩股 .KS', '台股 .TW'].map((m) => (
+                  <span class="px-2 py-0.5 rounded" style="background: var(--ob-surface); color: var(--ob-muted);">{m}</span>
+                ))}
+              </div>
+            </div>
+            <div>
+              <h3 class="text-base font-semibold m-0" style="color: var(--ob-ink);">
+                {isEn ? 'Multi-Source Quotes & Circuit Breakers' : '多源行情聚合与自动降级'}
+              </h3>
+              <p class="text-xs leading-relaxed mt-1.5 mb-0" style="color: var(--ob-muted);">
+                {isEn
+                  ? 'Automatic failover across free and token-backed providers with clear per-market capability contracts.'
+                  : '免费源零配置开箱即用，配置 TickPlus / Tushare / Longbridge 自动增强；单源限流自动熔断冷却并降级下一源。'}
+              </p>
+            </div>
+          </article>
+
+          <!-- Wide Card 2 -->
+          <article class="md:col-span-3 ob-card ob-card-hover p-5 flex flex-col justify-between gap-4">
+            <div class="ob-card-soft p-4 space-y-2.5">
+              <div class="flex items-center justify-between text-xs mono-num">
+                <span style="color: var(--ob-muted);">AGENT STRATEGY MATRIX</span>
+                <span style="color: var(--ob-accent);">15 SKILLS</span>
+              </div>
+              <div class="flex flex-wrap gap-1.5 text-xs">
+                {(isEn
+                  ? ['MA Cross', 'Chan Theory', 'Elliott Wave', 'Bull Trend', 'Hotspots', 'Event Driven', 'Growth', 'ETF Rotation', '+7 Custom YAML']
+                  : ['均线金叉', '缠论结构', '波浪理论', '多头趋势', '热点题材', '事件驱动', '成长质量', 'ETF 轮动', '+7 自定义 YAML']
+                ).map((tag, idx) => (
+                  <span
+                    class="px-2.5 py-1 rounded-md border font-medium"
+                    style={
+                      idx === 0
+                        ? 'border-color: var(--ob-border-strong); background: var(--ob-accent-soft); color: var(--ob-accent);'
+                        : 'border-color: var(--ob-border); background: var(--ob-surface); color: var(--ob-ink);'
+                    }
+                  >
+                    {tag}
+                  </span>
+                ))}
+              </div>
+            </div>
+            <div>
+              <h3 class="text-base font-semibold m-0" style="color: var(--ob-ink);">
+                {isEn ? '15 Built-in Strategies & Multi-Turn Q&A' : 'Agent 15 种内置策略与多轮追问'}
+              </h3>
+              <p class="text-xs leading-relaxed mt-1.5 mb-0" style="color: var(--ob-muted);">
+                {isEn
+                  ? 'Chat via Web /chat, Bot commands, or OpenClaw/Grok Skills with tool-calling over live quotes and indicators.'
+                  : '覆盖 Web /chat、Bot 指令与 OpenClaw / Grok Skill，支持实时调用行情、K 线、新闻与多空辩论风控审查。'}
+              </p>
+            </div>
+          </article>
+
+          <!-- Compact Card 3 -->
+          <article class="md:col-span-2 ob-card ob-card-hover p-5 flex flex-col justify-between gap-3">
+            <div class="ob-card-soft p-3.5 text-xs space-y-1.5">
+              <div class="flex items-center justify-between">
+                <span class="font-semibold" style="color: var(--ob-ink);">🎯 18:00 {isEn ? 'Daily Digest' : '决策仪表盘'}</span>
+                <span class="mono-num text-[11px]" style="color: var(--ob-up);">● {isEn ? 'Sent' : '已送达'}</span>
+              </div>
+              <div class="mono-num text-[11px]" style="color: var(--ob-muted);">WeChat · Feishu · TG · Discord · Mail</div>
+            </div>
+            <div>
+              <h3 class="text-sm font-semibold m-0" style="color: var(--ob-ink);">{isEn ? 'Multi-Channel Delivery' : '多渠道定时送达'}</h3>
+              <p class="text-xs leading-relaxed mt-1 mb-0" style="color: var(--ob-muted);">
+                {isEn ? 'Automated trading-day delivery via text, interactive cards, or share images.' : '工作日收盘自动推送，支持交互卡片、长图与节假日智能跳过。'}
+              </p>
+            </div>
+          </article>
+
+          <!-- Compact Card 4 -->
+          <article class="md:col-span-2 ob-card ob-card-hover p-5 flex flex-col justify-between gap-3">
+            <div class="ob-card-soft p-3.5 text-xs space-y-1.5">
+              <div class="flex items-center justify-between">
+                <span class="font-semibold mono-num" style="color: var(--ob-ink);">AAPL · MACD Cross</span>
+                <span class="px-1.5 py-0.5 rounded text-[11px]" style="background: var(--ob-accent-soft); color: var(--ob-accent);">ACTIVE</span>
+              </div>
+              <div class="mono-num text-[11px]" style="color: var(--ob-muted);">
+                {isEn ? 'Price / RSI Alerts · Portfolio Exposure' : '价格/RSI 告警 · 持仓币种风险暴露'}
+              </div>
+            </div>
+            <div>
+              <h3 class="text-sm font-semibold m-0" style="color: var(--ob-ink);">{isEn ? 'Alerts & Portfolio Risk' : '实时告警与组合风控'}</h3>
+              <p class="text-xs leading-relaxed mt-1 mb-0" style="color: var(--ob-muted);">
+                {isEn ? 'Rule-based technical alerts plus portfolio exposure and concentration checks.' : '管理价格突破、均线穿插与 RSI 阈值规则，并聚合持仓风险暴露。'}
+              </p>
+            </div>
+          </article>
+
+          <!-- Compact Card 5 -->
+          <article class="md:col-span-2 ob-card ob-card-hover p-5 flex flex-col justify-between gap-3">
+            <div class="ob-card-soft p-3.5 flex items-center justify-between gap-3">
+              <div>
+                <div class="text-xs" style="color: var(--ob-muted);">{isEn ? 'Direction Backtest' : '方向准确率回测'}</div>
+                <div class="mono-num text-lg font-bold" style="color: var(--ob-up);">T+N Eval</div>
+              </div>
+              <svg viewBox="0 0 90 34" class="w-24 h-9" aria-hidden="true">
+                <polyline
+                  fill="none"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  style="stroke: var(--ob-accent);"
+                  points="2,28 16,24 28,26 42,16 56,19 72,8 88,4"
+                />
+              </svg>
+            </div>
+            <div>
+              <h3 class="text-sm font-semibold m-0" style="color: var(--ob-ink);">{isEn ? 'SQLite History & Backtest' : 'SQLite 历史与胜率回测'}</h3>
+              <p class="text-xs leading-relaxed mt-1 mb-0" style="color: var(--ob-muted);">
+                {isEn ? 'Every report is persisted for historical replay, T+N accuracy checks, and review.' : '每份报告入库复用，支持 T+N 方向验证、止盈止损模拟与复盘。'}
+              </p>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <!-- QUICKSTART SECTION -->
+      <section id="quickstart" class="ob-card p-5 sm:p-7 space-y-5">
+        <div class="flex flex-wrap items-end justify-between gap-4">
+          <div>
+            <div class="text-xs font-semibold uppercase tracking-wider mono-num" style="color: var(--ob-accent);">02 / QUICK START</div>
+            <h2 class="text-2xl font-bold tracking-tight mt-1 m-0" style="color: var(--ob-ink);">
+              {isEn ? '4 ways to run, pick your entry point' : '4 种启动方式，按需选择门槛'}
+            </h2>
+          </div>
+
+          <div class="flex flex-wrap gap-1.5" role="tablist" aria-label="Deployment Channels">
+            {quickstartChannels.map((ch, idx) => (
+              <button
+                type="button"
+                data-qs-idx={idx}
+                class={`qs-tab-btn px-3 py-1.5 rounded-lg text-xs font-medium border cursor-pointer transition ${idx === 0 ? 'is-active' : ''}`}
+              >
+                {ch.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div class="flex flex-wrap items-center justify-between gap-2 text-xs">
+          <p id="qsDesc" class="m-0" style="color: var(--ob-muted);">{quickstartChannels[0].desc}</p>
+          <a id="qsDocLink" href={quickstartChannels[0].docHref} class="no-underline font-medium" style="color: var(--ob-accent);">
+            {isEn ? 'Open full guide →' : '查看对应文档 →'}
+          </a>
+        </div>
+
+        <div class="ob-terminal overflow-hidden">
+          <div class="px-4 py-2.5 border-b flex items-center justify-between text-xs" style="border-color: rgba(255,255,255,0.08);">
+            <span id="qsCodeTitle" class="mono-num opacity-80">{quickstartChannels[0].codeTitle}</span>
+            <button
+              type="button"
+              id="qsCopyBtn"
+              class="px-2.5 py-1 rounded text-xs font-medium cursor-pointer border"
+              style="border-color: rgba(255,255,255,0.18); background: rgba(255,255,255,0.06); color: inherit;"
+            >
+              {isEn ? 'Copy' : '复制命令'}
+            </button>
+          </div>
+          <pre id="qsCodeBody" class="p-4 m-0 text-xs leading-relaxed overflow-x-auto mono-num">{quickstartChannels[0].code}</pre>
+        </div>
+      </section>
+
+      <!-- BALANCED 3x2 DOCS LAUNCH GRID -->
+      <section class="space-y-5">
+        <div class="flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <div class="text-xs font-semibold uppercase tracking-wider mono-num" style="color: var(--ob-accent);">03 / DOCUMENTATION</div>
+            <h2 class="text-2xl sm:text-3xl font-bold tracking-tight mt-1 m-0" style="color: var(--ob-ink);">
+              {isEn ? 'Rebuilt 5-Pillar Documentation Center' : '全新 5 大支柱文档中心'}
+            </h2>
+            <p class="text-xs sm:text-sm mt-1 mb-0" style="color: var(--ob-muted);">
+              {isEn
+                ? 'Powered by Astro Starlight with instant CJK/EN search (⌘K), clean syntax highlighting, and curated static OpenAPI docs.'
+                : '同步主仓精选核心文档与静态 OpenAPI 架构快照，内置中英文全文搜索（⌘K）、代码一键复制与去重导航。'}
+            </p>
+          </div>
+          <a href={`${docsBase}/`} class="ob-secondary-btn px-4 py-2 text-xs font-semibold no-underline">
+            {isEn ? 'Enter Docs Center →' : '进入文档中心 →'}
+          </a>
+        </div>
+
+        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          {docCards.map((card) => (
+            <a href={card.href} class="ob-card ob-card-hover p-5 flex flex-col justify-between gap-4 no-underline">
+              <div class="space-y-2.5">
+                <span
+                  class="inline-block px-2 py-0.5 rounded text-[11px] font-semibold mono-num"
+                  style="background: var(--ob-accent-soft); color: var(--ob-accent);"
+                >
+                  {card.tag}
+                </span>
+                <h3 class="text-base font-semibold m-0" style="color: var(--ob-ink);">{card.title}</h3>
+                <p class="text-xs leading-relaxed m-0" style="color: var(--ob-muted);">{card.desc}</p>
+              </div>
+              <span class="text-xs font-medium" style="color: var(--ob-accent);">{isEn ? 'Read doc →' : '阅读文档 →'}</span>
+            </a>
+          ))}
+        </div>
+      </section>
+
+      <!-- ALPHA ECOSYSTEM MATRIX -->
+      <section class="space-y-4">
+        <div class="text-xs font-semibold uppercase tracking-wider mono-num" style="color: var(--ob-muted);">
+          04 / ALPHA OPEN-SOURCE MATRIX
+        </div>
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div class="ob-card p-5 border-l-4" style="border-left-color: var(--ob-accent);">
+            <div class="text-xs font-semibold mono-num" style="color: var(--ob-accent);">CORE · {isEn ? 'DAILY ANALYSIS' : '每日研判'}</div>
+            <h3 class="text-base font-bold mt-1.5 mb-0" style="color: var(--ob-ink);">Daily Stock Analysis</h3>
+            <p class="text-xs mt-1.5 mb-0 leading-relaxed" style="color: var(--ob-muted);">
+              {isEn ? 'Watchlist tracking, decision dashboards, market reviews, and Agent Q&A.' : '自选股跟踪、决策仪表盘、大盘复盘与 Agent 多策略问股。'}
+            </p>
+          </div>
+          <a
+            href="https://github.com/ZhuLinsen/alphasift"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="ob-card ob-card-hover p-5 no-underline block"
+          >
+            <div class="text-xs font-semibold mono-num" style="color: var(--ob-muted);">ECOSYSTEM · {isEn ? 'STOCK DISCOVERY' : '全市场选股'}</div>
+            <h3 class="text-base font-bold mt-1.5 mb-0" style="color: var(--ob-ink);">AlphaSift ↗</h3>
+            <p class="text-xs mt-1.5 mb-0 leading-relaxed" style="color: var(--ob-muted);">
+              {isEn ? 'Multi-factor full-market screening and auditable YAML stock discovery.' : '多因子全市场扫描与可审计 YAML 策略，筛选高胜率候选股票池。'}
+            </p>
+          </a>
+          <a
+            href="https://github.com/ZhuLinsen/alphaevo"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="ob-card ob-card-hover p-5 no-underline block"
+          >
+            <div class="text-xs font-semibold mono-num" style="color: var(--ob-muted);">ECOSYSTEM · {isEn ? 'STRATEGY EVOLUTION' : '策略进化'}</div>
+            <h3 class="text-base font-bold mt-1.5 mb-0" style="color: var(--ob-ink);">AlphaEvo ↗</h3>
+            <p class="text-xs mt-1.5 mb-0 leading-relaxed" style="color: var(--ob-muted);">
+              {isEn ? 'Self-evolving strategy backtesting and iterative parameter research agent.' : '策略回测验证与自适应参数进化引擎，与 DSA 形成投研闭环。'}
+            </p>
+          </a>
+        </div>
+      </section>
+    </main>
+
+    <!-- FOOTER -->
+    <footer class="border-t py-8" style="border-color: var(--ob-border);">
+      <div class="max-w-[1180px] mx-auto px-4 sm:px-6 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 text-xs" style="color: var(--ob-muted);">
+        <div class="space-y-1">
+          <div class="font-semibold" style="color: var(--ob-ink);">Daily Stock Analysis · MIT License</div>
+          <p class="m-0">
+            {isEn
+              ? 'Research and automation tool only — does not constitute investment advice.'
+              : '本项目仅供学习与研究辅助使用，不构成任何投资建议。'}
+          </p>
+        </div>
+        <div class="flex flex-wrap items-center gap-4">
+          <a href={`${docsBase}/`} class="no-underline hover:underline" style="color: var(--ob-accent);">{isEn ? 'Docs' : '文档中心'}</a>
+          <a href={localizeDoc('/docs/reference/api/')} class="no-underline hover:underline" style="color: var(--ob-muted);">OpenAPI</a>
+          <a href="https://github.com/ZhuLinsen/daily_stock_analysis/issues" target="_blank" rel="noopener noreferrer" class="no-underline hover:underline" style="color: var(--ob-muted);">Issues</a>
+          <a href="mailto:zhuls345@gmail.com?subject=DSA%20Feedback" class="no-underline hover:underline" style="color: var(--ob-muted);">zhuls345@gmail.com</a>
+        </div>
+      </div>
+    </footer>
+
+    <script is:inline define:vars={{ stageSamples, quickstartChannels, isEn }}>
+      (() => {
+        // Theme Sync with Starlight
+        const themeBtn = document.getElementById('themeToggleBtn');
+        const sunIcon = document.getElementById('themeIconSun');
+        const moonIcon = document.getElementById('themeIconMoon');
+
+        function applyTheme(t) {
+          document.documentElement.dataset.theme = t;
+          try {
+            localStorage.setItem('starlight-theme', t);
+          } catch {}
+          if (sunIcon && moonIcon) {
+            sunIcon.classList.toggle('hidden', t !== 'dark');
+            moonIcon.classList.toggle('hidden', t === 'dark');
+          }
+        }
+
+        applyTheme(document.documentElement.dataset.theme === 'light' ? 'light' : 'dark');
+
+        themeBtn?.addEventListener('click', () => {
+          const next = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light';
+          applyTheme(next);
+        });
+
+        // Mobile Drawer
+        const menuBtn = document.getElementById('mobileMenuBtn');
+        const drawer = document.getElementById('mobileMenuDrawer');
+        menuBtn?.addEventListener('click', () => {
+          const open = drawer?.classList.toggle('hidden') === false;
+          menuBtn.setAttribute('aria-expanded', String(open));
+        });
+
+        // Sample Stage Switching
+        const sampleBtns = Array.from(document.querySelectorAll('.sample-tab-btn'));
+        function styleSampleButtons(activeIdx) {
+          sampleBtns.forEach((btn, i) => {
+            const active = i === activeIdx;
+            btn.style.background = active ? 'var(--ob-accent-soft)' : 'var(--ob-surface-2)';
+            btn.style.color = active ? 'var(--ob-accent)' : 'var(--ob-muted)';
+            btn.style.borderColor = active ? 'var(--ob-border-strong)' : 'var(--ob-border)';
+          });
+        }
+        styleSampleButtons(0);
+
+        sampleBtns.forEach((btn) => {
+          btn.addEventListener('click', () => {
+            const idx = Number(btn.dataset.sampleIdx || 0);
+            const s = stageSamples[idx];
+            if (!s) return;
+            styleSampleButtons(idx);
+            const set = (id, val) => {
+              const el = document.getElementById(id);
+              if (el) el.textContent = val;
+            };
+            set('stageModel', s.model);
+            set('stageMarket', s.market);
+            set('stageSector', s.sector);
+            set('stageCode', s.code);
+            set('stageName', s.name);
+            set('stageAdvice', `${isEn ? 'Advice' : '建议'} · ${s.advice}`);
+            set('stageTrend', `${isEn ? 'Trend' : '趋势'} · ${s.trend}`);
+            set('stageConf', `${isEn ? 'Confidence' : '置信度'} · ${s.confidence}`);
+            set('stageScore', String(s.score));
+            set('stageScoreDesc', s.scoreDesc);
+            set('stageSummary', s.summary);
+            set('stageDataSources', s.dataSources);
+            set('stageIdealBuy', s.idealBuy);
+            set('stageSecBuy', s.secBuy);
+            set('stageStopLoss', s.stopLoss);
+            set('stageTakeProfit', s.takeProfit);
+            set('stageDecisionType', s.decisionType);
+            set('stageContextModel', s.model);
+            set('stageContextSources', s.dataSources);
+
+            const renderBullets = (id, items) => {
+              const listEl = document.getElementById(id);
+              if (!listEl) return;
+              listEl.replaceChildren();
+              (items || ['-']).forEach((entry) => {
+                const li = document.createElement('li');
+                li.textContent = String(entry);
+                listEl.appendChild(li);
+              });
+            };
+            renderBullets('stageCatalysts', s.catalysts);
+            renderBullets('stageRisks', s.risks);
+
+            const adviceEl = document.getElementById('stageAdvice');
+            if (adviceEl) {
+              adviceEl.style.color =
+                s.decisionType === 'buy' ? 'var(--ob-up)' : s.decisionType === 'sell' ? 'var(--ob-down)' : 'var(--ob-warn)';
+            }
+            const arc = document.getElementById('stageGaugeArc');
+            if (arc) {
+              arc.style.strokeDashoffset = (150.8 * (1 - s.score / 100)).toFixed(1);
+            }
+          });
+        });
+
+        // Quickstart Channel Switching + Copy
+        const qsBtns = Array.from(document.querySelectorAll('.qs-tab-btn'));
+        let activeQsIdx = 0;
+
+        function styleQsButtons(activeIdx) {
+          qsBtns.forEach((btn, i) => {
+            const active = i === activeIdx;
+            btn.style.background = active ? 'var(--ob-accent-soft)' : 'var(--ob-surface-2)';
+            btn.style.color = active ? 'var(--ob-accent)' : 'var(--ob-muted)';
+            btn.style.borderColor = active ? 'var(--ob-border-strong)' : 'var(--ob-border)';
+          });
+        }
+        styleQsButtons(0);
+
+        qsBtns.forEach((btn) => {
+          btn.addEventListener('click', () => {
+            activeQsIdx = Number(btn.dataset.qsIdx || 0);
+            const ch = quickstartChannels[activeQsIdx];
+            if (!ch) return;
+            styleQsButtons(activeQsIdx);
+            const desc = document.getElementById('qsDesc');
+            const link = document.getElementById('qsDocLink');
+            const title = document.getElementById('qsCodeTitle');
+            const body = document.getElementById('qsCodeBody');
+            if (desc) desc.textContent = ch.desc;
+            if (link) link.setAttribute('href', ch.docHref);
+            if (title) title.textContent = ch.codeTitle;
+            if (body) body.textContent = ch.code;
+          });
+        });
+
+        const copyBtn = document.getElementById('qsCopyBtn');
+        copyBtn?.addEventListener('click', async () => {
+          const text = quickstartChannels[activeQsIdx]?.code || '';
+          try {
+            if (navigator.clipboard?.writeText) {
+              await navigator.clipboard.writeText(text);
+            } else {
+              const ta = document.createElement('textarea');
+              ta.value = text;
+              document.body.appendChild(ta);
+              ta.select();
+              document.execCommand('copy');
+              document.body.removeChild(ta);
+            }
+          } catch {}
+          const orig = copyBtn.textContent;
+          copyBtn.textContent = isEn ? 'Copied ✓' : '已复制 ✓';
+          setTimeout(() => {
+            copyBtn.textContent = orig;
+          }, 1500);
+        });
+      })();
+    </script>
+  </body>
+</html>

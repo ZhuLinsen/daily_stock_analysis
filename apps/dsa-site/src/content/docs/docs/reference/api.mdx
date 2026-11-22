@@ -1,0 +1,23 @@
+---
+title: "OpenAPI 接口浏览器（静态快照）"
+description: "交互式检索主仓静态 OpenAPI 架构快照（docs/architecture/api_spec.json）已收录的核心 REST 端点与 Schema 契约。"
+---
+
+import ApiExplorer from '../../../../components/ApiExplorer.astro';
+
+本页面直接从主仓静态架构快照 `docs/architecture/api_spec.json` 自动同步生成，支持按模块标签筛选与关键字实时过滤。
+
+:::tip[获取完整运行时 OpenAPI（含告警规则等全部接口）]
+静态快照 `docs/architecture/api_spec.json` 重点收录历史决策、DecisionSignal、研究报告及部分核心契约；其余运行期接口（例如 `GET /api/v1/alerts/rules`、`POST /api/v1/alerts/rules`、持仓管理、全市场选股、Agent 问股流式会话等）可在启动 FastAPI 服务（`python main.py --serve-only`）后直接访问实时生成端点：
+
+- `http://127.0.0.1:8000/openapi.json`（完整运行时 OpenAPI 3.1 规格）
+- `http://127.0.0.1:8000/docs`（交互式 Swagger UI）
+
+告警规则创建与管理接口的文档契约另见 [实时告警中心](/docs/features/alerts/)。
+:::
+
+:::note[管理员认证说明]
+当开启 `ADMIN_AUTH_ENABLED=true` 时，除登录、健康检查与 OpenAPI 文档外，`/api/v1/*` 接口需要有效管理员会话 Cookie；默认本地单机模式不强制认证。
+:::
+
+<ApiExplorer lang="zh" />

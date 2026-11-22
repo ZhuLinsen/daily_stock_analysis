@@ -1,0 +1,65 @@
+---
+title: "DSA 文档中心"
+description: "Daily Stock Analysis 官方文档中心：按快速上手、核心能力、配置集成、部署运维与开发者参考五大支柱组织。"
+---
+
+import { CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+欢迎来到 **Daily Stock Analysis (DSA)** 官方文档中心。无论你是首次使用桌面客户端的非技术用户，还是准备接入多源行情、自定义交易策略或自建服务的开发者，都可以按下方五大支柱快速定位所需指南。
+
+:::tip[第一次使用？]
+建议先看 **[选择运行方式](/docs/getting-started/quick-start/)**，根据是否需要服务器和图形界面选定入口，5 分钟跑通首份自选股分析报告。
+:::
+
+## 五大文档支柱
+
+<CardGrid>
+  <LinkCard
+    title="1. 快速上手"
+    description="从桌面客户端、GitHub Actions、Docker 或本地 Python 选择最适合的启动入口，并配齐最小环境变量。"
+    href="/docs/getting-started/quick-start/"
+  />
+  <LinkCard
+    title="2. 小白桌面客户端指南"
+    description="零代码开箱教程：安装包下载、模型 Key 填入与首次分析操作。"
+    href="/docs/getting-started/beginner-client/"
+  />
+  <LinkCard
+    title="3. 6 大市场支持边界"
+    description="明确 A 股、港股、美股、日股、韩股、台股及 ETF 的数据源覆盖与降级规则。"
+    href="/docs/features/market-support/"
+  />
+  <LinkCard
+    title="4. Agent 15 种内置策略"
+    description="查看均线、缠论、波浪、事件驱动等策略矩阵，或编写无需代码的 YAML 自定义策略。"
+    href="/docs/features/strategies/"
+  />
+  <LinkCard
+    title="5. 数据源稳定性与 TickPlus"
+    description="多源 Fallback 链、熔断冷却机制、TickPlus / Tushare / Longbridge 配置指南。"
+    href="/docs/configuration/data-sources/"
+  />
+  <LinkCard
+    title="6. LLM 大模型路由配置"
+    description="接入 Gemini、Claude、DeepSeek、OpenAI 兼容网关、Ollama 本地模型与 LiteLLM 多路由。"
+    href="/docs/configuration/llm-guide/"
+  />
+  <LinkCard
+    title="7. 通知与 Bot 机器人"
+    description="配置企业微信、飞书、钉钉、Telegram、Discord、Slack、邮件与 OpenClaw / Grok Skill。"
+    href="/docs/configuration/notifications/"
+  />
+  <LinkCard
+    title="8. OpenAPI 接口浏览器"
+    description="交互式检索静态 OpenAPI 3.1 快照（docs/architecture/api_spec.json）的核心端点、参数契约与运行时说明。"
+    href="/docs/reference/api/"
+  />
+</CardGrid>
+
+## 配套开源生态
+
+| 项目 | 定位 | 仓库 |
+| --- | --- | --- |
+| **Daily Stock Analysis** | 每日自选股研判、决策仪表盘、大盘复盘与 Agent 问股 | [ZhuLinsen/daily_stock_analysis](https://github.com/ZhuLinsen/daily_stock_analysis) |
+| **AlphaSift** | 全市场多因子选股扫描与 YAML 审计策略 | [ZhuLinsen/alphasift](https://github.com/ZhuLinsen/alphasift) |
+| **AlphaEvo** | 策略回测验证与迭代进化引擎 | [ZhuLinsen/alphaevo](https://github.com/ZhuLinsen/alphaevo) |
