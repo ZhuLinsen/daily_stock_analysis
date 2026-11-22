@@ -64,6 +64,14 @@ const FALLBACK_BROKERS: PortfolioImportBrokerItem[] = [
   { broker: 'cmb', aliases: ['cmbchina', 'zhaoshang'], displayName: '招商' },
 ];
 
+/** 收益/收益率沿用 A 股习惯：红涨绿跌，0 保持中性。 */
+function getPnlToneClass(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value) || value === 0) {
+    return '';
+  }
+  return value > 0 ? 'text-price-up' : 'text-price-down';
+}
+
 type AccountOption = 'all' | number;
 type EventType = 'trade' | 'cash' | 'corporate';
 
@@ -1764,9 +1772,7 @@ const PortfolioPage: React.FC = () => {
                       <td
                         className={`py-2 pr-3 text-right ${
                           hasPositionPrice(row)
-                            ? row.unrealizedPnlBase >= 0
-                              ? 'text-success'
-                              : 'text-danger'
+                            ? getPnlToneClass(row.unrealizedPnlBase)
                             : 'text-secondary'
                         }`}
                       >
@@ -1775,9 +1781,7 @@ const PortfolioPage: React.FC = () => {
                       <td
                         className={`py-2 pr-3 text-right ${
                           hasPositionPrice(row) && row.unrealizedPnlPct !== null && row.unrealizedPnlPct !== undefined
-                            ? row.unrealizedPnlPct >= 0
-                              ? 'text-success'
-                              : 'text-danger'
+                            ? getPnlToneClass(row.unrealizedPnlPct)
                             : 'text-secondary'
                         }`}
                       >

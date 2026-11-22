@@ -707,6 +707,19 @@ def parse_analysis_target(
             matched_index=explicit_entry,
         )
 
+    from data_provider.us_index_mapping import normalize_us_hyphen_symbol
+
+    us_symbol = normalize_us_hyphen_symbol(raw)
+    if us_symbol:
+        return AnalysisTarget(
+            raw_input=raw_input,
+            asset_type=ParseStatus.STOCK,
+            canonical_id=us_symbol,
+            display_code=us_symbol,
+            exchange="US",
+            normalized_code=us_symbol,
+        )
+
     # PR #2267 review fix: an explicit CSI form not owned by the registry must
     # surface as ``unsupported`` — never a US ticker or a guessed SH/SZ index. This
     # covers both the ``.CSI`` suffix (already handled by the prior check) and

@@ -17,13 +17,20 @@
 import logging
 import random
 import time
-from threading import BoundedSemaphore, RLock, Thread
+from threading import BoundedSemaphore, Event, RLock, Thread
 from abc import ABC, abstractmethod
+from contextvars import copy_context
 from datetime import datetime, timezone
 from typing import Callable, Optional, List, Tuple, Dict, Any
 
 import pandas as pd
 import numpy as np
+from src.core.stock_execution_context import (
+    get_current_stock_cancellation,
+    is_current_stock_cancelled,
+    raise_if_stock_cancelled,
+    track_stock_worker_abandonment,
+)
 from src.data.stock_index_loader import get_index_stock_name
 from src.data.stock_mapping import STOCK_NAME_MAP, is_meaningful_stock_name
 from src.services.market_symbol_utils import is_suffix_market_symbol
@@ -408,9 +415,11 @@ class BaseFetcher(ABC):
         """
         return None
 
-    def get_market_stats(self) -> Optional[Dict[str, Any]]:
+    def get_market_stats(self, *, allow_cache: bool = True) -> Optional[Dict[str, Any]]:
         """
         获取市场涨跌统计
+
+        allow_cache=False 时，数据源必须发起新的行情请求。
 
         Returns:
             Dict: 包含:
@@ -755,11 +764,13 @@ class DataFetcherManager:
         probe = getattr(fetcher, probe_name, None)
         if not callable(probe):
             return None
+        raise_if_stock_cancelled()
         try:
             if probe_name == "is_available_for_request":
                 return bool(probe(capability))
             return bool(probe())
         except TypeError:
+            raise_if_stock_cancelled()
             return bool(probe())
         except Exception as exc:
             logger.debug(
@@ -792,8 +803,21 @@ class DataFetcherManager:
     def _call_fetcher_method(self, fetcher: BaseFetcher, method_name: str, *args, **kwargs):
         """Serialize shared fetcher state access through manager-owned per-instance locks."""
         method = getattr(fetcher, method_name)
-        with self._get_fetcher_call_lock(fetcher):
-            return method(*args, **kwargs)
+        lock = self._get_fetcher_call_lock(fetcher)
+        if get_current_stock_cancellation() is None:
+            with lock:
+                return method(*args, **kwargs)
+
+        raise_if_stock_cancelled()
+        while not lock.acquire(timeout=0.05):
+            raise_if_stock_cancelled()
+        try:
+            raise_if_stock_cancelled()
+            result = method(*args, **kwargs)
+        finally:
+            lock.release()
+        raise_if_stock_cancelled()
+        return result
 
     @classmethod
     def _filter_daily_fetchers_for_market(
@@ -875,10 +899,14 @@ class DataFetcherManager:
 
     @classmethod
     def _record_daily_source_failure(cls, fetcher: BaseFetcher, market: str, error: str | Exception) -> None:
+        key = cls._daily_health_key(fetcher, market)
+        if is_current_stock_cancelled():
+            cls._daily_source_health.record_inconclusive(key)
+            raise_if_stock_cancelled()
+
         # Import lazily because TushareFetcher inherits BaseFetcher from this module.
         from .tushare_fetcher import TusharePermissionError
 
-        key = cls._daily_health_key(fetcher, market)
         current = error
         visited = set()
         while isinstance(current, BaseException) and id(current) not in visited:
@@ -3065,6 +3093,9 @@ class DataFetcherManager:
                     # 空结果或占位结果：释放 HALF_OPEN 探测名额，避免卡死
                     circuit_breaker.record_inconclusive(source_key)
             except Exception as e:
+                if is_current_stock_cancelled():
+                    circuit_breaker.record_inconclusive(source_key)
+                    raise_if_stock_cancelled()
                 error_type, error_reason = summarize_exception(e)
                 record_provider_run(
                     data_type="chip",
@@ -3182,6 +3213,7 @@ class DataFetcherManager:
             if hasattr(fetcher, "get_belong_board")
         ]
         for index, fetcher in enumerate(candidate_fetchers):
+            raise_if_stock_cancelled()
             fallback_to = (
                 candidate_fetchers[index + 1].name
                 if index + 1 < len(candidate_fetchers)
@@ -3195,6 +3227,7 @@ class DataFetcherManager:
                     operation="get_belong_board",
                 )
                 raw_data = fetcher.get_belong_board(stock_code)
+                raise_if_stock_cancelled()
                 boards = self._normalize_belong_boards(raw_data)
                 if boards:
                     record_provider_run(
@@ -3267,6 +3300,8 @@ class DataFetcherManager:
             self.batch_get_stock_names(stock_codes)
             return
         for code in stock_codes:
+            if is_current_stock_cancelled():
+                return
             # Skip realtime lookup to avoid triggering expensive full-market quote
             # requests during the prefetch phase.
             self.get_stock_name(code, allow_realtime=False)
@@ -3366,14 +3401,17 @@ class DataFetcherManager:
                 continue
         return []
 
-    def get_market_stats(self, *, purpose: str = "unspecified") -> Dict[str, Any]:
+    def get_market_stats(
+        self, *, purpose: str = "unspecified", include_provider: bool = False, allow_cache: bool = True,
+    ) -> Dict[str, Any]:
         """获取市场涨跌统计（自动切换数据源）"""
         logger.info("[MarketStats] component=market_stats action=start purpose=%s", purpose)
+        stats_kwargs = {} if allow_cache else {"allow_cache": False}
         tickflow_fetcher = self._get_tickflow_fetcher()
         if tickflow_fetcher is not None:
             started_at = time.monotonic()
             try:
-                data = tickflow_fetcher.get_market_stats()
+                data = tickflow_fetcher.get_market_stats(**stats_kwargs)
                 elapsed = time.monotonic() - started_at
                 if data:
                     logger.info(
@@ -3382,7 +3420,7 @@ class DataFetcherManager:
                         purpose,
                         elapsed,
                     )
-                    return data
+                    return {**data, "provider": tickflow_fetcher.name} if include_provider else data
                 logger.info(
                     "[MarketStats] component=market_stats action=provider_empty "
                     "purpose=%s provider=TickFlowFetcher elapsed=%.2fs",
@@ -3404,7 +3442,7 @@ class DataFetcherManager:
                 continue
             started_at = time.monotonic()
             try:
-                data = fetcher.get_market_stats()
+                data = fetcher.get_market_stats(**stats_kwargs)
                 elapsed = time.monotonic() - started_at
                 if data:
                     logger.info(
@@ -3414,7 +3452,7 @@ class DataFetcherManager:
                         fetcher.name,
                         elapsed,
                     )
-                    return data
+                    return {**data, "provider": fetcher.name} if include_provider else data
                 logger.info(
                     "[MarketStats] component=market_stats action=provider_empty "
                     "purpose=%s provider=%s elapsed=%.2fs",
@@ -3472,7 +3510,8 @@ class DataFetcherManager:
 
         def runner() -> None:
             try:
-                result_holder["value"] = task()
+                if not is_current_stock_cancelled():
+                    result_holder["value"] = task()
             except Exception as exc:
                 error_holder["value"] = exc
             finally:
@@ -3489,15 +3528,26 @@ class DataFetcherManager:
                             del self._fundamental_timed_out_workers[quarantine_key]
                     slots.release()
 
-        worker = Thread(target=runner, daemon=True, name=f"fundamental-{task_name}")
+        stock_token = get_current_stock_cancellation()
+        abandoned = Event()
+        target = runner
+        if stock_token is not None:
+            context = copy_context()
+            context.run(track_stock_worker_abandonment, abandoned)
+            target = lambda: context.run(runner)
+        worker = Thread(target=target, daemon=True, name=f"fundamental-{task_name}")
         try:
-            worker.start()
+            if stock_token is None:
+                worker.start()
+            else:
+                stock_token.start_worker(worker, abandon_when=abandoned)
         except Exception as exc:
             slots.release()
             return None, str(exc), int((time.monotonic() - start) * 1000)
         worker.join(timeout=timeout_value)
         with self._fundamental_timeout_lock:
             if not state["completed"]:
+                abandoned.set()
                 if quarantine_key is not None:
                     state["timed_out"] = True
                     self._fundamental_timed_out_workers[quarantine_key] = (
@@ -3529,7 +3579,7 @@ class DataFetcherManager:
         last_error: Optional[str] = None
 
         for _ in range(attempts):
-            if remaining_seconds <= 0:
+            if remaining_seconds <= 0 or is_current_stock_cancelled():
                 break
             result, err, cost_ms = self._run_with_timeout(
                 task, remaining_seconds, task_name, quarantine_key=quarantine_key,

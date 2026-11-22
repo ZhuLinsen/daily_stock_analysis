@@ -1,0 +1,17 @@
+{
+  "name": "daily-stock-analysis",
+  "plugins": [
+    {
+      "name": "daily-stock-analysis",
+      "source": {
+        "source": "local",
+        "path": "./plugin"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

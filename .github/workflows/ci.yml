@@ -16,6 +16,7 @@ jobs:
       backend: ${{ steps.backend-filter.outputs.backend_non_web == 'true' || steps.filter.outputs.backend_contract_assets == 'true' || steps.filter.outputs.backend_web_contract == 'true' }}
       docker: ${{ steps.filter.outputs.docker }}
       frontend: ${{ steps.frontend-filter.outputs.frontend_code }}
+      site: ${{ steps.site-filter.outputs.site_code }}
       futu_packaging: ${{ steps.filter.outputs.futu_packaging }}
     steps:
       - name: 📥 Checkout
@@ -50,6 +51,7 @@ jobs:
             backend_non_web:
               - '**'
               - '!apps/dsa-web/**'
+              - '!apps/dsa-site/**'
               - '!docs/**'
               - '!**/*.md'
               - '!LICENSE'
@@ -62,6 +64,14 @@ jobs:
             frontend_code:
               - 'apps/dsa-web/**'
               - '!**/*.md'
+      - name: 🧭 Filter docs site paths
+        id: site-filter
+        uses: dorny/paths-filter@v3
+        with:
+          predicate-quantifier: every
+          filters: |
+            site_code:
+              - '{apps/dsa-site/**,docs/**,strategies/README.md,.github/workflows/ci.yml}'
 
   ai-governance:
     name: ai-governance
@@ -283,3 +293,27 @@ jobs:
           path: apps/dsa-web/test-results/fixtures/
           if-no-files-found: warn
           retention-days: 7
+
+  site-gate:
+    name: site-gate
+    runs-on: ubuntu-24.04
+    needs: [changes, ai-governance]
+    if: needs.changes.outputs.site == 'true'
+    defaults:
+      run:
+        working-directory: apps/dsa-site
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v5
+      - name: 🟢 Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: apps/dsa-site/package-lock.json
+      - name: 📦 Install
+        run: npm ci
+      - name: 🏗️ Build docs site
+        run: npm run build
+      - name: 🧪 Verify site contracts
+        run: npm test

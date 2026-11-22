@@ -11,7 +11,14 @@
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker&logoColor=white)](https://hub.docker.com/r/zhulinsen/daily_stock_analysis)
 
 <p align="center">
-  <a href="https://trendshift.io/repositories/18527?utm_source=repository-badge&amp;utm_medium=badge&amp;utm_campaign=badge-repository-18527" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/repositories/18527" alt="ZhuLinsen%2Fdaily_stock_analysis | Trendshift" width="250" height="55"/></a>&nbsp;<a href="https://hellogithub.com/repository/ZhuLinsen/daily_stock_analysis" target="_blank"><img src="https://api.hellogithub.com/v1/widgets/recommend.svg?rid=6daa16e405ce46ed97b4a57706aeb29f&claim_uid=pfiJMqhR9uvDGlT&theme=neutral" alt="Featured｜HelloGitHub" width="230" /></a>
+  <a href="https://trendshift.io/repositories/18527?utm_source=repository-badge&amp;utm_medium=badge&amp;utm_campaign=badge-repository-18527" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/repositories/18527" alt="ZhuLinsen%2Fdaily_stock_analysis | Trendshift" width="250" height="55"/></a>&nbsp;
+  <a href="https://www.star-history.com/zhulinsen/daily_stock_analysis">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/badge?repo=ZhuLinsen/daily_stock_analysis&amp;type=rank&amp;theme=dark" />
+      <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/badge?repo=ZhuLinsen/daily_stock_analysis&amp;type=rank" />
+      <img alt="Star History Rank" src="https://api.star-history.com/badge?repo=ZhuLinsen/daily_stock_analysis&amp;type=rank" height="55" />
+    </picture>
+  </a>
 </p>
 
 **AI-powered stock analysis system for A-shares / Hong Kong / US / Japanese / Korean / Taiwan stocks**
@@ -185,6 +192,26 @@ python main.py --serve-only
 ```
 
 > Docker deployment, scheduling, and cloud-server WebUI access are documented in the [Full Guide](./full-guide_EN.md).
+
+### Install as an agent plugin
+
+This repo ships an agent-agnostic marketplace at [`.agents/plugins/marketplace.json`](../.agents/plugins/marketplace.json). The plugin lives in [`plugin/`](../plugin/). The `stock_analyzer` skill **drives an already deployed and configured DSA checkout** (or a running DSA service); it does not ship the `src/` runtime. Marketplace installs typically cache only `plugin/`. The skill body is at `plugin/skills/stock_analyzer/SKILL.md`; repo-root `SKILL.md` is a plain-file copy for OpenClaw/docs and `core.symlinks=false` checkouts. Repo-maintenance skills (`analyze-issue`, etc.) are not shipped in the plugin.
+
+**Codex:**
+
+```bash
+codex plugin marketplace add ZhuLinsen/daily_stock_analysis
+codex plugin add daily-stock-analysis@daily-stock-analysis
+```
+
+**Claude Code:**
+
+```bash
+/plugin marketplace add ZhuLinsen/daily_stock_analysis
+/plugin install daily-stock-analysis@daily-stock-analysis
+```
+
+Local checkout: `codex plugin marketplace add /path/to/daily_stock_analysis`. Before using the skill, deploy and configure DSA per the [Full Guide](./full-guide_EN.md), or point the agent at an existing checkout via `DSA_REPO_ROOT` / asking the user (examples `chdir` into that root so relative `DATABASE_PATH` / market-review locks match the Web process). In-chat market review with `send_notification=False` requires a checkout that supports that parameter; older checkouts such as v3.35.0 should be updated first to avoid `TypeError` or accidental pushes. For HTTP, see [OpenClaw integration](./openclaw-skill-integration.md) / [Grok Bot integration](./grok-bot-integration.md): in-chat stock analysis must send `"notify": false`, and market review must send `"send_notification": false`. The optional read-only MCP server (`python -m src.mcp_server`, dependency `mcp>=1.0.0,<2`) is likewise configured manually from a full checkout per the [Full Guide](./full-guide_EN.md#read-only-mcp-stdio-server-optional); it is not bundled in the plugin package.
 
 ## 📱 Sample Output
 

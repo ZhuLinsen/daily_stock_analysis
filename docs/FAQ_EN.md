@@ -380,6 +380,20 @@ python main.py --market-only
 
 ---
 
+### Q18: Why didn't GitHub Actions run automatically on schedule in my fork, and how do I keep it updated?
+
+**Causes**:
+1. GitHub disables scheduled workflows on newly forked repositories until you manually enable them in the `Actions` tab.
+2. GitHub automatically pauses `schedule` triggers in any repository with **no repository activity for 60 days**.
+3. Local edits to `.github/workflows/*.yml` can block `Sync fork`.
+
+**Solution**:
+1. Click `Sync fork` -> `Update branch` on your GitHub repository page regularly (prefer configuring everything via `Secrets and variables` instead of editing workflow files).
+2. Re-enable the workflow under `Actions -> 每日股票分析 -> Enable workflow` if it was paused after 60 days of inactivity.
+3. For local runs, execute `python main.py --doctor` for an offline, redacted diagnostic summary of your config, LLM readiness, notifications, and storage permissions.
+
+---
+
 ## Still Have Questions?
 
 If the above content doesn't solve your issue, welcome to:

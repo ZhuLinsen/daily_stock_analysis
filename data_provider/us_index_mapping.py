@@ -12,9 +12,11 @@
 """
 
 import re
+from typing import Optional
 
 # 美股代码正则：1-5 个大写字母，可选 .X 后缀（如 BRK.B）
 _US_STOCK_PATTERN = re.compile(r'^[A-Z]{1,5}(\.[A-Z])?$')
+_US_HYPHEN_PATTERN = re.compile(r"([A-Z]{1,5})-([A-Z]{1,2})")
 
 
 # 用户输入 -> (Yahoo Finance 符号, 中文名称)
@@ -62,11 +64,21 @@ def is_us_index_code(code: str) -> bool:
     return (code or '').strip().upper() in US_INDEX_MAPPING
 
 
+def normalize_us_hyphen_symbol(code: str) -> Optional[str]:
+    """Use the dotted class-share alias and preserve longer Yahoo suffixes."""
+    symbol = (code or "").strip().upper()
+    match = _US_HYPHEN_PATTERN.fullmatch(symbol)
+    if match is None:
+        return None
+    base, suffix = match.groups()
+    return f"{base}.{suffix}" if len(suffix) == 1 else symbol
+
+
 def is_us_stock_code(code: str) -> bool:
     """
     判断代码是否为美股股票符号（排除美股指数）。
 
-    美股股票代码为 1-5 个大写字母，可选 .X 后缀如 BRK.B。
+    支持 BRK.B 等点号格式和 BAC-PL 等 Yahoo 连字符格式。
     美股指数（SPX、DJI 等）明确排除。
 
     Args:
@@ -91,7 +103,14 @@ def is_us_stock_code(code: str) -> bool:
     # 美股指数不是股票
     if normalized in US_INDEX_MAPPING:
         return False
-    return bool(_US_STOCK_PATTERN.match(normalized))
+    return bool(_US_STOCK_PATTERN.fullmatch(normalized) or normalize_us_hyphen_symbol(normalized))
+
+
+def get_us_stock_yf_symbol(code: str) -> Optional[str]:
+    """Convert an internal US stock code to Yahoo's symbol format."""
+    if is_us_stock_code(code):
+        return code.strip().upper().replace(".", "-")
+    return None
 
 
 def get_us_index_yf_symbol(code: str) -> tuple:

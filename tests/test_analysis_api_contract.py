@@ -1439,7 +1439,13 @@ class AnalysisApiContractTestCase(unittest.TestCase):
         with patch("src.config.get_config", return_value=SimpleNamespace()), \
              patch("src.core.pipeline.StockAnalysisPipeline", return_value=pipeline_instance), \
              patch.object(AnalysisService, "_build_analysis_response", return_value={"stock_code": "600519"}):
-            result = AnalysisService.analyze_stock(service, "600519", report_type="full", query_id="q1")
+            result = AnalysisService.analyze_stock(
+                service,
+                "600519",
+                report_type="full",
+                query_id="q1",
+                force_refresh=True,
+            )
 
         self.assertEqual(result, {"stock_code": "600519"})
         self.assertEqual(
@@ -1447,6 +1453,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             ReportType.FULL,
 
         )
+        self.assertTrue(pipeline_instance.process_single_stock.call_args.kwargs["force_refresh"])
 
     def test_analysis_service_passes_request_skills_to_pipeline(self) -> None:
         service = object.__new__(AnalysisService)
