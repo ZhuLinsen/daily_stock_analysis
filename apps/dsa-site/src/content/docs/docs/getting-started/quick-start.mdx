@@ -56,13 +56,14 @@ DSA 支持 4 种主流运行方式。你可以根据是否需要图形界面、�
     pip install -r requirements.txt
     cp .env.example .env
 
-    # 离线自检环境与数据源配置
+    # 关键：打开并编辑 .env，至少填写 STOCK_LIST 与 1 个 AI 模型 Key（如 GEMINI_API_KEY / DEEPSEEK_API_KEY）
+    # 离线自检环境、模型密钥与数据源就绪度
     python main.py --doctor
 
     # 立即分析指定股票并开启本地 Web 工作台
     python main.py --stocks 600519,hk00700,AAPL --serve
     ```
-    更多命令行参数见 [本地运行与诊断](/docs/deployment/local/)。
+    请先对照 [最小环境变量](/docs/getting-started/env-config/) 与 [LLM 大模型配置指南](/docs/configuration/llm-guide/) 填好模型密钥再触发分析；更多命令行参数见 [本地运行与诊断](/docs/deployment/local/)。
   </TabItem>
 </Tabs>
 

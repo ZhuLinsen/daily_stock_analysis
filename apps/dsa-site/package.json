@@ -13,6 +13,7 @@
     "prebuild": "node scripts/prepare-docs.mjs",
     "build": "astro build",
     "preview": "astro preview",
+    "test": "node --test tests/*.test.mjs",
     "deploy": "npx wrangler deploy"
   },
   "dependencies": {

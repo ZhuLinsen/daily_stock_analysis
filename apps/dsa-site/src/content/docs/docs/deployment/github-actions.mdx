@@ -13,22 +13,35 @@ GitHub Actions 是最轻量、零基础设施成本的运行方式。通过仓�
 
 ### 2. 配置 Repository Secrets / Variables
 
-打开你 Fork 后的仓库：`Settings → Secrets and variables → Actions → New repository secret`。
+打开你 Fork 后的仓库：`Settings → Secrets and variables → Actions`。
 
-**至少配置 1 个 AI 模型 Key：**
+**方式 A：单密钥直配（推荐新手，添加到 Secrets）**
 
 | Secret 名称 | 说明 | 推荐度 |
 | --- | --- | --- |
-| `MODELFLARE_KEY` | Modelflare 模型网关 Key，自动补齐默认地址与模型 | 推荐 |
-| `LLM_X6AI_API_KEY` | x6.ai 模型网关 Key，低成本接入主流模型 | 推荐 |
+| `MODELFLARE_KEY` | Modelflare 模型网关 Key，后端自动推导默认地址与模型 | 推荐 |
 | `GEMINI_API_KEY` | Google Gemini API Key | 可选 |
-| `OPENAI_API_KEY` | OpenAI / DeepSeek / 通义千问等兼容 Key（需配合 `OPENAI_BASE_URL`、`OPENAI_MODEL`） | 可选 |
+| `DEEPSEEK_API_KEY` | DeepSeek 官方 API Key（默认使用 `deepseek/deepseek-v4-flash`） | 可选 |
 | `ANTHROPIC_API_KEY` | Anthropic Claude API Key | 可选 |
+| `OPENAI_API_KEY` | OpenAI / 第三方兼容网关 Key（**必须**同步在 Variables/Secrets 配齐 `OPENAI_BASE_URL` 与 `OPENAI_MODEL` 或 `LITELLM_MODEL`） | 可选 |
+
+**方式 B：x6.ai 等多字段聚合渠道（需渠道变量 + 密钥配套）**
+
+`LLM_X6AI_API_KEY` **不能作为单一 Secret 单独生效**，工作流与配置加载器不会为 x6.ai 自动补齐路由。使用 x6.ai 时，除在 **Secrets** 中配置 `LLM_X6AI_API_KEY`（或 `LLM_X6AI_API_KEYS`）外，还必须在 **Variables** 中显式声明以下全部字段：
+
+```ini
+LLM_CHANNELS=x6ai
+LLM_X6AI_PROTOCOL=openai
+LLM_X6AI_BASE_URL=https://api.x6.ai/v1
+LLM_X6AI_MODELS=openai/anthropic/claude-haiku-5-5-discount
+```
+
+模型 ID 请以账号控制台查询与测试连接结果为准，更多自定义网关写法见 [LLM 服务商配置参考](/docs/configuration/llm-providers/) 与 [LLM 大模型配置指南](/docs/configuration/llm-guide/)。
 
 **配置自选股与通知渠道：**
 
 - `STOCK_LIST`：如 `600519,hk00700,AAPL,7203.T`（可放在 Variables 或 Secrets）
-- 通知渠道（至少配一个）：`WECHAT_WEBHOOK_URL`、`FEISHU_WEBHOOK_URL`、`TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID`、`DISCORD_WEBHOOK_URL`、`EMAIL_SENDER` + `EMAIL_PASSWORD`
+- 通知渠道（至少配齐一组，注意成对必填）：`WECHAT_WEBHOOK_URL`、`FEISHU_WEBHOOK_URL`、`TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID`、`DISCORD_WEBHOOK_URL`、`EMAIL_SENDER` + `EMAIL_PASSWORD`
 - 推荐加配新闻搜索：`SERPAPI_API_KEYS` 或 `ANSPIRE_API_KEYS` / `TAVILY_API_KEYS`
 
 ### 3. 启用 Actions 并手动测试

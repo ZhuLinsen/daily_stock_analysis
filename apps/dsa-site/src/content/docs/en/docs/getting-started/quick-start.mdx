@@ -30,8 +30,11 @@ DSA provides four primary ways to run. Pick the one that matches your workflow a
     git clone https://github.com/ZhuLinsen/daily_stock_analysis.git
     cd daily_stock_analysis
     cp .env.example .env
+    # Edit .env: set STOCK_LIST and at least one AI API key (see Minimal Env Config)
+
     docker-compose -f ./docker/docker-compose.yml up -d server
     ```
+    Configure at least one AI key before triggering analysis — see [Minimal Environment Configuration](/en/docs/getting-started/env-config/) and the [LLM Configuration Guide](/en/docs/configuration/llm-guide/).
   </TabItem>
 
   <TabItem label="Local Python">
@@ -41,9 +44,11 @@ DSA provides four primary ways to run. Pick the one that matches your workflow a
     python -m venv .venv && source .venv/bin/activate
     pip install -r requirements.txt
     cp .env.example .env
+    # Edit .env: set STOCK_LIST and at least one AI API key (e.g. GEMINI_API_KEY or DEEPSEEK_API_KEY)
 
     python main.py --doctor
     python main.py --stocks AAPL,NVDA,600519 --serve
     ```
+    Make sure an AI API key is configured in `.env` before running analysis — see [Minimal Environment Configuration](/en/docs/getting-started/env-config/) and the [LLM Configuration Guide](/en/docs/configuration/llm-guide/).
   </TabItem>
 </Tabs>

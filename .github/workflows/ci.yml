@@ -71,7 +71,7 @@ jobs:
           predicate-quantifier: every
           filters: |
             site_code:
-              - 'apps/dsa-site/**'
+              - '{apps/dsa-site/**,docs/**,strategies/README.md,.github/workflows/ci.yml}'
 
   ai-governance:
     name: ai-governance
@@ -315,3 +315,5 @@ jobs:
         run: npm ci
       - name: 🏗️ Build docs site
         run: npm run build
+      - name: 🧪 Verify site contracts
+        run: npm test

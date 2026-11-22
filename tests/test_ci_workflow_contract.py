@@ -94,7 +94,13 @@ def test_heavy_ci_jobs_are_path_filtered_and_backend_tests_are_sharded() -> None
     assert backend_filter_step["with"]["predicate-quantifier"] == "every"
     assert frontend_filter_step["with"]["predicate-quantifier"] == "every"
     assert site_filter_step["with"]["predicate-quantifier"] == "every"
-    assert site_filters["site_code"] == ["apps/dsa-site/**"]
+    assert len(site_filters["site_code"]) == 1
+    assert set(_expand_brace_pattern(site_filters["site_code"][0])) == {
+        "apps/dsa-site/**",
+        "docs/**",
+        "strategies/README.md",
+        ".github/workflows/ci.yml",
+    }
     assert backend_filters["backend_non_web"] == [
         "**",
         "!apps/dsa-web/**",
@@ -142,6 +148,9 @@ def test_heavy_ci_jobs_are_path_filtered_and_backend_tests_are_sharded() -> None
     assert backend_gate_job["if"] == "always()"
     assert docker_job["needs"] == ["changes", "ai-governance"]
     assert docker_job["if"] == "needs.changes.outputs.docker == 'true'"
+    site_gate_job = ci["jobs"]["site-gate"]
+    assert site_gate_job["needs"] == ["changes", "ai-governance"]
+    assert site_gate_job["if"] == "needs.changes.outputs.site == 'true'"
 
     install_step = next(
         step
@@ -240,7 +249,13 @@ def test_backend_filter_covers_mixed_changes_and_shared_web_assets() -> None:
     assert outputs(["apps/dsa-web/public/stocks.index.json"])[0] is True
     assert outputs(["apps/dsa-web/public/runtime/new-asset.json"])[0] is True
     assert _filter_output(["apps/dsa-site/src/pages/index.astro"], site_filters)
-    assert not _filter_output(["docs/CHANGELOG.md"], site_filters)
+    assert _filter_output(["docs/data-center-diagnostics.md"], site_filters)
+    assert _filter_output(["docs/architecture/api_spec.json"], site_filters)
+    assert _filter_output(["docs/CHANGELOG.md"], site_filters)
+    assert _filter_output(["strategies/README.md"], site_filters)
+    assert _filter_output([".github/workflows/ci.yml"], site_filters)
+    assert not _filter_output(["src/config.py"], site_filters)
+    assert not _filter_output(["apps/dsa-web/src/App.tsx"], site_filters)
 
 
 def test_browser_fixture_and_default_smoke_entrypoints_stay_separate() -> None:

@@ -21,7 +21,10 @@ source .venv/bin/activate
 
 pip install -r requirements.txt
 cp .env.example .env
+# 编辑 .env：填写 STOCK_LIST 与至少一个 AI 模型 Key（详见「最小环境变量」/「LLM 大模型配置」）
 ```
+
+首次运行分析前，请确保已按 [最小环境变量](/docs/getting-started/env-config/) 或 [LLM 大模型配置指南](/docs/configuration/llm-guide/) 填好可用的 AI Key（仅复制空白 `.env.example` 时 `--doctor` 可用于自检，实际分析会提示缺少可用模型）。
 
 ## 常用 CLI 命令
 

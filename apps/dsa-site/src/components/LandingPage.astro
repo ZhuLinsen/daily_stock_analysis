@@ -12,7 +12,7 @@ const { lang } = Astro.props;
 const isEn = lang === 'en';
 const rawSignals = isEn ? enSignals : zhSignals;
 
-// Enrich signals with crisp display helpers for the interactive Hero Stage
+// Format sanitized sample records for the interactive Hero Stage (no synthetic scores)
 const stageSamples = (Array.isArray(rawSignals) ? rawSignals : []).slice(0, 4).map((item, idx) => {
   const score = Number(item.sentiment_score ?? 60);
   const marketMap: Record<string, string> = {
@@ -24,35 +24,12 @@ const stageSamples = (Array.isArray(rawSignals) ? rawSignals : []).slice(0, 4).m
   const sp = (item.sniper_points || {}) as Record<string, number | null | undefined>;
   const fmt = (v: number | null | undefined) => (typeof v === 'number' ? v.toFixed(2) : '—');
   const dt = String(item.decision_type || 'hold').toLowerCase();
-  const stratsPresets = isEn
-    ? [
-        [
-          { label: 'Trend', score: Math.min(95, score + 8) },
-          { label: 'Growth', score: Math.min(92, score + 4) },
-          { label: 'Event', score: Math.max(35, score - 5) },
-          { label: 'Quant', score: Math.max(30, score - 8) },
-        ],
-        [
-          { label: 'Momentum', score: Math.min(90, score + 6) },
-          { label: 'Wave', score: Math.max(40, score - 4) },
-          { label: 'Sentiment', score: score },
-          { label: 'Risk Ctrl', score: Math.min(88, 100 - Math.abs(score - 65)) },
-        ],
-      ]
-    : [
-        [
-          { label: '趋势跟踪', score: Math.min(95, score + 23) },
-          { label: '缠论结构', score: Math.min(90, score + 7) },
-          { label: '波浪理论', score: Math.max(35, score - 10) },
-          { label: '情绪面', score: Math.max(30, score - 18) },
-        ],
-        [
-          { label: '多头趋势', score: Math.min(92, score + 14) },
-          { label: '成长质量', score: Math.min(88, score + 9) },
-          { label: '热点题材', score: Math.max(42, score - 6) },
-          { label: '筹码结构', score: Math.max(38, score - 12) },
-        ],
-      ];
+  const catalysts = (Array.isArray(item.positive_catalysts) ? item.positive_catalysts : []).filter(
+    (entry): entry is string => typeof entry === 'string' && entry.trim().length > 0,
+  );
+  const risks = (Array.isArray(item.risk_alerts) ? item.risk_alerts : []).filter(
+    (entry): entry is string => typeof entry === 'string' && entry.trim().length > 0,
+  );
 
   return {
     code: item.code || `STK${idx}`,
@@ -77,15 +54,14 @@ const stageSamples = (Array.isArray(rawSignals) ? rawSignals : []).slice(0, 4).m
     trend: item.trend_prediction || (isEn ? 'Bullish' : '看多'),
     confidence: item.confidence_level || (isEn ? 'Medium' : '中'),
     summary: item.analysis_summary || '-',
-    catalyst: Array.isArray(item.positive_catalysts) ? item.positive_catalysts[0] || '-' : '-',
-    risk: Array.isArray(item.risk_alerts) ? item.risk_alerts[0] || '-' : '-',
+    catalysts: catalysts.length ? catalysts : ['-'],
+    risks: risks.length ? risks : ['-'],
     idealBuy: fmt(sp.ideal_buy),
     secBuy: fmt(sp.secondary_buy),
     stopLoss: fmt(sp.stop_loss),
     takeProfit: fmt(sp.take_profit),
     model: item.model_used || 'openai-compatible/gemini',
     dataSources: item.data_sources || (isEn ? 'Multi-source market & news' : '行情 + 新闻舆情 + 技术面 + 基本面'),
-    strats: stratsPresets[idx % stratsPresets.length],
   };
 });
 
@@ -118,9 +94,10 @@ GEMINI_API_KEY=...   # or OPENAI_API_KEY / ANTHROPIC_API_KEY
         codeTitle: 'GitHub Actions · Serverless Workflow',
         code: `# 1. Fork https://github.com/ZhuLinsen/daily_stock_analysis
 # 2. Repo Settings -> Secrets and variables -> Actions -> New secret:
-GEMINI_API_KEY=...        # or OPENAI_API_KEY / ANTHROPIC_API_KEY
+GEMINI_API_KEY=...        # or DEEPSEEK_API_KEY / ANTHROPIC_API_KEY (for OpenAI gateways also set OPENAI_BASE_URL + OPENAI_MODEL)
 STOCK_LIST=AAPL,NVDA,hk00700
-TELEGRAM_BOT_TOKEN=...    # or DISCORD_WEBHOOK_URL / EMAIL_SENDER
+TELEGRAM_BOT_TOKEN=...    # Telegram requires BOTH TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID
+TELEGRAM_CHAT_ID=...      # or DISCORD_WEBHOOK_URL, or EMAIL_SENDER + EMAIL_PASSWORD
 
 # 3. Enable Workflows -> Run "Daily Stock Analysis" manually to test`,
       },
@@ -132,7 +109,8 @@ TELEGRAM_BOT_TOKEN=...    # or DISCORD_WEBHOOK_URL / EMAIL_SENDER
         codeTitle: 'Docker Compose · Server Deployment',
         code: `git clone https://github.com/ZhuLinsen/daily_stock_analysis.git
 cd daily_stock_analysis
-cp .env.example .env      # add STOCK_LIST + AI key
+cp .env.example .env
+# Edit .env: set STOCK_LIST and at least one AI API key
 
 docker-compose -f ./docker/docker-compose.yml up -d server
 # Open http://127.0.0.1:8000`,
@@ -146,6 +124,7 @@ docker-compose -f ./docker/docker-compose.yml up -d server
         code: `git clone https://github.com/ZhuLinsen/daily_stock_analysis.git && cd daily_stock_analysis
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt && cp .env.example .env
+# Edit .env: set STOCK_LIST and at least one AI key (e.g. GEMINI_API_KEY or DEEPSEEK_API_KEY)
 
 python main.py --doctor                    # offline health diagnostics
 python main.py --stocks AAPL,NVDA --serve  # analyze + start WebUI`,
@@ -176,9 +155,11 @@ GEMINI_API_KEY=...   # 或 DeepSeek / OpenAI 兼容 / Claude Key
         code: `# 1. Fork 仓库：https://github.com/ZhuLinsen/daily_stock_analysis
 # 2. 进入 Settings -> Secrets and variables -> Actions -> New repository secret
 
-GEMINI_API_KEY=...        # 或 OPENAI_API_KEY / MODELFLARE_KEY
+GEMINI_API_KEY=...        # 或 MODELFLARE_KEY / DEEPSEEK_API_KEY（OpenAI 兼容网关需加配 BASE_URL 与 MODEL）
 STOCK_LIST=600519,hk00700,AAPL
-WECHAT_WEBHOOK_URL=...    # 或 FEISHU_WEBHOOK_URL / TELEGRAM_BOT_TOKEN
+WECHAT_WEBHOOK_URL=...    # 或 FEISHU_WEBHOOK_URL / DISCORD_WEBHOOK_URL
+# Telegram 需成对配置：TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID
+# 邮件需成对配置：EMAIL_SENDER + EMAIL_PASSWORD
 
 # 3. Actions 标签页启用 Workflow -> 手动点击 Run workflow 测试`,
       },
@@ -204,6 +185,7 @@ docker-compose -f ./docker/docker-compose.yml up -d server
         code: `git clone https://github.com/ZhuLinsen/daily_stock_analysis.git && cd daily_stock_analysis
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt && cp .env.example .env
+# 编辑 .env：填写 STOCK_LIST 与至少一个 AI Key（如 GEMINI_API_KEY / DEEPSEEK_API_KEY / MODELFLARE_KEY）
 
 python main.py --doctor                     # 离线检查环境与数据源就绪度
 python main.py --stocks 600519,hk00700,AAPL # 立即分析指定标的
@@ -218,7 +200,7 @@ const docCards = isEn
       { tag: 'LLM', title: 'LLM Router & Models', desc: 'Configure Gemini, Claude, DeepSeek, OpenAI-compatible gateways, and Ollama.', href: localizeDoc('/docs/configuration/llm-guide/') },
       { tag: 'DATA', title: 'Data Sources & TickPlus', desc: 'Priority chains, circuit breakers, TickPlus, Tushare, and Longbridge setup.', href: localizeDoc('/docs/configuration/data-sources/') },
       { tag: 'BOTS', title: 'Notifications & Bots', desc: 'Connect WeChat Work, Feishu, DingTalk, Telegram, Discord, Slack, and Email.', href: localizeDoc('/docs/configuration/bot-commands/') },
-      { tag: 'OPENAPI', title: `OpenAPI Explorer (${siteMeta.apiEndpointCount})`, desc: 'Searchable REST endpoint explorer and downloadable OpenAPI 3.1 spec.', href: localizeDoc('/docs/reference/api/') },
+      { tag: 'OPENAPI', title: `OpenAPI Explorer (${siteMeta.apiEndpointCount})`, desc: 'Searchable viewer for the curated static OpenAPI 3.1 snapshot (docs/architecture/api_spec.json).', href: localizeDoc('/docs/reference/api/') },
     ]
   : [
       { tag: 'START', title: '选择运行方式（快速开始）', desc: '桌面端、GitHub Actions、Docker 与本地 CLI 四路径对比与 5 分钟上手。', href: '/docs/getting-started/quick-start/' },
@@ -226,7 +208,7 @@ const docCards = isEn
       { tag: 'LLM', title: 'LLM 大模型路由配置', desc: '接入 Gemini、Claude、DeepSeek、OpenAI 兼容网关、Ollama 本地模型与 LiteLLM。', href: '/docs/configuration/llm-guide/' },
       { tag: 'DATA', title: '数据源稳定性与 TickPlus', desc: '多源 Fallback 优先级、短期熔断恢复与 TickPlus / Tushare / Longbridge 指南。', href: '/docs/configuration/data-sources/' },
       { tag: 'BOTS', title: '通知渠道与 Bot 平台', desc: '企业微信、飞书、钉钉、Telegram、Discord、Slack、邮件与 OpenClaw / Grok 集成。', href: '/docs/configuration/notifications/' },
-      { tag: 'OPENAPI', title: `OpenAPI 接口浏览器 (${siteMeta.apiEndpointCount})`, desc: '交互式检索全部 REST API 端点、参数契约与完整 OpenAPI 3.1 规格。', href: '/docs/reference/api/' },
+      { tag: 'OPENAPI', title: `OpenAPI 接口浏览器 (${siteMeta.apiEndpointCount})`, desc: '交互式检索主仓静态 OpenAPI 3.1 架构快照（docs/architecture/api_spec.json）中的核心端点与 Schema。', href: '/docs/reference/api/' },
     ];
 
 const initialSample = stageSamples[0];
@@ -568,33 +550,50 @@ const initialSample = stageSamples[0];
               <div class="lg:col-span-4 flex flex-col gap-3">
                 <div class="ob-card-soft p-3.5 space-y-1.5">
                   <div class="text-xs font-semibold uppercase tracking-wider" style="color: var(--ob-up);">
-                    {isEn ? '✦ Positive Catalyst' : '✦ 利好催化'}
+                    {isEn ? '✦ Positive Catalysts' : '✦ 利好催化'}
                   </div>
-                  <p id="stageCatalyst" class="text-xs leading-relaxed m-0" style="color: var(--ob-muted);">{initialSample.catalyst}</p>
+                  <ul id="stageCatalysts" class="list-disc pl-4 space-y-1 text-xs leading-relaxed m-0" style="color: var(--ob-muted);">
+                    {initialSample.catalysts.map((item) => (
+                      <li>{item}</li>
+                    ))}
+                  </ul>
                 </div>
 
                 <div class="ob-card-soft p-3.5 space-y-1.5">
                   <div class="text-xs font-semibold uppercase tracking-wider" style="color: var(--ob-down);">
-                    {isEn ? '⚠ Risk Alert' : '⚠ 风险警报'}
+                    {isEn ? '⚠ Risk Alerts' : '⚠ 风险警报'}
                   </div>
-                  <p id="stageRisk" class="text-xs leading-relaxed m-0" style="color: var(--ob-muted);">{initialSample.risk}</p>
+                  <ul id="stageRisks" class="list-disc pl-4 space-y-1 text-xs leading-relaxed m-0" style="color: var(--ob-muted);">
+                    {initialSample.risks.map((item) => (
+                      <li>{item}</li>
+                    ))}
+                  </ul>
                 </div>
 
-                <div class="ob-card-soft p-3.5 space-y-2.5 flex-1">
-                  <div class="flex items-center justify-between text-xs">
-                    <span class="font-semibold" style="color: var(--ob-ink);">{isEn ? 'Agent Strategy Views' : 'Agent 多策略视角'}</span>
-                    <span class="mono-num" style="color: var(--ob-accent);">{isEn ? '15 Engines' : '15 策略引擎'}</span>
-                  </div>
-                  <div id="stageStrats" class="space-y-2 text-xs">
-                    {initialSample.strats.map((st) => (
-                      <div class="grid grid-cols-12 items-center gap-2">
-                        <span class="col-span-4 truncate" style="color: var(--ob-muted);">{st.label}</span>
-                        <div class="col-span-6 h-1.5 rounded-full overflow-hidden" style="background: var(--ob-border);">
-                          <div class="h-full rounded-full transition-all duration-300" style={`width:${st.score}%; background: var(--ob-accent);`}></div>
-                        </div>
-                        <span class="col-span-2 text-right mono-num font-semibold" style="color: var(--ob-ink);">{st.score}</span>
+                <div class="ob-card-soft p-3.5 space-y-2.5 flex-1 flex flex-col justify-between">
+                  <div class="space-y-2">
+                    <div class="flex items-center justify-between text-xs">
+                      <span class="font-semibold" style="color: var(--ob-ink);">{isEn ? 'Report Context' : '研报字段来源'}</span>
+                      <span id="stageDecisionType" class="mono-num uppercase px-1.5 py-0.5 rounded text-[11px]" style="background: var(--ob-accent-soft); color: var(--ob-accent);">
+                        {initialSample.decisionType}
+                      </span>
+                    </div>
+                    <div class="space-y-1.5 text-xs">
+                      <div class="flex items-start justify-between gap-2">
+                        <span style="color: var(--ob-subtle);">{isEn ? 'Model' : '分析模型'}</span>
+                        <span id="stageContextModel" class="mono-num text-right break-all" style="color: var(--ob-ink);">{initialSample.model}</span>
                       </div>
-                    ))}
+                      <div class="flex items-start justify-between gap-2">
+                        <span style="color: var(--ob-subtle);">{isEn ? 'Sources' : '数据维度'}</span>
+                        <span id="stageContextSources" class="text-right" style="color: var(--ob-muted);">{initialSample.dataSources}</span>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="pt-2 border-t flex items-center justify-between text-xs" style="border-color: var(--ob-border);">
+                    <span style="color: var(--ob-subtle);">{isEn ? 'Strategy Skills' : '策略框架'}</span>
+                    <a href={localizeDoc('/docs/features/strategies/')} class="no-underline font-medium" style="color: var(--ob-accent);">
+                      {isEn ? '15 Built-in Strategies →' : '15 种 Agent 策略 →'}
+                    </a>
                   </div>
                 </div>
               </div>
@@ -604,8 +603,8 @@ const initialSample = stageSamples[0];
           <div class="pt-3 border-t flex flex-wrap items-center justify-between gap-2 text-xs" style="border-color: var(--ob-border); color: var(--ob-subtle);">
             <span>
               {isEn
-                ? 'Sanitized historical output from DSA analysis_history — research aid only, not investment advice.'
-                : '展示内容来自真实 DSA analysis_history 脱敏样例 — 仅作能力演示，不构成任何投资建议。'}
+                ? 'Static sanitized sample matching the DSA analysis_history schema (daily_signals.us.json) — demo only, not investment advice.'
+                : '展示字段来自静态脱敏样例（daily_signals.json，对应 DSA analysis_history 输出结构）— 仅作能力演示，不构成任何投资建议。'}
             </span>
             <a href={localizeDoc('/docs/features/decision-signals/')} class="no-underline font-medium" style="color: var(--ob-accent);">
               {isEn ? 'DecisionSignal Contract →' : '查看信号字段契约 →'}
@@ -844,8 +843,8 @@ const initialSample = stageSamples[0];
             </h2>
             <p class="text-xs sm:text-sm mt-1 mb-0" style="color: var(--ob-muted);">
               {isEn
-                ? 'Powered by Astro Starlight with instant CJK/EN search (⌘K), clean syntax highlighting, and interactive OpenAPI docs.'
-                : '同步主仓全部功能手册与 OpenAPI 规格，内置中英文全文搜索（⌘K）、代码一键复制与去重导航。'}
+                ? 'Powered by Astro Starlight with instant CJK/EN search (⌘K), clean syntax highlighting, and curated static OpenAPI docs.'
+                : '同步主仓精选核心文档与静态 OpenAPI 架构快照，内置中英文全文搜索（⌘K）、代码一键复制与去重导航。'}
             </p>
           </div>
           <a href={`${docsBase}/`} class="ob-secondary-btn px-4 py-2 text-xs font-semibold no-underline">
@@ -1004,8 +1003,22 @@ const initialSample = stageSamples[0];
             set('stageSecBuy', s.secBuy);
             set('stageStopLoss', s.stopLoss);
             set('stageTakeProfit', s.takeProfit);
-            set('stageCatalyst', s.catalyst);
-            set('stageRisk', s.risk);
+            set('stageDecisionType', s.decisionType);
+            set('stageContextModel', s.model);
+            set('stageContextSources', s.dataSources);
+
+            const renderBullets = (id, items) => {
+              const listEl = document.getElementById(id);
+              if (!listEl) return;
+              listEl.replaceChildren();
+              (items || ['-']).forEach((entry) => {
+                const li = document.createElement('li');
+                li.textContent = String(entry);
+                listEl.appendChild(li);
+              });
+            };
+            renderBullets('stageCatalysts', s.catalysts);
+            renderBullets('stageRisks', s.risks);
 
             const adviceEl = document.getElementById('stageAdvice');
             if (adviceEl) {
@@ -1015,21 +1028,6 @@ const initialSample = stageSamples[0];
             const arc = document.getElementById('stageGaugeArc');
             if (arc) {
               arc.style.strokeDashoffset = (150.8 * (1 - s.score / 100)).toFixed(1);
-            }
-            const stratsWrap = document.getElementById('stageStrats');
-            if (stratsWrap) {
-              stratsWrap.innerHTML = s.strats
-                .map(
-                  (st) => `
-                  <div class="grid grid-cols-12 items-center gap-2">
-                    <span class="col-span-4 truncate" style="color: var(--ob-muted);">${st.label}</span>
-                    <div class="col-span-6 h-1.5 rounded-full overflow-hidden" style="background: var(--ob-border);">
-                      <div class="h-full rounded-full transition-all duration-300" style="width:${st.score}%; background: var(--ob-accent);"></div>
-                    </div>
-                    <span class="col-span-2 text-right mono-num font-semibold" style="color: var(--ob-ink);">${st.score}</span>
-                  </div>`,
-                )
-                .join('');
             }
           });
         });

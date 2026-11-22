@@ -10,18 +10,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const SITE_ROOT = path.resolve(__dirname, '..');
-const DSA_ROOT = path.resolve(SITE_ROOT, '../..');
-
-const CONTENT_ROOT = path.join(SITE_ROOT, 'src', 'content', 'docs');
-const PUBLIC_ASSETS_DIR = path.join(SITE_ROOT, 'public', 'docs-assets');
-const PUBLIC_OPENAPI_PATH = path.join(SITE_ROOT, 'public', 'openapi.json');
-const SITE_META_PATH = path.join(SITE_ROOT, 'src', 'data', 'site-meta.json');
-const OPENAPI_ENDPOINTS_PATH = path.join(SITE_ROOT, 'src', 'data', 'openapi-endpoints.json');
+const DEFAULT_SITE_ROOT = path.resolve(__dirname, '..');
 
 const DSA_REPO = 'https://github.com/ZhuLinsen/daily_stock_analysis';
 
-const SOURCE_ROUTE_MAP = {
+export const SOURCE_ROUTE_MAP = {
   'README.md': '/',
   'docs/README_EN.md': '/en/',
   'docs/README_CHT.md': '/',
@@ -69,7 +62,7 @@ const SOURCE_ROUTE_MAP = {
   'docs/architecture/api_spec.json': '/docs/reference/api/',
 };
 
-const SYNC_SPECS = [
+export const SYNC_SPECS = [
   {
     target: 'docs/getting-started/beginner-client.md',
     sources: ['docs/beginner-client-setup.md'],
@@ -287,24 +280,24 @@ const ALERT_TITLES = {
 
 const IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg']);
 
-function runGit(args) {
-  return execFileSync('git', ['-C', DSA_ROOT, ...args], {
+function runGit(dsaRoot, args) {
+  return execFileSync('git', ['-C', dsaRoot, ...args], {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'ignore'],
   }).trim();
 }
 
-function readGitMetadata() {
+function readGitMetadata(dsaRoot) {
   let dsaCommit = 'unknown';
   let versionLabel = 'latest';
   try {
-    dsaCommit = runGit(['rev-parse', '--short', 'HEAD']);
+    dsaCommit = runGit(dsaRoot, ['rev-parse', '--short', 'HEAD']);
   } catch {}
   try {
-    versionLabel = runGit(['describe', '--tags', '--always']);
+    versionLabel = runGit(dsaRoot, ['describe', '--tags', '--always']);
   } catch {}
 
-  const changelogPath = path.join(DSA_ROOT, 'docs', 'CHANGELOG.md');
+  const changelogPath = path.join(dsaRoot, 'docs', 'CHANGELOG.md');
   if ((versionLabel === 'latest' || !versionLabel.startsWith('v')) && fs.existsSync(changelogPath)) {
     const text = fs.readFileSync(changelogPath, 'utf8');
     const match = text.match(/^##\s+\[(\d+\.\d+\.\d+)\]/m);
@@ -432,20 +425,20 @@ function resolveRepoPath(currentSource, target) {
   return normalized === '.' ? '' : normalized;
 }
 
-function copyAsset(repoRel, copiedAssets) {
+function copyAsset({ repoRel, dsaRoot, publicAssetsDir, copiedAssets }) {
   if (!repoRel) return null;
-  const srcPath = path.join(DSA_ROOT, ...repoRel.split('/'));
+  const srcPath = path.join(dsaRoot, ...repoRel.split('/'));
   if (!fs.existsSync(srcPath) || !fs.statSync(srcPath).isFile()) {
     return null;
   }
-  const destPath = path.join(PUBLIC_ASSETS_DIR, ...repoRel.split('/'));
+  const destPath = path.join(publicAssetsDir, ...repoRel.split('/'));
   fs.mkdirSync(path.dirname(destPath), { recursive: true });
   fs.copyFileSync(srcPath, destPath);
   copiedAssets.add(repoRel);
   return `/docs-assets/${repoRel}`;
 }
 
-function rewriteLinksAndAssets(text, sourcePath, lang, copiedAssets) {
+function rewriteLinksAndAssets(text, sourcePath, lang, assetContext) {
   function mapHref(rawUrl, isImage) {
     let urlNoTitle = rawUrl.trim();
     let titleSuffix = '';
@@ -464,7 +457,7 @@ function rewriteLinksAndAssets(text, sourcePath, lang, copiedAssets) {
 
     const ext = path.posix.extname(repoRel).toLowerCase();
     if (isImage || IMAGE_EXTS.has(ext)) {
-      const assetUrl = copyAsset(repoRel, copiedAssets);
+      const assetUrl = copyAsset({ repoRel, ...assetContext });
       if (assetUrl) return `${assetUrl}${titleSuffix}`;
       return `${DSA_REPO}/raw/main/${repoRel}${titleSuffix}`;
     }
@@ -502,7 +495,7 @@ function rewriteLinksAndAssets(text, sourcePath, lang, copiedAssets) {
   return out.join('\n');
 }
 
-function sanitizeMarkdown(raw, sourcePath, lang, copiedAssets, mode) {
+function sanitizeMarkdown(raw, sourcePath, lang, assetContext, mode) {
   let text = raw.replace(/\r\n/g, '\n').replace(/^\uFEFF/, '');
   if (mode === 'changelog') {
     text = trimChangelog(text);
@@ -510,7 +503,7 @@ function sanitizeMarkdown(raw, sourcePath, lang, copiedAssets, mode) {
   text = stripFirstH1(text);
   text = normalizeCodeFences(text);
   text = convertGithubAlerts(text, lang);
-  text = rewriteLinksAndAssets(text, sourcePath, lang, copiedAssets);
+  text = rewriteLinksAndAssets(text, sourcePath, lang, assetContext);
   return text.replace(/\n{4,}/g, '\n\n\n').trim() + '\n';
 }
 
@@ -535,13 +528,15 @@ function resolveSchemaName(schemaObj) {
   return String(schemaObj.type || '');
 }
 
-function buildOpenApiSummary() {
-  const specPath = path.join(DSA_ROOT, 'docs', 'architecture', 'api_spec.json');
-  if (!fs.existsSync(specPath)) return 0;
+function buildOpenApiSummary({ dsaRoot, publicOpenApiPath, openApiEndpointsPath }) {
+  const specPath = path.join(dsaRoot, 'docs', 'architecture', 'api_spec.json');
+  if (!fs.existsSync(specPath) || !fs.statSync(specPath).isFile()) {
+    throw new Error('Missing required OpenAPI spec: docs/architecture/api_spec.json');
+  }
 
   const spec = JSON.parse(fs.readFileSync(specPath, 'utf8'));
-  fs.mkdirSync(path.dirname(PUBLIC_OPENAPI_PATH), { recursive: true });
-  fs.copyFileSync(specPath, PUBLIC_OPENAPI_PATH);
+  fs.mkdirSync(path.dirname(publicOpenApiPath), { recursive: true });
+  fs.copyFileSync(specPath, publicOpenApiPath);
 
   const schemas = spec.components?.schemas || {};
   const endpoints = [];
@@ -596,20 +591,52 @@ function buildOpenApiSummary() {
     endpoints,
   };
 
-  fs.mkdirSync(path.dirname(OPENAPI_ENDPOINTS_PATH), { recursive: true });
-  fs.writeFileSync(OPENAPI_ENDPOINTS_PATH, JSON.stringify(payload, null, 2) + '\n', 'utf8');
+  fs.mkdirSync(path.dirname(openApiEndpointsPath), { recursive: true });
+  fs.writeFileSync(openApiEndpointsPath, JSON.stringify(payload, null, 2) + '\n', 'utf8');
   return endpoints.length;
 }
 
-function syncDocEntry({ target, sources, title, description, lang, copiedAssets, mode }) {
+function collectMissingSources(dsaRoot) {
+  const missing = [];
+  for (const spec of SYNC_SPECS) {
+    for (const srcRel of spec.sources) {
+      const srcFile = path.join(dsaRoot, ...srcRel.split('/'));
+      if (!fs.existsSync(srcFile) || !fs.statSync(srcFile).isFile()) {
+        missing.push(srcRel);
+      }
+    }
+    if (spec.enSources) {
+      for (const srcRel of spec.enSources) {
+        const srcFile = path.join(dsaRoot, ...srcRel.split('/'));
+        if (!fs.existsSync(srcFile) || !fs.statSync(srcFile).isFile()) {
+          missing.push(srcRel);
+        }
+      }
+    }
+  }
+  return missing;
+}
+
+function syncDocEntry({
+  dsaRoot,
+  contentRoot,
+  target,
+  sources,
+  title,
+  description,
+  lang,
+  assetContext,
+  mode,
+}) {
   const parts = [];
-  const validSources = [];
 
   for (const srcRel of sources) {
-    const srcFile = path.join(DSA_ROOT, ...srcRel.split('/'));
-    if (!fs.existsSync(srcFile)) continue;
+    const srcFile = path.join(dsaRoot, ...srcRel.split('/'));
+    if (!fs.existsSync(srcFile) || !fs.statSync(srcFile).isFile()) {
+      throw new Error(`Missing required upstream doc: ${srcRel}`);
+    }
     const raw = fs.readFileSync(srcFile, 'utf8');
-    const cleaned = sanitizeMarkdown(raw, srcRel, lang, copiedAssets, mode);
+    const cleaned = sanitizeMarkdown(raw, srcRel, lang, assetContext, mode);
     if (sources.length > 1) {
       const h1 = raw.match(/^#\s+(.+)$/m);
       const rawHeading = h1 ? h1[1].trim() : path.posix.basename(srcRel, '.md');
@@ -618,63 +645,83 @@ function syncDocEntry({ target, sources, title, description, lang, copiedAssets,
     } else {
       parts.push(cleaned);
     }
-    validSources.push(srcRel);
   }
 
-  if (!parts.length) return false;
-
-  const editUrl = `${DSA_REPO}/edit/main/${validSources[0]}`;
+  const editUrl = `${DSA_REPO}/edit/main/${sources[0]}`;
   let output = buildFrontmatter(title, description, editUrl) + parts.join('\n\n---\n\n');
   if (!output.endsWith('\n')) output += '\n';
 
-  const dest = path.join(CONTENT_ROOT, ...target.split('/'));
+  const dest = path.join(contentRoot, ...target.split('/'));
   fs.mkdirSync(path.dirname(dest), { recursive: true });
   fs.writeFileSync(dest, output, 'utf8');
   return true;
 }
 
-function main() {
-  cleanGeneratedMarkdown(CONTENT_ROOT);
-  fs.rmSync(PUBLIC_ASSETS_DIR, { recursive: true, force: true });
-  fs.mkdirSync(PUBLIC_ASSETS_DIR, { recursive: true });
+export function prepareDocs({
+  siteRoot = DEFAULT_SITE_ROOT,
+  dsaRoot = path.resolve(siteRoot, '../..'),
+  quiet = false,
+} = {}) {
+  const contentRoot = path.join(siteRoot, 'src', 'content', 'docs');
+  const publicAssetsDir = path.join(siteRoot, 'public', 'docs-assets');
+  const publicOpenApiPath = path.join(siteRoot, 'public', 'openapi.json');
+  const siteMetaPath = path.join(siteRoot, 'src', 'data', 'site-meta.json');
+  const openApiEndpointsPath = path.join(siteRoot, 'src', 'data', 'openapi-endpoints.json');
 
-  const meta = readGitMetadata();
-  const endpointCount = buildOpenApiSummary();
+  // Remove all generated outputs up front so failed/repeat builds never retain stale files.
+  cleanGeneratedMarkdown(contentRoot);
+  fs.rmSync(publicAssetsDir, { recursive: true, force: true });
+  fs.rmSync(publicOpenApiPath, { force: true });
+  fs.rmSync(openApiEndpointsPath, { force: true });
+  fs.rmSync(siteMetaPath, { force: true });
+  fs.mkdirSync(publicAssetsDir, { recursive: true });
+
+  const missingSources = collectMissingSources(dsaRoot);
+  if (missingSources.length > 0) {
+    throw new Error(`Missing required upstream docs:\n- ${missingSources.join('\n- ')}`);
+  }
+
+  const endpointCount = buildOpenApiSummary({
+    dsaRoot,
+    publicOpenApiPath,
+    openApiEndpointsPath,
+  });
+
+  const meta = readGitMetadata(dsaRoot);
   meta.apiEndpointCount = endpointCount;
 
   const copiedAssets = new Set();
+  const assetContext = { dsaRoot, publicAssetsDir, copiedAssets };
   let syncedZh = 0;
   let syncedEn = 0;
 
   for (const spec of SYNC_SPECS) {
-    if (
-      syncDocEntry({
-        target: spec.target,
-        sources: spec.sources,
-        title: spec.title,
-        description: spec.description,
-        lang: 'zh',
-        copiedAssets,
-        mode: spec.mode,
-      })
-    ) {
-      syncedZh += 1;
-    }
+    syncDocEntry({
+      dsaRoot,
+      contentRoot,
+      target: spec.target,
+      sources: spec.sources,
+      title: spec.title,
+      description: spec.description,
+      lang: 'zh',
+      assetContext,
+      mode: spec.mode,
+    });
+    syncedZh += 1;
 
     if (spec.enSources) {
-      if (
-        syncDocEntry({
-          target: `en/${spec.target}`,
-          sources: spec.enSources,
-          title: spec.enTitle || spec.title,
-          description: spec.enDescription || spec.description,
-          lang: 'en',
-          copiedAssets,
-          mode: spec.mode,
-        })
-      ) {
-        syncedEn += 1;
-      }
+      syncDocEntry({
+        dsaRoot,
+        contentRoot,
+        target: `en/${spec.target}`,
+        sources: spec.enSources,
+        title: spec.enTitle || spec.title,
+        description: spec.enDescription || spec.description,
+        lang: 'en',
+        assetContext,
+        mode: spec.mode,
+      });
+      syncedEn += 1;
     }
   }
 
@@ -682,12 +729,22 @@ function main() {
   meta.syncedEnDocs = syncedEn;
   meta.copiedAssets = copiedAssets.size;
 
-  fs.mkdirSync(path.dirname(SITE_META_PATH), { recursive: true });
-  fs.writeFileSync(SITE_META_PATH, JSON.stringify(meta, null, 2) + '\n', 'utf8');
+  fs.mkdirSync(path.dirname(siteMetaPath), { recursive: true });
+  fs.writeFileSync(siteMetaPath, JSON.stringify(meta, null, 2) + '\n', 'utf8');
 
-  console.log(
-    `[prepare-docs] ${syncedZh} zh docs, ${syncedEn} en docs, ${copiedAssets.size} assets, ${endpointCount} OpenAPI endpoints (DSA ${meta.versionLabel} @ ${meta.dsaCommit})`,
-  );
+  if (!quiet) {
+    console.log(
+      `[prepare-docs] ${syncedZh} zh docs, ${syncedEn} en docs, ${copiedAssets.size} assets, ${endpointCount} OpenAPI endpoints (DSA ${meta.versionLabel} @ ${meta.dsaCommit})`,
+    );
+  }
+
+  return meta;
 }
 
-main();
+const isMainModule =
+  Boolean(process.argv[1]) &&
+  path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+
+if (isMainModule) {
+  prepareDocs();
+}
