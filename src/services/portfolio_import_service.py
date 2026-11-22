@@ -12,6 +12,7 @@ from datetime import date
 from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
+from dateutil.parser import parser, parserinfo
 
 from data_provider.base import canonical_stock_code
 from src.repositories.portfolio_repo import PortfolioRepository
@@ -23,6 +24,17 @@ from src.services.portfolio_service import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class _TradeDateInfo(parserinfo):
+    """Require a calendar date before dateutil fills missing fields from today."""
+
+    def validate(self, result) -> bool:
+        return None not in (result.year, result.month, result.day) and super().validate(result)
+
+
+_TRADE_DATE_PARSER = parser(_TradeDateInfo())
+
 
 @dataclass(frozen=True)
 class CsvParserSpec:
@@ -308,7 +320,7 @@ class PortfolioImportService:
     ) -> Optional[Dict[str, Any]]:
         broker_hints = parser_spec.column_hints
 
-        trade_date_raw = self._pick(
+        trade_date_obj = self._pick_trade_date(
             row,
             *(broker_hints.get("trade_date") or ()),
             "成交日期",
@@ -316,7 +328,6 @@ class PortfolioImportService:
             "日期",
             "成交时间",
         )
-        trade_date_obj = self._parse_date(trade_date_raw)
         if trade_date_obj is None:
             return None
 
@@ -419,16 +430,21 @@ class PortfolioImportService:
         return number
 
     @staticmethod
-    def _parse_date(value: Any) -> Optional[date]:
-        if value is None:
-            return None
-        text = str(value).strip()
-        if not text or text.lower() == "nan":
-            return None
-        parsed = pd.to_datetime(text, errors="coerce")
-        if pd.isna(parsed):
-            return None
-        return parsed.date()
+    def _pick_trade_date(row: pd.Series, *columns: str) -> Optional[date]:
+        """Read dates in broker order, skipping a standalone execution time."""
+        for column in dict.fromkeys(columns):
+            text = str(row.get(column, "")).strip()
+            if not text or text.lower() == "nan":
+                continue
+            # A compact HHMMSS in the execution time column can look like a six-digit date.
+            if column == "成交时间" and len(text) == 6 and text.isdecimal():
+                continue
+            try:
+                return _TRADE_DATE_PARSER.parse(text, ignoretz=True).date()
+            except (ValueError, OverflowError):
+                if column != "成交时间":
+                    return None
+        return None
 
     @staticmethod
     def _normalize_side(value: Any) -> Optional[str]:
