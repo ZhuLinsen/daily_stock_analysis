@@ -110,7 +110,7 @@ def parse_open_position_codes(xml_bytes: bytes) -> Tuple[List[str], List[str]]:
     return codes, skipped
 
 
-_STATEMENT_TRUE_FRESHNESS_SLACK_DAYS = 7
+_STATEMENT_TRUE_FRESHNESS_SLACK_DAYS = 0
 
 
 def _latest_us_trading_day_on_or_before(day: date) -> date:
@@ -149,18 +149,25 @@ def _validate_statement_freshness(xml_bytes: bytes) -> None:
     ]
     yesterday = date.today() - timedelta(days=1)
     expected = _latest_us_trading_day_on_or_before(yesterday)
+    saw_parseable = False
     for to_date in to_dates:
         try:
-            parsed = datetime.strptime(to_date[:8], "%Y%m%d").date()
+            parsed = datetime.strptime(to_date[:10].replace("-", ""), "%Y%m%d").date()
         except ValueError:
             continue
-        # ``expected`` already accounts for weekends/holidays; the slack only
-        # tolerates IBKR's own statement lag, never a wrong query period.
-        if (expected - parsed).days > _STATEMENT_TRUE_FRESHNESS_SLACK_DAYS:
+        saw_parseable = True
+        # ``expected`` already accounts for weekends/holidays, so a correctly
+        # configured "last business day" query passes even after a long break,
+        # while "Last Business Week" / "Last Month" are rejected.
+        if parsed < expected:
             raise IbkrPortfolioError(
-                f"IBKR Flex 报表期间过旧（toDate={parsed}，最近交易日 {expected}）；"
+                f"IBKR Flex 报表期间不是最新（toDate={parsed}，最近交易日 {expected}）；"
                 "请把 Flex Query 期间设为最近交易日"
             )
+    if to_dates and not saw_parseable:
+        raise IbkrPortfolioError(
+            f"IBKR Flex 报表缺少可解析的 toDate：{', '.join(to_dates)[:80]}"
+        )
 
 
 def load_ibkr_stock_codes() -> List[str]:

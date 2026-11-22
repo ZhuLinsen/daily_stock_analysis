@@ -38,7 +38,13 @@ _EXCHANGE_MARKET = {
 # withholding tax, other fees) is skipped.
 _CASH_TYPES_IMPORTED = frozenset({"Deposits/Withdrawals"})
 
-_DATE_PATTERN = re.compile(r"^(\d{8})")
+# Prefix written to the ledger `note` for every imported IBKR row, so a bad
+# import can be removed with `note LIKE 'ibkr_flex%'`.
+NOTE_MARKER = "ibkr_flex"
+
+# IBKR lets the Flex template choose the date format; both compact and
+# hyphenated forms appear in real reports.
+_DATE_PATTERN = re.compile(r"^(\d{8}|\d{4}-\d{2}-\d{2})")
 
 
 @dataclass(frozen=True)
@@ -79,7 +85,11 @@ class StatementParseResult:
 
 
 def _parse_flex_date(raw: Optional[str]) -> Optional[date]:
-    """Parse IBKR's ``yyyymmdd`` or ``yyyymmdd;HHMMSS`` into a date."""
+    """Parse IBKR's date formats into a date.
+
+    Accepts ``yyyymmdd``, ``yyyy-MM-dd`` and the ``...;HHMMSS`` timestamp form;
+    a template that renders dates differently would otherwise drop every row.
+    """
     if not raw:
         return None
     match = _DATE_PATTERN.match(raw.strip())
@@ -87,6 +97,8 @@ def _parse_flex_date(raw: Optional[str]) -> Optional[date]:
         return None
     text = match.group(1)
     try:
+        if "-" in text:
+            return date(int(text[0:4]), int(text[5:7]), int(text[8:10]))
         return date(int(text[0:4]), int(text[4:6]), int(text[6:8]))
     except ValueError:
         return None
@@ -144,7 +156,24 @@ def _iter_trades(statement: ET.Element) -> Iterable[ET.Element]:
             continue
         if (row.get("levelOfDetail") or "").strip().upper() != "EXECUTION":
             continue
+        # Row-level account id proves a merged report is not mixing accounts.
+        _require_flex_field(row, "accountId", "Trades")
         yield row
+
+
+def _require_flex_field(row: ET.Element, attribute: str, section: str) -> str:
+    """Return an attribute's value, or fail when the template omits it.
+
+    Freely customisable Flex fields are absent (not empty) when the template
+    does not select them. Treating "absent" as "not a stock" / "unknown
+    exchange" silently drops real data, so the contract is fail-closed.
+    """
+    value = row.get(attribute)
+    if value is None:
+        raise IbkrPortfolioError(
+            f"IBKR {section} 缺少 {attribute} 字段，请在 Flex Query 中勾选 {attribute}"
+        )
+    return value
 
 
 def _iter_cash(statement: ET.Element) -> Iterable[ET.Element]:
@@ -152,6 +181,9 @@ def _iter_cash(statement: ET.Element) -> Iterable[ET.Element]:
     if section is None:
         return
     for row in section.findall("CashTransaction"):
+        # The row-level account id is what proves a merged report is not mixing
+        # several IBKR accounts into one local ledger.
+        _require_flex_field(row, "accountId", "CashTransactions")
         yield row
 
 
@@ -160,7 +192,7 @@ def _parse_trade(row: ET.Element) -> Tuple[Optional[TradeRecord], Optional[str]]
     symbol = (row.get("symbol") or "").strip()
     if not symbol:
         return None, "missing symbol"
-    exchange = (row.get("listingExchange") or "").strip().upper()
+    exchange = _require_flex_field(row, "listingExchange", "Trades").strip().upper()
     market = _EXCHANGE_MARKET.get(exchange)
     if market is None:
         return None, f"{symbol}@{exchange or '?'}"
@@ -179,6 +211,16 @@ def _parse_trade(row: ET.Element) -> Tuple[Optional[TradeRecord], Optional[str]]
     currency = (row.get("currency") or "").strip().upper()
     if not currency:
         return None, f"{symbol}:missing currency"
+
+    # Required, not optional: without it a short cover (BUY/C) is
+    # indistinguishable from a long open (BUY/O) and would be booked as a long.
+    # An empty or unexpected value is treated the same as an absent field.
+    open_close = _require_flex_field(row, "openCloseIndicator", "Trades").strip().upper()
+    if open_close not in ("O", "C"):
+        raise IbkrPortfolioError(
+            f"IBKR Trades 的 openCloseIndicator 值无效（{open_close!r}），须为 O 或 C；"
+            "请在 Flex Query 中勾选 Open/Close Indicator"
+        )
 
     try:
         quantity = float(row.get("quantity"))
@@ -216,7 +258,7 @@ def _parse_trade(row: ET.Element) -> Tuple[Optional[TradeRecord], Optional[str]]
             fee=fee,
             tax=tax,
             trade_uid=trade_uid,
-            open_close=(row.get("openCloseIndicator") or "").strip().upper(),
+            open_close=open_close,
         ),
         None,
     )
@@ -246,7 +288,11 @@ def _parse_cash(row: ET.Element) -> Tuple[Optional[CashRecord], Optional[str]]:
     if not math.isfinite(amount) or amount == 0:
         return None, f"{cash_type}:zero amount"
     direction = "in" if amount > 0 else "out"
-    note = (row.get("description") or "ibkr_flex").strip()[:255] or None
+    # Always carry the marker so the documented cleanup (`note LIKE 'ibkr_flex%'`)
+    # also matches cash rows that keep the broker description.
+    description = (row.get("description") or "").strip()
+    note = f"{NOTE_MARKER}: {description}"[:255] if description else NOTE_MARKER
+    note = note or None
 
     return (
         CashRecord(

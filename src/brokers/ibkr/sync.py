@@ -18,7 +18,12 @@ from datetime import date, timedelta
 from typing import Dict, List, Optional, Set, Tuple
 
 from src.brokers.ibkr.flex import IbkrPortfolioError, download_flex_statement
-from src.brokers.ibkr.statement import StatementParseResult, TradeRecord, parse_statement
+from src.brokers.ibkr.statement import (
+    NOTE_MARKER,
+    StatementParseResult,
+    TradeRecord,
+    parse_statement,
+)
 from src.services.portfolio_service import (
     PortfolioConflictError,
     PortfolioOversellError,
@@ -177,11 +182,12 @@ def sync_ibkr_portfolio(
         # A BUY marked "C" closes a short and a SELL marked "O" opens one. The
         # ledger is long-only, so neither is representable: booking them would
         # create a phantom long or silently reduce/close a residual long that was
-        # acquired before --since. Block the symbol for the rest of the run.
+        # acquired before --since. Only the individual execution is skipped — a
+        # later correctly-flagged open (BUY/O) for the same symbol is real and
+        # must still be imported.
         if (record.open_close == "C" and record.side == "buy") or (
             record.open_close == "O" and record.side == "sell"
         ):
-            blocked_symbols.add(record.symbol)
             summary["trades_skipped_unbalanced"] += 1
             continue
         if record.symbol in blocked_symbols:
@@ -205,7 +211,7 @@ def sync_ibkr_portfolio(
                 market=record.market,
                 currency=record.currency,
                 trade_uid=record.trade_uid,
-                note="ibkr_flex",
+                note=NOTE_MARKER,
             )
             summary["trades_inserted"] += 1
         except PortfolioConflictError:
@@ -271,6 +277,11 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
 
 def main(argv: Optional[List[str]] = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    # Load .env / ENV_FILE exactly like main.py, otherwise a source install that
+    # configures the Flex credentials in .env cannot run this entry point.
+    from src.config import setup_env
+
+    setup_env()
     args = _parse_args(argv)
     since = date.fromisoformat(args.since) if args.since else None
     summary = sync_ibkr_portfolio(account_id=args.account_id, since=since, dry_run=args.dry_run)

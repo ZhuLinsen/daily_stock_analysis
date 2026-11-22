@@ -21,8 +21,13 @@ def _trade(**overrides) -> str:
         "taxes": "0",
         "tradeDate": "20260102",
         "tradeID": "12345",
+        "accountId": "U0000000",
+        "openCloseIndicator": "O",
     }
     attrs.update(overrides)
+    # Default mirrors a long-only ledger: buys open, sells close.
+    if "openCloseIndicator" not in overrides:
+        attrs["openCloseIndicator"] = "C" if attrs.get("buySell") == "SELL" else "O"
     return "<Trade " + " ".join(f'{k}="{v}"' for k, v in attrs.items()) + " />"
 
 
@@ -34,6 +39,7 @@ def _cash(**overrides) -> str:
         "dateTime": "20260105",
         "transactionID": "5186967799",
         "description": "CASH RECEIPTS / ELECTRONIC FUND TRANSFERS",
+        "accountId": "U0000000",
     }
     attrs.update(overrides)
     return "<CashTransaction " + " ".join(f'{k}="{v}"' for k, v in attrs.items()) + " />"
@@ -146,7 +152,7 @@ class IbkrStatementParseTest(unittest.TestCase):
     def test_malformed_trades_skipped_with_reason(self) -> None:
         cases = {
             "missing symbol": _trade(symbol=""),
-            "bad date": _trade(tradeDate="2026-01-02"),
+            "bad date": _trade(tradeDate="not-a-date"),
             "missing tradeID": _trade(tradeID=""),
             "bad quantity": _trade(quantity="abc"),
             "zero quantity": _trade(buySell="BUY", quantity="0"),
@@ -280,3 +286,65 @@ class IbkrStatementStrictnessTest(unittest.TestCase):
         # listed it on a US exchange.
         self.assertIsNone(s._canonical_symbol("SPX", "us"))
         self.assertEqual(s._canonical_symbol("AAPL", "us"), "AAPL")
+
+
+class IbkrRequiredFieldContractTest(unittest.TestCase):
+    """The ledger parser must fail closed on Flex fields it depends on."""
+
+    def _one(self, **trade_overrides) -> bytes:
+        row = _trade(**trade_overrides)
+        return _statement(f"<Trades>{row}</Trades><CashTransactions></CashTransactions>")
+
+    def test_missing_open_close_indicator_raises(self) -> None:
+        row = _trade()
+        row = row.replace(' openCloseIndicator="O"', "")
+        with self.assertRaisesRegex(IbkrPortfolioError, "openCloseIndicator"):
+            s.parse_statement(
+                _statement(f"<Trades>{row}</Trades><CashTransactions></CashTransactions>")
+            )
+
+    def test_missing_listing_exchange_raises(self) -> None:
+        row = _trade().replace(' listingExchange="NASDAQ"', "")
+        with self.assertRaisesRegex(IbkrPortfolioError, "listingExchange"):
+            s.parse_statement(
+                _statement(f"<Trades>{row}</Trades><CashTransactions></CashTransactions>")
+            )
+
+    def test_missing_row_account_id_raises(self) -> None:
+        row = _trade().replace(' accountId="U0000000"', "")
+        with self.assertRaisesRegex(IbkrPortfolioError, "accountId"):
+            s.parse_statement(
+                _statement(f"<Trades>{row}</Trades><CashTransactions></CashTransactions>")
+            )
+
+    def test_hyphenated_dates_are_accepted(self) -> None:
+        result = s.parse_statement(self._one(tradeDate="2026-01-02"))
+        self.assertEqual(result.trades[0].trade_date, date(2026, 1, 2))
+
+    def test_flex_datetime_form_is_accepted(self) -> None:
+        self.assertEqual(s._parse_flex_date("20260102;032459"), date(2026, 1, 2))
+        self.assertEqual(s._parse_flex_date("2026-01-02;032459"), date(2026, 1, 2))
+
+    def test_cash_note_keeps_the_cleanup_marker(self) -> None:
+        result = s.parse_statement(_with_cash(_cash()))
+        note = result.cash_events[0].note
+        self.assertTrue(note.startswith(s.NOTE_MARKER), note)
+        self.assertIn("ELECTRONIC FUND TRANSFER", note)
+
+
+class IbkrOpenCloseValidationTest(unittest.TestCase):
+    def _with_value(self, value: str) -> bytes:
+        row = _trade().replace('openCloseIndicator="O"', f'openCloseIndicator="{value}"')
+        return _statement(f"<Trades>{row}</Trades><CashTransactions></CashTransactions>")
+
+    def test_empty_open_close_is_rejected(self) -> None:
+        with self.assertRaisesRegex(IbkrPortfolioError, "openCloseIndicator"):
+            s.parse_statement(self._with_value(""))
+
+    def test_unexpected_open_close_is_rejected(self) -> None:
+        with self.assertRaisesRegex(IbkrPortfolioError, "openCloseIndicator"):
+            s.parse_statement(self._with_value("X"))
+
+    def test_lowercase_open_close_is_accepted(self) -> None:
+        result = s.parse_statement(self._with_value("c"))
+        self.assertEqual(result.trades[0].open_close, "C")

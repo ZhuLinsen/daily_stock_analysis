@@ -285,7 +285,7 @@ class IbkrPortfolioLoaderTest(unittest.TestCase):
         env = {"IBKR_FLEX_TOKEN": TOKEN, "IBKR_FLEX_QUERY_ID": "1712897"}
         with patch.dict(os.environ, env, clear=True), patch.object(
             service, "download_flex_statement", return_value=stale
-        ), self.assertRaisesRegex(IbkrPortfolioError, "过旧"):
+        ), self.assertRaisesRegex(IbkrPortfolioError, "不是最新"):
             service.load_ibkr_stock_codes()
 
     def test_rejects_stale_statement_among_multiple(self) -> None:
@@ -301,7 +301,7 @@ class IbkrPortfolioLoaderTest(unittest.TestCase):
         env = {"IBKR_FLEX_TOKEN": TOKEN, "IBKR_FLEX_QUERY_ID": "1712897"}
         with patch.dict(os.environ, env, clear=True), patch.object(
             service, "download_flex_statement", return_value=fresh_and_stale
-        ), self.assertRaisesRegex(IbkrPortfolioError, "过旧"):
+        ), self.assertRaisesRegex(IbkrPortfolioError, "不是最新"):
             service.load_ibkr_stock_codes()
 
     def test_loads_codes_from_configured_query(self) -> None:
@@ -352,5 +352,5 @@ class IbkrStatementFreshnessTest(unittest.TestCase):
         from src.brokers.ibkr import portfolio as pmod
 
         stale = date.today() - timedelta(days=40)
-        with self.assertRaisesRegex(IbkrPortfolioError, "过旧"):
+        with self.assertRaisesRegex(IbkrPortfolioError, "不是最新"):
             pmod._validate_statement_freshness(self._statement_with_to_date(stale))
