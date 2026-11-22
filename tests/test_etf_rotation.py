@@ -207,6 +207,50 @@ def test_first_signal_fully_defensive_still_starts_curves_at_fill():
     assert (result.equity == 1.0).all()
 
 
+def test_curve_starts_at_first_fill_even_after_leading_defensive_signals():
+    """The documented window is the first fill onwards, not the first score bar.
+
+    A long stretch of negative momentum makes every early rebalance pick the
+    cash/safe slot, so the portfolio trades nothing for months before the first
+    real fill. The curves must still begin at that fill: a flat all-cash prefix
+    carries no risk, and including it understates volatility and overstates
+    CAGR in the report's backtest table.
+    """
+    down, up = 200, 100
+    index = _dates(down + up)
+    closes = pd.DataFrame(
+        {
+            "A": _path(np.r_[np.full(down, -0.002), np.full(up, 0.004)]),
+            "B": _path(np.r_[np.full(down, -0.003), np.full(up, 0.001)]),
+        },
+        index=index,
+    )
+
+    result = run_backtest(closes, ["A", "B"], None, RotationParams(lookback_days=20))
+
+    assert len(result.trades) == 1  # one entry, no later switch
+    assert result.equity.index[0] == result.trades[0].exec_date
+    assert result.benchmark_equity.index.equals(result.equity.index)
+
+
+def test_no_fill_run_reports_only_the_last_bar():
+    """Without any fill the curves hold just the final bar, as documented."""
+    n = 200
+    index = _dates(n)
+    closes = pd.DataFrame(
+        {"A": _path(np.full(n, -0.002)), "B": _path(np.full(n, -0.0025))},
+        index=index,
+    )
+
+    result = run_backtest(closes, ["A", "B"], None, RotationParams(lookback_days=20))
+
+    assert result.trades == []
+    assert result.final_weights == {CASH: 1.0}
+    assert len(result.equity) == 1
+    assert result.equity.index[0] == index[-1]
+    assert result.benchmark_equity.index.equals(result.equity.index)
+
+
 def test_cash_leg_is_not_counted_as_turnover():
     closes = _regime_closes()
     result = run_backtest(closes, ["A"], None, RotationParams(lookback_days=20, cost_bps=0))
