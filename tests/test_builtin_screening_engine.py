@@ -27,6 +27,11 @@ from src.services.screening.strategy import list_strategies, load_all_strategies
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCREENING_ROOT = REPO_ROOT / "src" / "services" / "screening"
 
+# Original code written for this repo, not derived from AlphaSift: the
+# bundled-engine derivation notice does not apply to these files. Keep
+# this list explicit — anything not listed here is still checked.
+ORIGINAL_SCREENING_FILES = frozenset({"factor_mapping.py"})
+
 
 def test_screening_modelflare_channel_uses_shared_default_endpoint() -> None:
     from src.services.screening.config import _parse_llm_channels_env
@@ -84,7 +89,16 @@ def test_bundled_engine_keeps_source_and_license_notices() -> None:
         *(SCREENING_ROOT / "strategies").glob("*.yaml"),
     ]
     assert derived_files
+    for name in ORIGINAL_SCREENING_FILES:
+        original_path = SCREENING_ROOT / name
+        assert original_path.is_file()
+        assert (
+            f"Derived from AlphaSift revision {REFERENCE_REVISION}."
+            not in original_path.read_text(encoding="utf-8")
+        )
     for path in derived_files:
+        if path.name in ORIGINAL_SCREENING_FILES:
+            continue
         source = path.read_text(encoding="utf-8")
         assert f"Derived from AlphaSift revision {REFERENCE_REVISION}." in source
 

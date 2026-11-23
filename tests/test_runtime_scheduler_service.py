@@ -461,6 +461,22 @@ class RuntimeSchedulerServiceTestCase(unittest.TestCase):
 
         self.assertTrue(service.status()["last_error"].startswith("x"))
 
+    def test_keeps_success_result_when_worker_needs_cleanup(self) -> None:
+        service = RuntimeSchedulerService(config_provider=lambda: SimpleNamespace())
+        context = MagicMock()
+        process = context.Process.return_value
+        process.is_alive.return_value = True
+        context.Queue.return_value.get.return_value = {"success": True}
+
+        with patch("src.services.runtime_scheduler.multiprocessing.get_context", return_value=context), patch(
+            "src.services.runtime_scheduler._terminate_analysis_process_tree"
+        ) as terminate:
+            service._run_analysis_with_watchdog()
+
+        terminate.assert_called_once_with(process)
+        self.assertIsNotNone(service.status()["last_success_at"])
+        self.assertIsNone(service.status()["last_error"])
+
     @unittest.skipUnless(os.name == "posix", "POSIX process-group regression")
     def test_worker_exit_without_result_terminates_remaining_process_group(self) -> None:
         config = SimpleNamespace(

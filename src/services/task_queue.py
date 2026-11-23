@@ -260,7 +260,7 @@ class AnalysisTaskQueue:
         self._max_flow_events_per_task = 200
         
         self._initialized = True
-        logger.info(f"[TaskQueue] 初始化完成，最大并发: {max_workers}")
+        logger.info(f"[TaskQueue] Initialized with max_workers={max_workers}")
     
     @property
     def executor(self) -> ThreadPoolExecutor:
@@ -304,7 +304,7 @@ class AnalysisTaskQueue:
             target = max(1, int(max_workers))
         except (TypeError, ValueError):
             if log:
-                logger.warning("[TaskQueue] 忽略非法 MAX_WORKERS 值: %r", max_workers)
+                logger.warning("[TaskQueue] Ignoring invalid MAX_WORKERS value: %r", max_workers)
             return "unchanged"
 
         executor_to_shutdown: Optional[ThreadPoolExecutor] = None
@@ -317,7 +317,7 @@ class AnalysisTaskQueue:
             if self._has_inflight_tasks_locked():
                 if log:
                     logger.info(
-                        "[TaskQueue] 最大并发调整延后: 当前繁忙 (%s -> %s)",
+                        "[TaskQueue] Deferred max_workers adjustment: queue busy (%s -> %s)",
                         previous,
                         target,
                     )
@@ -331,7 +331,7 @@ class AnalysisTaskQueue:
             executor_to_shutdown.shutdown(wait=False)
 
         if log:
-            logger.info("[TaskQueue] 最大并发已更新: %s -> %s", previous, target)
+            logger.info("[TaskQueue] Updated max_workers: %s -> %s", previous, target)
         return "applied"
     
     # ========== 任务提交与查询 ==========
@@ -547,7 +547,7 @@ class AnalysisTaskQueue:
                 self._futures[task_id] = future
                 accepted.append(task_info)
                 created_task_ids.append(task_id)
-                logger.info(f"[TaskQueue] 任务已提交: {stock_code} -> {task_id}")
+                logger.info(f"[TaskQueue] Task submitted: {stock_code} -> {task_id}")
 
             # Keep task_created ordered before worker-emitted task_started/task_completed.
             # Broadcasting here also preserves batch rollback semantics because we only
@@ -647,7 +647,7 @@ class AnalysisTaskQueue:
         try:
             event_payload = copy.deepcopy(flow_event)
         except Exception:
-            logger.debug("[TaskQueue] 忽略不可复制的运行流事件: task_id=%s", task_id)
+            logger.debug("[TaskQueue] Ignoring uncopyable run-flow event: task_id=%s", task_id)
             return None
 
         with self._data_lock:
@@ -861,7 +861,7 @@ class AnalysisTaskQueue:
                             del self._analyzing_stocks[dedupe_key]
                 
                 self._broadcast_event("task_completed", task.to_dict())
-                logger.info(f"[TaskQueue] 任务完成: {task_id} ({stock_code})")
+                logger.info(f"[TaskQueue] Task completed: {task_id} ({stock_code})")
                 
                 # 清理过期任务
                 self._cleanup_old_tasks()
@@ -875,7 +875,7 @@ class AnalysisTaskQueue:
             if "diag_token" in locals():
                 reset_run_diagnostic_context(diag_token)
             error_msg = str(e)
-            logger.error(f"[TaskQueue] 任务失败: {task_id} ({stock_code}), 错误: {error_msg}")
+            logger.error(f"[TaskQueue] Task failed: {task_id} ({stock_code}), error: {error_msg}")
             
             with self._data_lock:
                 task = self._tasks.get(task_id)
@@ -955,7 +955,7 @@ class AnalysisTaskQueue:
                     task.message = "任务执行完成"
 
             self._broadcast_event("task_completed", task.to_dict())
-            logger.info(f"[TaskQueue] 自定义任务完成: {task_id}")
+            logger.info(f"[TaskQueue] Custom task completed: {task_id}")
 
             self._cleanup_old_tasks()
             return result
@@ -963,7 +963,7 @@ class AnalysisTaskQueue:
         except Exception as e:  # pragma: no cover - behavior verified in downstream tests
             error_msg = str(e)
             logger.error(
-                f"[TaskQueue] 自定义任务失败: {task_id}, 错误: {error_msg}"
+                f"[TaskQueue] Custom task failed: {task_id}, error: {error_msg}"
             )
 
             with self._data_lock:
@@ -1010,7 +1010,7 @@ class AnalysisTaskQueue:
                 removed += 1
             
             if removed > 0:
-                logger.debug(f"[TaskQueue] 清理了 {removed} 个过期任务")
+                logger.debug(f"[TaskQueue] Cleaned up {removed} expired task(s)")
             
             return removed
     
@@ -1034,7 +1034,9 @@ class AnalysisTaskQueue:
                     self._main_loop = asyncio.get_event_loop()
                 except RuntimeError:
                     pass
-            logger.debug(f"[TaskQueue] 新订阅者加入，当前订阅者数: {len(self._subscribers)}")
+            logger.debug(
+                f"[TaskQueue] Subscriber joined; total subscribers: {len(self._subscribers)}"
+            )
     
     def unsubscribe(self, queue: 'AsyncQueue') -> None:
         """
@@ -1046,7 +1048,9 @@ class AnalysisTaskQueue:
         with self._subscribers_lock:
             if queue in self._subscribers:
                 self._subscribers.remove(queue)
-                logger.debug(f"[TaskQueue] 订阅者离开，当前订阅者数: {len(self._subscribers)}")
+                logger.debug(
+                    f"[TaskQueue] Subscriber left; total subscribers: {len(self._subscribers)}"
+                )
     
     def _broadcast_event(self, event_type: str, data: Dict[str, Any]) -> None:
         """
@@ -1068,7 +1072,7 @@ class AnalysisTaskQueue:
             return
         
         if loop is None:
-            logger.warning("[TaskQueue] 无法广播事件：主事件循环未设置")
+            logger.warning("[TaskQueue] Cannot broadcast event: main event loop not set")
             return
         
         for queue in subscribers:
@@ -1078,9 +1082,9 @@ class AnalysisTaskQueue:
                 loop.call_soon_threadsafe(queue.put_nowait, event)
             except RuntimeError as e:
                 # 事件循环已关闭
-                logger.debug(f"[TaskQueue] 广播事件跳过（循环已关闭）: {e}")
+                logger.debug(f"[TaskQueue] Skipped event broadcast (loop closed): {e}")
             except Exception as e:
-                logger.warning(f"[TaskQueue] 广播事件失败: {e}")
+                logger.warning(f"[TaskQueue] Failed to broadcast event: {e}")
     
     # ========== 清理方法 ==========
     
@@ -1089,7 +1093,7 @@ class AnalysisTaskQueue:
         if self._executor:
             self._executor.shutdown(wait=True)
             self._executor = None
-            logger.info("[TaskQueue] 线程池已关闭")
+            logger.info("[TaskQueue] Thread pool shut down")
 
 
 # ========== 便捷函数 ==========
@@ -1109,6 +1113,9 @@ def get_task_queue() -> AnalysisTaskQueue:
         target_workers = max(1, int(getattr(config, "max_workers", queue.max_workers)))
         queue.sync_max_workers(target_workers, log=False)
     except Exception as exc:
-        logger.debug("[TaskQueue] 读取 MAX_WORKERS 失败，使用当前并发设置: %s", exc)
+        logger.debug(
+            "[TaskQueue] Failed to read MAX_WORKERS; using current concurrency setting: %s",
+            exc,
+        )
 
     return queue

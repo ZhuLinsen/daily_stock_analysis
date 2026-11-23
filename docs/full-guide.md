@@ -419,7 +419,7 @@ daily_stock_analysis/
 调试入口：
 
 - 每条返回会保留 `relevance_score` / `relevance_category` / `relevance_reasons` 元数据，最终 `to_text()` 与情报上下文会附带对应「关联度」说明；
-- 搜索链路日志会输出 `[新闻相关度]` 统计，便于复盘为何该批次触发了 direct/sector/macro 分层。
+- 搜索链路日志会输出 `[NewsRelevance]` 统计，便于复盘为何该批次触发了 direct/sector/macro 分层。
 
 兼容与回退说明：该改动不新增/修改模型、provider、Base URL、LiteLLM route、配置清理或回写逻辑；若出现异常，只能通过回滚本次提交恢复旧排序行为，不涉及历史配置迁移。
 
