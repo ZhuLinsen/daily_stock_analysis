@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [新功能] 大盘复盘结构化字段（Issue #1584）：复盘 Prompt 要求 LLM 在报告末尾输出 ```json 结构化附录，后端提取剥离后并入 payload，新增可选 `summary`（市场温度/状态/建议仓位/核心结论）、`indices[].ma_status`（MA5/MA10/MA20 技术状态与点评）、`breadth.divergence_diagnosis`（宽度与分化诊断，LLM 缺省时按指数-家数背离确定性兜底）、`style_rotation`（风格轮动信号）、`catalysts[]`（利好/利空、影响范围、持续性、是否已消化）、`next_day_plan`（明日观察清单/仓位建议/失效条件）及可选 `cross_market_note`（跨市场参考，P3）；解析失败或字段缺失逐字段降级为 null/省略，绝不中断复盘，旧 Markdown/历史/推送渲染零差异，不新增任何配置键；Web 大盘复盘视图对新增字段可选渲染（无字段时与旧版一致）。
 - [修复] 新增幂等的 `py_mini_racer.MiniRacer` 线程安全保护（`src/utils/mini_racer_guard.py`），在应用初始化与数据源层串行化 V8 isolate 创建与求值调用，避免多线程并发分析（`MAX_WORKERS > 1`）时触发原生 `SIGTRAP` 崩溃（Fixes #2586）。
 - [新功能] 新增 agent-agnostic 插件市场入口（`.agents/plugins/marketplace.json`）与 Codex/Claude Code 插件清单（`plugin/`）；将 `stock_analyzer` 正文迁至 `plugin/skills/stock_analyzer/SKILL.md`，根目录 `SKILL.md` 保留为普通文件副本（兼容 `core.symlinks=false` / OpenClaw）；技能明确要求驱动已部署的 DSA 检出，示例先 `chdir` 到检出根目录以共用相对库路径与复盘锁，大盘复盘在支持 `send_notification` 时默认不推送且对旧检出安全拒绝回退；HTTP 对话内个股须 `"notify": false`、大盘复盘须 `"send_notification": false`（`MarketReviewRequest` 亦接受 `notify` 别名）；只读 MCP 仍按完整指南在 checkout 中手动配置（不写入插件包）。
 - [新功能] 新增基于 Astro + Starlight 的官方官网与文档中心子项目（`apps/dsa-site/`），采用 Obsidian Bento 视觉与 5 大支柱文档体系，构建时直读主仓 `docs/`、`strategies/` 与 `docs/architecture/api_spec.json` 生成交互式 OpenAPI 浏览器与中英文全文搜索，并配套 `.dockerignore` 与独立 `site-gate` CI 门禁。
@@ -27,12 +28,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [修复] 选股、告警与个股分析报告统一使用同一 Wilder RSI（`src/utils/rsi.py`，基于 `fin-primitives`，以前 period 个涨跌幅的简单均值起算，与 TA-Lib 一致）：选股不再使用简单滚动均值，告警与报告不再以首行零涨跌幅起算 ewm，短历史下三处的超买/超卖判断不再出现分歧。预热期与无波动时仍为中性值 50；RSI 告警不再用预热占位值判断穿越，最少历史改为 period+2 根。
 - [文档] 将 AlphaSift 与 AlphaEvo 的项目入口前移至 README 产品预览之后、功能特性之前，以 `[!TIP]` 提示框展示，同步简体、英文与繁体版本。
 
-<!-- 新条目格式：- [类型] 描述（类型取值：新功能/改进/修复/文档/测试/chore）-->
-
-- [新功能] 定时模式启动立即执行的当日去重（`SCHEDULE_STARTUP_DEDUP`，默认开启）：`python main.py --schedule` 在 `SCHEDULE_RUN_IMMEDIATELY=true` 触发启动补跑前检查标记文件（位于 `DATABASE_PATH` 所在目录，默认 `data/analysis_run_state.json`），当天已有成功且覆盖当前应分析清单的全量分析（日期 + scope=full + 覆盖面子集判定）则跳过，否则照常补跑；每日定时任务与手动/API/GitHub Actions 触发永不去重；标记缺失、损坏、schema 未知或覆盖不全一律 fail-open 执行（绝不漏跑）；大盘复盘完成度仅记录、不参与判定（复盘补齐由每日定时任务覆盖）；设 `SCHEDULE_STARTUP_DEDUP=false` 可回到此前"每次容器重启都全量重跑"的行为；`--force-run` 可绕过启动去重检查（明确要求立即全量分析）。
-- [修复] 收紧定时模式启动去重：仅当全部应分析标的都成功时才记录当日标记（部分失败或全败、即使大盘复盘成功也不得记录，避免重启漏跑）；跳过判定改为覆盖面子集校验并升版 schema 2（v1 旧标记一律 fail-open 重跑一次以升级），`SCHEDULE_STARTUP_DEDUP` 进程环境变量与 .env 值不同时以进程为准（与 `SCHEDULE_RUN_IMMEDIATELY` 同权）。
-- [修复] 定时模式启动去重检查的预期清单改为与运行入口一致的真实目标解析链（Futu 持仓优先、其次 .env 热更新 `STOCK_LIST`、再按交易日过滤）：`--portfolio futu` 新增持仓、纯持仓部署自选为空、以及进程 env 启动后 .env 热更新三类场景不再误跳过；持仓解析失败或解析为空一律 fail-open 照常执行（绝不漏跑），非持仓空清单保持既有当日去重语义。
-- [新功能] 大盘复盘结构化字段（Issue #1584）：复盘 Prompt 要求 LLM 在报告末尾输出 ```json 结构化附录，后端提取剥离后并入 payload，新增可选 `summary`（市场温度/状态/建议仓位/核心结论）、`indices[].ma_status`（MA5/MA10/MA20 技术状态与点评）、`breadth.divergence_diagnosis`（宽度与分化诊断，LLM 缺省时按指数-家数背离确定性兜底）、`style_rotation`（风格轮动信号）、`catalysts[]`（利好/利空、影响范围、持续性、是否已消化）、`next_day_plan`（明日观察清单/仓位建议/失效条件）及可选 `cross_market_note`（跨市场参考，P3）；解析失败或字段缺失逐字段降级为 null/省略，绝不中断复盘，旧 Markdown/历史/推送渲染零差异，不新增任何配置键；Web 大盘复盘视图对新增字段可选渲染（无字段时与旧版一致）。
 - [修复] 修复 Telegram 报告包含 11 个及以上 Markdown 链接时，后续来源被替换为较早链接的问题。
 - [修复] 盘中回测与 Skill 观点评估从当日收盘起算，避免计入分析时已发生的日内涨跌；回测排除相对评估入场价失效的止盈止损方案的模拟收益及命中率，方向评估继续保留。
 - [修复] 钉钉和飞书凭据在 `.env.example` 中默认留空，避免首次配置时误报；模型缺失提示补充 `MODELFLARE_KEY`。
