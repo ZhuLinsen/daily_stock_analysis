@@ -5025,10 +5025,18 @@ class DataFetcherManager:
     def get_sector_rankings(self, n: int = 5) -> Tuple[List[Dict], List[Dict]]:
         """获取板块涨跌榜（自动切换数据源）"""
         # 按需求固定回退顺序：Akshare(EM) -> Akshare(Sina) -> Tushare -> Efinance
-        top, bottom, _, last_error = self._get_sector_rankings_with_meta(n)
+        top, bottom, source_chain, last_error = self._get_sector_rankings_with_meta(n)
         if top or bottom:
             return top, bottom
-        logger.warning(f"[sector rankings] all sources failed, last error: {last_error}")
+        log_error = last_error
+        if source_chain:
+            last_attempt = source_chain[-1]
+            if last_attempt.get("result") == "empty":
+                provider = last_attempt.get("provider") or "unknown"
+                log_error = f"{provider} returned empty result"
+        if not log_error:
+            log_error = "no available data source"
+        logger.warning(f"[sector rankings] all sources failed, last error: {log_error}")
         return [], []
 
     @staticmethod

@@ -246,6 +246,40 @@ class TestFetcherLogging(unittest.TestCase):
             any(call.kwargs.get("error_message") == "数据源未配置或暂不可用" for call in record_run.call_args_list)
         )
 
+    def test_sector_rankings_empty_result_logs_english_and_preserves_source_chain(self):
+        class _EmptySectorFetcher(BaseFetcher):
+            name = "EmptySectorFetcher"
+            priority = 1
+
+            def _fetch_raw_data(self, stock_code: str, start_date: str, end_date: str):
+                return None
+
+            def _normalize_data(self, df, stock_code: str):
+                return df
+
+            def get_sector_rankings(self, n: int = 5):
+                return None
+
+        manager = DataFetcherManager(fetchers=[_EmptySectorFetcher()])
+        top, bottom, source_chain, raw_last_error = manager._get_sector_rankings_with_meta(5)
+        self.assertEqual((top, bottom), ([], []))
+        self.assertEqual(raw_last_error, "EmptySectorFetcher返回空结果")
+        self.assertEqual(len(source_chain), 1)
+        self.assertEqual(source_chain[0]["result"], "empty")
+        self.assertEqual(source_chain[0]["error"], "EmptySectorFetcher返回空结果")
+
+        with self.assertLogs("data_provider.base", level="WARNING") as captured:
+            res_top, res_bottom = manager.get_sector_rankings(5)
+
+        self.assertEqual((res_top, res_bottom), ([], []))
+        log_messages = [record.getMessage() for record in captured.records]
+        self.assertIn(
+            "[sector rankings] all sources failed, last error: EmptySectorFetcher returned empty result",
+            log_messages,
+        )
+        for msg in log_messages:
+            self.assertIsNone(CJK_RE.search(msg), f"Unexpected CJK text in sector rankings log: {msg}")
+
 
 if __name__ == "__main__":
     unittest.main()
