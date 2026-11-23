@@ -69,7 +69,7 @@ English | [简体中文](../README.md) | [繁體中文](README_CHT.md)
 |------|-----------|
 | AI Models | [Modelflare](https://modelflare.dev/sign-up?utm_source=github&utm_campaign=daily_stock_analysis), [x6.ai](https://console.x6pro.io/register?code=zJ2qSdns), AIHubMix, Gemini, OpenAI-compatible providers, DeepSeek, Qwen, Claude, Ollama |
 | Market Data | [TickPlus (Recommended)](http://www.tickplus.org/register?reg=5433cf922395), AkShare, Tushare, Pytdx, Baostock, YFinance, Longbridge |
-| News Search | [SerpAPI](https://serpapi.com/github-daily-stock-analysis), Anspire, Tavily, Bocha, Brave, MiniMax, SearXNG |
+| News Search | [SerpAPI](https://serpapi.com/github-daily-stock-analysis), Tavily, Bocha, Brave, MiniMax, SearXNG |
 | Social Sentiment | Stock Sentiment API for Reddit / X / Polymarket, US stocks only |
 
 > The project includes free market-data sources such as AkShare, Baostock, and YFinance and can run without extra data-source credentials. These free sources can be rate-limited, change upstream contracts, or fluctuate by network condition, so stability is not guaranteed. For scheduled runs, batch analysis, or steadier quotes, configure token-based sources such as Tushare or Longbridge; market coverage, Actions mappings, and fallback rules are documented in [Data Source Configuration](./full-guide_EN.md#data-source-configuration).
@@ -130,7 +130,6 @@ News search strongly improves sentiment, announcements, events, and catalyst qua
 | Secret Name | Description | Required |
 |-------------|-------------|:--------:|
 | `SERPAPI_API_KEYS` | [SerpAPI](https://serpapi.com/github-daily-stock-analysis), search-engine results for realtime financial news | **Recommended** |
-| `ANSPIRE_API_KEYS` | Anspire search API key; can also be shared with its LLM gateway | Optional |
 | `TAVILY_API_KEYS` | Tavily, general news search API | Optional |
 | `BOCHA_API_KEYS` | Bocha, Chinese search with AI summaries | Optional |
 | `BRAVE_API_KEYS` | Brave Search, privacy-first search and US-stock news enrichment | Optional |
