@@ -27,6 +27,8 @@ import {
 } from '../components/settings';
 import { WEB_BUILD_INFO } from '../utils/constants';
 import { parseStockListValue } from '../utils/stockList';
+import { isEmailGroupKey } from '../utils/emailGroups';
+import { EmailGroupEditor } from '../components/settings/EmailGroupEditor';
 import { getCategoryDescription, getCategoryTitle, getFieldDescriptionZh, getFieldTitleZh } from '../utils/systemConfigI18n';
 import { getSettingsHelpContent } from '../locales/settingsHelp';
 import type {
@@ -201,6 +203,7 @@ function isItemHiddenInSettings(
   aiModelHasConfiguredChannels: boolean,
   aiModelHasConfiguredYaml: boolean,
 ): boolean {
+  if (isEmailGroupKey(item.key)) return true;
   if (category === 'base') {
     return BASE_HIDDEN_KEYS.has(item.key);
   }
@@ -852,6 +855,7 @@ const SettingsPage: React.FC = () => {
     save,
     resetDraft,
     setDraftValue,
+    applyPartialUpdate,
     getChangedItems,
     refreshAfterExternalSave,
     configVersion,
@@ -1861,6 +1865,15 @@ const SettingsPage: React.FC = () => {
             ) : null}
             {!trimmedSearchQuery && activeCategory === 'system' && passwordChangeable ? (
               <ChangePasswordCard />
+            ) : null}
+            {!trimmedSearchQuery && activeCategory === 'notification' ? (
+              <EmailGroupEditor
+                key={`email-groups:${configVersion}:${localDraftResetToken}`}
+                items={[...Object.values(itemsByCategory).flat(), ...currentChangedItems]}
+                issueByKey={issueByKey}
+                disabled={isSaving || isLoading || isImportingEnv}
+                onChange={applyPartialUpdate}
+              />
             ) : null}
             {!trimmedSearchQuery && activeCategory === 'notification' ? (
               <SettingsPanelErrorBoundary

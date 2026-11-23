@@ -1,6 +1,14 @@
 export type UiLanguage = 'zh' | 'en';
 
 const zh = {
+  'settings.emailGroupsTitle': '股票邮件通知分组',
+  'settings.emailGroupsDescription': '股票代码和邮箱均用英文逗号分隔，填写后点击页面顶部保存。分组股票需包含在自选股中，分析范围由自选股决定。',
+  'settings.emailGroupsAdd': '添加分组',
+  'settings.emailGroupsEmpty': '尚未设置分组，邮件使用默认收件人。',
+  'settings.emailGroupsNumber': '分组 {id}',
+  'settings.emailGroupsRemove': '删除分组 {id}',
+  'settings.emailGroupsStocks': '股票代码',
+  'settings.emailGroupsRecipients': '收件邮箱',
   'common.cancel': '取消',
   'common.close': '关闭',
   'common.closeDrawer': '关闭抽屉',
@@ -1034,6 +1042,14 @@ const zh = {
 export type UiTextKey = keyof typeof zh;
 
 const en: Record<UiTextKey, string> = {
+  'settings.emailGroupsTitle': 'Stock email notification groups',
+  'settings.emailGroupsDescription': 'Separate stock codes and email addresses with commas, then save at the top of this page. Group stocks must be in your watchlist, which determines the analysis scope.',
+  'settings.emailGroupsAdd': 'Add group',
+  'settings.emailGroupsEmpty': 'No groups configured. Emails use the default recipients.',
+  'settings.emailGroupsNumber': 'Group {id}',
+  'settings.emailGroupsRemove': 'Delete group {id}',
+  'settings.emailGroupsStocks': 'Stock codes',
+  'settings.emailGroupsRecipients': 'Recipient emails',
   'common.cancel': 'Cancel',
   'common.close': 'Close',
   'common.closeDrawer': 'Close drawer',

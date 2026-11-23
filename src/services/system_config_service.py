@@ -68,6 +68,7 @@ from src.core.config_registry import (
     get_category_definitions,
     get_field_definition,
     get_registered_field_keys,
+    is_email_group_key,
 )
 from src.llm.errors import call_litellm_with_param_recovery
 from src.llm.backend_registry import (
@@ -448,10 +449,10 @@ class SystemConfigService:
     def _get_schema_config_keys(cls, config_map: Dict[str, str], registered_keys: Set[str]) -> Set[str]:
         """Return keys needed by the Web schema payload.
 
-        Ordinary settings must be registry-backed. LLM channel detail keys are
-        kept only as editor support data for channels declared in LLM_CHANNELS.
+        Ordinary settings must be registry-backed. Numbered email groups and
+        declared LLM channel details are kept for their dedicated editors.
         """
-        keys = set(registered_keys)
+        keys = set(registered_keys) | {key for key in config_map if is_email_group_key(key)}
         channel_names = {
             segment.strip().upper()
             for segment in resolve_llm_channel_names(config_map).split(",")
@@ -493,6 +494,7 @@ class SystemConfigService:
             llm_channel_match = cls._WEB_SETTINGS_LLM_CHANNEL_SUPPORT_KEY_RE.match(key)
             if (
                 key in registered_keys
+                or is_email_group_key(key)
                 or (llm_channel_match and llm_channel_match.group(1) in channel_names)
             ):
                 runtime_map[key] = "" if raw_value is None else str(raw_value)
@@ -2497,6 +2499,33 @@ class SystemConfigService:
             issues.extend(self._validate_value(key=key, value=value, field_schema=field_schema))
 
         issues.extend(self._validate_cross_field(effective_map=effective_map, updated_keys=set(updated_map.keys())))
+        issues.extend(self._validate_email_groups(effective_map, set(updated_map)))
+        return issues
+
+    @staticmethod
+    def _validate_email_groups(effective_map: Dict[str, str], updated_keys: Set[str]) -> List[Dict[str, Any]]:
+        """Validate edited routing pairs while retaining unrelated legacy configuration."""
+        group_ids = {key.rsplit("_", 1)[1] for key in updated_keys if is_email_group_key(key)}
+        issues: List[Dict[str, Any]] = []
+        for group_id in sorted(group_ids, key=int):
+            stock_key = f"STOCK_GROUP_{group_id}"
+            email_key = f"EMAIL_GROUP_{group_id}"
+            stocks = [part.strip() for part in effective_map.get(stock_key, "").split(",") if part.strip()]
+            emails = [part.strip() for part in effective_map.get(email_key, "").split(",") if part.strip()]
+            if bool(stocks) != bool(emails):
+                issues.append({
+                    "key": email_key if stocks else stock_key,
+                    "code": "incomplete_email_group",
+                    "message": "每个邮件分组需要同时填写股票代码和收件邮箱，清空两项可停用分组。",
+                    "severity": "error",
+                })
+            if any(not re.fullmatch(r"[^\s@,]+@[^\s@,]+\.[^\s@,]+", email) for email in emails):
+                issues.append({
+                    "key": email_key,
+                    "code": "invalid_email_group_recipient",
+                    "message": "请输入有效的收件邮箱，多个邮箱使用英文逗号分隔。",
+                    "severity": "error",
+                })
         return issues
 
     @classmethod

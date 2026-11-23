@@ -4,6 +4,14 @@
 *.env
 *.env.local
 .env.*.local
+*.env.bak
+*.env.backup
+!.env.example
+
+# 本地登录凭据和券商授权缓存
+.admin_password_hash
+.session_secret
+/longbridge_tokens/
 
 # 测试文件（可能包含敏感配置）
 # 仅忽略仓库根目录下的临时 test_*.py 脚本；tests/ 目录下的单元测试需要纳入版本控制。
@@ -16,6 +24,8 @@
 /review.md
 /litellm_config.yaml
 /litellm_config.*.yaml
+/litellm_config.yml
+/litellm_config.*.yml
 
 # Python
 __pycache__/
@@ -59,9 +69,13 @@ env/
 **/.llm_usage_hmac_secret
 logs/
 reports/
+*.log
 *.db
+*.db-*
 *.sqlite
+*.sqlite-*
 *.sqlite3
+*.sqlite3-*
 
 # 系统文件
 .DS_Store

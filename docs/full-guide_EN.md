@@ -1094,6 +1094,8 @@ For a full illustrated troubleshooting guide, see [docs/bot/feishu-bot-config.md
 
 ### Email
 
+Web and Desktop users can add, edit, and delete stock email groups in the **Stock email notification groups** card at the top of **Settings → Notifications**. Enter comma-separated stock codes and recipients, then use the page's Save button. The editor preserves existing `STOCK_GROUP_N` / `EMAIL_GROUP_N` indices and reloads configuration after saving. Deleting a group clears both values. Both fields are required for an active group, and invalid recipient addresses reject the save. Stocks should already be in `STOCK_LIST`, which determines the analysis scope. Unmatched stocks use the default recipients; market reviews use the union of all group and default recipients. Docker deployments must persist the active configuration file, for example with `ENV_FILE=/app/data/runtime.env` in the mounted data directory. The default GitHub Actions workflow still requires explicit mapping of numbered variables.
+
 1. Enable SMTP service for your email
 2. Get authorization code (not login password)
 3. Set `EMAIL_SENDER`, `EMAIL_PASSWORD`, `EMAIL_RECEIVERS`

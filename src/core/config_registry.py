@@ -8,6 +8,7 @@ validation hints, and category grouping.
 from __future__ import annotations
 
 from copy import deepcopy
+import re
 from typing import Any, Dict, List, Optional
 
 from src.config import (
@@ -5311,6 +5312,11 @@ def get_registered_field_keys() -> List[str]:
     return list(_FIELD_DEFINITIONS.keys())
 
 
+def is_email_group_key(key: str) -> bool:
+    """Recognize the existing numbered stock-to-email routing settings."""
+    return re.fullmatch(r"(?:STOCK|EMAIL)_GROUP_\d+", key, re.IGNORECASE) is not None
+
+
 def _extract_option_values(options: List[Any]) -> List[str]:
     """Extract canonical option values from string/object style select options."""
     values: List[str] = []
@@ -5328,6 +5334,14 @@ def _extract_option_values(options: List[Any]) -> List[str]:
 def get_field_definition(key: str, value_hint: Optional[str] = None) -> Dict[str, Any]:
     """Return field definition for key, including inferred fallback metadata."""
     key_upper = key.upper()
+    if is_email_group_key(key_upper):
+        field = deepcopy(_FIELD_DEFINITIONS["EMAIL_RECEIVERS"])
+        field.update({
+            "key": key_upper,
+            "title": key_upper,
+            "description": "Stock codes or recipient addresses for one email notification group.",
+        })
+        return field
     if key_upper in _FIELD_DEFINITIONS:
         field = deepcopy(_FIELD_DEFINITIONS[key_upper])
         if key_upper in _FIELD_HELP_METADATA:

@@ -57,6 +57,60 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.manager = ConfigManager(env_path=self.env_path)
         self.service = SystemConfigService(manager=self.manager)
 
+    def test_email_groups_round_trip_and_runtime_routing(self) -> None:
+        from src.notification_sender.email_sender import EmailSender
+
+        self._rewrite_env("STOCK_LIST=600519,000001", "STOCK_GROUP_7=600519", "EMAIL_GROUP_7=old@example.com")
+        with patch.dict(os.environ, {"STOCK_GROUP_12": "000001", "EMAIL_GROUP_12": "runtime@example.com"}):
+            items = {item["key"]: item for item in self.service.get_config()["items"]}
+            self.assertEqual(items["STOCK_GROUP_7"]["schema"]["category"], "notification")
+            self.assertEqual(items["EMAIL_GROUP_12"]["value"], "runtime@example.com")
+            self.assertFalse(items["EMAIL_GROUP_12"]["raw_value_exists"])
+
+        # Exercise the real config reload and email routing without sending mail.
+        with patch.dict(os.environ, {}, clear=False):
+            result = self.service.update(
+                config_version=self.manager.get_config_version(),
+                items=[
+                    {"key": "STOCK_GROUP_7", "value": ""},
+                    {"key": "EMAIL_GROUP_7", "value": ""},
+                    {"key": "STOCK_GROUP_9", "value": "600519"},
+                    {"key": "EMAIL_GROUP_9", "value": "one@example.com,two@example.com"},
+                ],
+            )
+            self.assertTrue(result["reload_triggered"])
+            sender = EmailSender(Config.get_instance())
+            self.assertEqual(sender.get_receivers_for_stocks(["SH600519"]), ["one@example.com", "two@example.com"])
+            self.assertNotIn("old@example.com", sender.get_all_email_receivers())
+            reloaded = {item["key"]: item for item in self.service.get_config()["items"]}
+            self.assertEqual(reloaded["EMAIL_GROUP_9"]["value"], "one@example.com,two@example.com")
+            self.service.update(
+                config_version=self.manager.get_config_version(),
+                items=[{"key": "STOCK_GROUP_9", "value": ""}, {"key": "EMAIL_GROUP_9", "value": ""}],
+            )
+            self.assertNotIn("one@example.com", EmailSender(Config.get_instance()).get_all_email_receivers())
+
+    def test_email_group_validation_is_atomic_and_scoped(self) -> None:
+        self._rewrite_env("STOCK_LIST=600519", "STOCK_GROUP_3=600519")
+        self.assertTrue(self.service.validate([{"key": "LOG_LEVEL", "value": "DEBUG"}])["valid"])
+        original = self.env_path.read_text(encoding="utf-8")
+        for items in (
+            [{"key": "STOCK_GROUP_9", "value": "600519"}],
+            [{"key": "STOCK_GROUP_9", "value": "600519"}, {"key": "EMAIL_GROUP_9", "value": "bad-address"}],
+        ):
+            with self.assertRaises(ConfigValidationError):
+                self.service.update(config_version=self.manager.get_config_version(), items=items)
+            self.assertEqual(self.env_path.read_text(encoding="utf-8"), original)
+
+    def test_email_group_save_respects_config_version(self) -> None:
+        version = self.manager.get_config_version()
+        self.env_path.write_text("STOCK_LIST=AAPL\n", encoding="utf-8")
+        with self.assertRaises(ConfigConflictError):
+            self.service.update(config_version=version, items=[
+                {"key": "STOCK_GROUP_1", "value": "AAPL"},
+                {"key": "EMAIL_GROUP_1", "value": "one@example.com"},
+            ])
+
     # The regular primary model resolves cleanly; only AGENT_LITELLM_MODEL sits
     # on a Hermes-only route. Fixtures built from this therefore fail for exactly
     # one reason, so an assertion about the Agent check cannot be satisfied by an

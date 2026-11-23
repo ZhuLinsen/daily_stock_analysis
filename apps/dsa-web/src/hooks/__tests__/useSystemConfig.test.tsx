@@ -131,6 +131,34 @@ const sampleLlmConfig = {
 };
 
 describe('useSystemConfig', () => {
+  it('saves new email group keys and preserves them across unrelated external saves', async () => {
+    getConfig.mockResolvedValue(sampleConfig);
+    const { result } = renderHook(() => useSystemConfig());
+    await act(async () => { await result.current.load(); });
+    act(() => {
+      result.current.applyPartialUpdate([
+        { key: 'STOCK_GROUP_4', value: '600519' },
+        { key: 'EMAIL_GROUP_4', value: 'one@example.com' },
+        { key: 'OTHER_UNKNOWN_KEY', value: 'ignored' },
+      ]);
+    });
+    expect(result.current.dirtyCount).toBe(2);
+    await act(async () => { await result.current.refreshAfterExternalSave(['ADMIN_AUTH_ENABLED']); });
+    expect(result.current.getChangedItems()).toEqual([
+      { key: 'STOCK_GROUP_4', value: '600519' },
+      { key: 'EMAIL_GROUP_4', value: 'one@example.com' },
+    ]);
+    await act(async () => { await result.current.save(); });
+    expect(update).toHaveBeenCalledWith(expect.objectContaining({ items: [
+      { key: 'STOCK_GROUP_4', value: '600519' },
+      { key: 'EMAIL_GROUP_4', value: 'one@example.com' },
+    ] }));
+    act(() => { result.current.setDraftValue('EMAIL_GROUP_5', 'two@example.com'); });
+    expect(result.current.hasDirty).toBe(true);
+    act(() => { result.current.resetDraft(); });
+    expect(result.current.getChangedItems()).toEqual([]);
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     getConfig.mockResolvedValue(sampleConfig);

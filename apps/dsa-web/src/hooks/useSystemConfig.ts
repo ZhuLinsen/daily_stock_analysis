@@ -8,6 +8,7 @@ import type {
   SystemConfigUpdateItem,
 } from '../types/systemConfig';
 import { serializeStockListValue } from '../utils/stockList';
+import { isEmailGroupKey } from '../utils/emailGroups';
 
 type ToastState = {
   type: 'success';
@@ -146,16 +147,21 @@ export function useSystemConfig() {
 
   const dirtyKeys = useMemo(() => {
     const keys: string[] = [];
-    for (const item of serverItems) {
-      const draftRaw = draftValues[item.key];
+    const candidateKeys = new Set([
+      ...serverItems.map((item) => item.key),
+      ...Object.keys(draftValues).filter(isEmailGroupKey),
+    ]);
+    for (const key of candidateKeys) {
+      const item = serverItems.find((entry) => entry.key === key);
+      const draftRaw = draftValues[key];
       if (draftRaw === undefined) {
         continue;
       }
 
-      const normalizedDraft = normalizeFieldValue(draftRaw, item.schema);
-      const normalizedCurrent = normalizeFieldValue(item.value, item.schema);
+      const normalizedDraft = normalizeFieldValue(draftRaw, item?.schema);
+      const normalizedCurrent = normalizeFieldValue(item?.value ?? '', item?.schema);
       if (normalizedDraft !== normalizedCurrent) {
-        keys.push(item.key);
+        keys.push(key);
       }
     }
     return keys;
@@ -207,6 +213,13 @@ export function useSystemConfig() {
           }
 
           nextDraft[item.key] = item.value;
+        }
+        if (preserveDirty) {
+          for (const key of Object.keys(prevDraft).filter(isEmailGroupKey)) {
+            if (!(key in nextDraft) && !committedKeys.has(key)) {
+              nextDraft[key] = prevDraft[key];
+            }
+          }
         }
         return nextDraft;
       });
