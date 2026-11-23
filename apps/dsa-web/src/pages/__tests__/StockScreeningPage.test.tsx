@@ -121,7 +121,7 @@ describe('StockScreeningPage', () => {
     getHotspotDetail.mockReset();
     getHotspots.mockReset();
     getStrategies.mockReset();
-    getScreenTask.mockClear();
+    getScreenTask.mockReset();
     navigate.mockReset();
     resetLastScreenResult();
     screenStocks.mockReset();
@@ -1240,7 +1240,7 @@ describe('StockScreeningPage', () => {
     expect(await screen.findByText('选股已开启')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /运行选股/ }));
 
-    expect(await screen.findByText('选股运行中')).toBeInTheDocument();
+    expect(await screen.findByText(/35%/)).toBeInTheDocument();
     expect(window.sessionStorage.getItem('dsa.screening.activeScreenTask.v1')).toContain('screen-task-1');
 
     firstRender.unmount();
@@ -1269,9 +1269,9 @@ describe('StockScreeningPage', () => {
 
     render(<StockScreeningPage />);
 
-    await waitFor(() => expect(getScreenTask).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText('选股任务仍在后台运行，状态轮询暂时超时，将自动重试。')).toBeInTheDocument();
+    expect(getScreenTask).toHaveBeenCalledTimes(1);
     expect(screen.getByText('选股运行中')).toBeInTheDocument();
-    expect(screen.getByText('选股任务仍在后台运行，状态轮询暂时超时，将自动重试。')).toBeInTheDocument();
     expect(screen.queryByText(/连接上游服务超时/)).not.toBeInTheDocument();
     expect(window.sessionStorage.getItem('dsa.screening.activeScreenTask.v1')).toContain('screen-task-1');
   });
