@@ -249,6 +249,35 @@ class MainScheduleModeTestCase(unittest.TestCase):
         self.assertIsNone(effective_region)
         self.assertFalse(should_skip_all)
 
+    def test_compute_trading_day_filter_drops_prefixed_a_share_codes_on_cn_holiday(self) -> None:
+        """STOCK_LIST keeps ``600519.SH`` / ``SH600519`` / ``sz000001`` as typed;
+        they are A-shares and must be dropped on a CN holiday like bare codes."""
+        args = self._make_args()
+        config = self._make_config(
+            trading_day_check_enabled=True,
+            market_review_enabled=False,
+            database_path=str(Path(self.temp_dir.name) / "stock_analysis.db"),
+        )
+
+        stock_codes = ["600519", "SH600519", "600519.SH", "sz000001", "000001.SZ", "BJ920748", "AAPL"]
+
+        with patch("src.core.trading_calendar.get_open_markets_today", return_value={"us"}):
+            filtered_codes, _, should_skip_all = main._compute_trading_day_filter(
+                config,
+                args,
+                stock_codes,
+            )
+            cn_only_codes, _, cn_only_skip_all = main._compute_trading_day_filter(
+                config,
+                args,
+                ["600519.SH", "000001.SZ"],
+            )
+
+        self.assertEqual(filtered_codes, ["AAPL"])
+        self.assertFalse(should_skip_all)
+        self.assertEqual(cn_only_codes, [])
+        self.assertTrue(cn_only_skip_all)
+
     def test_public_webui_bind_warns_when_auth_is_disabled(self) -> None:
         with patch("src.auth.is_auth_enabled", return_value=False), \
              patch("main.logger.warning") as warning_log:

@@ -95,7 +95,7 @@ from src.core.analysis_run_marker import (
     record_analysis_run_marker,
     should_skip_startup_immediate_run,
 )
-from data_provider.base import canonical_stock_code
+from data_provider.base import canonical_stock_code, normalize_stock_code
 from src.services.stock_list_parser import (
     AnalysisTarget,
     ParseStatus,
@@ -543,7 +543,9 @@ def _compute_trading_day_filter(
     open_markets = get_open_markets_today()
     filtered_codes = []
     for code in stock_codes:
-        mkt = get_market_for_stock(code)
+        # STOCK_LIST keeps 600519.SH / SH600519 / sz000001 as typed; strip the
+        # exchange marker like the pipeline does so they map to market=cn.
+        mkt = get_market_for_stock(normalize_stock_code(code))
         if mkt is None:
             # 指数 code（如 sh000016/csi930955/930955.CSI）的 get_market_for_stock
             # 返回 None，若直接 fail-open 保留，A 股休市日指数不会被过滤，破坏
