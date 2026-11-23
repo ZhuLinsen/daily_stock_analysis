@@ -33,7 +33,7 @@ def test_futu_sdk_is_pinned_and_verified_across_linux_distributions() -> None:
     dockerfile = _read("docker/Dockerfile")
     ci = _workflow(".github/workflows/ci.yml")
     daily = _workflow(".github/workflows/00-daily-analysis.yml")
-    docker_publish = _workflow(".github/workflows/docker-publish.yml")
+    release = _workflow(".github/workflows/release.yml")
     manual_publish = _workflow(".github/workflows/ghcr-dockerhub.yml")
 
     assert requirements.count("futu-api==10.8.6808") == 1
@@ -44,7 +44,7 @@ def test_futu_sdk_is_pinned_and_verified_across_linux_distributions() -> None:
     assert "import futu" in _job_run_text(ci["jobs"]["backend-tests"])
     assert "import futu" in _job_run_text(ci["jobs"]["docker-build"])
     assert "import futu" in _job_run_text(daily["jobs"]["analyze"])
-    assert "import futu" in _job_run_text(docker_publish["jobs"]["build-and-push"])
+    assert "import futu" in _job_run_text(release["jobs"]["docker-build"])
     assert "import futu" in _job_run_text(manual_publish["jobs"]["build-and-push"])
 
 
@@ -70,7 +70,7 @@ def test_futu_sdk_is_collected_and_probed_in_desktop_backends() -> None:
         "desktop-futu-package-macos",
     ):
         job = jobs[job_name]
-        assert job["needs"] == ["changes", "ai-governance"]
+        assert job["needs"] == ["changes"]
         assert "needs.changes.outputs.futu_packaging == 'true'" in job["if"]
         assert "build-backend" in _job_run_text(job)
 

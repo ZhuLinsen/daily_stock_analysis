@@ -8,6 +8,9 @@ on:
         required: true
         default: 'v1.0.0'
 
+permissions:
+  contents: read
+
 concurrency:
   group: docker-manual-publish-${{ github.ref }}-${{ inputs.image_tag }}
   cancel-in-progress: true
@@ -17,6 +20,8 @@ env:
   DOCKERHUB_REGISTRY: docker.io
   GHCR_IMAGE_NAME: ${{ github.repository }}
   DOCKERHUB_IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/${{ github.event.repository.name }}
+  HAS_DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN != '' && 'true' || 'false' }}
+  HAS_DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME != '' && 'true' || 'false' }}
 
 jobs:
   build-and-push:
@@ -41,10 +46,6 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-        with:
-          driver-opts: |
-            image=moby/buildkit:master
-            network=host
 
       - name: Set up QEMU for multi-platform build
         uses: docker/setup-qemu-action@v3
@@ -59,6 +60,7 @@ jobs:
 
       # 登录到 Docker Hub（需要预先设置 secrets.DOCKERHUB_USERNAME 和 secrets.DOCKERHUB_TOKEN）
       - name: Log in to Docker Hub
+        if: ${{ env.HAS_DOCKERHUB_TOKEN == 'true' && env.HAS_DOCKERHUB_USERNAME == 'true' }}
         uses: docker/login-action@v3
         with:
           registry: ${{ env.DOCKERHUB_REGISTRY }}
@@ -77,6 +79,7 @@ jobs:
             latest=false
 
       - name: Extract metadata for Docker Hub
+        if: ${{ env.HAS_DOCKERHUB_TOKEN == 'true' && env.HAS_DOCKERHUB_USERNAME == 'true' }}
         id: meta-dockerhub
         uses: docker/metadata-action@v5
         with:
@@ -87,9 +90,20 @@ jobs:
           flavor: |
             latest=false
 
+      - name: Build local image for smoke test
+        uses: docker/build-push-action@v6
+        env:
+          DOCKER_BUILD_RECORD_RETENTION_DAYS: '7'
+        with:
+          context: .
+          file: docker/Dockerfile
+          load: true
+          tags: stock-analysis:manual
+          cache-from: type=gha,scope=manual-docker
+          cache-to: type=gha,mode=max,scope=manual-docker,ignore-error=true
+
       - name: Pre-publish docker smoke
         run: |
-          docker build -t stock-analysis:manual -f docker/Dockerfile .
           docker run --rm stock-analysis:manual python -c "
           from src.config import get_config; print('ok-config')
           from src.storage import DatabaseManager; print('ok-storage')
@@ -101,7 +115,7 @@ jobs:
           "
 
       - name: Build and push multi-arch images
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         env:
           DOCKER_BUILD_RECORD_RETENTION_DAYS: '7'
         with:
@@ -113,20 +127,18 @@ jobs:
             ${{ steps.meta-ghcr.outputs.tags }}
             ${{ steps.meta-dockerhub.outputs.tags }}
           labels: ${{ steps.meta-ghcr.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=manual-docker
+          cache-to: type=gha,mode=max,scope=manual-docker,ignore-error=true
 
       - name: Generate summary
         run: |
           echo "### Docker images built and pushed successfully" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "- GHCR: \`${{ env.GHCR_REGISTRY }}/${{ env.GHCR_IMAGE_NAME }}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Docker Hub: \`${{ env.DOCKERHUB_REGISTRY }}/${{ env.DOCKERHUB_IMAGE_NAME }}\`" >> "$GITHUB_STEP_SUMMARY"
+          if [[ "${{ env.HAS_DOCKERHUB_TOKEN }}" == "true" && "${{ env.HAS_DOCKERHUB_USERNAME }}" == "true" ]]; then
+            echo "- Docker Hub: \`${{ env.DOCKERHUB_REGISTRY }}/${{ env.DOCKERHUB_IMAGE_NAME }}\`" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "- Docker Hub: skipped (missing \`DOCKERHUB_TOKEN\` / \`DOCKERHUB_USERNAME\` secret)" >> "$GITHUB_STEP_SUMMARY"
+          fi
           echo "- Tags: ${{ inputs.image_tag }}, latest" >> "$GITHUB_STEP_SUMMARY"
           echo "- Platforms: linux/amd64, linux/arm64" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "### Pull commands" >> "$GITHUB_STEP_SUMMARY"
-          echo '```bash' >> "$GITHUB_STEP_SUMMARY"
-          echo "docker pull ${{ env.GHCR_REGISTRY }}/${{ env.GHCR_IMAGE_NAME }}:${{ inputs.image_tag }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "docker pull ${{ env.DOCKERHUB_REGISTRY }}/${{ env.DOCKERHUB_IMAGE_NAME }}:${{ inputs.image_tag }}" >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"

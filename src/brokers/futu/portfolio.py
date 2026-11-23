@@ -109,7 +109,7 @@ def _safe_close(context: Any) -> None:
     try:
         context.close()
     except Exception:  # pragma: no cover - closing is best effort
-        logger.debug("关闭 Futu OpenD 连接失败", exc_info=True)
+        logger.debug("Failed to close Futu OpenD connection", exc_info=True)
 
 
 def _connection_settings() -> tuple[str, int]:
@@ -307,10 +307,10 @@ def _load_position_codes(
             _safe_close(context)
 
     if skipped_short_count:
-        logger.info("已跳过 %d 个 Futu SHORT 空头持仓", skipped_short_count)
+        logger.info("Skipped %d Futu SHORT positions", skipped_short_count)
     if skipped_unknown_side_count:
         logger.warning(
-            "已跳过 %d 个持仓方向不是 LONG 的 Futu 持仓",
+            "Skipped %d Futu positions whose direction is not LONG",
             skipped_unknown_side_count,
         )
     return codes
@@ -377,7 +377,7 @@ def _filter_stock_codes(
 
     if not grouped:
         logger.warning(
-            "已跳过 %d 个当前分析流程不支持的 Futu 持仓: %s",
+            "Skipped %d Futu positions unsupported by current analysis pipeline: %s",
             len(unsupported_codes),
             ", ".join(unsupported_codes),
         )
@@ -429,7 +429,7 @@ def _filter_stock_codes(
     ]
     if unsupported_codes:
         logger.warning(
-            "已跳过 %d 个当前分析流程不支持的 Futu 持仓: %s",
+            "Skipped %d Futu positions unsupported by current analysis pipeline: %s",
             len(unsupported_codes),
             ", ".join(unsupported_codes),
         )
@@ -475,7 +475,7 @@ def load_futu_stock_codes() -> List[str]:
     position_codes = _load_position_codes(api, host, port, accounts)
     stock_codes = _filter_stock_codes(api, host, port, position_codes)
     logger.info(
-        "已从 Futu 真实账户加载 %d 只正股（账户数: %d，原始非零多头持仓数: %d）: %s",
+        "Loaded %d stocks from Futu REAL accounts (accounts: %d, raw non-zero LONG positions: %d): %s",
         len(stock_codes),
         len(accounts),
         len(position_codes),

@@ -134,13 +134,13 @@ def _get_nid(user_agent):
             _cache.expire_at = now + _cache.ttl
             return nid
         except requests.exceptions.RequestException as e:
-            logger.warning(f"请求东方财富授权接口失败: {e}")
+            logger.warning(f"Failed to request Eastmoney auth endpoint: {e}")
             _cache.data = None
             # 该接口请求失败时，方案可能已失效，后续大概率会继续失败，因无法成功获取，下次会继续请求，设置较长过期时间，可避免频繁请求
             _cache.expire_at = now + 5 * 60
             return None
         except (KeyError, json.JSONDecodeError) as e:
-            logger.warning(f"解析东方财富授权接口响应失败: {e}")
+            logger.warning(f"Failed to parse Eastmoney auth endpoint response: {e}")
             _cache.data = None
             # 该接口请求失败时，方案可能已失效，后续大概率会继续失败，因无法成功获取，下次会继续请求，设置较长过期时间，可避免频繁请求
             _cache.expire_at = now + 5 * 60

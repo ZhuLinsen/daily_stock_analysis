@@ -16,6 +16,18 @@ from src.schemas.analysis_context_pack import (
     ContextFieldStatus,
     DataQuality,
 )
+from src.schemas.factor_contract import (
+    FACTOR_CONTRACT_VERSION,
+    FACTOR_SET_VERSION,
+    CandidateFactorScore,
+    CandidatePoolRun,
+    FactorCategory,
+    FactorDataQuality,
+    FactorDefinition,
+    FactorFieldStatus,
+    FactorId,
+    FactorSnapshot,
+)
 from src.schemas.report_schema import AnalysisReportSchema
 
 __all__ = [
@@ -27,4 +39,14 @@ __all__ = [
     "AnalysisSubject",
     "ContextFieldStatus",
     "DataQuality",
+    "FACTOR_CONTRACT_VERSION",
+    "FACTOR_SET_VERSION",
+    "CandidateFactorScore",
+    "CandidatePoolRun",
+    "FactorCategory",
+    "FactorDataQuality",
+    "FactorDefinition",
+    "FactorFieldStatus",
+    "FactorId",
+    "FactorSnapshot",
 ]

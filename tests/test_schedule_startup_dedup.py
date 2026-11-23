@@ -630,7 +630,7 @@ class ScheduleStartupDedupIntegrationTestCase(unittest.TestCase):
             task()
 
             self.assertEqual(fake_analysis.call_count, 0)
-            self.assertIn("启动立即执行已跳过", self._joined_logs())
+            self.assertIn("Startup immediate run skipped", self._joined_logs())
 
     def test_startup_immediate_run_executes_without_marker(self):
         config = self._make_config()
@@ -642,8 +642,8 @@ class ScheduleStartupDedupIntegrationTestCase(unittest.TestCase):
             task()
 
             self.assertEqual(fake_analysis.call_count, 1)
-            self.assertIn("启动立即执行去重检查通过", self._joined_logs())
-            self.assertNotIn("启动立即执行已跳过", self._joined_logs())
+            self.assertIn("Startup immediate-run dedup check passed", self._joined_logs())
+            self.assertNotIn("Startup immediate run skipped", self._joined_logs())
 
     def test_second_task_call_is_daily_invocation_and_never_gated(self):
         config = self._make_config()
@@ -655,7 +655,7 @@ class ScheduleStartupDedupIntegrationTestCase(unittest.TestCase):
             # -> skipped by the gate.
             task()
             self.assertEqual(fake_analysis.call_count, 0)
-            self.assertIn("启动立即执行已跳过", self._joined_logs())
+            self.assertIn("Startup immediate run skipped", self._joined_logs())
 
             # Second invocation models the daily scheduled job: it must run
             # even though a matching full marker still exists (the gate flag
@@ -675,7 +675,7 @@ class ScheduleStartupDedupIntegrationTestCase(unittest.TestCase):
             task()
 
             self.assertEqual(fake_analysis.call_count, 1)
-            self.assertIn("启动立即执行去重检查通过", self._joined_logs())
+            self.assertIn("Startup immediate-run dedup check passed", self._joined_logs())
             self.assertIn("does not cover", self._joined_logs())
 
     def test_kill_switch_env_disables_the_gate(self):
@@ -691,7 +691,7 @@ class ScheduleStartupDedupIntegrationTestCase(unittest.TestCase):
             # The kill switch must bypass the gate entirely.
             fake_gate.assert_not_called()
             self.assertEqual(fake_analysis.call_count, 1)
-            self.assertNotIn("启动立即执行已跳过", self._joined_logs())
+            self.assertNotIn("Startup immediate run skipped", self._joined_logs())
 
     def test_no_run_immediately_keeps_gate_inactive(self):
         config = self._make_config()
@@ -708,7 +708,7 @@ class ScheduleStartupDedupIntegrationTestCase(unittest.TestCase):
             # Daily-style invocations never consult the startup gate.
             fake_gate.assert_not_called()
             self.assertEqual(fake_analysis.call_count, 1)
-            self.assertNotIn("启动立即执行已跳过", self._joined_logs())
+            self.assertNotIn("Startup immediate run skipped", self._joined_logs())
 
     def test_force_run_bypasses_gate_and_executes(self):
         # --force-run is an explicit request for an immediate full run:
@@ -727,8 +727,8 @@ class ScheduleStartupDedupIntegrationTestCase(unittest.TestCase):
 
             fake_gate.assert_not_called()
             self.assertEqual(fake_analysis.call_count, 1)
-            self.assertIn("--force-run 指定,跳过启动去重检查", self._joined_logs())
-            self.assertNotIn("启动立即执行已跳过", self._joined_logs())
+            self.assertIn("--force-run specified, skipping startup dedup check", self._joined_logs())
+            self.assertNotIn("Startup immediate run skipped", self._joined_logs())
 
     def test_cross_market_second_phase_reopens_gate(self):
         # Blocker OR-COR-9a7cb728 (integration, two phases): the morning
@@ -770,8 +770,8 @@ class ScheduleStartupDedupIntegrationTestCase(unittest.TestCase):
                     1,
                     "second phase with a not-fully-covered marker must execute",
                 )
-                self.assertIn("启动立即执行去重检查通过", self._joined_logs())
-                self.assertNotIn("启动立即执行已跳过", self._joined_logs())
+                self.assertIn("Startup immediate-run dedup check passed", self._joined_logs())
+                self.assertNotIn("Startup immediate run skipped", self._joined_logs())
 
     def _real_config_from_env(self):
         """Build a REAL Config through the production resolution chain.
@@ -830,7 +830,7 @@ class ScheduleStartupDedupIntegrationTestCase(unittest.TestCase):
             task()
 
             self.assertEqual(fake_analysis.call_count, 1)
-            self.assertNotIn("启动立即执行已跳过", self._joined_logs())
+            self.assertNotIn("Startup immediate run skipped", self._joined_logs())
 
     # -- second-round review blockers (OR-COR-e59aed48 / OR-COR-c4971c31) --
     #
@@ -865,9 +865,9 @@ class ScheduleStartupDedupIntegrationTestCase(unittest.TestCase):
                     "a new Futu position outside the covered marker must re-run",
                 )
                 joined = self._joined_logs()
-                self.assertIn("启动立即执行去重检查通过", joined)
+                self.assertIn("Startup immediate-run dedup check passed", joined)
                 self.assertIn("000001", joined)
-                self.assertNotIn("启动立即执行已跳过", joined)
+                self.assertNotIn("Startup immediate run skipped", joined)
 
     def test_covered_portfolio_targets_still_skip(self):
         # Guard against over-fixing: portfolio positions fully covered by
@@ -886,7 +886,7 @@ class ScheduleStartupDedupIntegrationTestCase(unittest.TestCase):
                 task()
 
                 self.assertEqual(fake_analysis.call_count, 0)
-                self.assertIn("启动立即执行已跳过", self._joined_logs())
+                self.assertIn("Startup immediate run skipped", self._joined_logs())
 
     def test_pure_portfolio_empty_watchlist_new_position_reopens_gate(self):
         # Scenario 2: pure-portfolio deployment (empty persisted watchlist).
@@ -913,9 +913,9 @@ class ScheduleStartupDedupIntegrationTestCase(unittest.TestCase):
                     "empty watchlist + live positions must not be a vacuous skip",
                 )
                 joined = self._joined_logs()
-                self.assertIn("启动立即执行去重检查通过", joined)
+                self.assertIn("Startup immediate-run dedup check passed", joined)
                 self.assertIn("000001", joined)
-                self.assertNotIn("启动立即执行已跳过", joined)
+                self.assertNotIn("Startup immediate run skipped", joined)
 
     def test_covered_pure_portfolio_targets_still_skip(self):
         # Guard: pure-portfolio deployment whose live positions are fully
@@ -934,7 +934,7 @@ class ScheduleStartupDedupIntegrationTestCase(unittest.TestCase):
                 task()
 
                 self.assertEqual(fake_analysis.call_count, 0)
-                self.assertIn("启动立即执行已跳过", self._joined_logs())
+                self.assertIn("Startup immediate run skipped", self._joined_logs())
 
     def test_pure_portfolio_empty_resolution_never_skips(self):
         # Empty portfolio resolution (no tradable positions) can never prove
@@ -960,7 +960,7 @@ class ScheduleStartupDedupIntegrationTestCase(unittest.TestCase):
                 )
                 joined = self._joined_logs()
                 self.assertIn("fail-open", joined)
-                self.assertNotIn("启动立即执行已跳过", joined)
+                self.assertNotIn("Startup immediate run skipped", joined)
 
     def test_portfolio_resolution_failure_fails_open(self):
         # A broker resolution failure must never become a skip decision
@@ -986,7 +986,7 @@ class ScheduleStartupDedupIntegrationTestCase(unittest.TestCase):
                 )
                 joined = self._joined_logs()
                 self.assertIn("fail-open", joined)
-                self.assertNotIn("启动立即执行已跳过", joined)
+                self.assertNotIn("Startup immediate run skipped", joined)
 
     def test_process_env_stock_list_with_updated_env_file_reopens_gate(self):
         # Scenario 3: WebUI/.env hot update after the container started with
@@ -1055,9 +1055,9 @@ class ScheduleStartupDedupIntegrationTestCase(unittest.TestCase):
                     "like the run entry does",
                 )
                 joined = self._joined_logs()
-                self.assertIn("启动立即执行去重检查通过", joined)
+                self.assertIn("Startup immediate-run dedup check passed", joined)
                 self.assertIn("000001", joined)
-                self.assertNotIn("启动立即执行已跳过", joined)
+                self.assertNotIn("Startup immediate run skipped", joined)
 
 
 class AllStockTargetsSucceededUnitTestCase(unittest.TestCase):
@@ -1618,7 +1618,7 @@ class SerialStartupDedupRegressionTestCase(unittest.TestCase):
                 "the dedup gate — run_full_analysis must not be called",
             )
             self.assertIn(
-                "启动立即执行已跳过",
+                "Startup immediate run skipped",
                 self._joined_logs(),
                 "serial-b: the skip log semantics must be present",
             )
@@ -1643,7 +1643,7 @@ class SerialStartupDedupRegressionTestCase(unittest.TestCase):
                 "reach the run",
             )
             self.assertNotIn(
-                "启动立即执行已跳过",
+                "Startup immediate run skipped",
                 "\n".join(self.log_sink[logs_before_daily:]),
                 "serial-c: the daily scheduled invocation must not be "
                 "gated by the startup dedup (fork at "

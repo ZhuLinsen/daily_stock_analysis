@@ -549,8 +549,8 @@ class MainPortfolioTest(unittest.TestCase):
         refresh_stock_index.assert_not_called()
         trading_day_filter.assert_not_called()
         log_text = "\n".join(captured.output)
-        self.assertIn("无符合条件的 Futu 持仓", log_text)
-        self.assertNotIn("未配置自选股列表", log_text)
+        self.assertIn("No eligible Futu positions in live account", log_text)
+        self.assertNotIn("Watchlist not configured", log_text)
 
     def test_empty_futu_portfolio_is_noop_when_trading_day_check_is_disabled(self):
         args = SimpleNamespace(
@@ -580,7 +580,7 @@ class MainPortfolioTest(unittest.TestCase):
         config.refresh_stock_list.assert_not_called()
         refresh_stock_index.assert_not_called()
         trading_day_filter.assert_not_called()
-        self.assertIn("无符合条件的 Futu 持仓", "\n".join(captured.output))
+        self.assertIn("No eligible Futu positions in live account", "\n".join(captured.output))
 
     def test_empty_futu_portfolio_preserves_enabled_auto_backtest(self):
         args = SimpleNamespace(
@@ -651,8 +651,8 @@ class MainPortfolioTest(unittest.TestCase):
         self.assertTrue(result)
         pipeline_class.assert_not_called()
         log_text = "\n".join(captured.output)
-        self.assertIn("无符合条件的 Futu 持仓", log_text)
-        self.assertNotIn("所有相关市场均为非交易日", log_text)
+        self.assertIn("No eligible Futu positions in live account", log_text)
+        self.assertNotIn("All relevant markets are closed today", log_text)
 
     def test_futu_portfolio_without_effective_codes_still_runs_market_review(self):
         args = SimpleNamespace(

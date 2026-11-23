@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [新功能] 新增 DSA 内部因子契约（`FactorDefinition`/`FactorSnapshot`/`CandidatePoolRun`/`CandidateFactorScore`，契约版本 1.0）：将选股 `factor_scores` 映射为带字段版本、来源、数据质量与降级原因的内部结构（#1902 P0）；仅新增 schema 与纯映射函数，不改变现有选股、API、回测与 DecisionSignal 行为。`ScreenResult.created_at` 改为带本地偏移的 ISO 字符串（按部署进程本地时钟换算为 UTC），`pick_to_factor_snapshot` 的显式 `computed_at` 同样归一化；内置引擎来源守卫的作用域已修正，原创的 `factor_mapping.py` 不再被误判为 AlphaSift 派生文件。
+- [改进] 优化 CI 与发布流水线：`ci.yml` 新增 `push: main` 与 `merge_group` 触发、顶层只读权限与统一 `ci-gate` 汇总门禁，解除 `ai-governance` 对域内检查的串行阻塞；后端引入 `uv` 加速依赖安装，Web CI 补跑 `npm test` (Vitest) 并缓存 Playwright 浏览器，新增 `desktop-tests` 执行桌面端单元测试；将 `create-release.yml`、`docker-publish.yml`、`desktop-release.yml` 收敛为单入口原子发布流 `release.yml`（原生 `ubuntu-24.04-arm` + `ubuntu-24.04` 双架构合并 manifest 与构建溯源），并同步 `scripts/ci_gate.sh` 与契约测试。
+- [修复] Agent 的 `analyze_pattern` 按形态出现前的趋势命名长影线 K 线。取形态出现前的收盘价，以 MA5 与 MA10 的高低判断方向（`StockTrendAnalyzer` 比较的同一组均线），并要求形态前最后一个收盘价也越过 MA5（下跌时低于 MA5，上涨时高于 MA5）：下跌时命名为锤子线/倒锤子，上涨时命名为上吊线/流星线；趋势不明确（包括 MA5 与 MA10 相等、形态前最后一个收盘价等于 MA5）或形态前不足 10 个收盘价时不给出这四个名称。`type` 取值保持不变（锤子线/上吊线为 `reversal_signal`，流星线为 `bearish_signal`），仅倒锤子由 `bearish_signal` 改为 `reversal_signal`；上吊线与倒锤子的说明文字随之调整，锤子线与流星线的条目内容不变。原先按单日涨跌和 K 线颜色命名，与趋势无关。其余形态的识别不变。
+- [改进] 将后端运行日志（`logger.*` / `logging.*`）统一为简洁英文，新增 AST 门禁 `scripts/check_english_logs.py` 并接入 `scripts/ci_gate.sh`，同时在贡献文档与开发规范中明确日志使用英文、用户可见报告与通知保留多语言配置（Fixes #2601）。
+
 - [修复] 新增幂等的 `py_mini_racer.MiniRacer` 线程安全保护（`src/utils/mini_racer_guard.py`），在应用初始化与数据源层串行化 V8 isolate 创建与求值调用，避免多线程并发分析（`MAX_WORKERS > 1`）时触发原生 `SIGTRAP` 崩溃（Fixes #2586）。
 - [新功能] 新增 agent-agnostic 插件市场入口（`.agents/plugins/marketplace.json`）与 Codex/Claude Code 插件清单（`plugin/`）；将 `stock_analyzer` 正文迁至 `plugin/skills/stock_analyzer/SKILL.md`，根目录 `SKILL.md` 保留为普通文件副本（兼容 `core.symlinks=false` / OpenClaw）；技能明确要求驱动已部署的 DSA 检出，示例先 `chdir` 到检出根目录以共用相对库路径与复盘锁，大盘复盘在支持 `send_notification` 时默认不推送且对旧检出安全拒绝回退；HTTP 对话内个股须 `"notify": false`、大盘复盘须 `"send_notification": false`（`MarketReviewRequest` 亦接受 `notify` 别名）；只读 MCP 仍按完整指南在 checkout 中手动配置（不写入插件包）。
 - [新功能] 新增基于 Astro + Starlight 的官方官网与文档中心子项目（`apps/dsa-site/`），采用 Obsidian Bento 视觉与 5 大支柱文档体系，构建时直读主仓 `docs/`、`strategies/` 与 `docs/architecture/api_spec.json` 生成交互式 OpenAPI 浏览器与中英文全文搜索，并配套 `.dockerignore` 与独立 `site-gate` CI 门禁。

@@ -266,7 +266,7 @@ class MiaoxiangFetcher(BaseFetcher):
         """
         stock_code = normalize_stock_code(stock_code)
         if _is_non_cn_request(stock_code) or _is_etf_code(stock_code):
-            logger.debug(f"[API跳过] {stock_code} 非A股个股，无筹码分布数据")
+            logger.debug(f"[API Skip] {stock_code} is not an A-share stock, no chip distribution data")
             return None
 
         tables = self._query_tables(

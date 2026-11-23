@@ -136,7 +136,14 @@ def test_heavy_ci_jobs_are_path_filtered_and_backend_tests_are_sharded() -> None
     backend_tests_job = ci["jobs"]["backend-tests"]
     backend_gate_job = ci["jobs"]["backend-gate"]
     docker_job = ci["jobs"]["docker-build"]
-    assert backend_tests_job["needs"] == ["changes", "ai-governance"]
+    desktop_tests_job = ci["jobs"]["desktop-tests"]
+    web_gate_job = ci["jobs"]["web-gate"]
+    ci_gate_job = ci["jobs"]["ci-gate"]
+    assert "push" in ci["on"]
+    assert "pull_request" in ci["on"]
+    assert "merge_group" in ci["on"]
+    assert ci["permissions"]["contents"] == "read"
+    assert backend_tests_job["needs"] == ["changes"]
     assert backend_tests_job["if"] == "needs.changes.outputs.backend == 'true'"
     assert backend_tests_job["strategy"]["fail-fast"] == "false"
     assert backend_tests_job["strategy"]["matrix"]["shard"] == ["1", "2", "3"]
@@ -146,18 +153,39 @@ def test_heavy_ci_jobs_are_path_filtered_and_backend_tests_are_sharded() -> None
         "backend-tests",
     ]
     assert backend_gate_job["if"] == "always()"
-    assert docker_job["needs"] == ["changes", "ai-governance"]
+    assert docker_job["needs"] == ["changes"]
     assert docker_job["if"] == "needs.changes.outputs.docker == 'true'"
+    assert desktop_tests_job["needs"] == ["changes"]
+    assert desktop_tests_job["if"] == "needs.changes.outputs.desktop == 'true'"
+    assert web_gate_job["needs"] == ["changes"]
+    assert any(step.get("run") == "npm test" for step in web_gate_job["steps"])
+    assert any(
+        step.get("uses", "").startswith("actions/cache@")
+        and "~/.cache/ms-playwright" in str(step.get("with", {}).get("path", ""))
+        for step in web_gate_job["steps"]
+    )
     site_gate_job = ci["jobs"]["site-gate"]
-    assert site_gate_job["needs"] == ["changes", "ai-governance"]
+    assert site_gate_job["needs"] == ["changes"]
     assert site_gate_job["if"] == "needs.changes.outputs.site == 'true'"
+    assert ci_gate_job["if"] == "always()"
+    assert set(ci_gate_job["needs"]) == {
+        "changes",
+        "ai-governance",
+        "backend-gate",
+        "web-gate",
+        "desktop-tests",
+        "site-gate",
+        "docker-build",
+        "desktop-futu-package-windows",
+        "desktop-futu-package-macos",
+    }
 
     install_step = next(
         step
         for step in backend_tests_job["steps"]
         if step["name"] == "📦 Install dependencies"
     )
-    assert "python -m pip install -r .github/requirements-ci.txt" in install_step["run"]
+    assert "uv pip install --system -r .github/requirements-ci.txt" in install_step["run"]
     shard_step = next(
         step
         for step in backend_tests_job["steps"]
@@ -268,3 +296,68 @@ def test_browser_fixture_and_default_smoke_entrypoints_stay_separate() -> None:
     default = next(step for step in steps if step.get("run") == "npm run test:smoke")
     assert default["env"]["DSA_WEB_SMOKE_PASSWORD"] == ""
     assert any(step.get("run") == "npx playwright test --config playwright.fixture.config.ts" for step in steps)
+
+
+def test_release_workflow_unifies_atomic_publish_and_native_arm64() -> None:
+    for legacy in (
+        ".github/workflows/create-release.yml",
+        ".github/workflows/docker-publish.yml",
+        ".github/workflows/desktop-release.yml",
+    ):
+        assert not (REPO_ROOT / legacy).exists()
+
+    release = _workflow(".github/workflows/release.yml")
+    jobs = release["jobs"]
+    docker_matrix = jobs["docker-build"]["strategy"]["matrix"]["include"]
+    assert {"platform": "linux/amd64", "arch": "amd64", "runner": "ubuntu-24.04"} in docker_matrix
+    assert {"platform": "linux/arm64", "arch": "arm64", "runner": "ubuntu-24.04-arm"} in docker_matrix
+    assert set(jobs["docker-merge-manifest"]["needs"]) == {
+        "pre-release-gate",
+        "docker-build",
+        "desktop-windows",
+        "desktop-macos",
+    }
+    assert set(jobs["publish-release"]["needs"]) == {
+        "pre-release-gate",
+        "docker-merge-manifest",
+        "desktop-windows",
+        "desktop-macos",
+    }
+    pre_outputs = jobs["pre-release-gate"]["outputs"]
+    assert "ghcr_repo" in pre_outputs
+    assert "dockerhub_repo" not in pre_outputs
+    assert any(
+        "tr '[:upper:]' '[:lower:]'" in str(step.get("run", ""))
+        for step in jobs["pre-release-gate"]["steps"]
+    )
+    assert any(
+        "tr '[:upper:]' '[:lower:]'" in str(step.get("run", ""))
+        for step in jobs["docker-build"]["steps"]
+    )
+    assert any(
+        "tr '[:upper:]' '[:lower:]'" in str(step.get("run", ""))
+        for step in jobs["docker-merge-manifest"]["steps"]
+    )
+    build_text = yaml.dump(jobs["docker-build"], sort_keys=False, width=4096)
+    merge_text = yaml.dump(jobs["docker-merge-manifest"], sort_keys=False, width=4096)
+    assert "needs.pre-release-gate.outputs.ghcr_repo" in build_text
+    assert "needs.pre-release-gate.outputs.ghcr_repo" in merge_text
+    assert "needs.pre-release-gate.outputs.dockerhub_repo" not in build_text
+    assert "needs.pre-release-gate.outputs.dockerhub_repo" not in merge_text
+    assert "${{ env.GHCR_REGISTRY }}/${{ env.GHCR_IMAGE_NAME }}" not in build_text
+    assert "${{ env.GHCR_REGISTRY }}/${{ env.GHCR_IMAGE_NAME }}" not in merge_text
+
+    merge_steps = jobs["docker-merge-manifest"]["steps"]
+    step_names = [step.get("name", "") or step.get("uses", "") for step in merge_steps]
+    idx_prev = step_names.index("Record previous latest digests")
+    idx_stage = step_names.index("Stage immutable GHCR multi-arch manifest")
+    idx_attest = next(
+        i for i, step in enumerate(merge_steps)
+        if str(step.get("uses", "")).startswith("actions/attest-build-provenance@")
+    )
+    idx_public_ghcr = step_names.index("Publish public GHCR tags")
+    idx_dockerhub = step_names.index("Publish Docker Hub tags")
+    assert idx_prev < idx_stage < idx_attest < idx_public_ghcr < idx_dockerhub
+    stage_run = merge_steps[idx_stage]["run"]
+    assert ":latest" not in stage_run
+    assert "release_tag" not in stage_run

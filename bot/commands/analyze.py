@@ -83,7 +83,10 @@ class AnalyzeCommand(BotCommand):
             if isinstance(analysis_target, str):
                 return BotResponse.error_response(analysis_target)
 
-            logger.info(f"[AnalyzeCommand] 分析标的: {code}, 报告类型: {report_type}")
+            logger.info(
+                f"[AnalyzeCommand] Analyzing target: {code}, "
+                f"report type: {report_type}"
+            )
 
             # 调用分析服务
             from src.services.task_service import get_task_service
@@ -119,7 +122,7 @@ class AnalyzeCommand(BotCommand):
             return BotResponse.error_response(f"提交分析任务失败: {error}")
 
         except Exception as e:
-            logger.error(f"[AnalyzeCommand] 执行失败: {e}")
+            logger.error(f"[AnalyzeCommand] Execution failed: {e}")
             return BotResponse.error_response(f"分析失败: {str(e)[:100]}")
 
     def _resolve_analysis_input(

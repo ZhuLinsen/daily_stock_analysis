@@ -71,7 +71,7 @@ def test_cli_stocks_do_not_hide_other_stock_related_issues():
 
 def test_llm_log_names_fallback_model():
     assert _describe_llm_result_model("deepseek/deepseek-chat", "gemini/x", "gemini/x") == (
-        "gemini/x（配置模型 deepseek/deepseek-chat，已回退）"
+        "gemini/x (configured: deepseek/deepseek-chat, fallback)"
     )
 
 
@@ -85,19 +85,19 @@ def test_llm_log_unchanged_when_configured_model_answers():
     ("openai/gpt-4o", "gpt-4o-2024-08-06"),
 ])
 def test_llm_log_does_not_call_normal_response_identity_a_fallback(configured, actual):
-    assert _describe_llm_result_model(configured, actual, configured) == f"{actual}（配置模型 {configured}）"
+    assert _describe_llm_result_model(configured, actual, configured) == f"{actual} (configured: {configured})"
 
 
 def test_llm_log_distinguishes_alias_identity_from_route_fallback():
-    assert _describe_llm_result_model("primary", "model-b", "primary") == "model-b（配置模型 primary）"
-    assert "已回退" in _describe_llm_result_model("primary", "model-b", "backup")
+    assert _describe_llm_result_model("primary", "model-b", "primary") == "model-b (configured: primary)"
+    assert "fallback" in _describe_llm_result_model("primary", "model-b", "backup")
 
 
 def test_llm_log_marks_a_dated_model_when_it_is_an_explicit_fallback_route():
-    assert "已回退" in _describe_llm_result_model(
+    assert "fallback" in _describe_llm_result_model(
         "openai/gpt-4o", "gpt-4o-2024-08-06", "openai/gpt-4o-2024-08-06",
     )
 
 
 def test_llm_log_does_not_infer_fallback_without_route_evidence():
-    assert _describe_llm_result_model("primary", "actual") == "actual（配置模型 primary）"
+    assert _describe_llm_result_model("primary", "actual") == "actual (configured: primary)"

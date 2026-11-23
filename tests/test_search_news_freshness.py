@@ -16,7 +16,8 @@ if "newspaper" not in sys.modules:
     mock_np.Config = MagicMock()
     sys.modules["newspaper"] = mock_np
 
-from src.search_service import SearchResponse, SearchResult, SearchService
+from src.search_service import BochaSearchProvider, SearchResponse, SearchResult, SearchService
+from scripts.check_english_logs import CJK_RE
 from src.services.run_diagnostics import (
     activate_run_diagnostic_context,
     current_diagnostic_snapshot,
@@ -2702,6 +2703,101 @@ class SearchNewsFreshnessTestCase(unittest.TestCase):
             industry = service.search_comprehensive_intel("600519", "贵州茅台", max_searches=6)["industry"]
 
         self.assertEqual([item.title for item in industry.results], titles[:2])
+
+    def test_comprehensive_intel_logs_english_dimensions_while_preserving_report_labels(self) -> None:
+        today = datetime.now().date().isoformat()
+        news = _response([_result("Apple AAPL latest news", today, snippet="Apple AAPL earnings outlook")])
+        service, _ = self._create_service_with_mock_provider(response=news)
+
+        with (
+            self.assertLogs("src.search_service", level="INFO") as captured,
+            patch("src.search_service.time.sleep"),
+        ):
+            intel = service.search_comprehensive_intel("AAPL", "Apple", max_searches=2)
+
+        intel_messages = [
+            record.getMessage()
+            for record in captured.records
+            if "[IntelSearch]" in record.getMessage()
+        ]
+        self.assertTrue(any("latest news" in msg for msg in intel_messages))
+        self.assertTrue(any("analyst research" in msg for msg in intel_messages))
+        for msg in intel_messages:
+            self.assertIsNone(CJK_RE.search(msg), f"Unexpected CJK text in [IntelSearch] log: {msg}")
+
+        formatted = service.format_intel_report(intel, "Apple")
+        self.assertIn("📰 最新消息", formatted)
+        self.assertIn("📈 机构分析", formatted)
+
+    def test_bocha_error_paths_log_english_while_preserving_error_message(self) -> None:
+        provider = BochaSearchProvider(["dummy_key"])
+
+        http_403_response = SimpleNamespace(
+            status_code=403,
+            headers={"content-type": "application/json"},
+            text='{"message": "quota exceeded"}',
+            json=lambda: {"message": "quota exceeded"},
+        )
+        with (
+            patch("src.search_service._post_with_retry", return_value=http_403_response),
+            self.assertLogs("src.search_service", level="WARNING") as cap_403,
+        ):
+            resp_403 = provider.search("Apple AAPL news", max_results=3, days=3)
+
+        self.assertFalse(resp_403.success)
+        self.assertTrue(resp_403.error_message.startswith("余额不足:"))
+        for msg in (record.getMessage() for record in cap_403.records):
+            self.assertIsNone(CJK_RE.search(msg), f"Unexpected CJK text in Bocha 403 log: {msg}")
+        self.assertTrue(any("Insufficient balance/quota" in r.getMessage() for r in cap_403.records))
+
+        bad_json_response = SimpleNamespace(
+            status_code=200,
+            headers={"content-type": "application/json"},
+            text="not-json",
+            json=MagicMock(side_effect=ValueError("Expecting value")),
+        )
+        with (
+            patch("src.search_service._post_with_retry", return_value=bad_json_response),
+            self.assertLogs("src.search_service", level="ERROR") as cap_json,
+        ):
+            resp_json = provider.search("Apple AAPL news", max_results=3, days=3)
+
+        self.assertFalse(resp_json.success)
+        self.assertTrue(resp_json.error_message.startswith("响应JSON解析失败:"))
+        for msg in (record.getMessage() for record in cap_json.records):
+            self.assertIsNone(CJK_RE.search(msg), f"Unexpected CJK text in Bocha JSON log: {msg}")
+        self.assertTrue(any("Response JSON parse failed" in r.getMessage() for r in cap_json.records))
+
+    def test_rank_news_response_logs_english_reasons_while_preserving_chinese_payload(self):
+        response = SearchResponse(
+            query="AAPL news",
+            provider="Tavily",
+            success=True,
+            results=[
+                SearchResult(
+                    title="AAPL reports earnings beat",
+                    snippet="Apple posted strong quarterly results.",
+                    url="https://example.com/aapl-earnings",
+                    source="reuters.com",
+                )
+            ],
+        )
+        with self.assertLogs("src.search_service", level="INFO") as captured:
+            ranked = SearchService._rank_news_response(
+                response,
+                stock_code="AAPL",
+                stock_name="苹果",
+                prefer_chinese=False,
+                max_results=5,
+                log_scope="AAPL",
+            )
+
+        self.assertEqual(len(ranked.results), 1)
+        self.assertIn("标题命中股票代码 AAPL", ranked.results[0].relevance_reasons or [])
+        log_messages = [record.getMessage() for record in captured.records]
+        self.assertTrue(any("[NewsRelevance]" in m for m in log_messages))
+        for msg in log_messages:
+            self.assertIsNone(CJK_RE.search(msg), f"Unexpected CJK text in NewsRelevance log: {msg}")
 
 
 if __name__ == "__main__":

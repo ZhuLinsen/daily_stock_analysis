@@ -152,7 +152,7 @@ def extract_from_image(
     except HTTPException:
         raise
     except Exception as e:
-        logger.warning(f"读取上传文件失败: {e}")
+        logger.warning(f"Failed to read uploaded file: {e}")
         raise HTTPException(
             status_code=400,
             detail={"error": "read_failed", "message": "读取上传文件失败"},
@@ -172,7 +172,7 @@ def extract_from_image(
     except ValueError as e:
         raise HTTPException(status_code=400, detail={"error": "extract_failed", "message": str(e)})
     except Exception as e:
-        logger.error(f"图片提取失败: {e}", exc_info=True)
+        logger.error(f"Image extraction failed: {e}", exc_info=True)
         raise HTTPException(
             status_code=500,
             detail={"error": "internal_error", "message": "图片提取失败"},
@@ -317,7 +317,7 @@ def get_watchlist(
     except ConfigConflictError as exc:
         raise api_error(409, "config_conflict", str(exc)) from exc
     except Exception as e:
-        logger.error(f"获取自选队列失败: {e}", exc_info=True)
+        logger.error(f"Failed to get watchlist: {e}", exc_info=True)
         raise HTTPException(
             status_code=500,
             detail={"error": "internal_error", "message": f"获取自选队列失败: {str(e)}"},
@@ -355,7 +355,7 @@ def add_to_watchlist(
     except ConfigConflictError as exc:
         raise api_error(409, "config_conflict", str(exc)) from exc
     except Exception as e:
-        logger.error(f"加入自选失败: {e}", exc_info=True)
+        logger.error(f"Failed to add to watchlist: {e}", exc_info=True)
         raise HTTPException(
             status_code=500,
             detail={"error": "internal_error", "message": f"加入自选失败: {str(e)}"},
@@ -395,7 +395,7 @@ def remove_from_watchlist(
     except ConfigConflictError as exc:
         raise api_error(409, "config_conflict", str(exc)) from exc
     except Exception as e:
-        logger.error(f"从自选删除失败: {e}", exc_info=True)
+        logger.error(f"Failed to remove from watchlist: {e}", exc_info=True)
         raise HTTPException(
             status_code=500,
             detail={"error": "internal_error", "message": f"从自选删除失败: {str(e)}"},
@@ -429,7 +429,7 @@ def get_stock_profile(
         )
     except Exception as exc:
         sanitized = sanitize_diagnostic_text(str(exc), max_length=300) or "internal profile error"
-        logger.error("获取个股研究聚合档案失败: %s", sanitized)
+        logger.error("Failed to get stock profile: %s", sanitized)
         raise HTTPException(
             status_code=500,
             detail={"error": "internal_error", "message": "获取个股研究聚合档案失败"},
@@ -495,7 +495,7 @@ def get_stock_quote(stock_code: str) -> StockQuote:
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"获取实时行情失败: {e}", exc_info=True)
+        logger.error(f"Failed to get realtime quote: {e}", exc_info=True)
         raise HTTPException(
             status_code=500,
             detail={
@@ -576,7 +576,7 @@ def get_stock_history(
             }
         )
     except Exception as e:
-        logger.error(f"获取历史行情失败: {e}", exc_info=True)
+        logger.error(f"Failed to get historical data: {e}", exc_info=True)
         raise HTTPException(
             status_code=500,
             detail={

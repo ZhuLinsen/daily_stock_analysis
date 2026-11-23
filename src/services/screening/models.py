@@ -235,7 +235,16 @@ class ScreenResult:
     result_variant_pool_size: int = 0
     result_variant_rotated_slots: int = 0
     saved_path: str = ""
-    created_at: str = field(default_factory=lambda: datetime.now().isoformat())
+    # Offset-aware local time: a naive wall time loses the DST fold,
+    # so two runs in the repeated hour (e.g. 2026-11-01 01:30 in
+    # America/New_York) produced identical strings and the factor
+    # mapping could not tell them apart. The offset keeps each run's
+    # UTC instant recoverable; readers already handle aware values
+    # (daily.py prefers an aware created_at over the mtime fallback,
+    # and the factor mapping converts offsets to UTC).
+    created_at: str = field(
+        default_factory=lambda: datetime.now().astimezone().isoformat()
+    )
 
 
 @dataclass

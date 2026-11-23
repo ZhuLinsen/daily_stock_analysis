@@ -565,11 +565,11 @@ class RuntimeSchedulerService:
             process.join(2)
             if process.is_alive():
                 _terminate_analysis_process_tree(process)
-                with self._analysis_process_lock:
-                    if generation != self._analysis_generation:
-                        return
-                    self._last_error = "runtime scheduled analysis worker did not exit"
-                return
+                logger.warning(
+                    "Runtime scheduled analysis worker did not exit after reporting a result; "
+                    "cleaned up worker process (pid=%s)",
+                    process.pid,
+                )
 
             with self._analysis_process_lock:
                 if generation != self._analysis_generation:

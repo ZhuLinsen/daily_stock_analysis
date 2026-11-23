@@ -61,7 +61,7 @@ class Serverchan3Sender:
             是否发送成功
         """
         if not self._serverchan3_sendkey:
-            logger.warning("Server酱3 SendKey 未配置，跳过推送")
+            logger.warning("ServerChan3 SendKey not configured, skipping notification")
             return False
 
         # 处理消息标题
@@ -99,15 +99,15 @@ class Serverchan3Sender:
 
             if response.status_code == 200:
                 result = response.json()
-                logger.info(f"Server酱3 消息发送成功: {result}")
+                logger.info(f"ServerChan3 message sent successfully: {result}")
                 return True
             else:
-                logger.error(f"Server酱3 请求失败: HTTP {response.status_code}")
-                logger.error(f"响应内容: {response.text}")
+                logger.error(f"ServerChan3 request failed: HTTP {response.status_code}")
+                logger.error(f"Response body: {response.text}")
                 return False
 
         except Exception as e:
-            logger.error(f"发送 Server酱3 消息失败: {e}")
+            logger.error(f"Failed to send ServerChan3 message: {e}")
             import traceback
             logger.debug(traceback.format_exc())
             return False
