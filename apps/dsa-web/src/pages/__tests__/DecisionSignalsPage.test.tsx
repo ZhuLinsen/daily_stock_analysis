@@ -389,8 +389,8 @@ function submitCurrentStock(value: string) {
 }
 
 async function persistReassessFromFirstSignal() {
-  await screen.findByText('贵州茅台');
-  fireEvent.click(screen.getAllByRole('button', { name: '查看 贵州茅台 AI 建议详情' })[0]);
+  const [firstSignalButton] = await screen.findAllByRole('button', { name: '查看 贵州茅台 AI 建议详情' });
+  fireEvent.click(firstSignalButton);
   fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: '生成预览' }));
   fireEvent.click(await screen.findByRole('button', { name: '确认保存' }));
   const confirmButtons = screen.getAllByRole('button', { name: '确认保存' });
@@ -756,6 +756,8 @@ describe('DecisionSignalsPage', () => {
   it('reports an expired signal refresh separately and refreshes active views', async () => {
     const refreshedItem = makeSignal({
       id: 90,
+      createdAt: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
+      updatedAt: new Date(Date.now() - 1000).toISOString(),
       decisionProfile: 'balanced',
       sourceAgent: null,
       triggerSource: 'api',
@@ -790,6 +792,7 @@ describe('DecisionSignalsPage', () => {
     renderPage();
     await screen.findByText('贵州茅台');
     submitCurrentStock('600519');
+    await screen.findByTestId(`timeline-click-${signal.id}`);
     await persistReassessFromFirstSignal();
 
     expect(await screen.findByText('重评估信号已刷新')).toBeInTheDocument();
