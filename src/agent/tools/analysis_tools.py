@@ -361,6 +361,32 @@ def _handle_analyze_pattern(stock_code: str, days: int = 60) -> dict:
 
     avg_body = sum(body(i) for i in range(n)) / n if n > 0 else 1
 
+    # --- Preceding-trend classification for single-candle reversal shapes ---
+    # A hammer and a hanging man are the same candle shape, and so are an
+    # inverted hammer and a shooting star.  What tells them apart is the
+    # trend BEFORE the candle (Nison): after a decline the shape is a
+    # hammer / inverted hammer (bottom signal), after an advance a hanging
+    # man / shooting star (top signal).  Body colour is secondary.
+    def trend_before(i, span=10, threshold=0.02):
+        """Classify the trend preceding candle i as 'up'/'down'/'neutral'.
+
+        Compares the close right before candle i with the SMA of the
+        ``span`` closes preceding it (candle i itself excluded).
+        """
+        span = min(span, i)
+        if span < 5:
+            return "neutral"
+        window = c[i - span:i]
+        sma = sum(window) / span
+        if sma <= 0:
+            return "neutral"
+        change = (c[i - 1] - sma) / sma
+        if change > threshold:
+            return "up"
+        if change < -threshold:
+            return "down"
+        return "neutral"
+
     # --- Single-candle patterns (last 3 days) ---
     for i in range(max(0, n - 3), n):
         bd = body(i)
@@ -375,22 +401,40 @@ def _handle_analyze_pattern(stock_code: str, days: int = 60) -> dict:
                 "strength": "弱", "desc": "多空平衡，可能变盘信号"
             })
 
-        # Hammer / Hanging Man
+        # Hammer / Hanging Man — same shape; the preceding trend decides
         if ls > body(i) * 2 and us < body(i) * 0.5:
-            label = "锤子线 (Hammer)" if i == 0 or c[i] >= c[i - 1] else "上吊线 (Hanging Man)"
+            trend = trend_before(i)
+            if trend == "down":
+                label, t = "锤子线 (Hammer)", "bullish_reversal"
+                desc = "下跌后出现，下影线长，底部反转信号"
+            elif trend == "up":
+                label, t = "上吊线 (Hanging Man)", "bearish_reversal"
+                desc = "上涨后出现，下影线长，顶部反转信号"
+            else:
+                label, t = "锤子线/上吊线 (Hammer/Hanging Man)", "neutral"
+                desc = "下影线长，前趋势不明，方向待确认"
             patterns_detected.append({
-                "pattern": label, "type": "reversal_signal",
+                "pattern": label, "type": t, "trend_context": trend,
                 "day_offset": -(n - 1 - i),
-                "strength": "中", "desc": "下影线长，潜在支撑/反转"
+                "strength": "中", "desc": desc
             })
 
-        # Shooting Star / Inverted Hammer
+        # Shooting Star / Inverted Hammer — same shape; the preceding trend decides
         if us > body(i) * 2 and ls < body(i) * 0.5:
-            label = "流星线 (Shooting Star)" if is_bearish(i) else "倒锤子"
+            trend = trend_before(i)
+            if trend == "down":
+                label, t = "倒锤子", "bullish_reversal"
+                desc = "下跌后出现，上影线长，底部反转信号"
+            elif trend == "up":
+                label, t = "流星线 (Shooting Star)", "bearish_reversal"
+                desc = "上涨后出现，上影线长，顶部反转信号"
+            else:
+                label, t = "倒锤子/流星线 (Inverted Hammer/Shooting Star)", "neutral"
+                desc = "上影线长，前趋势不明，方向待确认"
             patterns_detected.append({
-                "pattern": label, "type": "bearish_signal",
+                "pattern": label, "type": t, "trend_context": trend,
                 "day_offset": -(n - 1 - i),
-                "strength": "中", "desc": "上影线长，潜在压力/反转"
+                "strength": "中", "desc": desc
             })
 
         # Big bullish / bearish candle
@@ -503,7 +547,13 @@ analyze_pattern_tool = ToolDefinition(
     description="Detect candlestick and chart patterns in recent price history. "
                 "Identifies: Doji, Hammer, Shooting Star, Morning/Evening Star, Engulfing, "
                 "Double Bottom, upward breakout, box oscillation, and more. "
-                "Returns pattern list with type (bullish/bearish/reversal) and strength.",
+                "Hammer-family names are decided by the trend before the candle: after a "
+                "decline a long-lower-shadow candle is a Hammer and a long-upper-shadow "
+                "candle an Inverted Hammer (bottom signals); after an advance they are a "
+                "Hanging Man and a Shooting Star (top signals); if the trend is unclear "
+                "they degrade to a combined neutral label. "
+                "Returns pattern list with type (bullish/bearish/reversal) and strength; "
+                "hammer-family entries also carry trend_context ('up'/'down'/'neutral').",
     parameters=[
         ToolParameter(
             name="stock_code",
