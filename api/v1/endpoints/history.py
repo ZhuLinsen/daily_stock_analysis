@@ -561,7 +561,7 @@ def get_daily_history(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"查询当日历史列表失败: {e}", exc_info=True)
+        logger.error(f"Failed to query daily history list: {e}", exc_info=True)
         raise HTTPException(
             status_code=500,
             detail={
