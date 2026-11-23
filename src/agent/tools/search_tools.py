@@ -8,11 +8,40 @@ Tools:
 """
 
 import logging
-from typing import Optional
 
-from src.agent.tools.registry import ToolParameter, ToolDefinition
+from src.agent.news_evidence import record_news_evidence
+from src.agent.tools.execution import get_tool_stock_identity, is_tool_cancellation_requested
+from src.agent.tools.registry import ToolParameter, ToolDefinition, ToolPolicy
+from src.core.stock_execution_context import is_current_stock_cancelled
 
 logger = logging.getLogger(__name__)
+
+
+def _stock_run_cancelled() -> bool:
+    """Avoid doing persistence work after the owning batch slot timed out."""
+    return is_current_stock_cancelled() or is_tool_cancellation_requested()
+
+
+_NEWS_READ_POLICY = ToolPolicy.declared(
+    read_only=True,
+    side_effects=["network_read", "db_write_cache"],
+    permissions=["news:read"],
+    scope_dimensions=["stock"],
+    supported_asset_types=("stock", "index"),
+)
+_INTEL_READ_POLICY = ToolPolicy.declared(
+    read_only=True,
+    side_effects=["network_read", "db_write_cache"],
+    permissions=["intel:read"],
+    scope_dimensions=["stock"],
+    supported_asset_types=("stock", "index"),
+)
+
+
+def _get_db():
+    """Lazy import for DatabaseManager."""
+    from src.storage import get_db
+    return get_db()
 
 
 def _get_search_service():
@@ -21,21 +50,110 @@ def _get_search_service():
     return get_search_service()
 
 
+def _canonical_search_code(stock_code: str) -> str:
+    identity = get_tool_stock_identity(stock_code)
+    if identity is not None:
+        return identity.stock_code
+    from data_provider.base import canonical_stock_code, normalize_stock_code
+    from src.services.stock_list_parser import ParseStatus, parse_analysis_target
+
+    raw = str(stock_code or "").strip()
+    target = parse_analysis_target(raw)
+    if target.asset_type == ParseStatus.INDEX and target.canonical_id:
+        return target.canonical_id
+    return canonical_stock_code(normalize_stock_code(raw))
+
+
+def _resolve_search_subject(stock_code: str, stock_name: str) -> tuple[str, str]:
+    identity = get_tool_stock_identity(stock_code)
+    if identity is not None:
+        if identity.asset_type == "index":
+            return "", identity.stock_name or identity.stock_code
+        # A model-provided label is not evidence for the accepted subject.
+        return identity.stock_code, identity.stock_name or identity.stock_code
+    from src.services.stock_list_parser import ParseStatus, parse_analysis_target
+
+    target = parse_analysis_target(stock_code)
+    if target.asset_type == ParseStatus.INDEX and target.matched_index is not None:
+        return "", target.matched_index.display_name
+    return stock_code, stock_name
+
+
+def _persist_news_response(
+    *,
+    stock_code: str,
+    stock_name: str,
+    dimension: str,
+    response,
+) -> None:
+    """Best-effort news persistence for Agent search tools."""
+    if _stock_run_cancelled():
+        return
+    if not response or not getattr(response, "success", False) or not getattr(response, "results", None):
+        return
+
+    code = _canonical_search_code(stock_code)
+    try:
+        db = _get_db()
+        if _stock_run_cancelled():
+            return
+        saved_count = db.save_news_intel(
+            code=code,
+            name=stock_name,
+            dimension=dimension,
+            query=response.query,
+            response=response,
+            query_context=None,
+        )
+        logger.info(
+            "Agent news intel persisted for %s (dimension=%s, new_records=%s)",
+            code,
+            dimension,
+            saved_count,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Agent news intel persistence failed for %s (dimension=%s): %s",
+            code,
+            dimension,
+            exc,
+        )
+
+
 def _handle_search_stock_news(stock_code: str, stock_name: str) -> dict:
     """Search latest news for a stock."""
     service = _get_search_service()
+    query_code, query_name = _resolve_search_subject(stock_code, stock_name)
 
     if not service.is_available:
         return {"error": "No search engine available (no API keys configured)"}
 
-    response = service.search_stock_news(stock_code, stock_name, max_results=5)
+    if _stock_run_cancelled():
+        return {"error": "Stock analysis timed out before searching news"}
+    response = service.search_stock_news(query_code, query_name, max_results=5)
+
+    if _stock_run_cancelled():
+        record_news_evidence(0)
+        return {"error": "Stock analysis timed out while searching news"}
 
     if not response.success:
+        # 检索已发起但失败：Agent 这一轮没有拿到新闻证据，必须记 0 而不是不记，
+        # 否则报告会把「搜过但失败」误报成「未配置搜索渠道」。
+        record_news_evidence(0)
         return {
             "query": response.query,
             "success": False,
             "error": response.error_message,
         }
+
+    record_news_evidence(len(response.results))
+
+    _persist_news_response(
+        stock_code=stock_code,
+        stock_name=query_name,
+        dimension="latest_news",
+        response=response,
+    )
 
     return {
         "query": response.query,
@@ -74,6 +192,7 @@ search_stock_news_tool = ToolDefinition(
     ],
     handler=_handle_search_stock_news,
     category="search",
+    policy=_NEWS_READ_POLICY,
 )
 
 
@@ -84,26 +203,45 @@ search_stock_news_tool = ToolDefinition(
 def _handle_search_comprehensive_intel(stock_code: str, stock_name: str) -> dict:
     """Multi-dimensional intelligence search."""
     service = _get_search_service()
+    query_code, query_name = _resolve_search_subject(stock_code, stock_name)
 
     if not service.is_available:
         return {"error": "No search engine available (no API keys configured)"}
 
+    if _stock_run_cancelled():
+        return {"error": "Stock analysis timed out before searching intelligence"}
     intel_results = service.search_comprehensive_intel(
-        stock_code=stock_code,
-        stock_name=stock_name,
+        stock_code=query_code,
+        stock_name=query_name,
         max_searches=6,
     )
 
+    if _stock_run_cancelled():
+        record_news_evidence(0)
+        return {"error": "Stock analysis timed out while searching intelligence"}
+
     if not intel_results:
+        # 多维检索已发起但整体没有结果，同样必须记 0（见 _handle_search_stock_news）。
+        record_news_evidence(0)
         return {"error": "Comprehensive intel search returned no results"}
 
     # Format into readable report
-    report = service.format_intel_report(intel_results, stock_name)
+    report = service.format_intel_report(intel_results, query_name)
+
+    # 本次真正交给 Agent 的证据条数，按维度累计后一次性记录。
+    evidence_count = 0
 
     # Also return structured data
     dimensions = {}
     for dim_name, response in intel_results.items():
         if response and response.success:
+            evidence_count += len(response.results)
+            _persist_news_response(
+                stock_code=stock_code,
+                stock_name=query_name,
+                dimension=dim_name,
+                response=response,
+            )
             dimensions[dim_name] = {
                 "query": response.query,
                 "results_count": len(response.results),
@@ -116,6 +254,8 @@ def _handle_search_comprehensive_intel(stock_code: str, stock_name: str) -> dict
                     for r in response.results[:3]  # limit to 3 per dimension to save tokens
                 ],
             }
+
+    record_news_evidence(evidence_count)
 
     return {
         "report": report,
@@ -142,6 +282,7 @@ search_comprehensive_intel_tool = ToolDefinition(
     ],
     handler=_handle_search_comprehensive_intel,
     category="search",
+    policy=_INTEL_READ_POLICY,
 )
 
 

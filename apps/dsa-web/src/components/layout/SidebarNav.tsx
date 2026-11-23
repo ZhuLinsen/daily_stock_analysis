@@ -1,103 +1,189 @@
 import React, { useState } from 'react';
-import { motion } from 'motion/react';
-import { BarChart3, BriefcaseBusiness, Home, LogOut, MessageSquareQuote, Settings2 } from 'lucide-react';
-import { NavLink } from 'react-router-dom';
+import { Activity, BarChart3, Bell, BriefcaseBusiness, Database, Gauge, Home, LogOut, MessageSquareQuote, Search, Settings2 } from 'lucide-react';
+import { NavLink, useLocation } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import { useAgentChatStore } from '../../stores/agentChatStore';
+import { useUiLanguage } from '../../contexts/UiLanguageContext';
+import type { UiTextKey } from '../../i18n/uiText';
 import { cn } from '../../utils/cn';
 import { ConfirmDialog } from '../common/ConfirmDialog';
 import { StatusDot } from '../common/StatusDot';
+import { UiLanguageToggle } from '../i18n/UiLanguageToggle';
 import { ThemeToggle } from '../theme/ThemeToggle';
 
 type SidebarNavProps = {
   collapsed?: boolean;
   onNavigate?: () => void;
+  variant?: 'default' | 'rail';
 };
 
 type NavItem = {
   key: string;
-  label: string;
+  labelKey: UiTextKey;
   to: string;
   icon: React.ComponentType<{ className?: string }>;
   exact?: boolean;
   badge?: 'completion';
 };
 
-const NAV_ITEMS: NavItem[] = [
-  { key: 'home', label: '首页', to: '/', icon: Home, exact: true },
-  { key: 'chat', label: '问股', to: '/chat', icon: MessageSquareQuote, badge: 'completion' },
-  { key: 'portfolio', label: '持仓', to: '/portfolio', icon: BriefcaseBusiness },
-  { key: 'backtest', label: '回测', to: '/backtest', icon: BarChart3 },
-  { key: 'settings', label: '设置', to: '/settings', icon: Settings2 },
+type NavGroup = {
+  key: 'research' | 'portfolio' | 'system';
+  labelKey: UiTextKey;
+  items: NavItem[];
+};
+
+const NAV_GROUPS: NavGroup[] = [
+  {
+    key: 'research',
+    labelKey: 'layout.navGroup.research',
+    items: [
+      { key: 'home', labelKey: 'layout.nav.home', to: '/', icon: Home, exact: true },
+      { key: 'chat', labelKey: 'layout.nav.chat', to: '/chat', icon: MessageSquareQuote, badge: 'completion' },
+      { key: 'screening', labelKey: 'layout.nav.screening', to: '/screening', icon: Search },
+    ],
+  },
+  {
+    key: 'portfolio',
+    labelKey: 'layout.navGroup.portfolio',
+    items: [
+      { key: 'portfolio', labelKey: 'layout.nav.portfolio', to: '/portfolio', icon: BriefcaseBusiness },
+      { key: 'decision-signals', labelKey: 'layout.nav.decisionSignals', to: '/decision-signals', icon: Activity },
+      { key: 'backtest', labelKey: 'layout.nav.backtest', to: '/backtest', icon: BarChart3 },
+      { key: 'alerts', labelKey: 'layout.nav.alerts', to: '/alerts', icon: Bell },
+    ],
+  },
+  {
+    key: 'system',
+    labelKey: 'layout.navGroup.system',
+    items: [
+      { key: 'data', labelKey: 'layout.nav.dataCenter', to: '/data', icon: Database },
+      { key: 'usage', labelKey: 'layout.nav.usage', to: '/usage', icon: Gauge },
+      { key: 'settings', labelKey: 'layout.nav.settings', to: '/settings', icon: Settings2 },
+    ],
+  },
 ];
 
-export const SidebarNav: React.FC<SidebarNavProps> = ({ collapsed = false, onNavigate }) => {
+export const SidebarNav: React.FC<SidebarNavProps> = ({ collapsed = false, onNavigate, variant = 'default' }) => {
   const { authEnabled, logout } = useAuth();
+  const location = useLocation();
+  const { t } = useUiLanguage();
   const completionBadge = useAgentChatStore((state) => state.completionBadge);
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
+  const isRail = variant === 'rail';
+  const itemBaseClass = cn(
+    'group relative flex h-[var(--nav-item-height)] w-full items-center overflow-hidden rounded-2xl border border-transparent text-sm leading-none text-secondary-text transition-all',
+    isRail
+      ? 'justify-center gap-2.5 px-2'
+      : collapsed
+        ? 'justify-center px-0'
+        : 'gap-3 px-[var(--nav-item-padding-x)]'
+  );
+  const itemInteractiveClass = cn(
+    itemBaseClass,
+    'hover:bg-[var(--nav-hover-bg)] hover:text-foreground'
+  );
+  const itemActiveClass = 'border-[var(--nav-active-border)] bg-[var(--nav-active-bg)] font-medium text-[hsl(var(--primary))]';
+  const itemIconClass = cn(isRail ? 'h-[18px] w-[18px]' : 'h-5 w-5', 'shrink-0');
+  const itemLabelClass = cn('truncate', isRail ? 'text-center' : '');
 
   return (
-    <div className="flex h-full flex-col">
-      <div className={cn('mb-4 flex items-center gap-2 px-1', collapsed ? 'justify-center' : '')}>
-        <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-primary-gradient text-[hsl(var(--primary-foreground))] shadow-[0_12px_28px_var(--nav-brand-shadow)]">
-          <BarChart3 className="h-5 w-5" />
+    <div className={cn('flex min-h-0 w-full flex-col', isRail ? '' : 'h-full')}>
+      <div
+        className={cn(
+          'flex shrink-0 items-center',
+          isRail ? 'mb-5 justify-center gap-2 pt-1' : 'mb-4 gap-2 px-1',
+          collapsed || isRail ? 'justify-center' : ''
+        )}
+      >
+        <div
+          className={cn(
+            'flex items-center justify-center bg-primary-gradient text-[hsl(var(--primary-foreground))] shadow-[0_12px_28px_var(--nav-brand-shadow)]',
+            isRail ? 'h-9 w-9 rounded-[1rem]' : 'h-10 w-10 rounded-2xl'
+          )}
+        >
+          <BarChart3 className={cn(isRail ? 'h-[19px] w-[19px]' : 'h-5 w-5')} />
         </div>
         {!collapsed ? (
-          <p className="min-w-0 truncate text-sm font-semibold text-foreground">DSA</p>
+          <p className={cn('min-w-0 truncate font-semibold text-foreground', isRail ? 'text-[0.95rem] leading-none' : 'text-sm')}>DSA</p>
         ) : null}
       </div>
 
-      <nav className="flex flex-1 flex-col gap-1.5" aria-label="主导航">
-        {NAV_ITEMS.map(({ key, label, to, icon: Icon, exact, badge }) => (
-          <NavLink
-            key={key}
-            to={to}
-            end={exact}
-            onClick={onNavigate}
-            aria-label={label}
-            className={({ isActive }) =>
-              cn(
-                'group relative flex items-center gap-3 border-y border-x-0 text-sm transition-all',
-                'h-[var(--nav-item-height)]',
-                collapsed ? 'justify-center px-0' : 'px-[var(--nav-item-padding-x)]',
-                isActive
-                  ? 'border-[var(--nav-active-border)] bg-[var(--nav-active-bg)] text-[hsl(var(--primary))] font-medium'
-                  : 'border-transparent text-secondary-text hover:bg-[var(--nav-hover-bg)] hover:text-foreground'
-              )
-            }
-          >
-            {({ isActive }) => (
-              <>
-                {isActive && (
-                  <motion.div 
-                    layoutId="activeIndicator"
-                    className="absolute top-0 bottom-0 left-0 w-[var(--nav-indicator-width)] bg-[var(--nav-indicator-bg)] shadow-[0_0_10px_var(--nav-indicator-shadow)]"
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    transition={{ duration: 0.2 }}
-                  />
+      <nav className={cn('flex flex-col gap-1.5', isRail ? 'min-h-0 overflow-y-auto' : 'flex-1')} aria-label={t('layout.mainNav')}>
+        {NAV_GROUPS.map((group, groupIndex) => (
+          <React.Fragment key={group.key}>
+            {!collapsed && !isRail ? (
+              <p
+                className={cn(
+                  'select-none px-3 pb-0.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-text/75',
+                  groupIndex > 0 ? 'pt-2.5' : 'pt-0.5',
                 )}
-                <Icon className={cn('ml-1 h-5 w-5 shrink-0', isActive ? 'text-[var(--nav-icon-active)]' : 'text-current')} />
-                {!collapsed ? <span className="truncate">{label}</span> : null}
-                {badge === 'completion' && completionBadge ? (
-                  <StatusDot
-                    tone="info"
-                    data-testid="chat-completion-badge"
-                    className={cn(
-                      'absolute right-3 border-2 border-background shadow-[0_0_10px_var(--nav-indicator-shadow)]',
-                      collapsed ? 'right-2 top-2' : ''
-                    )}
-                    aria-label="问股有新消息"
-                  />
-                ) : null}
-              </>
-            )}
-          </NavLink>
+              >
+                {t(group.labelKey)}
+              </p>
+            ) : groupIndex > 0 ? (
+              <div className="my-1 border-t border-border/40" aria-hidden="true" />
+            ) : null}
+            {group.items.map(({ key, labelKey, to, icon: Icon, exact, badge }) => {
+              const label = t(labelKey);
+              return (
+                <NavLink
+                  key={key}
+                  to={to}
+                  end={exact}
+                  onClick={onNavigate}
+                  aria-label={label}
+                  className={({ isActive }) =>
+                    cn(
+                      itemInteractiveClass,
+                      'shrink-0',
+                      isActive ? itemActiveClass : ''
+                    )
+                  }
+                >
+                  {({ isActive }) => (
+                    <>
+                      <Icon className={cn(itemIconClass, isActive ? 'text-[var(--nav-icon-active)]' : 'text-current')} />
+                      {!collapsed ? <span className={itemLabelClass}>{label}</span> : null}
+                      {badge === 'completion' && completionBadge ? (
+                        <StatusDot
+                          tone="info"
+                          data-testid="chat-completion-badge"
+                          className={cn(
+                            'absolute right-3 border-2 border-background shadow-[0_0_10px_var(--nav-indicator-shadow)]',
+                            collapsed ? 'right-2 top-2' : ''
+                          )}
+                          aria-label={t('layout.newChatMessage')}
+                        />
+                      ) : null}
+                    </>
+                  )}
+                </NavLink>
+              );
+            })}
+          </React.Fragment>
         ))}
+
       </nav>
 
-      <div className="mt-4 mb-2">
-        <ThemeToggle variant="nav" collapsed={collapsed} />
+      <div className="mt-1.5 flex shrink-0 flex-col gap-1.5">
+        <ThemeToggle
+          variant={isRail ? 'rail' : 'nav'}
+          collapsed={collapsed}
+          wrapperClassName="w-full"
+          triggerClassName={itemInteractiveClass}
+          triggerActiveClassName={itemActiveClass}
+          iconClassName={itemIconClass}
+          labelClassName={itemLabelClass}
+        />
+        <UiLanguageToggle
+          variant={isRail ? 'rail' : 'nav'}
+          collapsed={collapsed}
+          wrapperClassName="w-full"
+          triggerClassName={itemInteractiveClass}
+          triggerActiveClassName={itemActiveClass}
+          iconClassName={itemIconClass}
+          labelClassName={itemLabelClass}
+        />
       </div>
 
       {authEnabled ? (
@@ -105,21 +191,22 @@ export const SidebarNav: React.FC<SidebarNavProps> = ({ collapsed = false, onNav
           type="button"
           onClick={() => setShowLogoutConfirm(true)}
           className={cn(
-            'mt-5 flex h-11 w-full cursor-pointer select-none items-center gap-3 rounded-2xl border border-transparent px-3 text-sm text-secondary-text transition-all hover:border-border/70 hover:bg-hover hover:text-foreground',
-            collapsed ? 'justify-center px-2' : ''
+            itemInteractiveClass,
+            'shrink-0',
+            isRail ? 'mt-1.5' : 'mt-5'
           )}
         >
-          <LogOut className="h-5 w-5 shrink-0" />
-          {!collapsed ? <span>退出</span> : null}
+          <LogOut className={itemIconClass} />
+          {!collapsed ? <span className={itemLabelClass}>{t('layout.logout')}</span> : null}
         </button>
       ) : null}
 
       <ConfirmDialog
         isOpen={showLogoutConfirm}
-        title="退出登录"
-        message="确认退出当前登录状态吗？退出后需要重新输入密码。"
-        confirmText="确认退出"
-        cancelText="取消"
+        title={t('layout.logoutTitle')}
+        message={t(/^\/settings\/?$/.test(location.pathname) ? 'layout.logoutSettingsMessage' : 'layout.logoutMessage')}
+        confirmText={t('layout.logoutConfirm')}
+        cancelText={t('common.cancel')}
         isDanger
         onConfirm={() => {
           setShowLogoutConfirm(false);

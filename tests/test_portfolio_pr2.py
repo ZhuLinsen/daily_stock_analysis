@@ -23,6 +23,7 @@ except ModuleNotFoundError:
 import src.auth as auth
 from api.app import create_app
 from src.config import Config
+from src.services.decision_signal_service import DecisionSignalService
 from src.services.portfolio_import_service import PortfolioImportService
 from src.services.portfolio_risk_service import PortfolioRiskService
 from src.services.portfolio_service import PortfolioBusyError, PortfolioService
@@ -102,6 +103,34 @@ class PortfolioPr2TestCase(unittest.TestCase):
         )
         self.db.save_daily_data(df, code=symbol, data_source="portfolio-pr2-test")
 
+    def _create_position(self, account_id: int, symbol: str, price: float = 100.0, *, market: str = "cn") -> None:
+        self.service.record_trade(
+            account_id=account_id,
+            symbol=symbol,
+            trade_date=date(2026, 1, 1),
+            side="buy",
+            quantity=10,
+            price=price,
+            market=market,
+            currency="CNY" if market == "cn" else "USD",
+        )
+        self._save_close(symbol, date(2026, 1, 1), price)
+
+    def _create_signal(self, symbol: str, action: str, **overrides) -> dict:
+        payload = {
+            "stock_code": symbol,
+            "stock_name": symbol,
+            "market": "cn",
+            "source_type": "manual",
+            "trace_id": f"signal-{symbol}-{action}-{len(overrides)}",
+            "trigger_source": "api",
+            "action": action,
+            "reason": f"{symbol} {action} reason",
+            "status": "active",
+        }
+        payload.update(overrides)
+        return DecisionSignalService().create_signal(payload)["item"]
+
     @staticmethod
     def _csv_bytes(with_trade_uid: bool = True) -> bytes:
         if with_trade_uid:
@@ -151,6 +180,60 @@ class PortfolioPr2TestCase(unittest.TestCase):
         self.assertEqual(first_hash["inserted_count"], 0)
         self.assertEqual(first_hash["duplicate_count"], 1)
         self.assertEqual(second_hash["inserted_count"], 0)
+
+    def test_csv_rejects_non_finite_numbers_before_any_write(self) -> None:
+        aid = self.service.create_account(name="Main", broker="Demo", market="cn", base_currency="CNY")["id"]
+        header = "成交日期,证券代码,买卖标志,成交数量,成交均价,手续费,印花税"
+        fields = {"quantity": 3, "price": 4, "手续费": 5, "印花税": 6}
+        for field, index in fields.items():
+            for token in ("Infinity", "-inf", "NaN", "+NaN", "1e309"):
+                row = ["2026-01-02", "000001", "买入", "10", "100", "0", "0"]
+                row[index] = token
+                # A valid first row must not be partially committed when a
+                # later row fails numeric validation.
+                content = (header + "\n2026-01-02,600519,买入,10,100,0,0\n" + ",".join(row) + "\n").encode()
+                for endpoint, dry_run in (("parse", True), ("commit", True), ("commit", False)):
+                    with self.subTest(field=field, token=token, endpoint=endpoint, dry_run=dry_run):
+                        resp = self.client.post(
+                            f"/api/v1/portfolio/imports/csv/{endpoint}",
+                            data={"broker": "huatai", "account_id": aid, "dry_run": str(dry_run).lower()},
+                            files={"file": ("trades.csv", content, "text/csv")},
+                        )
+                        self.assertEqual(resp.status_code, 400, resp.text)
+                        self.assertIn(f"CSV row 3: {field} must be finite", resp.json()["message"])
+        self.assertEqual(self.service.list_trade_events(account_id=aid)["total"], 0)
+
+    def test_csv_rejects_overflow_in_combined_fees_and_taxes(self) -> None:
+        for columns, field in (("手续费,佣金", "fee"), ("印花税,税费", "tax")):
+            with self.subTest(field=field):
+                content = ("成交日期,证券代码,买卖标志,成交数量,成交均价," + columns
+                           + "\n2026-01-02,600519,买入,10,100,1e308,1e308\n").encode()
+                with self.assertRaisesRegex(ValueError, f"CSV row 2: {field} must be finite"):
+                    self.import_service.parse_trade_csv(broker="huatai", content=content)
+
+    def test_import_records_reject_non_finite_numbers_in_dry_run_and_commit(self) -> None:
+        aid = self.service.create_account(name="Main", broker="Demo", market="cn", base_currency="CNY")["id"]
+        record = self.import_service.parse_trade_csv(broker="huatai", content=self._csv_bytes())["records"][0]
+        for field in ("quantity", "price", "fee", "tax"):
+            for value in (float("inf"), float("-inf"), float("nan")):
+                for dry_run in (True, False):
+                    with self.subTest(field=field, value=value, dry_run=dry_run):
+                        result = self.import_service.commit_trade_records(
+                            account_id=aid, broker="huatai", records=[{**record, field: value}], dry_run=dry_run,
+                        )
+                        self.assertEqual(result["inserted_count"], 0)
+                        self.assertEqual(result["failed_count"], 1)
+                        self.assertIn(f"{field} must be finite", result["errors"][0])
+        self.assertEqual(self.service.list_trade_events(account_id=aid)["total"], 0)
+
+    def test_csv_accepts_finite_scientific_notation_and_blank_optional_fees(self) -> None:
+        content = ("成交日期,证券代码,买卖标志,成交数量,成交均价,手续费,印花税\n"
+                   '2026-01-02,000001,买入,"1,000",1e2,,0\n').encode()
+        parsed = self.import_service.parse_trade_csv(broker="huatai", content=content)
+        self.assertEqual(parsed["record_count"], 1)
+        record = parsed["records"][0]
+        self.assertEqual(record["symbol"], "000001")
+        self.assertEqual((record["quantity"], record["price"], record["fee"], record["tax"]), (1000, 100, 0, 0))
 
     def test_import_side_parser_avoids_false_sell_match(self) -> None:
         csv_text = (
@@ -383,6 +466,23 @@ class PortfolioPr2TestCase(unittest.TestCase):
         self.assertGreater(report["drawdown"]["max_drawdown_pct"], 10.0)
         self.assertTrue(report["drawdown"]["alert"])
 
+    def test_concentration_preserves_positive_exposure_with_rounded_zero_weight(self) -> None:
+        risk = PortfolioRiskService()
+        snapshot = {"total_market_value": 10_000_001, "accounts": [{
+            "base_currency": "CNY", "market": "cn", "positions": [
+                {"symbol": "600519", "market_value_base": 10_000_000, "valuation_currency": "CNY"},
+                {"symbol": "000001", "market_value_base": 1, "valuation_currency": "CNY"},
+            ],
+        }]}
+        concentration = risk._build_concentration(snapshot, 30, as_of_date=date(2026, 1, 1))
+        with patch.object(risk, "_resolve_primary_sector", side_effect=["白酒", "银行"]):
+            sectors = risk._build_sector_concentration(snapshot, 30, as_of_date=date(2026, 1, 1))
+        for block, rows_key in ((concentration, "top_positions"), (sectors, "top_sectors")):
+            self.assertEqual(block["top_weight_pct"], 100)
+            self.assertEqual([row["weight_pct"] for row in block[rows_key]], [100, 0])
+            self.assertEqual(block[rows_key][1]["market_value_base"], 1)
+            self.assertTrue(block["alert"])
+
     def test_concentration_uses_cny_normalized_exposure(self) -> None:
         cn_account = self.service.create_account(name="CN", broker="Demo", market="cn", base_currency="CNY")
         us_account = self.service.create_account(name="US", broker="Demo", market="us", base_currency="USD")
@@ -494,6 +594,160 @@ class PortfolioPr2TestCase(unittest.TestCase):
         sectors = report["sector_concentration"]["top_sectors"]
         self.assertTrue(len(sectors) >= 1)
         self.assertEqual(sectors[0]["sector"], "白酒")
+
+    def test_risk_report_aggregates_active_defensive_decision_signals_for_holdings(self) -> None:
+        account = self.service.create_account(name="Main", broker="Demo", market="cn", base_currency="CNY")
+        aid = account["id"]
+        self.service.record_cash_ledger(
+            account_id=aid,
+            event_date=date(2026, 1, 1),
+            direction="in",
+            amount=100000.0,
+            currency="CNY",
+        )
+        for symbol in ("SH600519", "300750", "000001", "000002", "000003"):
+            self._create_position(aid, symbol)
+
+        self._create_signal("600519.SH", "sell")
+        self._create_signal("300750", "reduce")
+        self._create_signal("000001", "alert")
+        self._create_signal("000002", "buy")
+        self._create_signal("000003", "watch")
+        self._create_signal("002000", "sell")
+        self._create_signal("600519", "alert", status="expired", trace_id="expired-alert-600519")
+
+        report = self.risk_service.get_risk_report(account_id=aid, as_of=date(2026, 1, 1), cost_method="fifo")
+
+        block = report["decision_signal_risk"]
+        self.assertTrue(block["available"])
+        self.assertEqual(block["total"], 3)
+        self.assertEqual(block["actions"], {"sell": 1, "reduce": 1, "alert": 1})
+        symbols = {item["symbol"] for item in block["items"]}
+        self.assertEqual(symbols, {"SH600519", "300750", "000001"})
+        signal_actions = {item["symbol"]: item["signal"]["action"] for item in block["items"]}
+        self.assertNotIn("000002", signal_actions)
+        self.assertNotIn("000003", signal_actions)
+        self.assertNotIn("002000", signal_actions)
+        self.assertEqual(signal_actions["SH600519"], "sell")
+        self.assertEqual(signal_actions["300750"], "reduce")
+        self.assertEqual(signal_actions["000001"], "alert")
+
+    def test_risk_report_uses_requested_snapshot_for_decision_signal_filters(self) -> None:
+        account = self.service.create_account(name="Main", broker="Demo", market="cn", base_currency="CNY")
+        aid = account["id"]
+        self.service.record_cash_ledger(
+            account_id=aid,
+            event_date=date(2026, 1, 1),
+            direction="in",
+            amount=100000.0,
+            currency="CNY",
+        )
+        self.service.record_trade(
+            account_id=aid,
+            symbol="600519",
+            trade_date=date(2026, 1, 1),
+            side="buy",
+            quantity=10,
+            price=100,
+            market="cn",
+            currency="CNY",
+        )
+        self._save_close("600519", date(2026, 1, 1), 100.0)
+        self._save_close("600519", date(2026, 1, 2), 100.0)
+        self.service.record_trade(
+            account_id=aid,
+            symbol="000001",
+            trade_date=date(2026, 1, 2),
+            side="buy",
+            quantity=10,
+            price=20,
+            market="cn",
+            currency="CNY",
+        )
+        self._save_close("000001", date(2026, 1, 2), 20.0)
+        self._create_signal("000001", "sell")
+
+        original = self.risk_service.decision_signal_service.list_signals
+        with patch.object(
+            self.risk_service.decision_signal_service,
+            "list_signals",
+            wraps=original,
+        ) as spy:
+            report = self.risk_service.get_risk_report(
+                account_id=aid,
+                as_of=date(2026, 1, 2),
+                cost_method="fifo",
+            )
+
+        block = report["decision_signal_risk"]
+        self.assertTrue(block["available"])
+        self.assertEqual(block["total"], 1)
+        self.assertEqual(block["items"][0]["symbol"], "000001")
+        self.assertEqual(block["items"][0]["signal"]["action"], "sell")
+        for call in spy.mock_calls:
+            self.assertIsNot(call.kwargs.get("holding_only"), True)
+        identity_calls = [
+            call.kwargs.get("stock_identities")
+            for call in spy.mock_calls
+            if call.kwargs.get("stock_identities") is not None
+        ]
+        observed_identities = {
+            identity
+            for ids in identity_calls
+            for identity in ids
+        }
+        self.assertIn(("cn", "000001"), observed_identities)
+        self.assertIn(("cn", "600519"), observed_identities)
+
+    def test_risk_report_decision_signal_fail_open(self) -> None:
+        account = self.service.create_account(name="Main", broker="Demo", market="cn", base_currency="CNY")
+        aid = account["id"]
+        self.service.record_cash_ledger(
+            account_id=aid,
+            event_date=date(2026, 1, 1),
+            direction="in",
+            amount=10000.0,
+            currency="CNY",
+        )
+        self._create_position(aid, "600519")
+
+        class BrokenSignalService:
+            def list_signals(self, **_kwargs):
+                raise RuntimeError("decision signal unavailable")
+
+        risk_service = PortfolioRiskService(
+            portfolio_service=self.service,
+            decision_signal_service=BrokenSignalService(),
+        )
+        report = risk_service.get_risk_report(account_id=aid, as_of=date(2026, 1, 1), cost_method="fifo")
+
+        self.assertFalse(report["decision_signal_risk"]["available"])
+        self.assertEqual(report["decision_signal_risk"]["total"], 0)
+        self.assertEqual(report["decision_signal_risk"]["items"], [])
+
+    def test_portfolio_risk_endpoint_returns_defensive_decision_signals(self) -> None:
+        account = self.service.create_account(name="Main", broker="Demo", market="cn", base_currency="CNY")
+        aid = account["id"]
+        self.service.record_cash_ledger(
+            account_id=aid,
+            event_date=date(2026, 1, 1),
+            direction="in",
+            amount=10000.0,
+            currency="CNY",
+        )
+        self._create_position(aid, "600519")
+        self._create_signal("600519", "sell")
+
+        response = self.client.get(
+            "/api/v1/portfolio/risk",
+            params={"account_id": aid, "as_of": "2026-01-01", "cost_method": "fifo"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertIn("decision_signal_risk", payload)
+        self.assertEqual(payload["decision_signal_risk"]["total"], 1)
+        self.assertEqual(payload["decision_signal_risk"]["items"][0]["signal"]["action"], "sell")
 
     def test_snapshot_does_not_trigger_online_fx_refresh(self) -> None:
         account = self.service.create_account(name="US", broker="Demo", market="us", base_currency="CNY")
@@ -704,6 +958,131 @@ class PortfolioPr2TestCase(unittest.TestCase):
         self.assertIn("sector_concentration", payload)
         self.assertIn("drawdown", payload)
         self.assertIn("stop_loss", payload)
+
+
+class PortfolioRiskBoardCacheTestCase(unittest.TestCase):
+    """Sector lookups should not hit the rate-limited provider on every risk request."""
+
+    def setUp(self) -> None:
+        PortfolioRiskService.clear_belong_boards_cache_for_tests()
+        self.addCleanup(PortfolioRiskService.clear_belong_boards_cache_for_tests)
+
+    @staticmethod
+    def _new_service(manager: MagicMock) -> PortfolioRiskService:
+        portfolio_service = MagicMock()
+        portfolio_service.convert_amount.side_effect = lambda *, amount, **_kwargs: (amount, False, "")
+        service = PortfolioRiskService(
+            repo=MagicMock(),
+            portfolio_service=portfolio_service,
+            decision_signal_service=MagicMock(),
+            config=SimpleNamespace(),
+        )
+        service._data_manager = manager
+        return service
+
+    @staticmethod
+    def _snapshot() -> dict:
+        return {
+            "total_market_value": 300.0,
+            "accounts": [
+                {
+                    "market": "cn",
+                    "base_currency": "CNY",
+                    "positions": [
+                        {"symbol": "600519", "market": "cn", "market_value_base": 200.0},
+                        {"symbol": "600036", "market": "cn", "market_value_base": 100.0},
+                    ],
+                }
+            ],
+        }
+
+    def test_sector_lookups_are_reused_by_later_requests(self) -> None:
+        boards = {
+            "600519": [{"name": "白酒", "type": "行业"}],
+            "600036": [{"name": "银行", "type": "行业"}],
+        }
+        manager = MagicMock()
+        manager.get_belong_boards.side_effect = lambda symbol: [dict(item) for item in boards[symbol]]
+
+        # The risk endpoint builds a new service for every request.
+        results = [
+            self._new_service(manager)._build_sector_concentration(
+                self._snapshot(), 50.0, as_of_date=date(2026, 1, 1)
+            )
+            for _ in range(2)
+        ]
+
+        for result in results:
+            self.assertEqual([row["sector"] for row in result["top_sectors"]], ["白酒", "银行"])
+            self.assertEqual(result["coverage"]["classified_count"], 2)
+        self.assertEqual(manager.get_belong_boards.call_count, 2)
+
+    def test_empty_belong_boards_are_not_cached(self) -> None:
+        manager = MagicMock()
+        manager.get_belong_boards.side_effect = [[], [{"name": "白酒", "type": "行业"}]]
+
+        self.assertEqual(self._new_service(manager)._fetch_belong_boards("600519"), [])
+        self.assertEqual(
+            self._new_service(manager)._fetch_belong_boards("600519"),
+            [{"name": "白酒", "type": "行业"}],
+        )
+        self.assertEqual(manager.get_belong_boards.call_count, 2)
+
+    def test_expired_belong_boards_are_fetched_again(self) -> None:
+        manager = MagicMock()
+        manager.get_belong_boards.side_effect = [
+            [{"name": "白酒", "type": "行业"}],
+            [{"name": "饮料制造", "type": "行业"}],
+        ]
+
+        with patch.object(PortfolioRiskService, "_BELONG_BOARDS_CACHE_TTL_SECONDS", -1):
+            self._new_service(manager)._fetch_belong_boards("600519")
+            boards = self._new_service(manager)._fetch_belong_boards("600519")
+
+        self.assertEqual(boards, [{"name": "饮料制造", "type": "行业"}])
+        self.assertEqual(manager.get_belong_boards.call_count, 2)
+
+    def test_failed_lookup_through_data_manager_is_retried(self) -> None:
+        from data_provider.base import DataFetcherManager
+
+        class _FlakyBoardFetcher:
+            name = "FlakyBoardFetcher"
+            priority = 1
+
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def get_belong_board(self, stock_code: str) -> pd.DataFrame:
+                self.calls += 1
+                if self.calls == 1:
+                    raise ConnectionError("upstream timeout")
+                return pd.DataFrame({"板块名称": ["白酒"], "板块代码": ["BK0896"], "板块类型": ["行业"]})
+
+        fetcher = _FlakyBoardFetcher()
+        manager = DataFetcherManager(fetchers=[fetcher])
+
+        # The manager turns the provider error into an empty list; that must not be cached.
+        self.assertEqual(self._new_service(manager)._fetch_belong_boards("600519"), [])
+        retried = self._new_service(manager)._fetch_belong_boards("600519")
+        cached = self._new_service(manager)._fetch_belong_boards("600519")
+
+        self.assertEqual([board["name"] for board in retried], ["白酒"])
+        self.assertEqual(cached, retried)
+        self.assertEqual(fetcher.calls, 2)
+
+    def test_changing_returned_boards_does_not_change_the_cache(self) -> None:
+        manager = MagicMock()
+        manager.get_belong_boards.return_value = [{"name": "白酒", "type": "行业"}]
+
+        first = self._new_service(manager)._fetch_belong_boards("600519")
+        first[0]["name"] = "changed by caller"
+        first.append({"name": "extra", "type": "行业"})
+        hit = self._new_service(manager)._fetch_belong_boards("600519")
+        hit[0]["name"] = "changed again"
+        again = self._new_service(manager)._fetch_belong_boards("600519")
+
+        self.assertEqual(again, [{"name": "白酒", "type": "行业"}])
+        self.assertEqual(manager.get_belong_boards.call_count, 1)
 
 
 if __name__ == "__main__":

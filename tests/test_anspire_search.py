@@ -49,6 +49,8 @@ from src.config import Config, get_config
 from src.search_service import (
     AnspireSearchProvider,
     SearchService,
+    SearchResponse,
+    _get_with_retry,
     get_search_service,
     reset_search_service,
 )
@@ -274,11 +276,18 @@ class TestAnspireSearchProvider(unittest.TestCase):
             
         mock_requests.get = MagicMock(side_effect=timeout_exc())
         
-        response = self.provider.search("测试查询", max_results=3)
+        with patch.object(_get_with_retry.retry, "sleep", return_value=None) as mock_sleep:
+            response = self.provider.search("测试查询", max_results=3)
         
         self.assertFalse(response.success)
         self.assertEqual(response.provider, "Anspire")
         self.assertEqual(len(response.results), 0)
+        self.assertEqual(mock_requests.get.call_count, 3)
+        self.assertEqual(mock_sleep.call_count, 2)
+        self.assertEqual(
+            [float(item.args[0]) for item in mock_sleep.call_args_list],
+            [1.0, 2.0],
+        )
         # 错误消息检查
         self.assertTrue("超时" in response.error_message or "Timeout" in response.error_message)
     
@@ -295,11 +304,18 @@ class TestAnspireSearchProvider(unittest.TestCase):
 
         mock_requests.get = MagicMock(side_effect=conn_exc())
         
-        response = self.provider.search("测试查询", max_results=3)
+        with patch.object(_get_with_retry.retry, "sleep", return_value=None) as mock_sleep:
+            response = self.provider.search("测试查询", max_results=3)
         
         self.assertFalse(response.success)
         self.assertEqual(response.provider, "Anspire")
         self.assertEqual(len(response.results), 0)
+        self.assertEqual(mock_requests.get.call_count, 3)
+        self.assertEqual(mock_sleep.call_count, 2)
+        self.assertEqual(
+            [float(item.args[0]) for item in mock_sleep.call_args_list],
+            [1.0, 2.0],
+        )
         self.assertTrue("网络" in response.error_message or "Connection" in response.error_message)
     
     @patch('src.search_service.requests')
@@ -426,17 +442,44 @@ class TestAnspireSearchService(unittest.TestCase):
         self.assertEqual(len(anspire_providers), 0)
     
     def test_search_service_priority(self):
-        """测试 Anspire 优先级"""
+        """Anspire 紧随 SerpAPI，位于 MiniMax 和 SearXNG 之前。"""
         service = SearchService(
             anspire_keys=["anspire_key"],
             bocha_keys=["bocha_key"],
             tavily_keys=["tavily_key"],
+            brave_keys=["brave_key"],
+            serpapi_keys=["serpapi_key"],
+            minimax_keys=["minimax_key"],
+            searxng_base_urls=["https://search.example.com"],
             searxng_public_instances_enabled=False,
             news_max_age_days=3,
             news_strategy_profile="short"
         )
         
-        self.assertIsInstance(service._providers[0], AnspireSearchProvider)
+        self.assertEqual([p.name for p in service._providers], ["Bocha", "Tavily", "Brave", "SerpAPI", "Anspire", "MiniMax", "SearXNG"])
+        calls = []
+
+        def result_for(provider, success):
+            def search(*args, **kwargs):
+                calls.append(provider.name)
+                return SearchResponse(query="test", results=[], provider=provider.name, success=success)
+            return search
+
+        # Exercise the service fallback loop with the actual configured provider order.
+        for provider in service._providers:
+            provider.search = MagicMock(side_effect=result_for(provider, provider.name == "Anspire"))
+        response = service.search_stock_events("600519", "贵州茅台")
+        self.assertTrue(response.success)
+        self.assertEqual(response.provider, "Anspire")
+        self.assertEqual(calls, ["Bocha", "Tavily", "Brave", "SerpAPI", "Anspire"])
+
+        calls.clear()
+        service._cache.clear()
+        first = service._providers[0]
+        first.search = MagicMock(side_effect=result_for(first, True))
+        response = service.search_stock_events("600519", "贵州茅台")
+        self.assertEqual(response.provider, "Bocha")
+        self.assertEqual(calls, ["Bocha"])
 
 
 class TestAnspireIntegration(unittest.TestCase):
@@ -444,18 +487,35 @@ class TestAnspireIntegration(unittest.TestCase):
     
     @classmethod
     def setUpClass(cls):
-        """Check if API Key is configured."""
+        """Check if API Key is configured and valid."""
         cls.api_keys = [k.strip() for k in os.getenv('ANSPIRE_API_KEYS', '').split(',') if k.strip()]
         cls.has_api_key = len(cls.api_keys) > 0
+        cls.has_valid_api_key = False  # 标记是否有有效的 API Key
         
         if cls.has_api_key:
             reset_search_service()
             cls.service = get_search_service()
+            
+            # 验证 API Key 是否有效
+            try:
+                # 查找 Anspire provider
+                for provider in cls.service._providers:
+                    if isinstance(provider, AnspireSearchProvider):
+                        # 执行一次简单的搜索验证
+                        test_response = provider.search("测试", max_results=1)
+                        if test_response.success:
+                            cls.has_valid_api_key = True
+                        break
+            except Exception:
+                cls.has_valid_api_key = False
 
-    @unittest.skipIf(
-        not os.environ.get("ANSPIRE_API_KEYS"),
-        "未设置 ANSPIRE_API_KEYS 环境变量，跳过集成测试"
-    )
+    def setUp(self):
+        """在每次测试前检查 API Key 是否有效"""
+        if not os.environ.get("ANSPIRE_API_KEYS"):
+            self.skipTest("未设置 ANSPIRE_API_KEYS 环境变量，跳过集成测试")
+        if not getattr(self.__class__, 'has_valid_api_key', False):
+            self.skipTest("ANSPIRE_API_KEYS 环境变量中的 API Key 无效，跳过集成测试")
+
     @pytest.mark.network
     def test_real_api_call_stock_news(self):
         """真实 API 调用测试 - 股票新闻搜索"""
@@ -494,10 +554,6 @@ class TestAnspireIntegration(unittest.TestCase):
             # snippet 可能为空，视具体实现而定
             # self.assertIsNotNone(result.snippet)
     
-    @unittest.skipIf(
-        not os.environ.get("ANSPIRE_API_KEYS"),
-        "未设置 ANSPIRE_API_KEYS 环境变量，跳过集成测试"
-    )
     @pytest.mark.network
     def test_real_api_call_general_search(self):
         """真实 API 调用测试 - 通用搜索"""

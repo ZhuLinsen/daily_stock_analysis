@@ -1,0 +1,41 @@
+{
+  "total_steps": 8,
+  "tool_calls_log": [
+    {
+      "step": 1,
+      "tool": "get_realtime_quote",
+      "arguments": {"stock_code": "600519"},
+      "success": true,
+      "duration": 0.5,
+      "result_length": 100,
+      "cached": false
+    },
+    {
+      "step": 2,
+      "tool": "get_realtime_quote",
+      "arguments": {"stock_code": "600519"},
+      "success": true,
+      "duration": 0.6,
+      "result_length": 110,
+      "cached": false
+    },
+    {
+      "step": 3,
+      "tool": "get_daily_history",
+      "arguments": {"stock_code": "600519", "days": 30},
+      "success": false,
+      "duration": 1.5,
+      "result_length": 0,
+      "cached": true
+    },
+    {
+      "step": 4,
+      "tool": "search_stock_news",
+      "arguments": {"query": "贵州茅台"},
+      "success": true,
+      "duration": 2.0,
+      "result_length": 300,
+      "cached": false
+    }
+  ]
+}

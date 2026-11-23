@@ -26,6 +26,7 @@ import logging
 from typing import Optional
 
 from src.agent.agents.base_agent import BaseAgent
+from src.agent.tools.fxmacrodata_tools import fxmacrodata_tool_names
 from src.agent.protocols import AgentContext, AgentOpinion
 from src.agent.runner import try_parse_json
 
@@ -47,7 +48,17 @@ class PortfolioAgent(BaseAgent):
     tool_names = [
         "get_realtime_quote",
         "get_stock_info",
-    ]
+    ] + fxmacrodata_tool_names(
+        'data_catalogue',
+        'forex',
+        'rate_differentials',
+        'cot',
+        'curves',
+        'latest_commodities',
+        'risk_sentiment',
+        'mcp_portfolio_risk_engine_task',
+        'mcp_macro_regime_classifier_task',
+    )
 
     # ------------------------------------------------------------------
     # Prompt construction

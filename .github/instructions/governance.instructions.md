@@ -1,13 +1,11 @@
 ---
-applyTo: "README.md,docs/**,AGENTS.md,CLAUDE.md,.github/**,.claude/skills/**,scripts/**,docker/**"
+applyTo: "README.md,docs/**,AGENTS.md,CLAUDE.md,.github/**,.agents/**,.claude/skills,scripts/**,docker/**"
 ---
 
 # Governance Instructions
 
-- Keep commands, file paths, workflow names, config keys, release paths, and directory references aligned with the executable repository state.
-- `AGENTS.md` is the canonical AI collaboration document; if its meaning changes, sync `CLAUDE.md`, `.github/copilot-instructions.md`, `.github/instructions/*.instructions.md`, and repository skills as needed.
-- Root `SKILL.md` and `docs/openclaw-skill-integration.md` describe product or external integration behavior, not repository governance.
-- Explain which pipeline, release path, deployment path, review automation, or governance asset is affected and what the rollback path is.
-- Avoid widening permissions, secret exposure, or destructive automation without a clearly documented need.
-- Preserve the repository's opt-in auto-tag behavior (`#patch`, `#minor`, `#major`) unless the change explicitly updates release policy.
-- If only one language version of a document is updated, explain why the counterpart was not synchronized.
+- `AGENTS.md` is the canonical AI collaboration source; sync `CLAUDE.md`, `.github/copilot-instructions.md`, `.github/instructions/*.instructions.md`, `.agents/skills/**`, and `scripts/check_ai_assets.py` when governance contracts change, then run `python scripts/check_ai_assets.py`.
+- Keep commands, file paths, workflow names, config keys, and release paths aligned with executable repository state.
+- Root `SKILL.md` and `docs/openclaw-skill-integration.md` describe product/external integrations, not repository governance.
+- Avoid widening CI/workflow permissions, secret exposure, or destructive automation without a clearly documented need; preserve opt-in auto-tag (`#patch`, `#minor`, `#major`).
+- If only one language version of a bilingual doc is updated, state why the counterpart was not synchronized.

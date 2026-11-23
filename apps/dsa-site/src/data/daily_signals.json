@@ -1,0 +1,114 @@
+[
+  {
+    "code": "600105",
+    "name": "永鼎股份",
+    "market": "cn",
+    "sector": "通信设备",
+    "sentiment_score": 55,
+    "operation_advice": "观望",
+    "decision_type": "hold",
+    "confidence_level": "中",
+    "trend_prediction": "看多",
+    "analysis_summary": "趋势强劲但超买严重——MA5 偏离 +10.06%，市盈率 710 倍，主力近 10 日净流出 17.08 亿；持仓者持有，空仓者观望，等待回调至 MA10 附近再考虑分批介入。",
+    "risk_alerts": [
+      "市盈率高达 710.98 倍，估值极度偏高。",
+      "前 10 个交易日主力资金累计净流出 17.08 亿元。",
+      "乖离率 10.06% 远超 5% 安全线，追高风险极大。"
+    ],
+    "positive_catalysts": [
+      "2025 年净利润同比增长 280.43%，扣非增长 398.61%。",
+      "光纤业务业绩会披露 Q1 大超预期，预计全年 16-18 亿利润。",
+      "光芯片 CW 光源大批量出货，100G EML 量产。"
+    ],
+    "sniper_points": {
+      "ideal_buy": 46.33,
+      "secondary_buy": 42.33,
+      "stop_loss": 42.33,
+      "take_profit": null
+    },
+    "model_used": "openai-compatible/gemini",
+    "data_sources": "行情 + 新闻舆情 + 技术面 + 基本面"
+  },
+  {
+    "code": "603667",
+    "name": "五洲新春",
+    "market": "cn",
+    "sector": "机器人/丝杠",
+    "sentiment_score": 52,
+    "operation_advice": "观望",
+    "decision_type": "hold",
+    "confidence_level": "中",
+    "trend_prediction": "看多",
+    "analysis_summary": "今日涨停 78.17 元（+10.01%），多策略综合评分 52，趋势跟踪信号强势但 RSI 80.66 处于超买，乖离率 +12.65%；机构综合目标价 84.61 元，建议等回调缩量再考虑。",
+    "risk_alerts": [
+      "RSI_6 = 80.66 进入超买区间，短线追涨胜率不稳。",
+      "近 10 日主力累计净流出 4.67 亿，需观察回流确认。"
+    ],
+    "positive_catalysts": [
+      "人形机器人丝杠 + 特斯拉 + 华为 + 定增落地多重题材加持。",
+      "盈利比例 98.77%，机构综合目标价 84.61 元。"
+    ],
+    "sniper_points": {
+      "ideal_buy": null,
+      "secondary_buy": null,
+      "stop_loss": null,
+      "take_profit": 84.61
+    },
+    "model_used": "openai-compatible/gemini",
+    "data_sources": "行情 + 多策略 + 资金面"
+  },
+  {
+    "code": "000657",
+    "name": "中钨高新",
+    "market": "cn",
+    "sector": "有色金属",
+    "sentiment_score": 65,
+    "operation_advice": "观望",
+    "decision_type": "hold",
+    "confidence_level": "中",
+    "trend_prediction": "看多",
+    "analysis_summary": "AI 服务器材料逻辑与业绩高增长支撑估值，但主力资金净流出、筹码分散，等待量价配合再确认方向。",
+    "risk_alerts": [
+      "主力资金净流出，短线抛压仍需确认。",
+      "筹码分散可能削弱持续拉升效率。"
+    ],
+    "positive_catalysts": [
+      "AI 服务器材料链关注度提升。",
+      "业绩高增长为估值提供支撑。"
+    ],
+    "sniper_points": {
+      "ideal_buy": null,
+      "secondary_buy": null,
+      "stop_loss": null,
+      "take_profit": null
+    },
+    "model_used": "openai-compatible/gemini",
+    "data_sources": "行情 + 新闻舆情 + 技术面 + 基本面"
+  },
+  {
+    "code": "hk00700",
+    "name": "腾讯控股",
+    "market": "hk",
+    "sector": "互联网",
+    "sentiment_score": 71,
+    "operation_advice": "持有",
+    "decision_type": "hold",
+    "confidence_level": "中",
+    "trend_prediction": "看多",
+    "analysis_summary": "港股权重股趋势较稳，可作为港股风险偏好观察样本；关注外部利率与流动性变化。",
+    "risk_alerts": [
+      "港股流动性与外部利率预期仍会影响估值。"
+    ],
+    "positive_catalysts": [
+      "平台经济与 AI 应用持续改善中长期叙事。"
+    ],
+    "sniper_points": {
+      "ideal_buy": null,
+      "secondary_buy": null,
+      "stop_loss": null,
+      "take_profit": null
+    },
+    "model_used": "openai-compatible/gemini",
+    "data_sources": "YFinance/Longbridge + 新闻舆情 + 技术面"
+  }
+]

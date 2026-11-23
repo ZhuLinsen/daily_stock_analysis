@@ -55,6 +55,26 @@ docker-compose -f ./docker/docker-compose.yml logs -f
 docker-compose -f ./docker/docker-compose.yml ps
 ```
 
+### 3.1 Resource Recommendations
+
+The default `docker/docker-compose.yml` sets `limits.memory: 1G` and `reservations.memory: 512M` for each service. Treat this as the recommended starting point for full analysis workloads.
+
+- Minimum trial: `512M`, only for lightweight Web/API usage, single-stock runs, and low concurrency. Set `MAX_WORKERS=1`.
+- Recommended: `1G`, suitable for normal analysis when running either `server` or `analyzer`.
+- Heavy workloads: `2G+`, suitable when running `server + analyzer` together, multi-stock analysis, default `MAX_WORKERS=3`, market review, news expansion, image reports, or screening.
+
+If you can only use `512M`, avoid starting both `server` and `analyzer`, and disable non-essential market review, news expansion, and image report features.
+
+### 3.2 Avoid Duplicate Scheduled Notifications
+
+Prefer one automatic scheduler: either the standalone `analyzer`, or `server` with `SCHEDULE_ENABLED=true`. Check for old NAS `--schedule` containers and duplicate deployments. Instances with separate databases cannot deduplicate each other.
+
+Daily CLI and Web/API jobs atomically claim their due occurrence in the same SQLite file configured by `DATABASE_PATH`. The same due instant, watchlist/portfolio source, analysis/delivery options, and report settings dispatch once, including when a second process triggers after the first finishes. Different slots, watchlists, or analysis/delivery options remain independent. Due times use the scheduler process's timezone and are normalized to UTC; keep `TZ` consistent within a deployment. Both official Compose services share `data/` by default, including the claim records.
+
+This is at-most-once automatic dispatch, not automatic failure retry or guaranteed notification delivery. A crash, timeout, or analysis failure after claiming (possibly after partial notification delivery) does not cause another scheduler to repeat the whole run. Inspect the outcome, then use the Web “Run now” action to retry manually. Claiming happens at the actual execution boundary and freezes the watchlist snapshot, avoiding races with settings edits during asynchronous startup. Web dispatches rejected as busy never acquire a claim. Immediate startup runs, manual CLI/API analysis, and “Run now” bypass this deduplication. Records are retained for approximately seven days. An unwritable/busy database logs an error and skips that occurrence; Web scheduler status reports claim errors.
+
+This relies on reliable SQLite file locking and covers same-host processes and containers sharing one local bind mount. It does not promise distributed deduplication across separate databases, NFS, or multiple hosts. No new setting or historical analysis-data migration is required.
+
 ### 4. Common Management Commands
 
 ```bash
@@ -70,10 +90,10 @@ docker-compose -f ./docker/docker-compose.yml build --no-cache
 docker-compose -f ./docker/docker-compose.yml up -d
 
 # Enter container for debugging
-docker-compose -f ./docker/docker-compose.yml exec stock-analyzer bash
+docker-compose -f ./docker/docker-compose.yml exec -u dsa stock-analyzer bash
 
 # Manually run analysis once
-docker-compose -f ./docker/docker-compose.yml exec stock-analyzer python main.py --no-notify
+docker-compose -f ./docker/docker-compose.yml exec -u dsa stock-analyzer python main.py --no-notify
 ```
 
 ### 5. Data Persistence
@@ -82,6 +102,12 @@ Data is automatically saved to host directories:
 - `./data/` - Database files
 - `./logs/` - Log files
 - `./reports/` - Analysis reports
+
+### 6. Permissions
+
+The Docker image startup entrypoint automatically creates and fixes ownership for the mounted `./data`, `./logs`, and `./reports` directories, then drops privileges to the non-root `dsa` user (UID 1000). Normal deployments do not require manual host-side `chown` / `chmod`.
+
+If you explicitly set `--user` / Compose `user:`, or use read-only mounts, rootless Docker, NFS, or another environment that prevents the container from fixing ownership, make sure the actual runtime user can write to these directories.
 
 ---
 
@@ -184,9 +210,9 @@ journalctl -u stock-analyzer -f
 
 | Config Item | Description | How to Get |
 |--------|------|----------|
-| `GEMINI_API_KEY` | Required for AI analysis | [Google AI Studio](https://aistudio.google.com/) |
-| `STOCK_LIST` | Watchlist | Comma-separated stock codes |
-| `WECHAT_WEBHOOK_URL` | WeChat push | WeChat Work group bot |
+| `AIHUBMIX_KEY` / `GEMINI_API_KEY` / `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `ANSPIRE_API_KEYS` | Configure at least one AI model key; choose a provider as needed | Provider console |
+| `STOCK_LIST` | Watchlist | Comma-separated stock codes; registered-index explicit forms (e.g. `sh000016`, `930606.CSI`, `sz399365`) are supported via the one-shot `--stocks` argument or the GitHub Actions entry (local `.env`/Docker no-arg default runs keep stock semantics; use `--stocks` there for indices) — see [Index watchlist configuration](full-guide_EN.md#index-watchlist-configuration) |
+| Notification channel | Configure at least one, such as WeChat Work, Feishu, Telegram, or email | Notification provider |
 
 ### Optional Configuration
 
@@ -195,7 +221,10 @@ journalctl -u stock-analyzer -f
 | `SCHEDULE_ENABLED` | `false` | Enable scheduled tasks |
 | `SCHEDULE_TIME` | `18:00` | Daily execution time |
 | `MARKET_REVIEW_ENABLED` | `true` | Enable market review |
-| `TAVILY_API_KEYS` | - | News search (optional) |
+| `AIHUBMIX_KEY` | - | AIHubMix one-key multi-model access |
+| `SERPAPI_API_KEYS` | - | SerpAPI realtime financial news search (recommended) |
+| `ANSPIRE_API_KEYS` | - | [Anspire](https://open.anspire.cn/dsa?share_code=QFBC0FYC) API key (optional; shared by LLM and search; availability depends on account permissions) |
+| `TAVILY_API_KEYS` | - | Tavily news search (optional) |
 | `MINIMAX_API_KEYS` | - | MiniMax search (optional) |
 
 ---
@@ -279,13 +308,28 @@ rm /opt/stock-analyzer/data/*.lock
 
 ### 4. Insufficient memory
 
-Adjust memory limits in `docker-compose.yml`:
+The default Compose recommendation is already `1G`. If the container still hits OOM or is killed by the platform, raise the memory limit in `docker-compose.yml`; use `2G+` when running `server + analyzer` together, multi-stock analysis, market review, image reports, or screening:
 ```yaml
 deploy:
   resources:
     limits:
       memory: 1G
+    reservations:
+      memory: 512M
 ```
+
+For a constrained `512M` deployment, set `MAX_WORKERS=1`, start only one of `server` or `analyzer`, and reduce non-essential market review, news expansion, and image report tasks.
+
+### 5. `Exited (132)` or `Illegal instruction` on Apple Silicon / ARM64 Linux VMs
+
+**Symptom**: On newer-kernel `aarch64` Linux VMs running on Apple Silicon (e.g. M4 Ubuntu 26.04 VM), containers exit immediately with `Exited (132)` or `docker build` fails with `Illegal instruction (core dumped)`.
+
+**Root Cause**: Newer ARM64 VM kernels expose `HWCAP2_SME`, causing NumPy's bundled OpenBLAS dynamic dispatch to execute SME instructions unsupported in non-streaming mode.
+
+**Resolution**:
+
+- **Docker deployment**: Current `Dockerfile` and `entrypoint.sh` automatically default `OPENBLAS_CORETYPE=ARMV8` on `aarch64`/`arm64` (leaving `x86_64` untouched). If using an older image or running commands via `docker-compose exec`, add `OPENBLAS_CORETYPE=ARMV8` to `.env` (or pass `-e OPENBLAS_CORETYPE=ARMV8` to `docker run`).
+- **Direct deployment (pip + python)**: On bleeding-edge Linux distributions that default to Python 3.14 (such as Ubuntu 26.04), create your virtual environment with **Python 3.11 or 3.12** so pinned dependencies resolve prebuilt `aarch64` wheels instead of compiling C/Rust extensions from source, and `export OPENBLAS_CORETYPE=ARMV8` before starting if `Illegal instruction` occurs.
 
 ---
 
@@ -349,7 +393,10 @@ Add these Secrets:
 
 | Secret Name | Description | Required |
 |------------|------|------|
-| `GEMINI_API_KEY` | Gemini AI API Key | ✅ |
+| `AIHUBMIX_KEY` | AIHubMix API Key (one key for multiple model families) | Optional |
+| `ANTHROPIC_API_KEY` | Anthropic API Key | Optional |
+| `GEMINI_API_KEY` | Gemini AI API Key | Optional |
+| `OPENAI_API_KEY` | OpenAI-compatible API Key | Optional |
 | `WECHAT_WEBHOOK_URL` | WeChat Work Bot Webhook | Optional* |
 | `FEISHU_WEBHOOK_URL` | Feishu Bot Webhook | Optional* |
 | `TELEGRAM_BOT_TOKEN` | Telegram Bot Token | Optional* |
@@ -360,20 +407,23 @@ Add these Secrets:
 | `SERVERCHAN3_SENDKEY` | ServerChan v3 Sendkey | Optional* |
 | `CUSTOM_WEBHOOK_URLS` | Custom Webhook (comma-separated for multiple) | Optional* |
 | `STOCK_LIST` | Watchlist, e.g., `600519,300750` | ✅ |
-| `TAVILY_API_KEYS` | Tavily Search API Key | Recommended |
+| `SERPAPI_API_KEYS` | SerpAPI Key | Recommended |
+| `ANSPIRE_API_KEYS` | [Anspire](https://open.anspire.cn/dsa?share_code=QFBC0FYC) API key (optional; shared by LLM and search; availability depends on account permissions) | Optional |
+| `TAVILY_API_KEYS` | Tavily Search API Key | Optional |
+| `BOCHA_API_KEYS` | Bocha Search API Key | Optional |
+| `BRAVE_API_KEYS` | Brave Search API Key | Optional |
 | `MINIMAX_API_KEYS` | MiniMax Coding Plan Web Search | Optional |
-| `SERPAPI_API_KEYS` | SerpAPI Key | Optional |
 | `TUSHARE_TOKEN` | Tushare Token | Optional |
-| `GEMINI_MODEL` | Model name (default gemini-2.0-flash) | Optional |
+| `GEMINI_MODEL` | Model name (default gemini-3.6-flash) | Optional |
 
 > *Note: Configure at least one notification channel, multiple channels supported for simultaneous push
 
 #### 3. Verify Workflow File
 
-Ensure `.github/workflows/daily_analysis.yml` file exists and is committed:
+Ensure `.github/workflows/00-daily-analysis.yml` file exists and is committed:
 
 ```bash
-git add .github/workflows/daily_analysis.yml
+git add .github/workflows/00-daily-analysis.yml
 git commit -m "Add GitHub Actions workflow"
 git push
 ```
@@ -399,7 +449,7 @@ git push
 
 Default configuration: **Monday to Friday, 18:00 Beijing Time** auto-execution
 
-Modify time: Edit cron expression in `.github/workflows/daily_analysis.yml`:
+Modify time: Edit cron expression in `.github/workflows/00-daily-analysis.yml`:
 
 ```yaml
 schedule:

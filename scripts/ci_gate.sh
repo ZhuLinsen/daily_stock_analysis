@@ -17,13 +17,50 @@ flake8_checks() {
 
 deterministic_checks() {
   echo "==> backend-gate: local deterministic checks"
-  ./test.sh code
-  ./test.sh yfinance
+  ./scripts/test.sh code
+  ./scripts/test.sh yfinance
 }
 
 offline_test_suite() {
   echo "==> backend-gate: offline test suite"
-  python -m pytest -m "not network"
+  # ``--timeout=120`` hard-fails any single test that runs longer than two
+  # minutes (issue #2131: backend-gate previously hung indefinitely around
+  # AlphaSift hotspot cases without leaving any traceback). ``-o
+  # timeout_method=thread`` makes pytest-timeout use a watcher thread that
+  # is reliable even when the test has swallowed Ctrl-C / signal handling
+  # (yfinance, AlphaSift). ``-o faulthandler_timeout=300`` dumps all
+  # thread + interpreter stacks to stderr after five minutes of total
+  # test silence, giving us a post-mortem root cause for any future
+  # CI hang instead of ``backend-gate`` being silently cancelled by the
+  # workflow timeout.
+  pytest_args=(
+    -m "not network"
+    --timeout=120 -o timeout_method=thread
+    -o faulthandler_timeout=300
+    --durations=30 --durations-min=0.5
+  )
+
+  if [[ -n "${PYTEST_SPLITS:-}" || -n "${PYTEST_GROUP:-}" ]]; then
+    if [[ ! "${PYTEST_SPLITS:-}" =~ ^[1-9][0-9]*$ ]] \
+      || [[ ! "${PYTEST_GROUP:-}" =~ ^[1-9][0-9]*$ ]] \
+      || (( PYTEST_GROUP > PYTEST_SPLITS )); then
+      echo "PYTEST_SPLITS and PYTEST_GROUP must be positive integers with group <= splits." >&2
+      exit 2
+    fi
+    if [[ ! -f .github/ci-test-durations.json ]]; then
+      echo "Missing .github/ci-test-durations.json required for balanced CI shards." >&2
+      exit 2
+    fi
+    echo "==> backend-gate: pytest shard ${PYTEST_GROUP}/${PYTEST_SPLITS}"
+    python scripts/ci_test_shard.py \
+      --splits "${PYTEST_SPLITS}" \
+      --group "${PYTEST_GROUP}" \
+      --first-shard-overhead "${PYTEST_FIRST_SHARD_OVERHEAD:-0}" \
+      -- "${pytest_args[@]}"
+    return
+  fi
+
+  python -m pytest "${pytest_args[@]}"
 }
 
 run_all() {

@@ -12,8 +12,14 @@ Verifies:
 """
 
 import os
+import base64
 import sys
+import tempfile
+import time
+import types
 import unittest
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch, MagicMock, PropertyMock
 from dataclasses import dataclass
 
@@ -49,6 +55,18 @@ class TestSymbolConversion(unittest.TestCase):
         self.assertEqual(_to_longbridge_symbol("00700"), "0700.HK")
         self.assertEqual(_to_longbridge_symbol("09988"), "9988.HK")
 
+    def test_hk_stock_4digit_bare_code_issue_2091(self):
+        """4 位裸港股码 (0001 长和 / 0941 中国移动) 必须路由到 .HK 后缀。
+
+        与 ``data_provider.base._is_hk_market`` 的 4-5 位裸港股契约一致,
+        Longbridge 作为 HK-capable provider 也必须接受同一输入,避免
+        上游路由判 HK、下游 provider 静默跳过的部分调用链失败。
+        """
+        self.assertTrue(_is_hk_code("0001"))
+        self.assertTrue(_is_hk_code("0941"))
+        self.assertEqual(_to_longbridge_symbol("0001"), "0001.HK")
+        self.assertEqual(_to_longbridge_symbol("0941"), "0941.HK")
+
     def test_hk_stock_already_suffixed(self):
         self.assertEqual(_to_longbridge_symbol("0700.HK"), "0700.HK")
 
@@ -78,6 +96,368 @@ class TestLongbridgeFetcherNoCredentials(unittest.TestCase):
 
     def test_is_available_false(self):
         self.assertFalse(self.fetcher._is_available())
+
+
+class TestLongbridgeAuthSelection(unittest.TestCase):
+    """Verify OAuth and Legacy auth selection without real SDK calls."""
+
+    def _install_mock_longbridge(self):
+        mock_lb_module = types.ModuleType("longbridge")
+        mock_lb_openapi = types.ModuleType("longbridge.openapi")
+        mock_config = MagicMock()
+        mock_quote_context = MagicMock(return_value="quote-context")
+        mock_oauth_builder = MagicMock()
+
+        mock_lb_openapi.Config = mock_config
+        mock_lb_openapi.QuoteContext = mock_quote_context
+        mock_lb_openapi.OAuthBuilder = mock_oauth_builder
+        return mock_lb_module, mock_lb_openapi, mock_config, mock_quote_context, mock_oauth_builder
+
+    def _config(
+        self,
+        *,
+        app_key="",
+        app_secret="",
+        access_token="",
+        oauth_client_id="",
+    ):
+        return SimpleNamespace(
+            longbridge_app_key=app_key,
+            longbridge_app_secret=app_secret,
+            longbridge_access_token=access_token,
+            longbridge_oauth_client_id=oauth_client_id,
+        )
+
+    @patch("src.config.get_config")
+    def test_is_available_with_oauth_client_id(self, mock_get_config):
+        mock_get_config.return_value = self._config(oauth_client_id="client-1")
+
+        fetcher = LongbridgeFetcher()
+
+        self.assertTrue(fetcher._is_available())
+
+    @patch("src.config.get_config")
+    def test_oauth_uses_token_cache_without_legacy_fallback(self, mock_get_config):
+        mock_get_config.return_value = self._config(oauth_client_id="client-1")
+        modules = self._install_mock_longbridge()
+        mock_lb_module, mock_lb_openapi, mock_config, mock_quote_context, mock_oauth_builder = modules
+        mock_oauth_builder.return_value.build.return_value = "oauth-token"
+        mock_config.from_oauth.return_value = "oauth-config"
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            token_cache = Path(tmpdir) / "client-1"
+            token_cache.write_text('{"refresh_token":"valid-token"}', encoding="utf-8")
+            with patch.dict("sys.modules", {"longbridge": mock_lb_module, "longbridge.openapi": mock_lb_openapi}), patch.dict(
+                os.environ,
+                {
+                    "LONGBRIDGE_OAUTH_CLIENT_ID": "client-1",
+                    "LONGBRIDGE_APP_KEY": "",
+                    "LONGBRIDGE_APP_SECRET": "",
+                    "LONGBRIDGE_ACCESS_TOKEN": "",
+                },
+            ), patch("data_provider.longbridge_fetcher._longbridge_config_kwargs", return_value={}), patch(
+                "data_provider.longbridge_fetcher._oauth_token_cache_path",
+                return_value=token_cache,
+            ):
+                fetcher = LongbridgeFetcher()
+                ctx = fetcher._get_ctx()
+
+        self.assertEqual(ctx, "quote-context")
+        mock_oauth_builder.assert_called_once_with("client-1")
+        mock_config.from_oauth.assert_called_once_with("oauth-token")
+        mock_config.from_apikey_env.assert_not_called()
+        mock_quote_context.assert_called_once_with("oauth-config")
+
+    @patch("src.config.get_config")
+    def test_oauth_uses_app_key_as_client_id_when_access_token_missing(self, mock_get_config):
+        mock_get_config.return_value = self._config(app_key="app-key", app_secret="app-secret")
+        modules = self._install_mock_longbridge()
+        mock_lb_module, mock_lb_openapi, mock_config, mock_quote_context, mock_oauth_builder = modules
+        mock_oauth_builder.return_value.build.return_value = "oauth-token"
+        mock_config.from_oauth.return_value = "oauth-config"
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            token_cache = Path(tmpdir) / "app-key"
+            token_cache.write_text('{"refresh_token":"valid-token"}', encoding="utf-8")
+            with patch.dict("sys.modules", {"longbridge": mock_lb_module, "longbridge.openapi": mock_lb_openapi}), patch.dict(
+                os.environ,
+                {
+                    "LONGBRIDGE_OAUTH_CLIENT_ID": "",
+                    "LONGBRIDGE_APP_KEY": "app-key",
+                    "LONGBRIDGE_APP_SECRET": "app-secret",
+                    "LONGBRIDGE_ACCESS_TOKEN": "",
+                },
+            ), patch("data_provider.longbridge_fetcher._longbridge_config_kwargs", return_value={}), patch(
+                "data_provider.longbridge_fetcher._oauth_token_cache_path",
+                return_value=token_cache,
+            ):
+                fetcher = LongbridgeFetcher()
+                ctx = fetcher._get_ctx()
+
+        self.assertEqual(ctx, "quote-context")
+        mock_oauth_builder.assert_called_once_with("app-key")
+        mock_config.from_oauth.assert_called_once_with("oauth-token")
+        mock_config.from_apikey_env.assert_not_called()
+        mock_config.from_apikey.assert_not_called()
+        mock_quote_context.assert_called_once_with("oauth-config")
+
+    @patch("src.config.get_config")
+    def test_oauth_without_cache_does_not_call_legacy_when_legacy_incomplete(self, mock_get_config):
+        mock_get_config.return_value = self._config(oauth_client_id="client-1")
+        modules = self._install_mock_longbridge()
+        mock_lb_module, mock_lb_openapi, mock_config, _, mock_oauth_builder = modules
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            missing_cache = Path(tmpdir) / "client-1"
+            with patch.dict("sys.modules", {"longbridge": mock_lb_module, "longbridge.openapi": mock_lb_openapi}), patch.dict(
+                os.environ,
+                {
+                    "LONGBRIDGE_OAUTH_CLIENT_ID": "client-1",
+                    "LONGBRIDGE_APP_KEY": "",
+                    "LONGBRIDGE_APP_SECRET": "",
+                    "LONGBRIDGE_ACCESS_TOKEN": "",
+                },
+            ), patch("data_provider.longbridge_fetcher._longbridge_config_kwargs", return_value={}), patch(
+                "data_provider.longbridge_fetcher._oauth_token_cache_path",
+                return_value=missing_cache,
+            ):
+                fetcher = LongbridgeFetcher()
+                ctx = fetcher._get_ctx()
+
+        self.assertIsNone(ctx)
+        mock_oauth_builder.assert_not_called()
+        mock_config.from_apikey_env.assert_not_called()
+        mock_config.from_apikey.assert_not_called()
+
+    @patch("src.config.get_config")
+    def test_oauth_sdk_without_oauth_api_fails_closed_with_clear_log(self, mock_get_config):
+        mock_get_config.return_value = self._config(oauth_client_id="client-1")
+        mock_lb_module = types.ModuleType("longbridge")
+        mock_lb_openapi = types.ModuleType("longbridge.openapi")
+        mock_config = MagicMock()
+        mock_quote_context = MagicMock(return_value="quote-context")
+        mock_lb_openapi.Config = mock_config
+        mock_lb_openapi.QuoteContext = mock_quote_context
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            token_cache = Path(tmpdir) / "client-1"
+            token_cache.write_text('{"refresh_token":"valid-token"}', encoding="utf-8")
+            with patch.dict("sys.modules", {"longbridge": mock_lb_module, "longbridge.openapi": mock_lb_openapi}), patch.dict(
+                os.environ,
+                {
+                    "LONGBRIDGE_OAUTH_CLIENT_ID": "client-1",
+                    "LONGBRIDGE_APP_KEY": "",
+                    "LONGBRIDGE_APP_SECRET": "",
+                    "LONGBRIDGE_ACCESS_TOKEN": "",
+                },
+            ), patch("data_provider.longbridge_fetcher._longbridge_config_kwargs", return_value={}), patch(
+                "data_provider.longbridge_fetcher._oauth_token_cache_path",
+                return_value=token_cache,
+            ), self.assertLogs("data_provider.longbridge_fetcher", level="WARNING") as logs:
+                fetcher = LongbridgeFetcher()
+                ctx = fetcher._get_ctx()
+
+        self.assertIsNone(ctx)
+        self.assertIn("不支持 OAuth 2.0", "\n".join(logs.output))
+        mock_quote_context.assert_not_called()
+
+    @patch("src.config.get_config")
+    def test_oauth_invalid_cache_content_skips_oauth_reauth_and_fails_closed(self, mock_get_config):
+        mock_get_config.return_value = self._config(oauth_client_id="client-1")
+        modules = self._install_mock_longbridge()
+        mock_lb_module, mock_lb_openapi, mock_config, _, mock_oauth_builder = modules
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            invalid_cache = Path(tmpdir) / "client-1"
+            invalid_cache.write_text("invalid-json", encoding="utf-8")
+            with patch.dict("sys.modules", {"longbridge": mock_lb_module, "longbridge.openapi": mock_lb_openapi}), patch.dict(
+                os.environ,
+                {
+                    "LONGBRIDGE_OAUTH_CLIENT_ID": "client-1",
+                    "LONGBRIDGE_APP_KEY": "",
+                    "LONGBRIDGE_APP_SECRET": "",
+                    "LONGBRIDGE_ACCESS_TOKEN": "",
+                },
+            ), patch("data_provider.longbridge_fetcher._longbridge_config_kwargs", return_value={}), patch(
+                "data_provider.longbridge_fetcher._oauth_token_cache_path",
+                return_value=invalid_cache,
+            ):
+                fetcher = LongbridgeFetcher()
+                ctx = fetcher._get_ctx()
+
+        self.assertIsNone(ctx)
+        mock_oauth_builder.assert_not_called()
+        mock_config.from_apikey_env.assert_not_called()
+        mock_config.from_apikey.assert_not_called()
+
+    @patch("src.config.get_config")
+    def test_oauth_overwrites_invalid_cache_from_base64_secret(self, mock_get_config):
+        mock_get_config.return_value = self._config(oauth_client_id="client-1")
+        modules = self._install_mock_longbridge()
+        mock_lb_module, mock_lb_openapi, mock_config, _, mock_oauth_builder = modules
+        mock_oauth_builder.return_value.build.return_value = "oauth-token"
+        mock_config.from_oauth.return_value = "oauth-config"
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            invalid_cache = Path(tmpdir) / "client-1"
+            invalid_cache.write_text("invalid-json", encoding="utf-8")
+            encoded_cache = base64.b64encode(b'{"refresh_token":"refreshed"}').decode("ascii")
+            with patch.dict("sys.modules", {"longbridge": mock_lb_module, "longbridge.openapi": mock_lb_openapi}), patch.dict(
+                os.environ,
+                {
+                    "LONGBRIDGE_OAUTH_CLIENT_ID": "client-1",
+                    "LONGBRIDGE_OAUTH_TOKEN_CACHE_B64": encoded_cache,
+                    "LONGBRIDGE_APP_KEY": "",
+                    "LONGBRIDGE_APP_SECRET": "",
+                    "LONGBRIDGE_ACCESS_TOKEN": "",
+                },
+            ), patch("data_provider.longbridge_fetcher._longbridge_config_kwargs", return_value={}), patch(
+                "data_provider.longbridge_fetcher._oauth_token_cache_path",
+                return_value=invalid_cache,
+            ):
+                fetcher = LongbridgeFetcher()
+                ctx = fetcher._get_ctx()
+                self.assertEqual(invalid_cache.read_bytes(), b'{"refresh_token":"refreshed"}')
+
+        self.assertEqual(ctx, "quote-context")
+        mock_oauth_builder.assert_called_once_with("client-1")
+        mock_config.from_oauth.assert_called_once_with("oauth-token")
+        mock_config.from_apikey_env.assert_not_called()
+        mock_config.from_apikey.assert_not_called()
+
+    @patch("src.config.get_config")
+    def test_oauth_replaces_existing_cache_when_base64_secret_differs(self, mock_get_config):
+        mock_get_config.return_value = self._config(oauth_client_id="client-1")
+        modules = self._install_mock_longbridge()
+        mock_lb_module, mock_lb_openapi, mock_config, _, mock_oauth_builder = modules
+        mock_oauth_builder.return_value.build.return_value = "oauth-token"
+        mock_config.from_oauth.return_value = "oauth-config"
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            token_cache = Path(tmpdir) / "client-1"
+            token_cache.write_text('{"refresh_token":"old-but-json-valid"}', encoding="utf-8")
+            encoded_cache = base64.b64encode(b'{"refresh_token":"fresh"}').decode("ascii")
+            with patch.dict("sys.modules", {"longbridge": mock_lb_module, "longbridge.openapi": mock_lb_openapi}), patch.dict(
+                os.environ,
+                {
+                    "LONGBRIDGE_OAUTH_CLIENT_ID": "client-1",
+                    "LONGBRIDGE_OAUTH_TOKEN_CACHE_B64": encoded_cache,
+                    "LONGBRIDGE_APP_KEY": "",
+                    "LONGBRIDGE_APP_SECRET": "",
+                    "LONGBRIDGE_ACCESS_TOKEN": "",
+                },
+            ), patch("data_provider.longbridge_fetcher._longbridge_config_kwargs", return_value={}), patch(
+                "data_provider.longbridge_fetcher._oauth_token_cache_path",
+                return_value=token_cache,
+            ):
+                fetcher = LongbridgeFetcher()
+                ctx = fetcher._get_ctx()
+                self.assertEqual(token_cache.read_bytes(), b'{"refresh_token":"fresh"}')
+
+        self.assertEqual(ctx, "quote-context")
+        mock_config.from_oauth.assert_called_once_with("oauth-token")
+        mock_config.from_apikey_env.assert_not_called()
+        mock_config.from_apikey.assert_not_called()
+
+    @patch("src.config.get_config")
+    def test_oauth_callback_reauth_request_fails_closed_in_headless(self, mock_get_config):
+        mock_get_config.return_value = self._config(oauth_client_id="client-1")
+        modules = self._install_mock_longbridge()
+        mock_lb_module, mock_lb_openapi, mock_config, _, mock_oauth_builder = modules
+
+        def _require_oauth_reauth_request(show_url):
+            show_url("https://longbridge.oauth/login")
+            raise RuntimeError("re-auth requested")
+        mock_oauth_builder.return_value.build.side_effect = _require_oauth_reauth_request
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            token_cache = Path(tmpdir) / "client-1"
+            token_cache.write_text('{"refresh_token":"expired-token"}', encoding="utf-8")
+            with patch.dict("sys.modules", {"longbridge": mock_lb_module, "longbridge.openapi": mock_lb_openapi}), patch.dict(
+                os.environ,
+                {
+                    "LONGBRIDGE_OAUTH_CLIENT_ID": "client-1",
+                    "LONGBRIDGE_APP_KEY": "",
+                    "LONGBRIDGE_APP_SECRET": "",
+                    "LONGBRIDGE_ACCESS_TOKEN": "",
+                },
+            ), patch("data_provider.longbridge_fetcher._longbridge_config_kwargs", return_value={}), patch(
+                "data_provider.longbridge_fetcher._oauth_token_cache_path",
+                return_value=token_cache,
+            ):
+                fetcher = LongbridgeFetcher()
+                ctx = fetcher._get_ctx()
+
+        self.assertIsNone(ctx)
+        mock_oauth_builder.assert_called_once_with("client-1")
+        mock_config.from_apikey_env.assert_not_called()
+        mock_config.from_apikey.assert_not_called()
+
+    @patch("src.config.get_config")
+    def test_oauth_restores_token_cache_from_base64_secret(self, mock_get_config):
+        mock_get_config.return_value = self._config(oauth_client_id="client-1")
+        modules = self._install_mock_longbridge()
+        mock_lb_module, mock_lb_openapi, mock_config, _, mock_oauth_builder = modules
+        mock_oauth_builder.return_value.build.return_value = "oauth-token"
+        mock_config.from_oauth.return_value = "oauth-config"
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            token_cache = Path(tmpdir) / "client-1"
+            encoded_cache = base64.b64encode(b'{"refresh_token":"test"}').decode("ascii")
+            with patch.dict("sys.modules", {"longbridge": mock_lb_module, "longbridge.openapi": mock_lb_openapi}), patch.dict(
+                os.environ,
+                {
+                    "LONGBRIDGE_OAUTH_CLIENT_ID": "client-1",
+                    "LONGBRIDGE_OAUTH_TOKEN_CACHE_B64": encoded_cache,
+                    "LONGBRIDGE_APP_KEY": "",
+                    "LONGBRIDGE_APP_SECRET": "",
+                    "LONGBRIDGE_ACCESS_TOKEN": "",
+                },
+            ), patch("data_provider.longbridge_fetcher._longbridge_config_kwargs", return_value={}), patch(
+                "data_provider.longbridge_fetcher._oauth_token_cache_path",
+                return_value=token_cache,
+            ):
+                fetcher = LongbridgeFetcher()
+                ctx = fetcher._get_ctx()
+                self.assertEqual(token_cache.read_bytes(), b'{"refresh_token":"test"}')
+
+        self.assertEqual(ctx, "quote-context")
+        mock_config.from_oauth.assert_called_once_with("oauth-token")
+
+    @patch("src.config.get_config")
+    def test_oauth_failure_can_fallback_to_complete_legacy_credentials(self, mock_get_config):
+        mock_get_config.return_value = self._config(
+            app_key="app-key",
+            app_secret="app-secret",
+            access_token="access-token",
+            oauth_client_id="client-1",
+        )
+        modules = self._install_mock_longbridge()
+        mock_lb_module, mock_lb_openapi, mock_config, mock_quote_context, mock_oauth_builder = modules
+        mock_oauth_builder.return_value.build.side_effect = RuntimeError("bad cache")
+        mock_config.from_apikey_env.return_value = "legacy-config"
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            token_cache = Path(tmpdir) / "client-1"
+            token_cache.write_text("{}", encoding="utf-8")
+            with patch.dict("sys.modules", {"longbridge": mock_lb_module, "longbridge.openapi": mock_lb_openapi}), patch.dict(
+                os.environ,
+                {
+                    "LONGBRIDGE_OAUTH_CLIENT_ID": "client-1",
+                    "LONGBRIDGE_APP_KEY": "app-key",
+                    "LONGBRIDGE_APP_SECRET": "app-secret",
+                    "LONGBRIDGE_ACCESS_TOKEN": "access-token",
+                },
+            ), patch("data_provider.longbridge_fetcher._longbridge_config_kwargs", return_value={}), patch(
+                "data_provider.longbridge_fetcher._oauth_token_cache_path",
+                return_value=token_cache,
+            ):
+                fetcher = LongbridgeFetcher()
+                ctx = fetcher._get_ctx()
+
+        self.assertEqual(ctx, "quote-context")
+        mock_config.from_apikey_env.assert_called_once()
+        mock_quote_context.assert_called_once_with("legacy-config")
 
 
 class TestLongbridgeFetcherMocked(unittest.TestCase):
@@ -202,6 +582,114 @@ class TestLongbridgeFetcherMocked(unittest.TestCase):
         expected_ratio = round(50000000 / avg_vol, 2)
         self.assertEqual(quote.volume_ratio, expected_ratio)
 
+    def test_volume_ratio_history_candlesticks_by_offset_arg_order(self):
+        """Regression for #2100: verify keyword args used in
+        history_candlesticks_by_offset call, immune to positional signature
+        drift between longbridge 0.2.74 (Linux: forward, time, count)
+        and 4.x (Windows/macOS/Python>=3.12: forward, count, time).
+
+        Before the fix, `_compute_volume_ratio` invoked
+        `ctx.history_candlesticks_by_offset(symbol, period, adjust_type, forward, 6, datetime.now())`
+        — i.e. `time` slot got `6` (int) and `count` slot got `datetime.now()`,
+        which made the PyO3 binding raise
+        `argument 'time': 'int' object cannot be converted to 'PyDateTime'`
+        inside the longbridge SDK, swallowed into DEBUG log and surfaced as
+        volume_ratio=None.
+        """
+        import types
+        from datetime import datetime as dt_cls, date as dt_date, timedelta
+
+        mock_lb_module = types.ModuleType("longbridge")
+        mock_lb_openapi = types.ModuleType("longbridge.openapi")
+        mock_lb_openapi.Period = MagicMock()
+        mock_lb_openapi.AdjustType = MagicMock()
+        with patch.dict("sys.modules", {
+            "longbridge": mock_lb_module,
+            "longbridge.openapi": mock_lb_openapi,
+        }):
+            fetcher, ctx = self._make_fetcher_with_mock_ctx()
+            ctx.quote.return_value = [self._make_mock_quote(volume=50000000)]
+            ctx.static_info.return_value = [self._make_mock_static()]
+
+            base = dt_date.today() - timedelta(days=6)
+            mock_candles = []
+            for i, vol in enumerate([40000000, 38000000, 42000000, 41000000, 39000000]):
+                c = MagicMock()
+                c.volume = vol
+                past_date = base + timedelta(days=i)
+                c.timestamp = MagicMock()
+                c.timestamp.date.return_value = past_date
+                mock_candles.append(c)
+            ctx.history_candlesticks_by_offset.return_value = mock_candles
+
+            with patch("data_provider.longbridge_fetcher.datetime", wraps=dt_cls) as mocked_dt:
+                fetcher.get_realtime_quote("AAPL")
+
+            ctx.history_candlesticks_by_offset.assert_called_once()
+            call_kwargs = ctx.history_candlesticks_by_offset.call_args.kwargs
+            # keyword args 跨 SDK 版本契约兼容：
+            # 0.2.74 positional signature: (symbol, period, adjust_type, forward, time, count)
+            # 4.x positional signature: (symbol, period, adjust_type, forward, count, time)
+            # keyword args 不受位置变化影响
+            self.assertIn("time", call_kwargs, "keyword arg 'time' must be present")
+            self.assertIn("count", call_kwargs, "keyword arg 'count' must be present")
+            self.assertIn("symbol", call_kwargs, "keyword arg 'symbol' must be present")
+            self.assertIsInstance(call_kwargs["time"], dt_cls,
+                f"time kwarg got {call_kwargs['time']!r} (type {type(call_kwargs['time']).__name__}); "
+                "expected datetime — see #2100")
+            self.assertIsInstance(call_kwargs["count"], int,
+                f"count kwarg got {call_kwargs['count']!r} (type {type(call_kwargs['count']).__name__}); "
+                "expected int — see #2100")
+            self.assertEqual(call_kwargs["count"], 6)
+            self.assertEqual(call_kwargs["symbol"], "AAPL.US")
+            mocked_dt.now.assert_called()
+
+    def test_volume_ratio_keyword_args_cross_sdk_compat(self):
+        """Verify keyword args work regardless of positional signature drift.
+
+        Simulates a 4.x-style mock where positional order is
+        (symbol, period, adjust_type, forward, count, time) — the opposite
+        of 0.2.74's (symbol, period, adjust_type, forward, time, count).
+        Keyword args in the production code make both signatures callable
+        with the same keyword dict.
+        """
+        import types
+        from datetime import datetime as dt_cls, date as dt_date, timedelta
+
+        mock_lb_module = types.ModuleType("longbridge")
+        mock_lb_openapi = types.ModuleType("longbridge.openapi")
+        mock_lb_openapi.Period = MagicMock()
+        mock_lb_openapi.AdjustType = MagicMock()
+        with patch.dict("sys.modules", {
+            "longbridge": mock_lb_module,
+            "longbridge.openapi": mock_lb_openapi,
+        }):
+            fetcher, ctx = self._make_fetcher_with_mock_ctx()
+            ctx.quote.return_value = [self._make_mock_quote(volume=50000000)]
+            ctx.static_info.return_value = [self._make_mock_static()]
+
+            base = dt_date.today() - timedelta(days=6)
+            mock_candles = []
+            for i, vol in enumerate([40000000, 38000000, 42000000, 41000000, 39000000]):
+                c = MagicMock()
+                c.volume = vol
+                past_date = base + timedelta(days=i)
+                c.timestamp = MagicMock()
+                c.timestamp.date.return_value = past_date
+                mock_candles.append(c)
+            ctx.history_candlesticks_by_offset.return_value = mock_candles
+
+            with patch("data_provider.longbridge_fetcher.datetime", wraps=dt_cls):
+                fetcher.get_realtime_quote("AAPL")
+
+            ctx.history_candlesticks_by_offset.assert_called_once()
+            call_kwargs = ctx.history_candlesticks_by_offset.call_args.kwargs
+            self.assertEqual(call_kwargs["count"], 6,
+                "count should be 6 regardless of positional signature version")
+            self.assertIsInstance(call_kwargs["time"], dt_cls,
+                "time should be datetime even when 4.x positional order is (forward, count, time)")
+            self.assertEqual(call_kwargs["symbol"], "AAPL.US")
+
     def test_quote_api_failure_returns_none(self):
         """If ctx.quote() raises, return None gracefully."""
         fetcher, ctx = self._make_fetcher_with_mock_ctx()
@@ -209,6 +697,31 @@ class TestLongbridgeFetcherMocked(unittest.TestCase):
 
         result = fetcher.get_realtime_quote("AAPL")
         self.assertIsNone(result)
+
+    def test_connection_error_enters_cooldown_and_skips_immediate_retry(self):
+        """Connection-close failures should not trigger reconnect on every stock."""
+        fetcher, ctx = self._make_fetcher_with_mock_ctx()
+        ctx.quote.side_effect = Exception("client is closed")
+
+        with patch("data_provider.longbridge_fetcher._connection_cooldown_seconds", return_value=30):
+            first = fetcher.get_realtime_quote("AAPL")
+            second = fetcher.get_realtime_quote("AAPL")
+
+        self.assertIsNone(first)
+        self.assertIsNone(second)
+        self.assertEqual(ctx.quote.call_count, 1)
+        self.assertIsNone(fetcher._ctx)
+        self.assertGreater(fetcher._cooldown_until, time.time())
+
+    def test_daily_data_skips_request_during_cooldown(self):
+        """Daily requests should also respect the connection cooldown."""
+        fetcher, ctx = self._make_fetcher_with_mock_ctx()
+        fetcher._cooldown_until = time.time() + 30
+
+        with self.assertRaisesRegex(RuntimeError, "temporarily unavailable"):
+            fetcher._fetch_raw_data("AAPL", "2026-05-01", "2026-05-08")
+
+        ctx.history_candlesticks_by_date.assert_not_called()
 
     def test_hk_stock_symbol(self):
         """HK stock should use .HK suffix."""

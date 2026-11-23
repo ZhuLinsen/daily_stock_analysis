@@ -10,16 +10,49 @@ Tools:
 """
 
 import logging
+from dataclasses import replace
 from datetime import date
 from threading import Lock
-from typing import Optional
+from typing import Any, Dict, List, Optional, Tuple
 
-from src.agent.tools.registry import ToolParameter, ToolDefinition
+from src.agent.tools.execution import check_tool_execution, get_tool_stock_identity, get_tool_analysis_target
+from src.agent.tools.registry import ToolParameter, ToolDefinition, ToolPolicy
 
 logger = logging.getLogger(__name__)
 
+_MARKET_DATA_STOCK_POLICY = ToolPolicy.declared(
+    read_only=True,
+    side_effects=["network_read"],
+    permissions=["market_data:read"],
+    scope_dimensions=["stock"],
+    supported_asset_types=("stock",),
+)
+_MARKET_QUOTE_POLICY = replace(_MARKET_DATA_STOCK_POLICY, supported_asset_types=("stock", "index"))
+_MARKET_DATA_CACHE_POLICY = ToolPolicy.declared(
+    read_only=True,
+    side_effects=["network_read", "db_read", "db_write_cache"],
+    permissions=["market_data:read"],
+    scope_dimensions=["stock"],
+    supported_asset_types=("stock", "index"),
+)
+_ANALYSIS_CONTEXT_POLICY = ToolPolicy.declared(
+    read_only=True,
+    side_effects=["db_read"],
+    permissions=["analysis_context:read"],
+    scope_dimensions=["stock"],
+    cancellation_safe=True,
+    supported_asset_types=("stock", "index"),
+)
+_PORTFOLIO_READ_POLICY = ToolPolicy.declared(
+    read_only=True,
+    side_effects=["db_read"],
+    permissions=["portfolio:read"],
+)
+
 _fetcher_manager_singleton = None
 _fetcher_manager_lock = Lock()
+_DAILY_HISTORY_DEFAULT_DAYS = 60
+_DAILY_HISTORY_MAX_DAYS = 365
 
 
 def _get_fetcher_manager():
@@ -49,6 +82,69 @@ def _get_db():
     """Lazy import for DatabaseManager."""
     from src.storage import get_db
     return get_db()
+
+
+def _normalize_history_days(days: Any) -> Tuple[int, Dict[str, Any]]:
+    """Normalize LLM-provided history window and return response metadata."""
+    requested_days = days
+    warning = None
+    try:
+        if isinstance(days, bool):
+            raise ValueError("bool is not a valid days value")
+        effective_days = int(days)
+    except (TypeError, ValueError):
+        effective_days = _DAILY_HISTORY_DEFAULT_DAYS
+        warning = (
+            f"Invalid days value {requested_days!r}; "
+            f"using default {_DAILY_HISTORY_DEFAULT_DAYS}."
+        )
+
+    if effective_days < 1:
+        effective_days = 1
+        warning = f"days must be >= 1; using {effective_days}."
+    elif effective_days > _DAILY_HISTORY_MAX_DAYS:
+        effective_days = _DAILY_HISTORY_MAX_DAYS
+        warning = f"days exceeds max {_DAILY_HISTORY_MAX_DAYS}; truncated."
+
+    metadata: Dict[str, Any] = {}
+    if warning is not None:
+        metadata.update(
+            {
+                "warning": warning,
+                "requested_days": requested_days,
+                "effective_days": effective_days,
+            }
+        )
+    return effective_days, metadata
+
+
+def _history_code_candidates(stock_code: str) -> Tuple[List[str], str]:
+    """Return cache lookup candidates plus canonical write code."""
+    identity = get_tool_stock_identity(stock_code)
+    if identity is not None:
+        return [identity.stock_code], identity.stock_code
+    from data_provider.base import canonical_stock_code, normalize_stock_code
+    from src.services.stock_list_parser import ParseStatus, parse_analysis_target
+
+    raw_code = str(stock_code or "").strip()
+    target = parse_analysis_target(raw_code)
+    if target.asset_type == ParseStatus.INDEX:
+        # Explicit index identities keep their canonical bucket (``sh000016``
+        # / ``csi930955``) so index bars never land in the colliding stock
+        # bucket (Story 1.5).
+        return [target.canonical_id], target.canonical_id
+    normalized_code = canonical_stock_code(normalize_stock_code(raw_code))
+    candidates: List[str] = []
+    for candidate in (canonical_stock_code(raw_code), normalized_code):
+        if candidate and candidate not in candidates:
+            candidates.append(candidate)
+    return candidates, normalized_code
+
+
+def _append_history_metadata(response: dict, metadata: Dict[str, Any]) -> dict:
+    if metadata:
+        response.update(metadata)
+    return response
 
 
 def _compact_fundamental_context(fundamental_context: dict) -> dict:
@@ -180,7 +276,8 @@ def _compact_portfolio_risk(risk: dict, top_n: int = 10) -> dict:
 def _handle_get_realtime_quote(stock_code: str) -> dict:
     """Get real-time stock quote."""
     manager = _get_fetcher_manager()
-    quote = manager.get_realtime_quote(stock_code)
+    target = get_tool_analysis_target(stock_code)
+    quote = manager.get_realtime_quote(stock_code, **({"analysis_target": target} if target is not None else {}))
     if quote is None:
         return {
             "error": f"No realtime quote available for {stock_code}",
@@ -225,6 +322,7 @@ get_realtime_quote_tool = ToolDefinition(
     ],
     handler=_handle_get_realtime_quote,
     category="data",
+    policy=_MARKET_QUOTE_POLICY,
 )
 
 
@@ -234,25 +332,56 @@ get_realtime_quote_tool = ToolDefinition(
 
 def _handle_get_daily_history(stock_code: str, days: int = 60) -> dict:
     """Get daily OHLCV history data."""
-    manager = _get_fetcher_manager()
-    df, source = manager.get_daily_data(stock_code, days=days)
+    effective_days, metadata = _normalize_history_days(days)
+
+    from src.services.history_loader import load_history_df
+    df, source = load_history_df(stock_code, days=effective_days)
 
     if df is None or df.empty:
-        return {"error": f"No historical data available for {stock_code}"}
+        return _append_history_metadata(
+            {"error": f"No historical data available for {stock_code}"},
+            metadata,
+        )
+
+    if source != "db_cache":
+        _, normalized_code = _history_code_candidates(stock_code)
+        try:
+            saved_count = _get_db().save_daily_data(df, normalized_code, source)
+            logger.info(
+                "Agent daily history persisted for %s (source=%s, new_records=%s)",
+                normalized_code,
+                source,
+                saved_count,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Agent daily history persistence failed for %s: %s",
+                normalized_code,
+                exc,
+            )
 
     # Convert DataFrame to list of dicts (last N records)
-    records = df.tail(min(days, len(df))).to_dict(orient="records")
+    records = df.tail(min(effective_days, len(df))).to_dict(orient="records")
     # Ensure date is string
     for r in records:
         if "date" in r:
             r["date"] = str(r["date"])
 
-    return {
-        "code": stock_code,
+    response_code = stock_code
+    if source == "db_cache" and records:
+        response_code = records[-1].get("code") or response_code
+
+    return _append_history_metadata({
+        "code": response_code,
         "source": source,
+        "cache_hit": source == "db_cache",
+        "requested_days": effective_days,
+        "effective_days": effective_days,
+        "actual_records": len(records),
+        "partial_cache": source == "db_cache" and len(records) < effective_days,
         "total_records": len(records),
         "data": records,
-    }
+    }, metadata)
 
 
 get_daily_history_tool = ToolDefinition(
@@ -275,6 +404,7 @@ get_daily_history_tool = ToolDefinition(
     ],
     handler=_handle_get_daily_history,
     category="data",
+    policy=_MARKET_DATA_CACHE_POLICY,
 )
 
 
@@ -319,6 +449,7 @@ get_chip_distribution_tool = ToolDefinition(
     ],
     handler=_handle_get_chip_distribution,
     category="data",
+    policy=_MARKET_DATA_STOCK_POLICY,
 )
 
 
@@ -328,8 +459,10 @@ get_chip_distribution_tool = ToolDefinition(
 
 def _handle_get_analysis_context(stock_code: str) -> dict:
     """Get stored analysis context from database."""
+    check_tool_execution()
     db = _get_db()
     context = db.get_analysis_context(stock_code)
+    check_tool_execution()
 
     if context is None:
         return {"error": f"No analysis context in DB for {stock_code}"}
@@ -337,6 +470,7 @@ def _handle_get_analysis_context(stock_code: str) -> dict:
     # Return safely serializable version (remove raw_data to save tokens)
     safe_context = {}
     for k, v in context.items():
+        check_tool_execution()
         if k == "raw_data":
             safe_context["has_raw_data"] = True
             safe_context["raw_data_count"] = len(v) if isinstance(v, list) else 0
@@ -360,6 +494,7 @@ get_analysis_context_tool = ToolDefinition(
     ],
     handler=_handle_get_analysis_context,
     category="data",
+    policy=_ANALYSIS_CONTEXT_POLICY,
 )
 
 
@@ -370,8 +505,9 @@ get_analysis_context_tool = ToolDefinition(
 def _handle_get_stock_info(stock_code: str) -> dict:
     """Get stock fundamental information through unified fundamental context."""
     manager = _get_fetcher_manager()
+    target = get_tool_analysis_target(stock_code)
     try:
-        fundamental_context = manager.get_fundamental_context(stock_code)
+        fundamental_context = manager.get_fundamental_context(stock_code, **({"analysis_target": target} if target is not None else {}))
     except Exception as e:
         logger.warning(f"get_stock_info via fundamental pipeline failed for {stock_code}: {e}")
         fundamental_context = manager.build_failed_fundamental_context(stock_code, str(e))
@@ -383,7 +519,7 @@ def _handle_get_stock_info(stock_code: str) -> dict:
 
     stock_name = stock_code.upper()
     try:
-        stock_name = manager.get_stock_name(stock_code) or stock_name
+        stock_name = manager.get_stock_name(stock_code, **({"analysis_target": target} if target is not None else {})) or stock_name
     except Exception:
         pass
 
@@ -412,11 +548,12 @@ get_stock_info_tool = ToolDefinition(
         ToolParameter(
             name="stock_code",
             type="string",
-            description="A-share stock code, e.g., '600519'",
+            description="Stock code: A-share '600519', US 'AAPL', HK '00700'",
         ),
     ],
     handler=_handle_get_stock_info,
     category="data",
+    policy=_MARKET_DATA_STOCK_POLICY,
 )
 
 
@@ -524,6 +661,7 @@ get_portfolio_snapshot_tool = ToolDefinition(
     ],
     handler=_handle_get_portfolio_snapshot,
     category="data",
+    policy=_PORTFOLIO_READ_POLICY,
 )
 
 
@@ -602,6 +740,7 @@ get_capital_flow_tool = ToolDefinition(
     ],
     handler=_handle_get_capital_flow,
     category="data",
+    policy=_MARKET_DATA_STOCK_POLICY,
 )
 
 

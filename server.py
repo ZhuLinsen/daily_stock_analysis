@@ -12,7 +12,8 @@ Daily Stock Analysis - FastAPI 后端服务入口
 
 启动方式：
     uvicorn server:app --reload --host 0.0.0.0 --port 8000
-    
+    （启用 GUARD_ENABLED 时请加 --no-proxy-headers，或让 FORWARDED_ALLOW_IPS 与 GUARD_TRUSTED_PROXIES 一致）
+
     或使用 main.py:
     python main.py --serve-only      # 仅启动 API 服务
     python main.py --serve           # API 服务 + 执行分析
@@ -46,9 +47,12 @@ __all__ = ['app']
 if __name__ == "__main__":
     import uvicorn
 
+    from api.middlewares.security_guard import uvicorn_proxy_kwargs
+
     uvicorn.run(
         "server:app",
         host="0.0.0.0",
         port=8000,
         reload=True,
+        **uvicorn_proxy_kwargs(),
     )

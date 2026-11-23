@@ -1,4 +1,5 @@
 import React, { useId } from 'react';
+import { useUiLanguage } from '../../contexts/UiLanguageContext';
 import { cn } from '../../utils/cn';
 
 interface SelectOption {
@@ -29,12 +30,15 @@ export const Select: React.FC<SelectProps> = ({
   onChange,
   options,
   label,
-  placeholder = '请选择',
+  placeholder,
   disabled = false,
   className = '',
 }) => {
+  const { t } = useUiLanguage();
   const selectId = useId();
   const resolvedId = id ?? selectId;
+  const hasEmptyOption = options.some((option) => option.value === '');
+  const resolvedPlaceholder = placeholder ?? t('common.selectPlaceholder');
 
   return (
     <div className={cn('flex flex-col', className)}>
@@ -47,13 +51,14 @@ export const Select: React.FC<SelectProps> = ({
           disabled={disabled}
           className={cn(
             'input-surface input-focus-glow h-11 w-full appearance-none rounded-xl border bg-transparent px-4 py-2.5 pr-10 text-sm text-foreground',
+            '[color-scheme:light] dark:[color-scheme:dark]',
             'transition-all duration-200 focus:outline-none',
             disabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer',
           )}
         >
-          {placeholder && (
+          {resolvedPlaceholder && !hasEmptyOption && (
             <option value="" disabled>
-              {placeholder}
+              {resolvedPlaceholder}
             </option>
           )}
           {options.map((option) => (

@@ -22,13 +22,19 @@ TUSHARE_TOKEN=你的tushare_token
 python3 scripts/fetch_tushare_stock_list.py
 ```
 
+如需针对 A 股名称状态做修正，可以加上 `--a-rk`，脚本会保持 `stock_basic` 作为基础来源，再用 `rt_k` 对带 `XD`、`XR`、`DR`、`N`、`C` 前缀的名称进行回填，并覆盖输出到 `data/stock_list_a.csv`：
+
+```bash
+python3 scripts/fetch_tushare_stock_list.py --a-rk
+```
+
 ### 3. 查看输出
 
 数据将保存到 `data/` 目录：
 
 ```
 data/
-├── stock_list_a.csv       # A股列表
+├── stock_list_a.csv       # A股列表（--a-rk 时为修正后名称）
 ├── stock_list_hk.csv      # 港股列表
 ├── stock_list_us.csv      # 美股列表
 └── README_stock_list.md   # 数据说明文档
@@ -53,6 +59,8 @@ data/
 ## 输出文件格式
 
 ### A股（stock_list_a.csv）
+
+执行 `--a-rk` 时，这个文件会写入修正后的 A 股名称。
 
 ```csv
 ts_code,symbol,name,area,industry,market,exchange,list_date,...
@@ -97,21 +105,47 @@ stock = a_stocks[a_stocks['ts_code'] == '600519.SH']
 print(stock[['name', 'industry', 'list_date']])
 ```
 
-### 更新自动补全索引
+### 刷新股票自动补全索引
 
-获取数据后，可以更新自动补全索引：
+推荐直接使用一键刷新脚本，它会默认在抓取 A 股时使用 `--a-rk`，然后生成并同步自动补全索引：
 
 ```bash
-# 将 Tushare CSV 数据生成为前端自动补全索引
+pip install -r requirements.txt
+python3 scripts/refresh_stock_index.py
+```
+
+生成自动补全索引依赖 `pypinyin` 写入中文股票的完整拼音和拼音首字母字段；缺少该依赖时脚本会直接失败，避免生成无法支持拼音搜索的降级索引。
+
+如果你只想单独更新 CSV，可以先抓取数据：
+
+```bash
+python3 scripts/fetch_tushare_stock_list.py --a-rk
+```
+
+如果已经有新的 CSV，只想重新生成索引：
+
+```bash
 python3 scripts/generate_index_from_csv.py --test  # 先测试
 python3 scripts/generate_index_from_csv.py         # 确认后生成
 ```
+
+### 本地客户端自动获取最新索引
+
+新版客户端默认会从项目 GitHub `main` 分支读取最新的 `apps/dsa-web/public/stocks.index.json`，并缓存到本地 `data/cache/stocks.index.json`。前端仍访问本地 `/stocks.index.json`，不需要直接跨域请求 GitHub。
+
+远程索引地址、检查频率和网络超时时间为系统内置值，不提供用户配置项；用户只需要决定是否启用：
+
+```bash
+STOCK_INDEX_REMOTE_UPDATE_ENABLED=true
+```
+
+默认开启时，系统最多每 48 小时检查一次更新。若运行环境无法访问 GitHub raw、请求超时、返回内容不是合法股票索引，应用会保留已有缓存；如果没有远程缓存，则继续使用随应用打包的内置索引。远程更新失败不会阻断 WebUI 启动、股票自动补全或分析流程；连续失败达到系统内置阈值后，会在本进程内暂停重试直到下一轮 48 小时窗口。
 
 ## 注意事项
 
 1. **积分要求**：确保账号积分足够（A股/港股2000，美股120试用）
 2. **请求限制**：注意 API 的每分钟请求次数限制
-3. **数据更新**：建议每月更新一次数据
+3. **数据更新**：维护者建议每三天刷新一次并提交到仓库；本地客户端默认最多每 48 小时检查一次 GitHub `main` 上的索引更新。后续可通过 GitHub Actions workflow 自动化刷新与提交 PR
 4. **网络连接**：需要稳定的网络连接
 
 ## 常见问题
@@ -133,7 +167,10 @@ python3 scripts/generate_index_from_csv.py         # 确认后生成
 4. 当前脚本不会自动重试；单次请求失败后会输出错误并结束，请排查原因后重新运行
 
 ### Q: 数据更新频率？
-**A**: 建议每月更新一次，或根据需求调整
+**A**: 对维护者本地 CSV 与仓库索引，建议每三天更新一次并提交到仓库；遇到摘帽/更名等高影响事件可临时刷新。未来可通过 GitHub Actions workflow 自动化刷新与提交 PR。对普通本地客户端，系统默认最多每 48 小时从 GitHub `main` 检查一次最新索引。
+
+### Q: 无法访问 GitHub raw 会影响使用吗？
+**A**: 不会。远程索引更新是 best-effort：失败时会继续使用已有远程缓存或随应用打包的内置索引；如果索引完全不可用，Web 自动补全会进入现有 fallback，股票代码仍可手动输入。
 
 ## 相关链接
 

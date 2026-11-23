@@ -1,0 +1,75 @@
+# Derived from AlphaSift revision 9f522747caafd3c0b1ddb7e14d5cf44c8580b6cf.
+# Licensed under Apache-2.0 and modified for daily_stock_analysis.
+# 趋势质量策略
+name: momentum_quality
+display_name: 趋势质量
+description: 兼顾趋势确认和基本面质量的中线候选发现
+version: "1.1"
+category: framework
+tags: [momentum, quality, trend, llm_friendly]
+analysis_skills: [bull_trend, growth_quality]
+style:
+  risk_profile: balanced
+  holding_period: swing
+  execution_style: trend_quality
+  market_regime: [risk_on, trend, rotation]
+  capital_profile: high_liquidity
+  ui_badge: 趋势
+
+screening:
+  enabled: true
+  market_scope: [cn]
+  hard_filters:
+    exclude_st: true
+    amount_min: 200000000
+    market_cap_min: 8000000000
+    pe_ttm_min: 0
+    pe_ttm_max: 60
+    pb_min: 0
+    pb_max: 8.0
+    change_pct_min: -3.5
+    change_pct_max: 7.5
+    price_min: 4
+    price_max: 220
+  tech_weight: 0.45
+  factor_weights:
+    momentum: 0.28
+    value: 0.15
+    liquidity: 0.18
+    activity: 0.15
+    stability: 0.12
+    reversal: 0.04
+    theme_heat: 0.06
+    size: 0.02
+  scoring_profile:
+    momentum_chase_start_pct: 5.0
+    momentum_chase_penalty_slope: 14.0
+    activity_ideal_volume_ratio: 2.2
+    activity_ideal_turnover_rate: 4.5
+    stability_hot_change_pct: 6.5
+  risk_profile:
+    chase_change_pct: 7.5
+    abnormal_volume_ratio: 5.5
+    high_turnover_rate: 14.0
+    low_llm_confidence: 0.50
+  portfolio_profile:
+    max_same_bucket: 1
+    concentration_penalty: 4.5
+    buckets:
+      金融: [券商, 银行, 保险]
+      消费: [白酒, 食品, 家电, 零售, 消费]
+      AI算力: [AI算力, 算力, 数据中心, 服务器, 光模块]
+      新能源: [新能源, 光伏, 锂电, 电池, 储能]
+      周期: [钢铁, 煤炭, 有色, 化工]
+      公用事业: [电力, 燃气, 水务, 环保, 公用事业]
+  scorecard_profile:
+    value_quality_bonus: 1.8
+    capital_confirmed_bonus: 2.4
+    volume_spike_ratio: 5.0
+    hot_money_penalty: 2.5
+  ranking_hints: |
+    优先关注：
+    1. 已经确认趋势但还没有进入极端追涨阶段的候选
+    2. 基本面质量（估值、资金活跃、稳定性）能为趋势提供支撑
+    3. 避免单一题材过度集中，兼顾不同风格的趋势机会
+  max_output: 5

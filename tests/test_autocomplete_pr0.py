@@ -44,6 +44,20 @@ class TestAnalyzeRequest:
         assert request.original_query is None
         assert request.selection_source is None
 
+    def test_analyze_request_accepts_strategy_skills_alias(self):
+        """Test analysis requests accept both skills and legacy strategies."""
+        request = AnalyzeRequest(
+            stock_code="600519",
+            skills=["growth_quality"],
+        )
+        assert request.skills == ["growth_quality"]
+
+        legacy_request = AnalyzeRequest(
+            stock_code="600519",
+            strategies=["event_driven"],
+        )
+        assert legacy_request.skills == ["event_driven"]
+
     def test_analyze_request_validation_selection_source(self):
         """Test selection_source field validation"""
         # Valid selection_source values
@@ -196,6 +210,22 @@ class TestTaskQueue:
         assert len(tasks2) == 0
         assert len(dups2) == 1
         assert isinstance(dups2[0], DuplicateTaskError)
+
+    def test_task_queue_csi_equivalent_forms_dedupe_to_one_task(self):
+        """Real task-layer regression: submitting both the parser canonical
+        ``csi930955`` and its explicit alias ``930955.CSI`` in one batch must
+        yield exactly ONE accepted task (canonicalised to ``csi930955``) and
+        ONE duplicate — not two distinct tasks. This guards the task dedupe key
+        against splitting a registered CSI identity into distinct keys."""
+        queue = self._build_queue()
+        accepted, duplicates = queue.submit_tasks_batch(
+            stock_codes=["csi930955", "930955.CSI"],
+        )
+        assert len(accepted) == 1
+        assert accepted[0].stock_code == "csi930955"
+        assert len(duplicates) == 1
+        assert isinstance(duplicates[0], DuplicateTaskError)
+        assert duplicates[0].stock_code == "csi930955"
 
 
 class TestIntegration:

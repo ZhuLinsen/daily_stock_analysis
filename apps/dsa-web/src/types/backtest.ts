@@ -2,14 +2,20 @@
  * Backtest API type definitions
  * Mirrors api/v1/schemas/backtest.py
  */
+import type { DecisionAction, MarketPhaseSummary } from './analysis';
 
 // ============ Request / Response ============
+
+export type BacktestAnalysisPhase = 'premarket' | 'intraday' | 'postmarket' | 'unknown';
+export type BacktestPhaseFilter = BacktestAnalysisPhase | 'all';
 
 export interface BacktestRunRequest {
   code?: string;
   force?: boolean;
   evalWindowDays?: number;
   minAgeDays?: number;
+  analysisDateFrom?: string;
+  analysisDateTo?: string;
   limit?: number;
 }
 
@@ -19,6 +25,9 @@ export interface BacktestRunResponse {
   completed: number;
   insufficient: number;
   errors: number;
+  appliedEvalWindowDays?: number;
+  message?: string | null;
+  diagnostics?: Record<string, unknown>;
 }
 
 // ============ Result Item ============
@@ -33,7 +42,11 @@ export interface BacktestResultItem {
   evalStatus: string;
   evaluatedAt?: string;
   operationAdvice?: string;
+  action?: DecisionAction | null;
+  actionLabel?: string | null;
   trendPrediction?: string;
+  marketPhase?: string | null;
+  marketPhaseSummary?: MarketPhaseSummary | null;
   positionRecommendation?: string;
   startPrice?: number;
   endClose?: number;

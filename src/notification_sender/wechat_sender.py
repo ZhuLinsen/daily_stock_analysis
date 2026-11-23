@@ -11,9 +11,10 @@ import base64
 import hashlib
 import requests
 import time
+from typing import Optional
 
 from src.config import Config
-from src.formatters import chunk_content_by_max_bytes
+from src.formatters import chunk_content_by_max_bytes, strip_hidden_markdown_metadata
 
 
 logger = logging.getLogger(__name__)
@@ -36,7 +37,7 @@ class WechatSender:
         self._wechat_msg_type = getattr(config, 'wechat_msg_type', 'markdown')
         self._webhook_verify_ssl = getattr(config, 'webhook_verify_ssl', True)
         
-    def send_to_wechat(self, content: str) -> bool:
+    def send_to_wechat(self, content: str, *, timeout_seconds: Optional[float] = None) -> bool:
         """
         推送消息到企业微信机器人
         
@@ -73,20 +74,25 @@ class WechatSender:
             logger.warning("企业微信 Webhook 未配置，跳过推送")
             return False
         
+        sanitized_content = strip_hidden_markdown_metadata(content).strip()
+        if not sanitized_content:
+            logger.warning("企业微信消息内容为空，跳过推送")
+            return False
+
         # 根据消息类型动态限制上限，避免 text 类型超过企业微信 2048 字节限制
         if self._wechat_msg_type == 'text':
             max_bytes = min(self._wechat_max_bytes, 2000)  # 预留一定字节给系统/分页标记
         else:
             max_bytes = self._wechat_max_bytes  # markdown 默认 4000 字节
-        
+
         # 检查字节长度，超长则分批发送
-        content_bytes = len(content.encode('utf-8'))
+        content_bytes = len(sanitized_content.encode('utf-8'))
         if content_bytes > max_bytes:
             logger.info(f"消息内容超长({content_bytes}字节/{len(content)}字符)，将分批发送")
-            return self._send_wechat_chunked(content, max_bytes)
+            return self._send_wechat_chunked(sanitized_content, max_bytes)
         
         try:
-            return self._send_wechat_message(content)
+            return self._send_wechat_message(sanitized_content, timeout_seconds=timeout_seconds)
         except Exception as e:
             logger.error(f"发送企业微信消息失败: {e}")
             return False
@@ -124,14 +130,14 @@ class WechatSender:
             logger.error("企业微信图片发送异常: %s", e)
             return False
     
-    def _send_wechat_message(self, content: str) -> bool:
+    def _send_wechat_message(self, content: str, *, timeout_seconds: Optional[float] = None) -> bool:
         """发送企业微信消息"""
         payload = self._gen_wechat_payload(content)
         
         response = requests.post(
             self._wechat_url,
             json=payload,
-            timeout=10,
+            timeout=timeout_seconds or 10,
             verify=self._webhook_verify_ssl
         )
         
@@ -174,17 +180,18 @@ class WechatSender:
 
     def _gen_wechat_payload(self, content: str) -> dict:
         """生成企业微信消息 payload"""
+        sanitized_content = strip_hidden_markdown_metadata(content).strip()
         if self._wechat_msg_type == 'text':
             return {
                 "msgtype": "text",
                 "text": {
-                    "content": content
+                    "content": sanitized_content
                 }
             }
         else:
             return {
                 "msgtype": "markdown",
                 "markdown": {
-                    "content": content
+                    "content": sanitized_content
                 }
             }

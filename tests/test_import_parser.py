@@ -4,12 +4,13 @@
 Covers:
 - CSV/Excel/text parsing
 - Column mapping (code, name aliases)
-- Encoding (utf-8, gbk)
+- Encoding (UTF-8, GBK and BOM-marked UTF-16)
 - Name-to-code resolution (mocked)
 - No-header mode (col 0 = code, col 1 = name)
 - File size and text size limits
 """
 
+import codecs
 import io
 import pytest
 from unittest.mock import patch
@@ -38,6 +39,11 @@ class TestParseImportFromBytesCsv:
         data = "股票代码,股票名称\n600519,贵州茅台".encode("utf-8")
         result = parse_import_from_bytes(data, "a.csv")
         assert result[0] == ("600519", "贵州茅台", "medium")
+
+    def test_parses_utf8_bom_csv_header(self):
+        data = "\ufeffcode,name\n600519,".encode("utf-8")
+        result = parse_import_from_bytes(data, "a.csv")
+        assert result == [("600519", None, "medium")]
 
     def test_parses_csv_no_header(self):
         # Use 300750 instead of 00700 to avoid pandas stripping leading zeros
@@ -140,6 +146,26 @@ class TestParseImportFromBytesExcel:
 # ---------------------------------------------------------------------------
 
 class TestParseImportLimits:
+    @pytest.mark.parametrize(("bom", "encoding", "separator", "filename"), [
+        (codecs.BOM_UTF16_LE, "utf-16-le", "\t", "watchlist.txt"),
+        (codecs.BOM_UTF16_BE, "utf-16-be", ",", "watchlist.csv"),
+    ])
+    def test_imports_utf16_files_with_byte_order_mark(self, bom, encoding, separator, filename):
+        rows = [("代码", "名称"), ("00700", "腾讯控股"), ("AAPL", "Apple")]
+        text = "\r\n".join(separator.join(row) for row in rows)
+        assert parse_import_from_bytes(bom + text.encode(encoding), filename) == [
+            ("00700", "腾讯控股", "medium"),
+            ("AAPL", "Apple", "medium"),
+        ]
+
+    @pytest.mark.parametrize("data", [
+        codecs.BOM_UTF16_LE + b"A",
+        codecs.BOM_UTF32_LE + "AAPL".encode("utf-32-le"),
+    ])
+    def test_rejects_invalid_or_unsupported_encoding(self, data):
+        with pytest.raises(ValueError, match="文件编码"):
+            parse_import_from_bytes(data, "watchlist.txt")
+
     def test_rejects_file_over_limit(self):
         data = b"x" * (MAX_FILE_BYTES + 1)
         with pytest.raises(ValueError, match="超过"):

@@ -10,9 +10,31 @@ Tools:
 
 import logging
 
-from src.agent.tools.registry import ToolParameter, ToolDefinition
+from src.agent.tools.execution import (
+    ToolExecutionCancelled,
+    ToolExecutionDeadlineExceeded,
+    check_tool_execution,
+    get_tool_analysis_target,
+)
+from src.agent.tools.registry import ToolParameter, ToolDefinition, ToolPolicy
 
 logger = logging.getLogger(__name__)
+
+_BACKTEST_READ_POLICY = ToolPolicy.declared(
+    read_only=True,
+    side_effects=["db_read"],
+    permissions=["backtest:read"],
+    scope_dimensions=["stock"],
+    supported_asset_types=("stock",),
+)
+_BACKTEST_GLOBAL_READ_POLICY = ToolPolicy.declared(
+    read_only=True,
+    side_effects=["db_read"],
+    permissions=["backtest:read"],
+    cancellation_safe=True,
+)
+
+_CONTROL_ERRORS = (ToolExecutionCancelled, ToolExecutionDeadlineExceeded)
 
 _backtest_service = None
 
@@ -51,11 +73,15 @@ def _serialize_overall_backtest_summary(summary: dict, eval_window_days: int) ->
 def _handle_get_overall_backtest_summary(eval_window_days: int = 30) -> dict:
     """Get the overall backtest summary for the full analysis corpus."""
     try:
+        check_tool_execution()
         svc = _get_backtest_service()
         summary = svc.get_summary(scope="overall", code=None, eval_window_days=eval_window_days)
+        check_tool_execution()
         if summary is None:
             return {"info": "No backtest summary available. Backtest may not have been run yet."}
         return _serialize_overall_backtest_summary(summary, eval_window_days)
+    except _CONTROL_ERRORS:
+        raise
     except Exception:
         logger.warning("[backtest_tools] get_overall_backtest_summary error", exc_info=True)
         return {"error": "Failed to retrieve backtest summary."}
@@ -70,8 +96,10 @@ def _handle_get_skill_backtest_summary(skill_id: str = "", eval_window_days: int
         }
 
     try:
+        check_tool_execution()
         svc = _get_backtest_service()
         summary = svc.get_skill_summary(skill_id, eval_window_days=eval_window_days)
+        check_tool_execution()
         if summary is None:
             return {
                 "skill_id": skill_id,
@@ -94,6 +122,8 @@ def _handle_get_skill_backtest_summary(skill_id: str = "", eval_window_days: int
             "avg_simulated_return_pct": summary.get("avg_simulated_return_pct"),
             "computed_at": summary.get("computed_at"),
         }
+    except _CONTROL_ERRORS:
+        raise
     except Exception:
         logger.warning("[backtest_tools] get_skill_backtest_summary error", exc_info=True)
         return {"error": "Failed to retrieve backtest summary."}
@@ -123,6 +153,7 @@ get_skill_backtest_summary_tool = ToolDefinition(
     ],
     handler=_handle_get_skill_backtest_summary,
     category="data",
+    policy=_BACKTEST_GLOBAL_READ_POLICY,
 )
 
 
@@ -142,6 +173,7 @@ get_strategy_backtest_summary_tool = ToolDefinition(
     ],
     handler=_handle_get_overall_backtest_summary,
     category="data",
+    policy=_BACKTEST_GLOBAL_READ_POLICY,
 )
 
 
@@ -155,11 +187,15 @@ def _handle_get_stock_backtest_summary(stock_code: str, eval_window_days: int = 
     Returns the summary plus recent evaluation items.
     """
     try:
+        check_tool_execution()
         svc = _get_backtest_service()
         result = {}
+        target = get_tool_analysis_target(stock_code)
+        target_kwargs = {"analysis_target": target} if target is not None else {}
 
         # Per-stock summary
-        summary = svc.get_summary(scope="stock", code=stock_code, eval_window_days=eval_window_days)
+        summary = svc.get_summary(scope="stock", code=stock_code, eval_window_days=eval_window_days, **target_kwargs)
+        check_tool_execution()
         if summary:
             result["summary"] = {
                 "code": summary.get("code", stock_code),
@@ -175,7 +211,8 @@ def _handle_get_stock_backtest_summary(stock_code: str, eval_window_days: int = 
             result["summary"] = None
 
         # Recent evaluations
-        evals = svc.get_recent_evaluations(code=stock_code, eval_window_days=eval_window_days, limit=limit)
+        evals = svc.get_recent_evaluations(code=stock_code, eval_window_days=eval_window_days, limit=limit, **target_kwargs)
+        check_tool_execution()
         items = evals.get("items", [])
         # Slim down items to essential fields
         result["recent_evaluations"] = [
@@ -192,11 +229,14 @@ def _handle_get_stock_backtest_summary(stock_code: str, eval_window_days: int = 
             for item in items
         ]
         result["total"] = evals.get("total", 0)
+        check_tool_execution()
 
         if result["summary"] is None and not result["recent_evaluations"]:
             return {"info": f"No backtest data available for {stock_code}. Backtest may not have been run yet."}
 
         return result
+    except _CONTROL_ERRORS:
+        raise
     except Exception:
         logger.warning("[backtest_tools] get_stock_backtest_summary error", exc_info=True)
         return {"error": "Failed to retrieve backtest data."}
@@ -231,6 +271,7 @@ get_stock_backtest_summary_tool = ToolDefinition(
     ],
     handler=_handle_get_stock_backtest_summary,
     category="data",
+    policy=_BACKTEST_READ_POLICY,
 )
 
 

@@ -16,14 +16,24 @@ same implementation.
 
 import json
 import logging
+import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
+from src.config import get_config
+from src.agent.chat_context import build_agent_chat_context_bundle, build_visible_chat_history
 from src.agent.llm_adapter import LLMToolAdapter
+from src.agent.provider_trace import persist_provider_trace_turns
 from src.agent.runner import run_agent_loop, parse_dashboard_json
+from src.agent.runtime_facts import AgentRuntimeFacts
+from src.agent.stock_scope import StockScope, StockScopeResolution, resolve_stock_scope
+from src.storage import get_db
 from src.agent.tools.registry import ToolRegistry
 from src.report_language import normalize_report_language
 from src.market_context import get_market_role, get_market_guidelines
+from src.market_phase_prompt import format_market_phase_prompt_section
+from src.market_structure_prompt import format_market_structure_prompt_section
+from src.services.daily_market_context import format_daily_market_context_prompt_section
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +54,14 @@ class AgentResult:
     provider: str = ""
     model: str = ""                            # comma-separated models used (supports fallback)
     error: Optional[str] = None
+    messages: List[Dict[str, Any]] = field(default_factory=list)
+    runtime_facts: Optional[AgentRuntimeFacts] = None  # internal; never serialized into dashboard
+    backend: str = ""
+    error_code: Optional[str] = None
+    usage: Optional[Dict[str, Any]] = None
+    # Optional whitelisted snapshots for multi-agent trajectory evaluation.
+    # Single-agent callers continue to receive the historical empty list.
+    stage_trajectories: List[Dict[str, Any]] = field(default_factory=list)
 
 
 # ============================================================
@@ -122,6 +140,23 @@ LEGACY_DEFAULT_AGENT_SYSTEM_PROMPT = """你是一位专注于趋势交易的{mar
             "sniper_points": {{"ideal_buy": "", "secondary_buy": "", "stop_loss": "", "take_profit": ""}},
             "position_strategy": {{"suggested_position": "", "entry_plan": "", "risk_control": ""}},
             "action_checklist": []
+        }},
+        "phase_decision": {{
+            "phase_context": {{"phase": "premarket/intraday/lunch_break/closing_auction/postmarket/non_trading/unknown"}},
+            "action_window": "盘前计划/盘中跟踪/午间确认/收盘前风控/盘后复盘/非交易日观察",
+            "immediate_action": "立即行动/等待确认/观察/止损止盈预警/禁止追高/无盘中动作",
+            "watch_conditions": ["观察条件1", "观察条件2"],
+            "next_check_time": "下一次检查点或市场本地时间",
+            "confidence_reason": "置信度理由，说明阶段和数据质量限制",
+            "data_limitations": ["阶段或数据质量限制1", "阶段或数据质量限制2"]
+        }},
+        "signal_attribution": {{
+            "technical_indicators": 技术指标贡献度(0-100；有效非零贡献度之和应为100；全零表示无有效信号),
+            "news_sentiment": 新闻舆情贡献度(0-100；有效非零贡献度之和应为100；全零表示无有效信号),
+            "fundamentals": 基本面贡献度(0-100；有效非零贡献度之和应为100；全零表示无有效信号),
+            "market_conditions": 市场环境贡献度(0-100；有效非零贡献度之和应为100；全零表示无有效信号),
+            "strongest_bullish_signal": "最强看多信号名称",
+            "strongest_bearish_signal": "最强看空信号名称"
         }}
     }},
     "analysis_summary": "100字综合分析摘要",
@@ -177,6 +212,17 @@ LEGACY_DEFAULT_AGENT_SYSTEM_PROMPT = """你是一位专注于趋势交易的{mar
 3. **精确狙击点**：必须给出具体价格，不说模糊的话
 4. **检查清单可视化**：用 ✅⚠️❌ 明确显示每项检查结果
 5. **风险优先级**：舆情中的风险点要醒目标出
+
+## 可操作性与稳定性约束
+
+- 不得仅因为单日涨跌或评分跨线就在“买入/卖出”之间剧烈切换。
+- 操作建议必须同时参考价格位置（支撑/压力位）、量能/筹码、主力资金流向和风险事件。
+- 股价位于支撑与压力之间、资金流不明确时，优先输出“持有/震荡/观望/洗盘观察”等可执行的中性建议；`decision_type` 仍保持 `hold`。
+- 只有在接近支撑确认或有效突破压力，且资金流/量价配合时，才能给出买入；接近压力且资金流出时不得追买。
+- 只有在跌破关键支撑、主力资金持续流出或风险显著放大时，才能给出卖出/减仓。
+- 必须输出 `dashboard.phase_decision` 七字段；盘中/午休/临近收盘要给出当前动作、观察条件和下一次检查点。
+- 建议输出可选展示字段 `dashboard.signal_attribution` 六字段；解释推荐理由的构成，包括技术指标、新闻舆情、基本面、市场环境的贡献度，以及最强看多/看空信号。
+- 盘前、非交易日或未知阶段不得伪造今日盘中走势；quote/daily_bars/technical 存在 stale、fallback、missing、fetch_failed、partial 或 estimated 时，`confidence_level` 不得为高。
 
 {language_section}
 """
@@ -253,6 +299,23 @@ AGENT_SYSTEM_PROMPT = """你是一位{market_role}投资分析 Agent，拥有数
             "sniper_points": {{"ideal_buy": "", "secondary_buy": "", "stop_loss": "", "take_profit": ""}},
             "position_strategy": {{"suggested_position": "", "entry_plan": "", "risk_control": ""}},
             "action_checklist": []
+        }},
+        "phase_decision": {{
+            "phase_context": {{"phase": "premarket/intraday/lunch_break/closing_auction/postmarket/non_trading/unknown"}},
+            "action_window": "盘前计划/盘中跟踪/午间确认/收盘前风控/盘后复盘/非交易日观察",
+            "immediate_action": "立即行动/等待确认/观察/止损止盈预警/禁止追高/无盘中动作",
+            "watch_conditions": ["观察条件1", "观察条件2"],
+            "next_check_time": "下一次检查点或市场本地时间",
+            "confidence_reason": "置信度理由，说明阶段和数据质量限制",
+            "data_limitations": ["阶段或数据质量限制1", "阶段或数据质量限制2"]
+        }},
+        "signal_attribution": {{
+            "technical_indicators": 技术指标贡献度(0-100；有效非零贡献度之和应为100；全零表示无有效信号),
+            "news_sentiment": 新闻舆情贡献度(0-100；有效非零贡献度之和应为100；全零表示无有效信号),
+            "fundamentals": 基本面贡献度(0-100；有效非零贡献度之和应为100；全零表示无有效信号),
+            "market_conditions": 市场环境贡献度(0-100；有效非零贡献度之和应为100；全零表示无有效信号),
+            "strongest_bullish_signal": "最强看多信号名称",
+            "strongest_bearish_signal": "最强看空信号名称"
         }}
     }},
     "analysis_summary": "100字综合分析摘要",
@@ -305,6 +368,17 @@ AGENT_SYSTEM_PROMPT = """你是一位{market_role}投资分析 Agent，拥有数
 3. **精确狙击点**：必须给出具体价格，不说模糊的话
 4. **检查清单可视化**：用 ✅⚠️❌ 明确显示每项检查结果
 5. **风险优先级**：舆情中的风险点要醒目标出
+
+## 可操作性与稳定性约束
+
+- 不得仅因为单日涨跌或评分跨线就在“买入/卖出”之间剧烈切换。
+- 操作建议必须同时参考价格位置（支撑/压力位）、量能/筹码、主力资金流向和风险事件。
+- 股价位于支撑与压力之间、资金流不明确时，优先输出“持有/震荡/观望/洗盘观察”等可执行的中性建议；`decision_type` 仍保持 `hold`。
+- 只有在接近支撑确认或有效突破压力，且资金流/量价配合时，才能给出买入；接近压力且资金流出时不得追买。
+- 只有在跌破关键支撑、主力资金持续流出或风险显著放大时，才能给出卖出/减仓。
+- 必须输出 `dashboard.phase_decision` 七字段；盘中/午休/临近收盘要给出当前动作、观察条件和下一次检查点。
+- 建议输出可选展示字段 `dashboard.signal_attribution` 六字段；解释推荐理由的构成，包括技术指标、新闻舆情、基本面、市场环境的贡献度，以及最强看多/看空信号。
+- 盘前、非交易日或未知阶段不得伪造今日盘中走势；quote/daily_bars/technical 存在 stale、fallback、missing、fetch_failed、partial 或 estimated 时，`confidence_level` 不得为高。
 
 {language_section}
 """
@@ -383,7 +457,6 @@ CHAT_SYSTEM_PROMPT = """你是一位{market_role}投资分析 Agent，拥有数�
 {language_section}
 """
 
-
 def _build_language_section(report_language: str, *, chat_mode: bool = False) -> str:
     """Build output-language guidance for the agent prompt."""
     normalized = normalize_report_language(report_language)
@@ -419,6 +492,136 @@ def _build_language_section(report_language: str, *, chat_mode: bool = False) ->
 - `decision_type` 必须保持为 `buy|hold|sell`。
 - 所有面向用户的人类可读文本值必须使用中文。
 """
+
+
+# ============================================================
+# Shared chat request preparation
+# ============================================================
+
+
+@dataclass(frozen=True)
+class PreparedAgentChat:
+    """System prompt, visible history, and scope shared by Agent backends."""
+
+    system_prompt: str
+    history_messages: List[Dict[str, Any]]
+    stock_scope: Optional[StockScope]
+
+
+def prepare_agent_chat(
+    *,
+    message: str,
+    session_id: str,
+    context: Optional[Dict[str, Any]],
+    config: Any,
+    context_llm_adapter: Any,
+    skill_instructions: str,
+    default_skill_policy: str,
+    use_legacy_default_prompt: bool,
+    include_provider_trace: bool,
+    strict_initial_stock_scope: bool = False,
+    scope_resolution: Optional[StockScopeResolution] = None,
+    db_manager=None,
+    source_snapshot: Optional[Dict[str, Any]] = None,
+) -> PreparedAgentChat:
+    """Build the existing Chat prompt order without choosing an Agent backend."""
+    if scope_resolution is None:
+        scope_resolution = resolve_stock_scope(
+            message,
+            context,
+            strict_initial_scope=strict_initial_stock_scope,
+        )
+    effective_context = scope_resolution.effective_context
+
+    skills_section = ""
+    if skill_instructions:
+        skills_section = f"## 激活的交易技能\n\n{skill_instructions}"
+    default_skill_policy_section = ""
+    if default_skill_policy:
+        default_skill_policy_section = f"\n{default_skill_policy}\n"
+    report_language = normalize_report_language((effective_context or {}).get("report_language", "zh"))
+    stock_code = (effective_context or {}).get("stock_code", "")
+    if use_legacy_default_prompt:
+        prompt_template = LEGACY_DEFAULT_CHAT_SYSTEM_PROMPT
+    else:
+        prompt_template = CHAT_SYSTEM_PROMPT
+    system_prompt = prompt_template.format(
+        market_role=get_market_role(stock_code, report_language),
+        market_guidelines=get_market_guidelines(stock_code, report_language),
+        default_skill_policy_section=default_skill_policy_section,
+        skills_section=skills_section,
+        language_section=_build_language_section(report_language, chat_mode=True),
+    )
+
+    if include_provider_trace:
+        history_messages = list(
+            build_agent_chat_context_bundle(
+                session_id, context_llm_adapter, config,
+                **({"db_manager": db_manager, "source_snapshot": source_snapshot}
+                   if source_snapshot is not None else {}),
+            ).context_messages
+        )
+    else:
+        history_messages = list(
+            build_visible_chat_history(
+                session_id,
+                context_llm_adapter,
+                config,
+                allow_llm_compression=False,
+                **({"db_manager": db_manager, "source_snapshot": source_snapshot}
+                   if source_snapshot is not None else {}),
+            )
+        )
+
+    if effective_context:
+        context_parts = []
+        if effective_context.get("stock_code"):
+            context_parts.append(f"股票代码: {effective_context['stock_code']}")
+        if effective_context.get("stock_name"):
+            context_parts.append(f"股票名称: {effective_context['stock_name']}")
+        if effective_context.get("previous_price"):
+            context_parts.append(f"上次分析价格: {effective_context['previous_price']}")
+        if effective_context.get("previous_change_pct"):
+            context_parts.append(f"上次涨跌幅: {effective_context['previous_change_pct']}%")
+        if effective_context.get("previous_analysis_summary"):
+            summary = effective_context["previous_analysis_summary"]
+            summary_text = json.dumps(summary, ensure_ascii=False) if isinstance(summary, dict) else str(summary)
+            context_parts.append(f"上次分析摘要:\n{summary_text}")
+        if effective_context.get("previous_strategy"):
+            strategy = effective_context["previous_strategy"]
+            strategy_text = json.dumps(strategy, ensure_ascii=False) if isinstance(strategy, dict) else str(strategy)
+            context_parts.append(f"上次策略分析:\n{strategy_text}")
+        daily_market_context_section = format_daily_market_context_prompt_section(
+            effective_context.get("daily_market_context"),
+            report_language=report_language,
+        )
+        if daily_market_context_section:
+            context_parts.append(daily_market_context_section.strip())
+        market_structure_section = format_market_structure_prompt_section(
+            effective_context.get("market_structure_context"),
+            report_language=report_language,
+        )
+        if market_structure_section:
+            context_parts.append(market_structure_section.strip())
+        if context_parts:
+            history_messages.extend(
+                [
+                    {
+                        "role": "user",
+                        "content": "[系统提供的历史分析上下文，可供参考对比]\n" + "\n".join(context_parts),
+                    },
+                    {
+                        "role": "assistant",
+                        "content": "好的，我已了解该股票的历史分析数据。请告诉我你想了解什么？",
+                    },
+                ]
+            )
+
+    return PreparedAgentChat(
+        system_prompt=system_prompt,
+        history_messages=history_messages,
+        stock_scope=scope_resolution.stock_scope,
+    )
 
 
 # ============================================================
@@ -510,90 +713,106 @@ class AgentExecutor:
             AgentResult with the text response.
         """
         from src.agent.conversation import conversation_manager
+        from src.services.agent_chat_session_service import AgentChatSessionService
 
-        # Build system prompt with skills
-        skills_section = ""
-        if self.skill_instructions:
-            skills_section = f"## 激活的交易技能\n\n{self.skill_instructions}"
-        default_skill_policy_section = ""
-        if self.default_skill_policy:
-            default_skill_policy_section = f"\n{self.default_skill_policy}\n"
-        report_language = normalize_report_language((context or {}).get("report_language", "zh"))
-        stock_code = (context or {}).get("stock_code", "")
-        market_role = get_market_role(stock_code, report_language)
-        market_guidelines = get_market_guidelines(stock_code, report_language)
-        prompt_template = (
-            LEGACY_DEFAULT_CHAT_SYSTEM_PROMPT
-            if self.use_legacy_default_prompt
-            else CHAT_SYSTEM_PROMPT
+        db, snapshot = conversation_manager.prepare_turn(session_id)
+        config = getattr(self.llm_adapter, "_config", None) or get_config()
+        scope_resolution, disposition = AgentChatSessionService(db).prepare_compatibility_turn(
+            config, snapshot, message, context=context,
         )
-        system_prompt = prompt_template.format(
-            market_role=market_role,
-            market_guidelines=market_guidelines,
-            default_skill_policy_section=default_skill_policy_section,
-            skills_section=skills_section,
-            language_section=_build_language_section(report_language, chat_mode=True),
+        prepared = prepare_agent_chat(
+            message=message,
+            session_id=session_id,
+            context=context,
+            config=config,
+            context_llm_adapter=self.llm_adapter,
+            skill_instructions=self.skill_instructions,
+            default_skill_policy=self.default_skill_policy,
+            use_legacy_default_prompt=self.use_legacy_default_prompt,
+            include_provider_trace=True,
+            db_manager=db,
+            source_snapshot=snapshot,
+            scope_resolution=scope_resolution,
         )
-
-        # Build tool declarations in OpenAI format (litellm handles all providers)
-        tool_decls = self.tool_registry.to_openai_tools()
-
-        # Get conversation history
-        session = conversation_manager.get_or_create(session_id)
-        history = session.get_history()
-
-        # Initialize conversation
         messages: List[Dict[str, Any]] = [
-            {"role": "system", "content": system_prompt},
+            {"role": "system", "content": prepared.system_prompt},
+            *prepared.history_messages,
         ]
-        messages.extend(history)
-
-        # Inject previous analysis context if provided (data reuse from report follow-up)
-        if context:
-            context_parts = []
-            if context.get("stock_code"):
-                context_parts.append(f"股票代码: {context['stock_code']}")
-            if context.get("stock_name"):
-                context_parts.append(f"股票名称: {context['stock_name']}")
-            if context.get("previous_price"):
-                context_parts.append(f"上次分析价格: {context['previous_price']}")
-            if context.get("previous_change_pct"):
-                context_parts.append(f"上次涨跌幅: {context['previous_change_pct']}%")
-            if context.get("previous_analysis_summary"):
-                summary = context["previous_analysis_summary"]
-                summary_text = json.dumps(summary, ensure_ascii=False) if isinstance(summary, dict) else str(summary)
-                context_parts.append(f"上次分析摘要:\n{summary_text}")
-            if context.get("previous_strategy"):
-                strategy = context["previous_strategy"]
-                strategy_text = json.dumps(strategy, ensure_ascii=False) if isinstance(strategy, dict) else str(strategy)
-                context_parts.append(f"上次策略分析:\n{strategy_text}")
-            if context_parts:
-                context_msg = "[系统提供的历史分析上下文，可供参考对比]\n" + "\n".join(context_parts)
-                messages.append({"role": "user", "content": context_msg})
-                messages.append({"role": "assistant", "content": "好的，我已了解该股票的历史分析数据。请告诉我你想了解什么？"})
-
         messages.append({"role": "user", "content": message})
+        baseline_len = len(messages)
+        run_id = str(uuid.uuid4())
 
         # Persist the user turn immediately so the session appears in history during processing
-        conversation_manager.add_message(session_id, "user", message)
+        accepted = conversation_manager.commit_user_turn(db, snapshot, message, state_disposition=disposition)
+        user_message_id = accepted["user_message_id"]
 
-        result = self._run_loop(messages, tool_decls, parse_dashboard=False, progress_callback=progress_callback)
+        tool_decls = self.tool_registry.to_openai_tools()
+        result = self._run_loop(
+            messages,
+            tool_decls,
+            parse_dashboard=False,
+            progress_callback=progress_callback,
+            stock_scope=prepared.stock_scope,
+        )
 
         # Persist assistant reply (or error note) for context continuity
         if result.success:
-            conversation_manager.add_message(session_id, "assistant", result.content)
+            assistant_message_id = conversation_manager.add_message(
+                session_id, "assistant", result.content, accepted_turn=accepted, db_manager=db,
+            )
+            if assistant_message_id is not None:
+                self._persist_provider_trace(
+                    session_id=session_id,
+                    run_id=run_id,
+                    messages=result.messages,
+                    baseline_len=baseline_len,
+                    user_message_id=user_message_id,
+                    assistant_message_id=assistant_message_id,
+                    accepted_turn=accepted,
+                    db_factory=lambda: db,
+                )
         else:
             error_note = f"[分析失败] {result.error or '未知错误'}"
-            conversation_manager.add_message(session_id, "assistant", error_note)
+            conversation_manager.add_message(session_id, "assistant", error_note, accepted_turn=accepted, db_manager=db)
 
         return result
 
-    def _run_loop(self, messages: List[Dict[str, Any]], tool_decls: List[Dict[str, Any]], parse_dashboard: bool, progress_callback: Optional[Callable] = None) -> AgentResult:
+    def _persist_provider_trace(
+        self,
+        *,
+        session_id: str,
+        run_id: str,
+        messages: List[Dict[str, Any]],
+        baseline_len: int,
+        user_message_id: int,
+        assistant_message_id: int,
+        accepted_turn=None,
+        db_factory=None,
+    ) -> None:
+        persist_provider_trace_turns(
+            session_id=session_id,
+            run_id=run_id,
+            messages=messages,
+            baseline_len=baseline_len,
+            user_message_id=user_message_id,
+            assistant_message_id=assistant_message_id,
+            db_factory=db_factory if db_factory is not None else get_db,
+            accepted_turn=accepted_turn,
+            log=logger,
+        )
+
+    def _run_loop(
+        self,
+        messages: List[Dict[str, Any]],
+        tool_decls: List[Dict[str, Any]],
+        parse_dashboard: bool,
+        progress_callback: Optional[Callable] = None,
+        stock_scope: Optional[StockScope] = None,
+    ) -> AgentResult:
         """Delegate to the shared runner and adapt the result.
 
-        This preserves the exact same observable behaviour as the original
-        inline implementation while sharing the single authoritative loop
-        in :mod:`src.agent.runner`.
+        Dashboard mode exposes only the parsed canonical payload through both
+        ``dashboard`` and ``content``; free-form mode preserves the raw text.
         """
         loop_result = run_agent_loop(
             messages=messages,
@@ -602,6 +821,7 @@ class AgentExecutor:
             max_steps=self.max_steps,
             progress_callback=progress_callback,
             max_wall_clock_seconds=self.timeout_seconds,
+            stock_scope=stock_scope,
         )
 
         model_str = loop_result.model
@@ -610,7 +830,11 @@ class AgentExecutor:
             dashboard = parse_dashboard_json(loop_result.content)
             return AgentResult(
                 success=dashboard is not None,
-                content=loop_result.content,
+                content=(
+                    json.dumps(dashboard, ensure_ascii=False, indent=2)
+                    if dashboard is not None
+                    else loop_result.content
+                ),
                 dashboard=dashboard,
                 tool_calls_log=loop_result.tool_calls_log,
                 total_steps=loop_result.total_steps,
@@ -618,6 +842,7 @@ class AgentExecutor:
                 provider=loop_result.provider,
                 model=model_str,
                 error=None if dashboard else "Failed to parse dashboard JSON from agent response",
+                messages=loop_result.messages,
             )
 
         return AgentResult(
@@ -630,6 +855,7 @@ class AgentExecutor:
             provider=loop_result.provider,
             model=model_str,
             error=loop_result.error,
+            messages=loop_result.messages,
         )
 
     def _build_user_message(self, task: str, context: Optional[Dict[str, Any]] = None) -> str:
@@ -643,8 +869,35 @@ class AgentExecutor:
                 parts.append(f"报告类型: {context['report_type']}")
             if report_language == "en":
                 parts.append("输出语言: English（所有 JSON 键名保持不变，所有面向用户的文本值使用英文）")
+            elif report_language == "ko":
+                parts.append("출력 언어: 한국어（모든 JSON 키는 그대로 유지하고, 사용자 노출 텍스트 값은 한국어로 작성）")
             else:
                 parts.append("输出语言: 中文（所有 JSON 键名保持不变，所有面向用户的文本值使用中文）")
+
+            market_phase_section = format_market_phase_prompt_section(
+                context.get("market_phase_context"),
+                report_language=report_language,
+            )
+            if market_phase_section:
+                parts.append(market_phase_section)
+
+            daily_market_context_section = format_daily_market_context_prompt_section(
+                context.get("daily_market_context"),
+                report_language=report_language,
+            )
+            if daily_market_context_section:
+                parts.append(daily_market_context_section)
+
+            market_structure_section = format_market_structure_prompt_section(
+                context.get("market_structure_context"),
+                report_language=report_language,
+            )
+            if market_structure_section:
+                parts.append(market_structure_section)
+
+            analysis_context_pack_summary = context.get("analysis_context_pack_summary")
+            if isinstance(analysis_context_pack_summary, str) and analysis_context_pack_summary:
+                parts.append(analysis_context_pack_summary)
 
             # Inject pre-fetched context data to avoid redundant fetches
             if context.get("realtime_quote"):

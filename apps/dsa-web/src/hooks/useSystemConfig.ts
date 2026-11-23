@@ -7,6 +7,7 @@ import type {
   SystemConfigItem,
   SystemConfigUpdateItem,
 } from '../types/systemConfig';
+import { serializeStockListValue } from '../utils/stockList';
 
 type ToastState = {
   type: 'success';
@@ -52,6 +53,10 @@ function isMultiValueSchema(schema: SystemConfigItem['schema'] | undefined): boo
 }
 
 function normalizeFieldValue(value: string, schema: SystemConfigItem['schema'] | undefined): string {
+  if ((schema?.key ?? '').toUpperCase() === 'STOCK_LIST') {
+    return serializeStockListValue(value);
+  }
+
   if (!isMultiValueSchema(schema)) {
     return value;
   }
@@ -68,6 +73,8 @@ export function useSystemConfig() {
   const [configVersion, setConfigVersion] = useState<string>('');
   const [maskToken, setMaskToken] = useState<string>('******');
   const [serverItems, setServerItems] = useState<SystemConfigItem[]>([]);
+  const [llmModelProviders, setLlmModelProviders] = useState<string[]>([]);
+  const [llmYamlActive, setLlmYamlActive] = useState<boolean | undefined>(undefined);
 
   // UI state
   const [draftValues, setDraftValues] = useState<Record<string, string>>({});
@@ -221,6 +228,8 @@ export function useSystemConfig() {
 
     try {
       const config = await systemConfigApi.getConfig(true);
+      setLlmModelProviders(config.llmModelProviders || []);
+      setLlmYamlActive(config.llmYamlActive);
       applyServerPayload(config.items, config.configVersion, config.maskToken);
       setToast(null);
       return true;
@@ -256,6 +265,8 @@ export function useSystemConfig() {
   const refreshAfterExternalSave = useCallback(
     async (committedKeys: string[]) => {
       const config = await systemConfigApi.getConfig(true);
+      setLlmModelProviders(config.llmModelProviders || []);
+      setLlmYamlActive(config.llmYamlActive);
       applyServerPayload(config.items, config.configVersion, config.maskToken, {
         preserveDirty: true,
         committedKeys,
@@ -288,8 +299,16 @@ export function useSystemConfig() {
       });
   }, [dirtyKeys, draftValues, serverItemByKey]);
 
-  const save = useCallback(async (): Promise<SaveResult> => {
-    if (!hasDirty) {
+  const save = useCallback(async (changedItems?: SystemConfigUpdateItem[]): Promise<SaveResult> => {
+    const explicitItems = changedItems ?? [];
+    const resolvedChangedItems = explicitItems.length > 0 ? explicitItems : getChangedItems();
+
+    if (!explicitItems.length && !hasDirty) {
+      setToast({ type: 'success', message: '当前没有可保存的修改。' });
+      return { success: true, message: '当前没有可保存的修改' };
+    }
+
+    if (!resolvedChangedItems.length) {
       setToast({ type: 'success', message: '当前没有可保存的修改。' });
       return { success: true, message: '当前没有可保存的修改' };
     }
@@ -298,10 +317,8 @@ export function useSystemConfig() {
     setSaveError(null);
     setRetryAction(null);
 
-    const changedItems = getChangedItems();
-
     try {
-      const validateResult = await systemConfigApi.validate({ items: changedItems });
+      const validateResult = await systemConfigApi.validate({ items: resolvedChangedItems });
       setValidationIssues(validateResult.issues || []);
 
       if (!validateResult.valid) {
@@ -323,10 +340,12 @@ export function useSystemConfig() {
         configVersion,
         maskToken,
         reloadNow: true,
-        items: changedItems,
+        items: resolvedChangedItems,
       });
 
       const refreshed = await systemConfigApi.getConfig(true);
+      setLlmModelProviders(refreshed.llmModelProviders || []);
+      setLlmYamlActive(refreshed.llmYamlActive);
       applyServerPayload(refreshed.items, refreshed.configVersion, refreshed.maskToken);
 
       const warningText = updateResult.warnings?.length
@@ -383,6 +402,8 @@ export function useSystemConfig() {
     configVersion,
     maskToken,
     serverItems,
+    llmYamlActive,
+    llmModelProviders,
     categories,
     itemsByCategory,
     issueByKey,
@@ -408,6 +429,7 @@ export function useSystemConfig() {
     save,
     resetDraft,
     setDraftValue,
+    getChangedItems,
     applyPartialUpdate,
     refreshAfterExternalSave,
   };

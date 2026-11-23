@@ -5,19 +5,23 @@ Generate Stock Index from CSV File
 
 Input:
   - Tushare format: data/stock_list_{a,hk,us}.csv
+  - Seed format: scripts/stock_index_seeds/stock_list_{jp,kr}.csv
   - AkShare format: logs/stock_basic_*.csv
 
 Output: apps/dsa-web/public/stocks.index.json
 
 Usage:
-    python3 scripts/generate_index_from_csv.py              # 默认使用 Tushare
-    python3 scripts/generate_index_from_csv.py --source akshare
-    python3 scripts/generate_index_from_csv.py --test       # 测试模式
+    python scripts/generate_index_from_csv.py              # 默认使用 Tushare
+    python scripts/generate_index_from_csv.py --source akshare
+    python scripts/generate_index_from_csv.py --test       # 测试模式
+    python scripts/generate_index_from_csv.py --index-only --test  # 仅合并指数 seed
 """
 
 import argparse
 import csv
 import json
+import math
+import os
 import re
 import sys
 import unicodedata
@@ -27,13 +31,25 @@ from typing import List, Dict, Any, Optional
 # Add the project root to sys.path.
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from src.services.stock_index_remote_service import validate_stock_index_payload
+
 try:
     from pypinyin import lazy_pinyin, Style
     PYPINYIN_AVAILABLE = True
 except ImportError:
+    lazy_pinyin = None
+    Style = None
     PYPINYIN_AVAILABLE = False
-    print("[Warning] pypinyin not available, pinyin fields will be empty")
-    print("[Info] Install with: pip install pypinyin")
+
+
+def require_pypinyin() -> bool:
+    """Ensure pypinyin is available before generating autocomplete assets."""
+    if PYPINYIN_AVAILABLE:
+        return True
+
+    print("[Error] pypinyin not available; cannot generate stock autocomplete index.")
+    print("[Info] Install dependencies with: pip install -r requirements.txt")
+    return False
 
 
 def load_csv_data(csv_path: Path) -> List[Dict[str, Any]]:
@@ -74,7 +90,7 @@ def load_csv_data(csv_path: Path) -> List[Dict[str, Any]]:
 
 def load_tushare_data(data_dir: Path) -> List[Dict[str, Any]]:
     """
-    从 Tushare CSV 文件加载三个市场的股票数据
+    从 Tushare CSV 文件加载多市场股票数据
 
     Args:
         data_dir: 数据目录路径
@@ -83,10 +99,22 @@ def load_tushare_data(data_dir: Path) -> List[Dict[str, Any]]:
         合并后的股票列表
     """
     all_stocks = []
+    seed_dir = Path(__file__).parent / 'stock_index_seeds'
+    default_data_dir = Path(__file__).parent.parent / 'data'
+    use_seed_fallback = data_dir.resolve() == default_data_dir.resolve()
+
+    def _csv_path(file_name: str) -> Path:
+        data_path = data_dir / file_name
+        if data_path.exists() or not use_seed_fallback:
+            return data_path
+        return seed_dir / file_name
+
     market_files = {
         'CN': data_dir / 'stock_list_a.csv',
         'HK': data_dir / 'stock_list_hk.csv',
         'US': data_dir / 'stock_list_us.csv',
+        'JP': _csv_path('stock_list_jp.csv'),
+        'KR': _csv_path('stock_list_kr.csv'),
     }
 
     for market_name, csv_file in market_files.items():
@@ -166,6 +194,11 @@ def load_akshare_data(logs_dir: Path) -> List[Dict[str, Any]]:
 
     Returns:
         股票列表
+
+    说明：
+        AkShare 这条输入路径保留其原始 name 字段，不额外套用
+        Tushare A 股那套 XD / XR / DR 状态前缀修正逻辑。这里的目标是
+        复用 AkShare 已输出的展示名，而不是对其做二次归一化。
     """
     csv_files = list(logs_dir.glob("stock_basic_*.csv"))
 
@@ -214,7 +247,7 @@ def generate_pinyin(name: str) -> tuple:
         Tuple of (pinyin_full, pinyin_abbr)
     """
     if not PYPINYIN_AVAILABLE:
-        return (None, None)
+        raise RuntimeError("pypinyin is required to generate stock autocomplete index")
 
     try:
         normalized_name = normalize_name_for_pinyin(name)
@@ -251,6 +284,23 @@ def normalize_name_for_pinyin(name: str) -> str:
     return normalized.strip() or unicodedata.normalize('NFKC', name).strip()
 
 
+def normalize_stock_name_for_index(name: str, market: str) -> str:
+    """
+    Normalize stock names before writing the long-lived autocomplete index.
+
+    For A-shares (including BSE), ``XD``/``XR``/``DR`` are
+    ex-dividend/ex-rights trading-day prefixes. They should not be stored in
+    the official static index because they can become stale almost immediately.
+    New-stock prefixes such as ``N``/``C`` and risk-warning prefixes such as
+    ``ST``/``*ST`` are preserved; they should be refreshed by the next
+    stock-list update.
+    """
+    normalized = unicodedata.normalize('NFKC', str(name or '')).strip()
+    if market in {'CN', 'BSE'}:
+        normalized = re.sub(r'^(?:XD|XR|DR)\s*', '', normalized, flags=re.IGNORECASE)
+    return normalized.strip()
+
+
 def extract_symbol_from_ts_code(ts_code: str, market: str) -> Optional[str]:
     """
     从 ts_code 提取 displayCode
@@ -258,6 +308,7 @@ def extract_symbol_from_ts_code(ts_code: str, market: str) -> Optional[str]:
     - A股：000001.SZ → 000001
     - 港股：00700.HK → 00700
     - 美股：AAPL → AAPL
+    - 日股/韩股：7203.T / 005930.KS → 保留后缀，避免与其他市场裸代码冲突
 
     Args:
         ts_code: TS代码
@@ -269,8 +320,8 @@ def extract_symbol_from_ts_code(ts_code: str, market: str) -> Optional[str]:
     if not ts_code:
         return None
 
-    if market == 'US':
-        # 美股无后缀，直接返回
+    if market in {'US', 'JP', 'KR'}:
+        # 美股常见 class/share 后缀、日韩 Yahoo 后缀都是代码身份的一部分。
         return ts_code
 
     if '.' in ts_code:
@@ -284,7 +335,7 @@ def get_stock_name(row: Dict[str, str], market: str) -> Optional[str]:
     """
     获取股票名称
 
-    - A股/港股：使用 name 字段
+    - A股/港股/日股/韩股：使用 name 字段
     - 美股：使用 enname 字段（英文名称）
 
     Args:
@@ -301,7 +352,22 @@ def get_stock_name(row: Dict[str, str], market: str) -> Optional[str]:
     else:
         # A股和港股使用中文名称
         name = row.get('name', '').strip()
+        name = normalize_stock_name_for_index(name, market)
         return name if name else None
+
+
+def parse_aliases(row: Dict[str, str]) -> List[str]:
+    """Parse optional seed aliases from a CSV row."""
+    raw_aliases = (row.get('aliases') or row.get('alias') or '').strip()
+    if not raw_aliases:
+        return []
+
+    aliases: List[str] = []
+    for alias in re.split(r'[|;,，、]+', raw_aliases):
+        normalized = unicodedata.normalize('NFKC', alias).strip()
+        if normalized and normalized not in aliases:
+            aliases.append(normalized)
+    return aliases
 
 
 def parse_stock_row(row: Dict[str, str], preferred_market: Optional[str] = None) -> Optional[Dict[str, Any]]:
@@ -354,6 +420,7 @@ def parse_stock_row(row: Dict[str, str], preferred_market: Optional[str] = None)
         'symbol': display_code,
         'name': name,
         'market': market,
+        'aliases': parse_aliases(row),
     }
 
 
@@ -362,10 +429,10 @@ def determine_market(ts_code: str) -> str:
     Determine market based on code
 
     Args:
-        ts_code: Trading code (e.g., 000001.SZ, AAPL, BRK.B, GOOG.A)
+        ts_code: Trading code (e.g., 000001.SZ, AAPL, BRK.B, 7203.T, 005930.KS)
 
     Returns:
-        Market code (CN, HK, US, BSE)
+        Market code (CN, HK, US, BSE, JP, KR)
     """
     if '.' in ts_code:
         # 有后缀的情况
@@ -377,6 +444,10 @@ def determine_market(ts_code: str) -> str:
             return 'HK'
         elif suffix == 'BJ':
             return 'BSE'
+        elif suffix == 'T':
+            return 'JP'
+        elif suffix in ['KS', 'KQ']:
+            return 'KR'
         # 有后缀但不是中国市场后缀，检查是否为美股
         # 美股可能有点号后缀（如 BRK.B, GOOG.A, AAPL.U）
         prefix = ts_code.split('.')[0]
@@ -503,6 +574,9 @@ def build_stock_index(stocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
         # Generate aliases.
         aliases = generate_aliases(name, market)
+        for alias in stock.get('aliases', []):
+            if alias != name and alias not in aliases:
+                aliases.append(alias)
 
         index.append({
             "canonicalCode": ts_code,    # Example: 000001.SZ, AAPL
@@ -547,6 +621,355 @@ def compress_index(index: List[Dict[str, Any]]) -> List[List]:
     return compressed
 
 
+# ---------------------------------------------------------------------------
+# Index registry seed — build-time manifest merge.
+# ---------------------------------------------------------------------------
+_INDEX_REGISTRY_SEED_PATH = Path(__file__).parent / "stock_index_seeds" / "index_registry.csv"
+_INDEX_NAMESPACE_RE = re.compile(r"^(sh|sz|csi)\d{6}$")
+_EXPLICIT_INDEX_ALIAS_RE = re.compile(
+    r"^(?:(?:sh|sz|csi)\d{6}|\d{6}\.(?:sh|sz|csi))$"
+)
+
+
+def load_index_registry_seed(seed_path: Optional[Path] = None) -> List[Dict[str, Any]]:
+    """Load the approved index-registry seed CSV into raw row dicts.
+
+    Columns: ``canonical_code,display_code,name_zh,aliases,name_source,popularity``.
+    ``aliases`` uses the existing ``|``-separated ``parse_aliases()`` convention.
+    """
+    path = seed_path or _INDEX_REGISTRY_SEED_PATH
+    if not path.is_file():
+        raise FileNotFoundError(f"index registry seed not found: {path}")
+
+    rows: List[Dict[str, Any]] = []
+    # Normalized identity keys must not map to more than one canonical within
+    # the seed. A NFKC/casefold-equivalent duplicate alias owned by two entries
+    # (e.g. ``csi930955`` and ``CSI930955`` split across rows) would otherwise
+    # silently overwrite one identity, so it is rejected at the build-time
+    # boundary instead of at runtime. A key that equals its own row's canonical
+    # (e.g. alias ``000300.SH`` on row ``sh000300``) is legitimate and skipped.
+    seen_identity_keys: Dict[str, str] = {}
+    with open(path, "r", encoding="utf-8-sig") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            canonical = (row.get("canonical_code") or "").strip()
+            display = (row.get("display_code") or "").strip()
+            name = (row.get("name_zh") or "").strip()
+            if not canonical or not display or not name:
+                raise ValueError(f"index registry seed row missing required field: {row}")
+
+            raw_aliases = [
+                alias.strip()
+                for alias in str(row.get("aliases") or "").split("|")
+                if alias.strip()
+            ]
+            _validate_unique_index_aliases(raw_aliases, canonical)
+            aliases = parse_aliases(row)
+            _validate_unique_index_aliases(aliases, canonical)
+            popularity_raw = (row.get("popularity") or "100").strip() or "100"
+            try:
+                popularity = int(popularity_raw)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"index registry seed popularity must be a plain integer, "
+                    f"got {popularity_raw!r} for canonical {canonical!r}"
+                ) from exc
+            if popularity < 0:
+                raise ValueError(
+                    f"index registry seed popularity must be non-negative: "
+                    f"{popularity!r} for canonical {canonical!r}"
+                )
+
+            # Reject a normalized identity key that maps to a different canonical.
+            for key in [canonical, display] + aliases:
+                norm_key = _normalize_index_key(key)
+                if not norm_key:
+                    continue
+                existing = seen_identity_keys.get(norm_key)
+                if existing is not None and existing != canonical:
+                    raise ValueError(
+                        f"seed identity key {key!r} normalizes to {norm_key!r} "
+                        f"already owned by canonical {existing!r}"
+                    )
+                seen_identity_keys[norm_key] = canonical
+
+            rows.append({
+                "canonical_code": canonical,
+                "display_code": display,
+                "name_zh": name,
+                "aliases": aliases,
+                "name_source": (row.get("name_source") or "").strip(),
+                "popularity": popularity,
+            })
+    return rows
+
+
+def _normalize_index_key(value: str) -> str:
+    """Normalize resolver keys while keeping CSI suffix aliases distinct."""
+    normalized = unicodedata.normalize(
+        "NFKC", str(value or "")
+    ).strip().casefold()
+    prefix_match = re.fullmatch(r"(sh|sz)(\d{6})", normalized)
+    if prefix_match:
+        return f"{prefix_match.group(1)}{prefix_match.group(2)}"
+    suffix_match = re.fullmatch(r"(\d{6})\.(sh|sz)", normalized)
+    if suffix_match:
+        return f"{suffix_match.group(2)}{suffix_match.group(1)}"
+    return normalized
+
+
+def _validate_unique_index_aliases(aliases: Any, canonical: str) -> None:
+    """Reject duplicate aliases after NFKC/case-insensitive normalization."""
+    if not isinstance(aliases, list):
+        raise ValueError(f"index aliases must be a list: {canonical!r}")
+    seen: set[str] = set()
+    for alias in aliases:
+        if not isinstance(alias, str):
+            raise ValueError(f"index alias must be a string: {canonical!r}")
+        normalized = _normalize_index_key(alias)
+        if normalized in seen:
+            raise ValueError(
+                f"duplicate index alias after normalization for {canonical!r}: {alias!r}"
+            )
+        seen.add(normalized)
+
+
+def build_index_entries_from_seed(seed_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Convert seed rows into the 10-column index tuple dicts.
+
+    ``display_code`` is honored from the seed (SH/SZ display equals canonical;
+    CSI display is ``{code}.CSI``). All rows are ``market=CN``,
+    ``assetType=index``, ``active=True``, ``popularity`` from seed.
+    """
+    entries: List[Dict[str, Any]] = []
+    for row in seed_rows:
+        canonical = row["canonical_code"]
+        _validate_unique_index_aliases(row.get("aliases"), canonical)
+        popularity = row.get("popularity", 100)
+        if (
+            isinstance(popularity, bool)
+            or not isinstance(popularity, int)
+            or popularity < 0
+        ):
+            raise ValueError(
+                f"index popularity must be a non-negative integer: {canonical!r}"
+            )
+        display = (row.get("display_code") or "").strip() or canonical
+        pinyin_full, pinyin_abbr = generate_pinyin(row["name_zh"])
+        entries.append({
+            "canonicalCode": canonical,
+            "displayCode": display,
+            "nameZh": row["name_zh"],
+            "pinyinFull": pinyin_full,
+            "pinyinAbbr": pinyin_abbr,
+            "aliases": list(row["aliases"]),
+            "market": "CN",
+            "assetType": "index",
+            "active": True,
+            "popularity": popularity,
+        })
+    return entries
+
+
+def validate_index_registry(
+    entries: List[Dict[str, Any]],
+    non_index_rows: Optional[List[List[Any]]] = None,
+) -> None:
+    """Semantic validation for the index registry (build-time and candidates).
+
+    Rules (implementation-contracts.md §Semantic Validation):
+      1. canonical matches ``^(sh|sz|csi)\\d{6}$``; SH/SZ display == canonical,
+         CSI display == ``{code}.CSI``.
+      2. market=CN, assetType=index, active=True, non-empty name, valid pinyin,
+         finite numeric popularity.
+      3. canonical/display/alias normalize to exactly one canonical within the set.
+      4. Index explicit keys must not collide with active stock/ETF keys; bare
+         numeric display/alias rejected.
+      5. Text aliases rejected from identity resolver seed.
+      6. Each namespace has at least one daily provider in the manifest matrix.
+
+    ``non_index_rows`` carries the active stock/ETF compressed tuples from the
+    same payload so rule 4 can reject an index canonical/display/alias that
+    collides with a stock/ETF identity after normalization.
+    """
+    if not entries:
+        return
+
+    canonical_map: Dict[str, str] = {}
+    resolver_map: Dict[str, str] = {}
+    bare_conflicts: Dict[str, str] = {}
+
+    # Active stock/ETF identity keys (canonical/display/aliases) that an index
+    # explicit key must never collide with after normalization.
+    stock_keys: Dict[str, str] = {}
+    for row in non_index_rows or []:
+        if not isinstance(row, list) or len(row) < 10:
+            continue
+        if str(row[7] or "").strip() == "index":
+            continue
+        if row[8] is not True:
+            continue
+        stock_canonical = str(row[0] or "").strip()
+        for key in [row[0], row[1]] + list(row[5] if isinstance(row[5], list) else []):
+            norm_key = _normalize_index_key(key)
+            if norm_key:
+                stock_keys.setdefault(norm_key, stock_canonical)
+
+    for entry in entries:
+        canonical = str(entry["canonicalCode"] or "").strip()
+        display = str(entry["displayCode"] or "").strip()
+        name = str(entry["nameZh"] or "").strip()
+        market = str(entry["market"] or "").strip()
+        asset_type = str(entry["assetType"] or "").strip()
+        active = entry["active"]
+        popularity = entry["popularity"]
+        aliases = entry.get("aliases")
+
+        if not _INDEX_NAMESPACE_RE.match(canonical):
+            raise ValueError(f"index canonical must match ^(sh|sz|csi)\\d{{6}}$: {canonical!r}")
+        namespace = canonical[:3] if canonical.startswith("csi") else canonical[:2]
+        if namespace in {"sh", "sz"}:
+            if display != canonical:
+                raise ValueError(f"SH/SZ index display must equal canonical: {canonical!r} != {display!r}")
+        elif namespace == "csi":
+            expected_display = f"{canonical[3:]}.CSI"
+            if display != expected_display:
+                raise ValueError(f"CSI index display must be {expected_display!r}, got {display!r}")
+
+        if market != "CN":
+            raise ValueError(f"index market must be CN: {canonical!r}")
+        if asset_type != "index":
+            raise ValueError(f"index asset_type must be index: {canonical!r}")
+        if active is not True:
+            raise ValueError(f"index active must be True: {canonical!r}")
+        if not name:
+            raise ValueError(f"index name must be non-empty: {canonical!r}")
+        pinyin_full = entry.get("pinyinFull")
+        pinyin_abbr = entry.get("pinyinAbbr")
+        if (
+            not isinstance(pinyin_full, str)
+            or not pinyin_full.strip()
+            or not isinstance(pinyin_abbr, str)
+            or not pinyin_abbr.strip()
+        ):
+            raise ValueError(f"index pinyin fields must be non-empty: {canonical!r}")
+        if not isinstance(aliases, list):
+            raise ValueError(f"index aliases must be a list: {canonical!r}")
+        _validate_unique_index_aliases(aliases, canonical)
+        # Popularity must be a plain non-negative integer. Fractional
+        # (``1.5``), boolean (``True``) and negative values are rejected
+        # without truncation — only an integer value like ``100`` is valid.
+        if (
+            isinstance(popularity, bool)
+            or not isinstance(popularity, int)
+            or not math.isfinite(float(popularity))
+            or popularity < 0
+        ):
+            raise ValueError(f"index popularity must be a non-negative integer: {canonical!r}")
+
+        if namespace not in {"sh", "sz", "csi"}:
+            raise ValueError(f"index namespace has no provider mapping: {namespace!r}")
+
+        # canonical uniqueness
+        norm_canonical = _normalize_index_key(canonical)
+        if norm_canonical in canonical_map:
+            raise ValueError(f"duplicate index canonical: {canonical!r}")
+        canonical_map[norm_canonical] = canonical
+
+        for alias in aliases:
+            norm_alias = _normalize_index_key(alias)
+            if norm_alias.isdigit():
+                raise ValueError(f"bare numeric display/alias rejected for index: {alias!r}")
+            if not _EXPLICIT_INDEX_ALIAS_RE.fullmatch(norm_alias):
+                raise ValueError(
+                    f"index aliases must use an explicit code form: {alias!r}"
+                )
+
+        # canonical + display + aliases must resolve to exactly one canonical
+        for key in [canonical, display] + aliases:
+            norm_key = _normalize_index_key(key)
+            if not norm_key:
+                continue
+            if norm_key.isdigit():
+                raise ValueError(f"bare numeric display/alias rejected for index: {key!r}")
+            if norm_key in resolver_map and resolver_map[norm_key] != canonical:
+                raise ValueError(
+                    f"index resolver key {key!r} maps to multiple canonicals "
+                    f"({resolver_map[norm_key]} vs {canonical})"
+                )
+            if norm_key in stock_keys:
+                raise ValueError(
+                    f"index resolver key {key!r} collides with active stock/ETF "
+                    f"identity {stock_keys[norm_key]!r}"
+                )
+            resolver_map[norm_key] = canonical
+
+        # bare-conflict map: numeric base of explicit aliases, for matched_index
+        for alias in aliases:
+            base = "".join(ch for ch in alias if ch.isdigit())
+            if base and base.isdigit() and len(base) == 6:
+                bare_conflicts.setdefault(base, canonical)
+
+    return
+
+
+def _load_existing_payload(output_path: Path) -> List[List[Any]]:
+    """Load the existing compressed JSON payload (must be a list)."""
+    with open(output_path, "r", encoding="utf-8") as f:
+        payload = json.load(f)
+    if not isinstance(payload, list):
+        raise ValueError(f"existing payload is not a list: {output_path}")
+    return payload
+
+
+def _atomic_write_json(output_path: Path, compressed: List[List[Any]]) -> None:
+    """Write the compressed payload atomically (temp file + os.replace)."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = output_path.with_name(f".{output_path.name}.{os.getpid()}.tmp")
+    try:
+        with open(temp_path, "w", encoding="utf-8") as f:
+            f.write("[\n")
+            for i, item in enumerate(compressed):
+                json.dump(item, f, ensure_ascii=False, separators=(",", ":"))
+                if i < len(compressed) - 1:
+                    f.write(",\n")
+                else:
+                    f.write("\n")
+            f.write("]\n")
+        os.replace(temp_path, output_path)
+    finally:
+        try:
+            temp_path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def run_index_only(output_path: Path, *, test: bool = False) -> List[List[Any]]:
+    """Merge the approved index-registry seed into the existing compressed JSON.
+
+    Preserves all non-index tuples in their original order, removes any old
+    index tuples, appends seed-generated index rows sorted by canonicalCode,
+    validates, and atomically replaces the output (unless ``test``).
+    """
+    seed_rows = load_index_registry_seed()
+    index_entries = build_index_entries_from_seed(seed_rows)
+
+    existing = _load_existing_payload(output_path)
+    validate_stock_index_payload(existing, min_items=0)
+    non_index = [item for item in existing if not (len(item) > 7 and item[7] == "index")]
+    # Validate the seed index rows against the existing active stock/ETF rows so
+    # an index identity that collides with a stock/ETF key is rejected.
+    validate_index_registry(index_entries, non_index_rows=non_index)
+
+    index_compressed = compress_index(index_entries)
+    index_compressed.sort(key=lambda item: str(item[0]))
+
+    merged = non_index + index_compressed
+    if not test:
+        _atomic_write_json(output_path, merged)
+    return merged
+
+
 def main():
     """主函数"""
     parser = argparse.ArgumentParser(description='从 CSV 生成股票自动补全索引')
@@ -555,6 +978,11 @@ def main():
         choices=['tushare', 'akshare'],
         default='tushare',
         help='数据源选择（默认: tushare）'
+    )
+    parser.add_argument(
+        '--index-only',
+        action='store_true',
+        help='仅合并指数注册表 seed 到现有压缩 JSON，不重建股票索引'
     )
     parser.add_argument(
         '--test', '-t',
@@ -566,6 +994,37 @@ def main():
     print("=" * 60)
     print("股票索引生成工具（从 CSV）")
     print("=" * 60)
+
+    if not require_pypinyin():
+        return 1
+
+    # 输出路径
+    output_path = (
+        Path(__file__).parent.parent / "apps" / "dsa-web" / "public" / "stocks.index.json"
+    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # --index-only: 只合并指数 seed，不重建股票索引。
+    if args.index_only:
+        print(f"数据源：index-only（合并指数注册表 seed）")
+        print("\n[1/3] 读取指数注册表 seed...")
+        merged = run_index_only(output_path, test=args.test)
+        print(f"      合并后共 {len(merged)} 条记录")
+        index_rows = [item for item in merged if len(item) > 7 and item[7] == "index"]
+        print(f"      其中指数 {len(index_rows)} 条")
+        if args.test:
+            print("\n[2/3] 测试模式：跳过写入文件")
+        else:
+            print(f"\n[2/3] 写入文件：{output_path}")
+            file_size = output_path.stat().st_size
+            print(f"      文件大小：{file_size / 1024:.2f} KB")
+        print("\n[3/3] 验证合并结果...")
+        # In test mode the output file is untouched, so validate/report the
+        # would-be merged payload returned by ``run_index_only`` rather than
+        # reopening the unchanged file.
+        print(f"      验证通过：{len(merged)} 条记录")
+        return 0
+
     print(f"数据源：{args.source}")
 
     # 加载数据
@@ -586,19 +1045,23 @@ def main():
 
     print(f"      共读取 {len(stocks)} 只股票")
 
-    # 生成拼音提示
-    if not PYPINYIN_AVAILABLE:
-        print("\n[提示] 安装 pypinyin 可获得拼音搜索功能：")
-        print("       pip install pypinyin")
-
     print("\n[2/5] 生成索引数据...")
     index = build_stock_index(stocks)
 
-    # 输出路径
-    output_path = (
-        Path(__file__).parent.parent / "apps" / "dsa-web" / "public" / "stocks.index.json"
+    # 合并指数注册表 seed，防止后续重建擦除 index 行。
+    print("\n[2.5/5] 合并指数注册表 seed...")
+    seed_rows = load_index_registry_seed()
+    index_entries = build_index_entries_from_seed(seed_rows)
+    # Validate the seed index rows against the freshly built stock/ETF rows so
+    # an index identity that collides with a stock/ETF key is rejected.
+    validate_index_registry(
+        index_entries,
+        non_index_rows=compress_index(index),
     )
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+    # Canonical-sort the index rows so the full rebuild is byte-stable and
+    # matches the ``--index-only`` ordering; non-index rows keep build order.
+    index_entries.sort(key=lambda entry: str(entry["canonicalCode"]))
+    index.extend(index_entries)
 
     print("\n[3/5] 压缩索引数据...")
     compressed = compress_index(index)
@@ -618,16 +1081,8 @@ def main():
             for i, item in enumerate(compressed[:5]):
                 print(f"        {i + 1}. {item}")
     else:
-        print("\n[4/5] 写入文件：{output_path}")
-        with open(output_path, 'w', encoding='utf-8') as f:
-            f.write('[\n')
-            for i, item in enumerate(compressed):
-                json.dump(item, f, ensure_ascii=False, separators=(',', ':'))
-                if i < len(compressed) - 1:
-                    f.write(',\n')
-                else:
-                    f.write('\n')
-            f.write(']\n')
+        print(f"\n[4/5] 写入文件：{output_path}")
+        _atomic_write_json(output_path, compressed)
 
         file_size = output_path.stat().st_size
         print(f"      文件大小：{file_size / 1024:.2f} KB")

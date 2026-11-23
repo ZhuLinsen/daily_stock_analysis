@@ -12,6 +12,7 @@ from datetime import datetime
 import re
 
 from src.config import Config
+from src.formatters import strip_hidden_markdown_metadata
 
 
 logger = logging.getLogger(__name__)
@@ -28,7 +29,13 @@ class Serverchan3Sender:
         """
         self._serverchan3_sendkey = getattr(config, 'serverchan3_sendkey', None)
         
-    def send_to_serverchan3(self, content: str, title: Optional[str] = None) -> bool:
+    def send_to_serverchan3(
+        self,
+        content: str,
+        title: Optional[str] = None,
+        *,
+        timeout_seconds: Optional[float] = None,
+    ) -> bool:
         """
         推送消息到 Server酱3
 
@@ -61,6 +68,7 @@ class Serverchan3Sender:
         if title is None:
             date_str = datetime.now().strftime('%Y-%m-%d')
             title = f"📈 股票分析报告 - {date_str}"
+        sanitized_content = strip_hidden_markdown_metadata(content).strip()
 
         try:
             # 根据 sendkey 格式构造 URL
@@ -79,7 +87,7 @@ class Serverchan3Sender:
             # 构建请求参数
             params = {
                 'title': title,
-                'desp': content,
+                'desp': sanitized_content,
                 'options': {}
             }
 
@@ -87,7 +95,7 @@ class Serverchan3Sender:
             headers = {
                 'Content-Type': 'application/json;charset=utf-8'
             }
-            response = requests.post(url, json=params, headers=headers, timeout=10)
+            response = requests.post(url, json=params, headers=headers, timeout=timeout_seconds or 10)
 
             if response.status_code == 200:
                 result = response.json()
@@ -103,4 +111,3 @@ class Serverchan3Sender:
             import traceback
             logger.debug(traceback.format_exc())
             return False
-

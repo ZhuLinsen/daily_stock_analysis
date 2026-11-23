@@ -1,0 +1,17 @@
+{
+  "name": "daily-stock-analysis",
+  "version": "3.35.0",
+  "description": "AI-powered multi-market stock analysis skill for daily_stock_analysis.",
+  "author": {
+    "name": "ZhuLinsen",
+    "url": "https://github.com/ZhuLinsen"
+  },
+  "homepage": "https://github.com/ZhuLinsen/daily_stock_analysis",
+  "repository": "https://github.com/ZhuLinsen/daily_stock_analysis",
+  "license": "MIT",
+  "keywords": [
+    "stock-analysis",
+    "agent-skills",
+    "finance"
+  ]
+}

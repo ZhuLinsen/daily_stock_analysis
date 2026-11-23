@@ -151,7 +151,9 @@ class SocialSentimentService:
 
     def fetch_reddit_report(self, ticker: str) -> Optional[Dict]:
         """Fetch detailed Reddit report for a single ticker."""
-        url = f"{self._api_url}/reddit/stocks/v1/report/{ticker.upper()}"
+        # Adanos removed /reddit/stocks/v1/report/{ticker} (always 404);
+        # the current per-stock endpoint is /reddit/stocks/v1/stock/{ticker}.
+        url = f"{self._api_url}/reddit/stocks/v1/stock/{ticker.upper()}"
         return self._fetch_json(url)
 
     def fetch_reddit_trending(self) -> Optional[List[Dict]]:
@@ -200,6 +202,15 @@ class SocialSentimentService:
 
         # 1. Reddit per-ticker report (richest data)
         reddit_data = self.fetch_reddit_report(ticker_upper)
+
+        # The current per-stock endpoint signals "no data for this ticker" with
+        # HTTP 200 and {"ticker": ..., "found": false} (official openapi.json).
+        # An empty payload must not be formatted as evidence: treat that
+        # platform as having no data so it produces no context text and the
+        # pipeline does not register it as social evidence
+        # (PR #2452 review OR-COR-369e9579).
+        if isinstance(reddit_data, dict) and reddit_data.get("found") is False:
+            reddit_data = None
 
         # 2. X trending (filter for this ticker)
         x_entry = None
@@ -280,7 +291,9 @@ class SocialSentimentService:
             if top_mentions:
                 lines.append("  Top Mentions:")
                 for i, m in enumerate(top_mentions[:5], 1):
-                    text = (m.get("text") or m.get("title") or "")[:120]
+                    # TopMention per the official contract carries
+                    # "text_snippet"; older payloads used "text"/"title".
+                    text = (m.get("text_snippet") or m.get("text") or m.get("title") or "")[:120]
                     sub = m.get("subreddit", "")
                     score = SocialSentimentService._coalesce(m.get("sentiment_score"), m.get("sentiment"))
                     upvotes = m.get("upvotes", "")
@@ -294,14 +307,23 @@ class SocialSentimentService:
                     meta = f" ({', '.join(meta_parts)})" if meta_parts else ""
                     lines.append(f"    {i}. \"{text}\"{meta}")
 
-            # Daily stats
-            daily = report.get("daily_stats", [])
-            if daily:
+            # Daily stats. The current /stock/{ticker} endpoint names this
+            # list "daily_trend" (older report payloads used "daily_stats");
+            # guard against non-list shapes so unexpected payloads degrade
+            # to "section omitted" instead of raising.
+            daily = report.get("daily_stats") or report.get("daily_trend") or []
+            if daily and isinstance(daily, list):
                 lines.append("  Recent Daily Activity:")
                 for d in daily[:5]:
                     day = d.get("date", "")
                     day_mentions = d.get("mentions", "?")
-                    day_sentiment = d.get("avg_sentiment", "?")
+                    # DailyTrendItem per the official contract carries
+                    # "sentiment_score" (0 is valid); older payloads used
+                    # "avg_sentiment". _coalesce keeps 0 and only falls back
+                    # to "?" when neither field is present.
+                    day_sentiment = SocialSentimentService._coalesce(
+                        d.get("sentiment_score"), d.get("avg_sentiment"), "?"
+                    )
                     lines.append(f"    {day}: {day_mentions} mentions, avg sentiment {day_sentiment}")
         else:
             lines.append("\n🔴 Reddit: No data available")

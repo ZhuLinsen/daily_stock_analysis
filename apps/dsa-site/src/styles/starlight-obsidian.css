@@ -1,0 +1,144 @@
+@layer base, starlight, theme, components, utilities;
+
+@import '@astrojs/starlight-tailwind';
+@import 'tailwindcss/theme.css' layer(theme);
+@import 'tailwindcss/utilities.css' layer(utilities);
+
+@theme {
+  --color-accent-50: #f0f9ff;
+  --color-accent-100: #e0f2fe;
+  --color-accent-200: #bae6fd;
+  --color-accent-300: #7dd3fc;
+  --color-accent-400: #38bdf8;
+  --color-accent-500: #0ea5e9;
+  --color-accent-600: #0284c7;
+  --color-accent-700: #0369a1;
+  --color-accent-800: #075985;
+  --color-accent-900: #0c4a6e;
+  --color-accent-950: #082f49;
+
+  --color-gray-50: #fafafa;
+  --color-gray-100: #f4f4f5;
+  --color-gray-200: #e4e4e7;
+  --color-gray-300: #d4d4d8;
+  --color-gray-400: #a1a1aa;
+  --color-gray-500: #71717a;
+  --color-gray-600: #52525b;
+  --color-gray-700: #3f3f46;
+  --color-gray-800: #27272a;
+  --color-gray-900: #111318;
+  --color-gray-950: #09090b;
+}
+
+@layer utilities {
+  :root {
+    --sl-font: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+    --sl-font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+
+    /* Obsidian Bento Dark Theme */
+    --sl-color-white: #f4f4f5;
+    --sl-color-gray-1: #e4e4e7;
+    --sl-color-gray-2: #a1a1aa;
+    --sl-color-gray-3: #71717a;
+    --sl-color-gray-4: #3f3f46;
+    --sl-color-gray-5: #27272a;
+    --sl-color-gray-6: #111318;
+    --sl-color-black: #09090b;
+
+    --sl-color-bg: #09090b;
+    --sl-color-bg-nav: rgba(9, 9, 11, 0.86);
+    --sl-color-bg-sidebar: #0c0e13;
+    --sl-color-bg-inline-code: rgba(255, 255, 255, 0.07);
+
+    --sl-color-accent-low: rgba(56, 189, 248, 0.14);
+    --sl-color-accent: #0ea5e9;
+    --sl-color-accent-high: #38bdf8;
+    --sl-color-text-accent: #38bdf8;
+
+    --sl-color-hairline-light: rgba(255, 255, 255, 0.09);
+    --sl-color-hairline: rgba(255, 255, 255, 0.07);
+    --sl-color-hairline-shade: #050507;
+  }
+
+  :root[data-theme='light'] {
+    --sl-color-white: #09090b;
+    --sl-color-gray-1: #18181b;
+    --sl-color-gray-2: #3f3f46;
+    --sl-color-gray-3: #52525b;
+    --sl-color-gray-4: #a1a1aa;
+    --sl-color-gray-5: #e4e4e7;
+    --sl-color-gray-6: #f4f4f5;
+    --sl-color-black: #ffffff;
+
+    --sl-color-bg: #fafafb;
+    --sl-color-bg-nav: rgba(250, 250, 251, 0.88);
+    --sl-color-bg-sidebar: #f4f4f6;
+    --sl-color-bg-inline-code: rgba(9, 9, 11, 0.06);
+
+    --sl-color-accent-low: #e0f2fe;
+    --sl-color-accent: #0284c7;
+    --sl-color-accent-high: #0369a1;
+    --sl-color-text-accent: #0284c7;
+
+    --sl-color-hairline-light: #e4e4e7;
+    --sl-color-hairline: #e4e4e7;
+    --sl-color-hairline-shade: #d4d4d8;
+  }
+}
+
+/* Subtle top ambient spotlight matching Obsidian Bento */
+:root[data-theme='dark'] body {
+  background-image: radial-gradient(
+    ellipse 70% 32% at 55% -6%,
+    rgba(56, 189, 248, 0.11),
+    rgba(129, 140, 248, 0.05) 45%,
+    transparent 75%
+  );
+  background-repeat: no-repeat;
+}
+
+.header {
+  backdrop-filter: blur(12px);
+}
+
+.sl-markdown-content {
+  font-size: 0.965rem;
+  line-height: 1.75;
+}
+
+.sl-markdown-content h1,
+.sl-markdown-content h2,
+.sl-markdown-content h3 {
+  letter-spacing: -0.02em;
+  font-weight: 700;
+}
+
+.sl-markdown-content table {
+  font-variant-numeric: tabular-nums;
+  font-size: 0.875rem;
+}
+
+.sl-markdown-content th {
+  font-weight: 600;
+}
+
+.sl-markdown-content img {
+  border-radius: 10px;
+  border: 1px solid var(--sl-color-hairline-light);
+}
+
+.sidebar-content a[aria-current='page'] {
+  font-weight: 600;
+  border-inline-start: 2px solid var(--sl-color-text-accent);
+  border-radius: 0 6px 6px 0;
+}
+
+.starlight-aside {
+  border-radius: 10px;
+}
+
+/* Balanced typography & tabular numbers in docs cards */
+.card {
+  border-radius: 12px !important;
+  border-color: var(--sl-color-hairline-light) !important;
+}

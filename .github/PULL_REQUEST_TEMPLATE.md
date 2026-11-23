@@ -1,6 +1,6 @@
 <!--
 For Chinese contributors: 请直接用中文填写。
-For English contributors: please fill in English. All fields marked (EN) accept English.
+For English contributors: please fill in English.
 -->
 
 ## PR Type
@@ -11,51 +11,55 @@ For English contributors: please fill in English. All fields marked (EN) accept 
 - [ ] docs
 - [ ] chore
 - [ ] test
+- [ ] ci
 
 ## Background And Problem
 
-请描述当前问题、影响范围与触发场景。  
-*(EN) Describe the problem, its impact, and what triggers it.*
+描述当前问题现象、触发条件、关联 Issue（`Fixes #xxx` / `Refs #xxx`，无 Issue 时写动机与验收标准）以及根因定位（`path:line`）；如新增配置、开关或独立入口，请说明为何不能直接复用或精简既有能力。
 
 ## Scope Of Change
 
-请列出本 PR 修改的模块和文件范围。  
-*(EN) List the modules and files changed in this PR.*
+按实际 `git diff` 列出改动（区分**新增文件**与**修改的既有运行时文件**，避免描述与实际 diff 不一致）：
 
-## Issue Link
+- 文件总数 / 变更行数：
+- 新增文件：
+- 修改的既有运行时文件：
+- 文档更新（`docs/*` / `docs/CHANGELOG.md`）：
 
-必须填写以下之一 / Fill in one of:
-- `Fixes #<issue_number>`
-- `Refs #<issue_number>`
-- 无 Issue 时说明原因与验收标准 / If no issue, explain the motivation and acceptance criteria
+## Behavior Changes (Before vs After)
+
+| 场景 / 输入 | 改前行为 | 改后行为 | 谁会感知（配置/渠道/页面） |
+|---|---|---|---|
+|  |  |  |  |
+
+## Config / API / UI Impact
+
+- **环境变量 / `.env` 配置变更**（无则写 `无`；有则逐项列键名、默认值、不配置时行为，并确认 `.env.example` / docs / Web 设置页 / Actions 同步情况）：
+- **API / Schema / CLI 变更**（无则写 `无`；有则写字段/参数变化与 Web/Desktop 兼容情况）：
+- **第三方模型 / API 兼容变更**（如涉及，附官方来源链接、锁定依赖兼容窗口、是否改写旧配置；否则写 `不适用`）：
 
 ## Verification Commands And Results
 
-请填写你实际执行过的命令和关键结果（不要只写"已测试"）。  
-*(EN) Paste the commands you actually ran and their key output (don't just write "tested"):*
+贴实际执行的命令与关键结果，并与当前 Head CI 保持一致：
 
-```bash
-# example
-./scripts/ci_gate.sh
-python -m pytest -m "not network"
-```
+- 当前 Head CI：`ai-governance: pass/fail` | `backend-gate: pass/fail` | `docker-build: pass/fail/skipped` | `web-gate: pass/fail/skipped`（附链接）
+- 本地验证命令与结果（如有环境差异请注明）：
 
-关键输出/结论 / Key output & conclusion:
+## Visual Evidence (if applicable)
 
-## Compatibility And Risk
+若修改了报告格式、报告渲染、通知卡片或 Web/Desktop UI 界面，请附受影响页面/报告截图（涉及前后差异优先附前后对比；勿将一次性截图作为仓库文件提交）。无法截图时写明原因与可复现替代证据（如 Playwright 命令与 Actions artifact 链接）。
 
-请说明兼容性影响、潜在风险（如无请写 `None`）。  
-*(EN) Describe compatibility impact and potential risks (write `None` if not applicable).*
+- 截图 / 产物链接：
 
-## Rollback Plan
+## Irreversible Changes And Recovery (if applicable)
 
-请至少写一句可执行的回滚方案（必填）。  
-*(EN) Provide at least one actionable rollback step (required).*
+仅当涉及**数据库/持久化格式变更、运行时配置自动改写/迁移、外部系统状态写入（自选/账本/通知）、或发布策略变化**时，写明旧数据/旧配置如何处理及恢复方式；纯代码变更直接写 `无`。
+
+- 
 
 ## EXTRACT_PROMPT Change (if applicable)
 
-若本 PR 修改了 `src/services/image_stock_extractor.py` 中的 `EXTRACT_PROMPT`，请在此处粘贴完整变更后的 prompt。  
-*If this PR changes `EXTRACT_PROMPT` in `src/services/image_stock_extractor.py`, paste the full updated prompt here:*
+若修改了 `src/services/image_stock_extractor.py` 中的 `EXTRACT_PROMPT`，请粘贴完整最新 prompt：
 
 <details>
 <summary>展开 / Expand: Full EXTRACT_PROMPT</summary>
@@ -68,8 +72,8 @@ python -m pytest -m "not network"
 
 ## Checklist
 
-- [ ] 本 PR 有明确动机和业务价值 / This PR has a clear motivation and value
-- [ ] 已提供可复现的验证命令与结果 / Reproducible verification commands and results are included
-- [ ] 已评估兼容性与风险 / Compatibility and risk have been assessed
-- [ ] 已提供回滚方案 / A rollback plan is provided
-- [ ] 若涉及用户可见变更，已同步更新相关文档与 `docs/CHANGELOG.md`；若未更新 `README.md`，已说明原因与文档落点 / If user-visible changes are included, the relevant docs and `docs/CHANGELOG.md` are updated; if `README.md` was not updated, the reason and documentation location are explained
+- [ ] PR 描述与实际 `git diff` 完全一致
+- [ ] 已说明行为变化与配置/API/UI/报告/通知影响面
+- [ ] 已提供可复现的验证命令与当前 Head CI 结论
+- [ ] 若修改报告/通知/Web UI，已附截图或可复现替代可视证据，且未将临时截图提交入库
+- [ ] 若涉及用户可见变更，已同步相关 `docs/*.md` 与 `docs/CHANGELOG.md`（`[Unreleased]` 扁平格式）

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { HistoryList } from '../HistoryList';
 import type { HistoryItem } from '../../../types/analysis';
@@ -35,6 +35,11 @@ const longChineseNameItem: HistoryItem = {
   sentimentScore: 75,
   operationAdvice: '持有',
   createdAt: '2026-03-16T08:00:00Z',
+  marketPhaseSummary: {
+    market: 'CN',
+    phase: 'non_trading',
+    warnings: [],
+  },
 };
 
 describe('HistoryList', () => {
@@ -72,6 +77,180 @@ describe('HistoryList', () => {
     expect(onToggleItemSelection).toHaveBeenCalledWith(1);
   });
 
+  it('uses structured action before legacy operation advice', () => {
+    render(
+      <HistoryList
+        {...baseProps}
+        items={[
+          {
+            ...items[0],
+            action: 'avoid',
+            actionLabel: '回避',
+            operationAdvice: '买入',
+            sentimentScore: 35,
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByText('回避 35')).toBeInTheDocument();
+    expect(screen.queryByText('买入 35')).not.toBeInTheDocument();
+  });
+
+  it('uses the unified legacy fallback for negated buy advice without structured action', () => {
+    render(
+      <HistoryList
+        {...baseProps}
+        items={[
+          {
+            ...items[0],
+            action: null,
+            actionLabel: null,
+            operationAdvice: '不建议买入，等待确认',
+            sentimentScore: 28,
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByText('回避 28')).toBeInTheDocument();
+    expect(screen.queryByText('买入 28')).not.toBeInTheDocument();
+  });
+
+  it('uses the unified legacy fallback for backend-aligned hold advice without structured action', () => {
+    render(
+      <HistoryList
+        {...baseProps}
+        items={[
+          {
+            ...items[0],
+            action: null,
+            actionLabel: null,
+            operationAdvice: '洗盘观察',
+            sentimentScore: 48,
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByText('持有 48')).toBeInTheDocument();
+    expect(screen.queryByText('情绪 48')).not.toBeInTheDocument();
+  });
+
+  it('does not render ambiguous English legacy advice as a buy action', () => {
+    render(
+      <HistoryList
+        {...baseProps}
+        items={[
+          {
+            ...items[0],
+            action: null,
+            actionLabel: null,
+            operationAdvice: 'buy or sell',
+            sentimentScore: 28,
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByText('情绪 28')).toBeInTheDocument();
+    expect(screen.queryByText('buy 28')).not.toBeInTheDocument();
+  });
+
+  it('does not render financial compound English advice as an action badge', () => {
+    render(
+      <HistoryList
+        {...baseProps}
+        items={[
+          {
+            ...items[0],
+            action: null,
+            actionLabel: null,
+            operationAdvice: 'no buyback announced',
+            sentimentScore: 28,
+          },
+          {
+            ...items[0],
+            id: 2,
+            queryId: 'q-2',
+            action: null,
+            actionLabel: null,
+            operationAdvice: 'no selloff risk',
+            sentimentScore: 31,
+          },
+          {
+            ...items[0],
+            id: 3,
+            queryId: 'q-3',
+            action: null,
+            actionLabel: null,
+            operationAdvice: 'sell-off risk remains low',
+            sentimentScore: 33,
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByText('情绪 28')).toBeInTheDocument();
+    expect(screen.getByText('情绪 31')).toBeInTheDocument();
+    expect(screen.getByText('情绪 33')).toBeInTheDocument();
+    expect(screen.queryByText('回避 28')).not.toBeInTheDocument();
+    expect(screen.queryByText('持有 31')).not.toBeInTheDocument();
+    expect(screen.queryByText('卖出 33')).not.toBeInTheDocument();
+  });
+
+  it('does not render Chinese financial context legacy advice as an action badge', () => {
+    render(
+      <HistoryList
+        {...baseProps}
+        items={[
+          {
+            ...items[0],
+            action: null,
+            actionLabel: null,
+            operationAdvice: '买盘增强，继续观察',
+            sentimentScore: 32,
+          },
+          {
+            ...items[0],
+            id: 2,
+            queryId: 'q-2',
+            action: null,
+            actionLabel: null,
+            operationAdvice: '卖压缓解，继续观察',
+            sentimentScore: 34,
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByText('情绪 32')).toBeInTheDocument();
+    expect(screen.getByText('情绪 34')).toBeInTheDocument();
+    expect(screen.queryByText('买入 32')).not.toBeInTheDocument();
+    expect(screen.queryByText('卖出 34')).not.toBeInTheDocument();
+  });
+
+  it('does not render multi-guard legacy advice as an avoid or alert action', () => {
+    render(
+      <HistoryList
+        {...baseProps}
+        items={[
+          {
+            ...items[0],
+            action: null,
+            actionLabel: null,
+            operationAdvice: 'risk alert, avoid buying',
+            sentimentScore: 28,
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByText('情绪 28')).toBeInTheDocument();
+    expect(screen.queryByText('回避 28')).not.toBeInTheDocument();
+    expect(screen.queryByText('预警 28')).not.toBeInTheDocument();
+  });
+
   it('toggles select-all when clicking the label text', () => {
     const onToggleSelectAll = vi.fn();
 
@@ -103,11 +282,18 @@ describe('HistoryList', () => {
     );
 
     // '贵州茅台股票股份有限公司' (12 Chinese chars) should be truncated to '贵州茅台股票股份.' (8 chars + dot)
-    // The full name exists in a hidden span, visible on hover
     expect(screen.getByText('贵州茅台股票股份.')).toBeInTheDocument();
-    const fullNameHidden = screen.queryByText('贵州茅台股票股份有限公司');
-    expect(fullNameHidden).toBeInTheDocument();
-    expect(fullNameHidden).toHaveClass('hidden');
+    expect(screen.queryByText('贵州茅台股票股份有限公司')).not.toBeInTheDocument();
+    expect(
+      screen.getByRole('button', {
+        name: /^贵州茅台股票股份有限公司 600519 历史记录$/,
+      }),
+    ).toBeInTheDocument();
+
+    const actions = screen.getByTestId('history-card-actions');
+    const meta = screen.getByTestId('history-card-meta');
+    expect(within(actions).queryByText('CN · 非交易日')).not.toBeInTheDocument();
+    expect(within(meta).getByText('CN · 非交易日')).toBeVisible();
   });
 
   it('generates unique select-all ids across multiple instances', () => {

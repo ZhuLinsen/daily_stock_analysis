@@ -1,0 +1,182 @@
+# -*- coding: utf-8 -*-
+"""ntfy notification sender."""
+
+from __future__ import annotations
+
+import json
+import logging
+import time
+from datetime import datetime
+from typing import Optional, Tuple
+from urllib.parse import unquote, urlparse, urlunparse
+
+import requests
+
+from src.config import Config
+from src.formatters import chunk_content_by_max_bytes, strip_hidden_markdown_metadata
+
+
+logger = logging.getLogger(__name__)
+
+# ntfy's default message-size-limit is 4096 bytes: a longer message is turned into an
+# attachment instead of text, and a JSON body above twice that limit is rejected with
+# HTTP 413. The per-message budget leaves room for the page marker and keeps the body
+# under 8192 bytes even if every byte needs a JSON escape.
+NTFY_MESSAGE_MAX_BYTES = 3900
+
+
+def resolve_ntfy_endpoint(ntfy_url: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
+    """Split NTFY_URL into server root and topic from the final path segment."""
+    raw_url = (ntfy_url or "").strip().rstrip("/")
+    if not raw_url:
+        return None, None
+
+    try:
+        parsed = urlparse(raw_url)
+        _ = parsed.port
+    except ValueError:
+        return None, None
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+        return None, None
+
+    path_segments = [segment for segment in parsed.path.split("/") if segment]
+    if not path_segments:
+        return None, None
+
+    topic = unquote(path_segments[-1]).strip()
+    if not topic:
+        return None, None
+
+    root_path = "/".join(path_segments[:-1])
+    server_url = urlunparse(
+        parsed._replace(
+            path=f"/{root_path}" if root_path else "",
+            params="",
+            query="",
+            fragment="",
+        )
+    ).rstrip("/")
+
+    return server_url, topic
+
+
+class NtfySender:
+    """Send Markdown text notifications through the ntfy JSON publish API."""
+
+    def __init__(self, config: Config):
+        self._ntfy_url = getattr(config, "ntfy_url", None)
+        self._ntfy_token = getattr(config, "ntfy_token", None)
+        self._webhook_verify_ssl = getattr(config, "webhook_verify_ssl", True)
+
+    def _is_ntfy_configured(self) -> bool:
+        return bool(self._ntfy_url)
+
+    def _resolve_ntfy_endpoint(self) -> Tuple[Optional[str], Optional[str]]:
+        return resolve_ntfy_endpoint(self._ntfy_url)
+
+    def send_to_ntfy(
+        self,
+        content: str,
+        title: Optional[str] = None,
+        *,
+        timeout_seconds: Optional[float] = None,
+    ) -> bool:
+        """Publish a notification to ntfy using a JSON body with UTF-8 text."""
+        if not self._is_ntfy_configured():
+            logger.warning("ntfy URL 未配置，跳过推送")
+            return False
+
+        server_url, topic = self._resolve_ntfy_endpoint()
+        if not server_url or not topic:
+            logger.error("NTFY_URL 必须是包含 topic path 的完整 endpoint，例如 https://ntfy.sh/my-topic")
+            return False
+
+        if title is None:
+            date_str = datetime.now().strftime("%Y-%m-%d")
+            title = f"📈 股票分析报告 - {date_str}"
+        sanitized_content = strip_hidden_markdown_metadata(content).strip()
+
+        headers = {
+            "Content-Type": "application/json; charset=utf-8",
+            "User-Agent": "daily_stock_analysis",
+        }
+        token = (self._ntfy_token or "").strip()
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+
+        chunks = [sanitized_content]
+        if len(sanitized_content.encode("utf-8")) > NTFY_MESSAGE_MAX_BYTES:
+            chunks = chunk_content_by_max_bytes(
+                sanitized_content,
+                NTFY_MESSAGE_MAX_BYTES,
+                add_page_marker=True,
+            )
+        total_chunks = len(chunks)
+        if total_chunks > 1:
+            logger.info("ntfy 消息内容超长，将分 %s 批发送", total_chunks)
+
+        success_count = 0
+        for index, chunk in enumerate(chunks):
+            chunk_title = f"{title} ({index + 1}/{total_chunks})" if total_chunks > 1 else title
+            if self._publish_ntfy_message(
+                server_url,
+                topic,
+                chunk,
+                chunk_title,
+                headers,
+                timeout_seconds=timeout_seconds,
+            ):
+                success_count += 1
+            elif total_chunks > 1:
+                logger.error("ntfy 第 %s/%s 批发送失败", index + 1, total_chunks)
+
+            # 批次间隔，避免连续发布触发限流
+            if index < total_chunks - 1:
+                time.sleep(1)
+
+        return success_count == total_chunks
+
+    def _publish_ntfy_message(
+        self,
+        server_url: str,
+        topic: str,
+        message: str,
+        title: str,
+        headers: dict,
+        *,
+        timeout_seconds: Optional[float] = None,
+    ) -> bool:
+        """Publish one ntfy message; the body is sent as raw UTF-8 JSON to stay within the size limit."""
+        payload = {
+            "topic": topic,
+            "title": title,
+            "message": message,
+            "markdown": True,
+        }
+
+        try:
+            response = requests.post(
+                server_url,
+                data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                headers=headers,
+                timeout=timeout_seconds or 10,
+                verify=self._webhook_verify_ssl,
+            )
+            if 200 <= response.status_code < 300:
+                logger.info("ntfy 消息发送成功")
+                return True
+
+            logger.error("ntfy 请求失败: HTTP %s", response.status_code)
+            logger.debug("ntfy 响应内容: %s", response.text)
+            return False
+        except requests.exceptions.Timeout:
+            logger.error("发送 ntfy 消息失败: 请求超时")
+            return False
+        except requests.exceptions.RequestException as exc:
+            logger.error("发送 ntfy 消息失败: 网络请求异常")
+            logger.debug("ntfy 请求异常类型: %s", type(exc).__name__)
+            return False
+        except Exception as exc:
+            logger.error("发送 ntfy 消息失败: 未知异常")
+            logger.debug("ntfy 未知异常类型: %s", type(exc).__name__)
+            return False

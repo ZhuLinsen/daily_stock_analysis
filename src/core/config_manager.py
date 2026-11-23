@@ -8,17 +8,61 @@ import logging
 import os
 import re
 import threading
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Iterable, List, Literal, Optional, Set, Tuple
+from typing import Callable, Dict, Iterable, Iterator, List, Literal, Optional, Set, Tuple
 
 from dotenv import dotenv_values
 
 _ASSIGNMENT_PATTERN = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$")
 _FALLBACK_REWRITE_ERRNOS = {errno.EBUSY, errno.EXDEV}
+_COMPOSE_ESCAPED_ENV_VALUE_KEYS = frozenset({"CUSTOM_WEBHOOK_BODY_TEMPLATE"})
+_APPLICATION_TEMPLATE_PLACEHOLDER_PATTERN = re.compile(
+    r"(?<!\$)\$(?:"
+    r"\{(content_json|title_json|content|title)\}"
+    r"|(content_json|title_json|content|title)\b"
+    r")"
+)
+_ESCAPED_APPLICATION_TEMPLATE_PLACEHOLDER_PATTERN = re.compile(
+    r"\$\$(?:"
+    r"\{(content_json|title_json|content|title)\}"
+    r"|(content_json|title_json|content|title)\b"
+    r")"
+)
 
 logger = logging.getLogger(__name__)
+
+
+def escape_compose_sensitive_env_value(key: str, value: str) -> str:
+    """Escape app template placeholders that Docker Compose would interpolate."""
+    if key.upper() not in _COMPOSE_ESCAPED_ENV_VALUE_KEYS:
+        return value
+
+    def _replace(match: re.Match[str]) -> str:
+        braced_name = match.group(1)
+        plain_name = match.group(2)
+        if braced_name is not None:
+            return f"$${{{braced_name}}}"
+        return f"$${plain_name}"
+
+    return _APPLICATION_TEMPLATE_PLACEHOLDER_PATTERN.sub(_replace, value)
+
+
+def unescape_compose_sensitive_env_value(key: str, value: str) -> str:
+    """Restore app template placeholders escaped for Docker Compose storage."""
+    if key.upper() not in _COMPOSE_ESCAPED_ENV_VALUE_KEYS:
+        return value
+
+    def _replace(match: re.Match[str]) -> str:
+        braced_name = match.group(1)
+        plain_name = match.group(2)
+        if braced_name is not None:
+            return f"${{{braced_name}}}"
+        return f"${plain_name}"
+
+    return _ESCAPED_APPLICATION_TEMPLATE_PLACEHOLDER_PATTERN.sub(_replace, value)
 
 
 @dataclass
@@ -69,9 +113,38 @@ class ConfigLineEntry:
 class ConfigManager:
     """Manage `.env` read/write operations with optimistic versioning."""
 
+    # Separate services can manage the same file and process environment.
+    _lock = threading.RLock()
+
     def __init__(self, env_path: Optional[Path] = None):
         self._env_path = env_path or self._resolve_env_path()
-        self._lock = threading.RLock()
+
+    @contextmanager
+    def locked(self) -> Iterator[None]:
+        """Keep related config operations together within this process."""
+        with self._lock:
+            yield
+
+    @contextmanager
+    def _write_locked(self) -> Iterator[None]:
+        """Serialize writers on a stable lock file that survives atomic replacement."""
+        env_path = self._env_path.parent.resolve() / self._env_path.name
+        lock_path = env_path.with_name(f"{env_path.name}.lock")
+        with self.locked():
+            lock_path.parent.mkdir(parents=True, exist_ok=True)
+            with lock_path.open("a+b") as handle:
+                if os.name == "nt":
+                    import msvcrt
+
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+                # Closing the handle releases the OS lock. Keep the sidecar in
+                # place so every waiting writer locks the same file.
+                yield
 
     @property
     def env_path(self) -> Path:
@@ -80,15 +153,37 @@ class ConfigManager:
 
     def read_config_map(self) -> Dict[str, str]:
         """Read key-value mapping from `.env` file."""
+        return self._read_config_map(normalize_values=True)
+
+    def _read_config_map(self, *, normalize_values: bool) -> Dict[str, str]:
+        """Read key-value mapping from `.env` file."""
         if not self._env_path.exists():
             return {}
 
-        values = dotenv_values(self._env_path)
-        return {
-            str(key): "" if value is None else str(value)
-            for key, value in values.items()
-            if key is not None
-        }
+        raw_values = dotenv_values(self._env_path, interpolate=False)
+        if normalize_values:
+            values = dotenv_values(self._env_path)
+            for raw_key, raw_value in raw_values.items():
+                if (
+                    raw_key is not None
+                    and str(raw_key).upper() in _COMPOSE_ESCAPED_ENV_VALUE_KEYS
+                ):
+                    values[raw_key] = raw_value
+        else:
+            values = raw_values
+        config_map: Dict[str, str] = {}
+        for key, value in values.items():
+            if key is None:
+                continue
+            normalized_key = str(key)
+            normalized_value = "" if value is None else str(value)
+            if normalize_values:
+                normalized_value = unescape_compose_sensitive_env_value(
+                    normalized_key,
+                    normalized_value,
+                )
+            config_map[normalized_key] = normalized_value
+        return config_map
 
     def get_config_version(self) -> str:
         """Return deterministic version string based on file state."""
@@ -114,10 +209,15 @@ class ConfigManager:
         updates: Iterable[Tuple[str, str]],
         sensitive_keys: Set[str],
         mask_token: str,
+        *,
+        check_current: Optional[Callable[[], None]] = None,
     ) -> Tuple[List[str], List[str], str]:
-        """Apply updates into `.env` file using atomic replace when possible."""
-        with self._lock:
+        """Check the current state and persist updates under the same writer lock."""
+        with self._write_locked():
+            if check_current is not None:
+                check_current()
             current_values = self.read_config_map()
+            stored_values = self._read_config_map(normalize_values=False)
             mutable_updates: Dict[str, str] = {}
             skipped_masked: List[str] = []
 
@@ -130,7 +230,15 @@ class ConfigManager:
                         skipped_masked.append(key_upper)
                     continue
 
-                if current_value == value:
+                stored_value = stored_values.get(key_upper)
+                canonical_stored_value = escape_compose_sensitive_env_value(
+                    key_upper,
+                    value.replace("\n", ""),
+                )
+                if current_value == value and (
+                    key_upper not in _COMPOSE_ESCAPED_ENV_VALUE_KEYS
+                    or stored_value == canonical_stored_value
+                ):
                     continue
 
                 mutable_updates[key_upper] = value
@@ -147,13 +255,11 @@ class ConfigManager:
 
         for key, value in updates.items():
             line_value = value.replace("\n", "")
+            line_value = escape_compose_sensitive_env_value(key, line_value)
             if key in key_to_index:
                 entries[key_to_index[key]] = ConfigLineEntry.assignment(key, line_value)
             else:
                 entries.append(ConfigLineEntry.assignment(key, line_value))
-
-        if not self._env_path.parent.exists():
-            self._env_path.parent.mkdir(parents=True, exist_ok=True)
 
         temp_path = self._env_path.with_suffix(self._env_path.suffix + ".tmp")
         content = "\n".join(entry.render() for entry in entries)

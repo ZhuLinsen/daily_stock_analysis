@@ -9,9 +9,15 @@
 2. 定义历史 K 线数据模型
 """
 
-from typing import Optional, List
+from typing import Dict, Literal, Optional, List
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+
+from api.v1.schemas.history import HistoryItem
+from api.v1.schemas.intelligence import IntelligenceItem
+from api.v1.schemas.research_artifact import ResearchArtifact
+
+StockProfileStatus = Literal["fresh", "partial", "unavailable"]
 
 
 class StockQuote(BaseModel):
@@ -30,23 +36,22 @@ class StockQuote(BaseModel):
     amount: Optional[float] = Field(None, description="成交额（元）")
     update_time: Optional[str] = Field(None, description="更新时间")
     
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "stock_code": "600519",
-                "stock_name": "贵州茅台",
-                "current_price": 1800.00,
-                "change": 15.00,
-                "change_percent": 0.84,
-                "open": 1785.00,
-                "high": 1810.00,
-                "low": 1780.00,
-                "prev_close": 1785.00,
-                "volume": 10000000,
-                "amount": 18000000000,
-                "update_time": "2024-01-01T15:00:00"
-            }
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "stock_code": "600519",
+            "stock_name": "贵州茅台",
+            "current_price": 1800.00,
+            "change": 15.00,
+            "change_percent": 0.84,
+            "open": 1785.00,
+            "high": 1810.00,
+            "low": 1780.00,
+            "prev_close": 1785.00,
+            "volume": 10000000,
+            "amount": 18000000000,
+            "update_time": "2024-01-01T15:00:00"
         }
+    })
 
 
 class KLineData(BaseModel):
@@ -61,19 +66,18 @@ class KLineData(BaseModel):
     amount: Optional[float] = Field(None, description="成交额")
     change_percent: Optional[float] = Field(None, description="涨跌幅 (%)")
     
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "date": "2024-01-01",
-                "open": 1785.00,
-                "high": 1810.00,
-                "low": 1780.00,
-                "close": 1800.00,
-                "volume": 10000000,
-                "amount": 18000000000,
-                "change_percent": 0.84
-            }
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "date": "2024-01-01",
+            "open": 1785.00,
+            "high": 1810.00,
+            "low": 1780.00,
+            "close": 1800.00,
+            "volume": 10000000,
+            "amount": 18000000000,
+            "change_percent": 0.84
         }
+    })
 
 
 class ExtractItem(BaseModel):
@@ -100,12 +104,85 @@ class StockHistoryResponse(BaseModel):
     period: str = Field(..., description="K 线周期")
     data: List[KLineData] = Field(default_factory=list, description="K 线数据列表")
     
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "stock_code": "600519",
-                "stock_name": "贵州茅台",
-                "period": "daily",
-                "data": []
-            }
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "stock_code": "600519",
+            "stock_name": "贵州茅台",
+            "period": "daily",
+            "data": []
         }
+    })
+
+
+class StockProfileQuoteBlock(BaseModel):
+    status: StockProfileStatus
+    data: Optional[StockQuote] = None
+    limitations: List[str] = Field(default_factory=list)
+
+
+class StockProfileHistoryBlock(BaseModel):
+    status: StockProfileStatus
+    period: Literal["daily"] = "daily"
+    data: List[KLineData] = Field(default_factory=list)
+    limitations: List[str] = Field(default_factory=list)
+
+
+class StockProfileResearchData(BaseModel):
+    latest_report: Optional[HistoryItem] = None
+    recent_reports: List[HistoryItem] = Field(default_factory=list)
+    structured_report: Optional[ResearchArtifact] = None
+
+
+class StockProfileResearchBlock(BaseModel):
+    status: StockProfileStatus
+    data: StockProfileResearchData = Field(default_factory=StockProfileResearchData)
+    limitations: List[str] = Field(default_factory=list)
+
+
+class StockProfileIntelligenceBlock(BaseModel):
+    status: StockProfileStatus
+    items: List[IntelligenceItem] = Field(default_factory=list)
+    limitations: List[str] = Field(default_factory=list)
+
+
+class StockProfilePortfolioRelation(BaseModel):
+    held: bool = False
+    matched_markets: List[str] = Field(default_factory=list)
+
+
+class StockProfilePortfolioBlock(BaseModel):
+    status: StockProfileStatus
+    data: StockProfilePortfolioRelation = Field(default_factory=StockProfilePortfolioRelation)
+    limitations: List[str] = Field(default_factory=list)
+
+
+class StockProfileMonitorData(BaseModel):
+    total_rule_count: int = 0
+    enabled_rule_count: int = 0
+    rule_ids: List[int] = Field(default_factory=list)
+
+
+class StockProfileMonitorBlock(BaseModel):
+    status: StockProfileStatus
+    data: StockProfileMonitorData = Field(default_factory=StockProfileMonitorData)
+    limitations: List[str] = Field(default_factory=list)
+
+
+class StockProfileEvidenceQuality(BaseModel):
+    status: StockProfileStatus
+    blocks: Dict[str, StockProfileStatus] = Field(default_factory=dict)
+    limitations: List[str] = Field(default_factory=list)
+
+
+class StockProfileResponse(BaseModel):
+    requested_code: str
+    canonical_code: str
+    market: Literal["cn", "hk", "us", "jp", "kr", "tw"]
+    as_of: str
+    quote: StockProfileQuoteBlock
+    history: StockProfileHistoryBlock
+    research: StockProfileResearchBlock
+    intelligence: StockProfileIntelligenceBlock
+    portfolio: StockProfilePortfolioBlock
+    monitors: StockProfileMonitorBlock
+    evidence_quality: StockProfileEvidenceQuality

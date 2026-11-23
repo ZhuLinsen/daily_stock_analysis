@@ -32,6 +32,9 @@ import time
 
 logger = logging.getLogger(__name__)
 
+FEISHU_DOMAIN = "https://open.feishu.cn"
+LARK_DOMAIN = "https://open.larksuite.com"
+
 # 尝试导入飞书 SDK
 try:
     import lark_oapi as lark
@@ -43,7 +46,13 @@ try:
         CreateMessageRequest,
         CreateMessageRequestBody,
     )
+    from lark_oapi.core.const import (
+        FEISHU_DOMAIN as SDK_FEISHU_DOMAIN,
+        LARK_DOMAIN as SDK_LARK_DOMAIN,
+    )
 
+    FEISHU_DOMAIN = SDK_FEISHU_DOMAIN
+    LARK_DOMAIN = SDK_LARK_DOMAIN
     FEISHU_SDK_AVAILABLE = True
 except ImportError:
     FEISHU_SDK_AVAILABLE = False
@@ -55,6 +64,21 @@ from src.formatters import format_feishu_markdown, chunk_content_by_max_bytes
 from src.config import get_config
 
 
+def _resolve_feishu_domain(domain: Optional[str]) -> str:
+    """Resolve the configured Feishu/Lark region to an SDK API domain."""
+    raw_domain = str(domain or "feishu").strip().lower()
+    if raw_domain in ("feishu", FEISHU_DOMAIN.lower()):
+        return FEISHU_DOMAIN
+    if raw_domain in ("lark", LARK_DOMAIN.lower()):
+        return LARK_DOMAIN
+
+    logger.warning(
+        "[Feishu Stream] 无效的 FEISHU_DOMAIN=%s，回退为 feishu",
+        raw_domain,
+    )
+    return FEISHU_DOMAIN
+
+
 class FeishuReplyClient:
     """
     飞书消息回复客户端
@@ -62,23 +86,37 @@ class FeishuReplyClient:
     使用飞书 API 发送回复消息。
     """
 
-    def __init__(self, app_id: str, app_secret: str):
+    def __init__(
+            self,
+            app_id: str,
+            app_secret: str,
+            domain: Optional[str] = None
+    ):
         """
         Args:
             app_id: 飞书应用 ID
             app_secret: 飞书应用密钥
+            domain: 飞书 API 区域（feishu/lark）或 SDK API 域名
         """
         if not FEISHU_SDK_AVAILABLE:
             raise ImportError("lark-oapi SDK 未安装")
 
+        config = get_config()
+        configured_domain = (
+            domain
+            if domain is not None
+            else getattr(config, 'feishu_domain', 'feishu')
+        )
+        self._domain = _resolve_feishu_domain(configured_domain)
+
         self._client = lark.Client.builder() \
             .app_id(app_id) \
             .app_secret(app_secret) \
+            .domain(self._domain) \
             .log_level(lark.LogLevel.WARNING) \
             .build()
 
         # 获取配置的最大字节数
-        config = get_config()
         self._max_bytes = getattr(config, 'feishu_max_bytes', 20000)
 
     def _send_interactive_card(self, content: str, message_id: Optional[str] = None,
@@ -538,12 +576,14 @@ class FeishuStreamClient:
     def __init__(
             self,
             app_id: Optional[str] = None,
-            app_secret: Optional[str] = None
+            app_secret: Optional[str] = None,
+            domain: Optional[str] = None
     ):
         """
         Args:
             app_id: 应用 ID（不传则从配置读取）
             app_secret: 应用密钥（不传则从配置读取）
+            domain: 飞书 API 区域（feishu/lark）或 SDK API 域名
         """
         if not FEISHU_SDK_AVAILABLE:
             raise ImportError(
@@ -556,6 +596,12 @@ class FeishuStreamClient:
 
         self._app_id = app_id or getattr(config, 'feishu_app_id', None)
         self._app_secret = app_secret or getattr(config, 'feishu_app_secret', None)
+        configured_domain = (
+            domain
+            if domain is not None
+            else getattr(config, 'feishu_domain', 'feishu')
+        )
+        self._domain = _resolve_feishu_domain(configured_domain)
 
         if not self._app_id or not self._app_secret:
             raise ValueError(
@@ -581,7 +627,11 @@ class FeishuStreamClient:
     def _create_event_handler(self) -> 'lark.EventDispatcherHandler':
         """创建事件分发处理器"""
         # 创建回复客户端
-        self._reply_client = FeishuReplyClient(self._app_id, self._app_secret)
+        self._reply_client = FeishuReplyClient(
+            self._app_id,
+            self._app_secret,
+            domain=self._domain,
+        )
 
         # 创建消息处理器
         handler = FeishuStreamHandler(
@@ -625,6 +675,7 @@ class FeishuStreamClient:
             app_id=self._app_id,
             app_secret=self._app_secret,
             event_handler=event_handler,
+            domain=self._domain,
             log_level=lark.LogLevel.WARNING,
             auto_reconnect=True
         )

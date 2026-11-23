@@ -1,4 +1,5 @@
 import React from 'react';
+import { useUiLanguage } from '../../contexts/UiLanguageContext';
 import { cn } from '../../utils/cn';
 
 interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
@@ -45,13 +46,14 @@ export const Button: React.FC<ButtonProps> = ({
   variant = 'primary',
   size = 'md',
   isLoading = false,
-  loadingText = '处理中...',
+  loadingText,
   glow = false,
   className = '',
   disabled,
   type = 'button',
   ...props
 }) => {
+  const { t } = useUiLanguage();
   const glowStyles = glow ? 'shadow-glow-cyan settings-glow-cyan-hover' : '';
 
   return (
@@ -93,7 +95,7 @@ export const Button: React.FC<ButtonProps> = ({
               d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
             />
           </svg>
-          {loadingText}
+          {loadingText ?? t('common.processing')}
         </span>
       ) : (
         children

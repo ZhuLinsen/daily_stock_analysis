@@ -12,23 +12,60 @@ Responsibilities:
 from __future__ import annotations
 import json
 import logging
+import re
 from datetime import date, datetime, timedelta
 from typing import Optional, Dict, Any, List, Tuple, TYPE_CHECKING
 
+from data_provider.us_index_mapping import get_us_stock_yf_symbol, normalize_us_hyphen_symbol
 from src.config import get_config, resolve_news_window_days
+from src.formatters import markdown_to_plain_text
+from src.data.stock_index_loader import resolve_index_stock_code
+from src.services.stock_code_utils import resolve_daily_stock_identity
 from src.report_language import (
     get_bias_status_emoji,
     get_localized_stock_name,
     get_report_labels,
     get_signal_level,
+    get_chip_unavailable_reason,
+    is_chip_structure_unavailable,
     localize_bias_status,
     localize_chip_health,
-    localize_operation_advice,
+    localize_conflict_severity,
+    localize_consensus_level,
+    localize_strategy_signal,
+    localize_strategy_skill,
+    localize_strategy_synthesis_summary,
     localize_trend_prediction,
     normalize_report_language,
+    normalize_strategy_synthesis_payload,
+    strategy_invalid_opinion_count,
 )
 from src.storage import DatabaseManager
-from src.utils.data_processing import normalize_model_used, parse_json_field
+from src.services.run_diagnostics import build_run_diagnostic_summary
+from src.services.empty_news import (
+    empty_news_disclosure,
+    empty_news_disclosure_from_stored,
+    persisted_news_evidence_present,
+    persisted_news_result_state,
+)
+from src.market_phase_summary import (
+    extract_market_phase_summary,
+    rebuild_market_phase_summary_for_stock_code,
+)
+from src.schemas.decision_action import (
+    display_action_fields,
+    display_action_fields_for_result,
+    display_operation_advice_for_result,
+)
+from src.schemas.decision_scale import extract_decision_guardrail_reason
+from src.utils.sniper_points import find_sniper_points
+from src.utils.data_processing import (
+    extract_realtime_detail_fields,
+    normalize_model_used,
+    parse_json_field,
+    signal_attribution_has_content,
+    signal_attribution_weight_items,
+)
 
 if TYPE_CHECKING:
     from src.analyzer import AnalysisResult
@@ -60,29 +97,200 @@ class HistoryService:
             db_manager: Database manager (optional, defaults to singleton instance)
         """
         self.db = db_manager or DatabaseManager.get_instance()
+
+    @staticmethod
+    def _serialize_created_at(value: Optional[datetime]) -> Optional[str]:
+        """Serialize stored server-local timestamps with an explicit offset."""
+        if value is None:
+            return None
+        return value.astimezone().isoformat()
+
+    @staticmethod
+    def _history_code_filter_candidates(
+        stock_code: str,
+        *,
+        market_hint: Optional[str] = None,
+    ) -> List[str]:
+        raw_code = str(stock_code or "").strip()
+        if not raw_code:
+            return []
+
+        candidates: List[str] = []
+
+        def add(candidate: str) -> None:
+            candidate = str(candidate or "").strip().upper()
+            if candidate and candidate not in candidates:
+                candidates.append(candidate)
+
+        trusted_market = str(market_hint or "").strip().lower()
+        if trusted_market:
+            identity = resolve_daily_stock_identity(raw_code, market_hint=trusted_market)
+            if identity is None or identity.market != trusted_market:
+                return []
+            for candidate in identity.code_candidates:
+                candidate_text = str(candidate or "").strip()
+                if candidate_text.isdigit():
+                    unhinted_identity = resolve_daily_stock_identity(candidate_text)
+                    if unhinted_identity is None or unhinted_identity.market != trusted_market:
+                        continue
+                add(candidate)
+            return candidates
+
+        try:
+            from data_provider.base import (
+                canonical_stock_code,
+                is_bse_code,
+                normalize_stock_code,
+            )
+            from src.services.stock_list_parser import ParseStatus, parse_analysis_target
+
+            # PR #2312: parser-aware index branch. ``parse_analysis_target``
+            # (with the index registry) is the single asset-type authority. When
+            # the query token is a registered INDEX, the persisted-read candidate
+            # set must be exactly:
+            #   1. the lowercase parser canonical (``sh000016`` / ``csi930955`` —
+            #      the current storage form),
+            #   2. the legacy uppercase canonical (``SH000016`` / ``CSI930955`` —
+            #      how pre-fix records were saved), and
+            #   3. every explicit alias/display form (``000016.SH`` /
+            #      ``930955.CSI`` — ``IndexEntry.aliases``).
+            # The bare same-code stock (``000016`` / ``930955``) is deliberately
+            # excluded so an index record is never reachable through a stock
+            # query and vice versa. This unifies the previous CSI-only convergence
+            # (PR #2267) with the SH/SZ index identity so all three namespaces
+            # share one branch.
+            target = parse_analysis_target(raw_code)
+            if target.asset_type == ParseStatus.INDEX:
+                index_keys = [target.canonical_id]
+                legacy_upper = (
+                    canonical_stock_code(target.canonical_id)
+                    or target.canonical_id.upper()
+                )
+                if legacy_upper and legacy_upper not in index_keys:
+                    index_keys.append(legacy_upper)
+                entry = target.matched_index
+                if entry is not None:
+                    for alias in entry.aliases:
+                        alias = str(alias or "").strip()
+                        if not alias:
+                            continue
+                        if alias not in index_keys:
+                            index_keys.append(alias)
+                        # sqlite ``IN`` comparison is case-sensitive: a legacy
+                        # record may have been persisted under the uppercase
+                        # alias form (``SZ399300`` for registry alias
+                        # ``sz399300``), so the persisted-read candidate set must
+                        # carry both the raw alias and its uppercase form. The
+                        # bare same-code stock (``000300``) is still never added.
+                        alias_upper = alias.upper()
+                        if alias_upper and alias_upper not in index_keys:
+                            index_keys.append(alias_upper)
+                for key in index_keys:
+                    if key and key not in candidates:
+                        candidates.append(key)
+                return candidates
+
+            raw_canonical = canonical_stock_code(raw_code)
+            normalized = canonical_stock_code(normalize_stock_code(raw_canonical))
+        except Exception:
+            add(raw_code)
+            return candidates
+
+        def add_hk_variants(digits: str) -> None:
+            if not digits or not digits.isdigit():
+                return
+
+            normalized_digits = digits.zfill(5)
+            add(f"HK{normalized_digits}")
+            add(f"{normalized_digits}.HK")
+
+            unpadded_digits = digits.lstrip("0")
+            if unpadded_digits:
+                add(f"{unpadded_digits}.HK")
+
+        resolved = resolve_index_stock_code(raw_canonical) or resolve_index_stock_code(normalized)
+        resolved_normalized = ""
+        if resolved:
+            try:
+                resolved_normalized = canonical_stock_code(normalize_stock_code(resolved))
+            except Exception:
+                resolved_normalized = resolved
+            add(resolved)
+            add(resolved_normalized)
+            resolved_base = str(resolved_normalized or resolved).split(".", 1)[0]
+            if resolved_base and resolved_base.isdigit():
+                add(resolved_base)
+
+        add(raw_canonical)
+        add(normalized)
+
+        yahoo_symbol = get_us_stock_yf_symbol(normalized)
+        if yahoo_symbol:
+            add(yahoo_symbol)
+            add(normalize_us_hyphen_symbol(yahoo_symbol) or yahoo_symbol)
+
+        if normalized.startswith("HK") and normalized[2:].isdigit():
+            add_hk_variants(normalized[2:])
+        elif normalized.isdigit() and len(normalized) == 5:
+            add_hk_variants(normalized)
+        elif normalized.isdigit() and len(normalized) == 6:
+            exchange = None
+            if is_bse_code(normalized):
+                exchange = "BJ"
+            elif normalized.startswith(("5", "6", "9")):
+                exchange = "SH"
+            elif normalized.startswith(("0", "1", "2", "3")):
+                exchange = "SZ"
+
+            if exchange:
+                add(f"{normalized}.{exchange}")
+                add(f"{exchange}{normalized}")
+                if exchange == "SH":
+                    add(f"{normalized}.SS")
+                    add(f"SS{normalized}")
+
+        return candidates
     
     def get_history_list(
         self,
         stock_code: Optional[str] = None,
+        report_type: Optional[str] = None,
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
         page: int = 1,
-        limit: int = 20
+        limit: int = 20,
+        include_ambiguous_numeric_aliases: bool = True,
+        market_hint: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Get history analysis list.
         
         Args:
             stock_code: Stock code filter
+            report_type: Report type filter
             start_date: Start date (YYYY-MM-DD)
             end_date: End date (YYYY-MM-DD)
             page: Page number
             limit: Items per page
+            include_ambiguous_numeric_aliases: Whether to include bare numeric
+                aliases that may collide across offshore markets.
+            market_hint: Trusted market identity for candidate expansion. When
+                present, candidates from other indexed markets are excluded.
             
         Returns:
             Dictionary containing total count and items
         """
         try:
+            if stock_code:
+                stock_code = self._history_code_filter_candidates(
+                    stock_code,
+                    market_hint=market_hint,
+                )
+                if not include_ambiguous_numeric_aliases and not market_hint:
+                    stock_code = [candidate for candidate in stock_code if not candidate.isdigit()]
+                if not stock_code:
+                    return {"total": 0, "items": []}
+
             # Parse date parameters
             start_dt = None
             end_dt = None
@@ -105,6 +313,7 @@ class HistoryService:
             # Use new paginated query method
             records, total = self.db.get_analysis_history_paginated(
                 code=stock_code,
+                report_type=report_type,
                 start_date=start_dt,
                 end_date=end_dt,
                 offset=offset,
@@ -114,16 +323,7 @@ class HistoryService:
             # Convert to response format
             items = []
             for record in records:
-                items.append({
-                    "id": record.id,
-                    "query_id": record.query_id,
-                    "stock_code": record.code,
-                    "stock_name": record.name,
-                    "report_type": record.report_type,
-                    "sentiment_score": record.sentiment_score,
-                    "operation_advice": record.operation_advice,
-                    "created_at": record.created_at.isoformat() if record.created_at else None,
-                })
+                items.append(self._record_to_list_item_dict(record))
             
             return {
                 "total": total,
@@ -132,9 +332,166 @@ class HistoryService:
             
         except Exception as e:
             logger.error(f"查询历史列表失败: {e}", exc_info=True)
-            return {"total": 0, "items": []}
+            raise
 
-    def _resolve_record(self, record_id: str):
+    @staticmethod
+    def _safe_float(value: Any) -> Optional[float]:
+        if value is None:
+            return None
+        try:
+            if isinstance(value, str):
+                value = value.strip().replace("%", "")
+                if not value:
+                    return None
+            parsed = float(value)
+            return parsed if parsed == parsed else None
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _first_present(*values: Any) -> Any:
+        for value in values:
+            if value is not None and value != "":
+                return value
+        return None
+
+    def _extract_history_market_fields(self, context_snapshot: Any) -> Dict[str, Optional[float]]:
+        snapshot_obj = parse_json_field(context_snapshot)
+        realtime_fields = extract_realtime_detail_fields(snapshot_obj)
+
+        volume_ratio = None
+        turnover_rate = None
+        if isinstance(snapshot_obj, dict):
+            enhanced = snapshot_obj.get("enhanced_context")
+            realtime = enhanced.get("realtime") if isinstance(enhanced, dict) else None
+            quote_raw = snapshot_obj.get("realtime_quote_raw")
+            quote = snapshot_obj.get("realtime_quote")
+            for source in (realtime, quote_raw, quote):
+                if not isinstance(source, dict):
+                    continue
+                if volume_ratio is None:
+                    volume_ratio = self._first_present(
+                        source.get("volume_ratio"),
+                        source.get("volumeRatio"),
+                    )
+                if turnover_rate is None:
+                    turnover_rate = self._first_present(
+                        source.get("turnover_rate"),
+                        source.get("turnoverRate"),
+                        source.get("turnover"),
+                    )
+
+        return {
+            "current_price": self._safe_float(realtime_fields.get("current_price")),
+            "change_pct": self._safe_float(realtime_fields.get("change_pct")),
+            "volume_ratio": self._safe_float(volume_ratio),
+            "turnover_rate": self._safe_float(turnover_rate),
+        }
+
+    @staticmethod
+    def _display_stock_code(raw_code: Any) -> str:
+        code = str(raw_code or "").strip()
+        if not code:
+            return code
+        from src.services.stock_list_parser import ParseStatus, parse_analysis_target
+
+        try:
+            target = parse_analysis_target(code)
+        except Exception:
+            return resolve_index_stock_code(code) or code
+        if target.asset_type == ParseStatus.INDEX:
+            # PR #2312: registered index records always surface the parser
+            # canonical (lowercase ``sh000300`` / ``csi930955``), even when the
+            # persisted row was saved under a legacy uppercase canonical or an
+            # explicit alias (``SH000016`` / ``000016.SH`` / ``sz399300`` /
+            # ``000300.CSI``). Web identity keys therefore only need a simple
+            # case fold for API/task/report codes — they must never guess a
+            # canonical from prefixes/suffixes.
+            return target.canonical_id
+        return resolve_index_stock_code(code) or code
+
+    def _display_market_phase_summary(self, stock_code: str, context_snapshot: Any) -> Any:
+        return rebuild_market_phase_summary_for_stock_code(
+            self._display_stock_code(stock_code),
+            context_snapshot,
+        )
+
+    @staticmethod
+    def _extract_market_review_region(context_snapshot: Any) -> Optional[str]:
+        snapshot = parse_json_field(context_snapshot)
+        if not isinstance(snapshot, dict):
+            return None
+
+        region = snapshot.get("market_review_region")
+        if not isinstance(region, str):
+            payload = snapshot.get("market_review_payload")
+            region = payload.get("region") if isinstance(payload, dict) else None
+
+        normalized = region.strip() if isinstance(region, str) else ""
+        return normalized or None
+
+    def _record_to_list_item_dict(self, record) -> Dict[str, Any]:
+        raw_result = parse_json_field(getattr(record, "raw_result", None))
+        model_used = raw_result.get("model_used") if isinstance(raw_result, dict) else None
+        display_code = self._display_stock_code(record.code)
+        market_fields = self._extract_history_market_fields(
+            getattr(record, "context_snapshot", None)
+        )
+        market_phase_summary = self._display_market_phase_summary(
+            record.code,
+            getattr(record, "context_snapshot", None),
+        )
+        action_fields = self._decision_action_fields_for_record(record, raw_result)
+        analysis_summary = record.analysis_summary
+        if getattr(record, "report_type", None) == "market_review":
+            market_review_content = self._extract_market_review_content(record, raw_result)
+            analysis_summary = self._market_review_summary(
+                record.analysis_summary,
+                market_review_content,
+            )
+
+        return {
+            "id": record.id,
+            "query_id": record.query_id,
+            "stock_code": display_code,
+            "stock_name": record.name,
+            "report_type": record.report_type,
+            "region": self._extract_market_review_region(
+                getattr(record, "context_snapshot", None)
+            ),
+            "trend_prediction": record.trend_prediction,
+            "analysis_summary": analysis_summary,
+            "sentiment_score": record.sentiment_score,
+            "operation_advice": record.operation_advice,
+            "action": action_fields["action"],
+            "action_label": action_fields["action_label"],
+            "model_used": normalize_model_used(model_used),
+            "created_at": self._serialize_created_at(record.created_at),
+            "market_phase_summary": market_phase_summary,
+            "asset_type": self._asset_type_for_record(record),
+            **market_fields,
+        }
+
+    @staticmethod
+    def _asset_type_for_record(record) -> Optional[str]:
+        """Return the parser-derived optional ``asset_type`` for a history row.
+
+        Uses the *persisted* ``record.code`` (never the display code) via
+        :func:`asset_type_from_canonical_code`, so ``sh000016`` is ``index``,
+        bare ``000016`` is ``stock`` and market review rows (``MARKET``) omit
+        the field. Optional by contract: legacy clients simply ignore it.
+        """
+        from src.services.analysis_service import asset_type_from_canonical_code
+
+        return asset_type_from_canonical_code(getattr(record, "code", None))
+
+    def _resolve_record(
+        self,
+        record_id: str,
+        *,
+        code: Optional[str] = None,
+        report_type: Optional[str] = None,
+    ):
         """
         Resolve a record_id parameter to an AnalysisHistory object.
 
@@ -154,8 +511,15 @@ class HistoryService:
                 return record
         except (ValueError, TypeError):
             pass
-        # Fall back to query_id lookup
-        return self.db.get_latest_analysis_by_query_id(record_id)
+        # Fall back to query_id lookup. Keep the old no-kwargs call for
+        # unfiltered paths so existing test doubles and integrations remain compatible.
+        if code is None and report_type is None:
+            return self.db.get_latest_analysis_by_query_id(record_id)
+        return self.db.get_latest_analysis_by_query_id(
+            record_id,
+            code=code,
+            report_type=report_type,
+        )
 
     def resolve_and_get_detail(self, record_id: str) -> Optional[Dict[str, Any]]:
         """
@@ -197,6 +561,77 @@ class HistoryService:
             logger.error(f"resolve_and_get_news failed for {record_id}: {e}", exc_info=True)
             return []
 
+    def resolve_and_get_diagnostics(self, record_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Resolve record_id and return a user-facing run diagnostic summary.
+
+        Legacy records without diagnostic snapshots return an ``unknown``
+        summary instead of failing. Storage and JSON parsing errors are
+        propagated so callers can surface backend failures accurately.
+        """
+        record = self._resolve_record(record_id)
+        if not record:
+            return None
+
+        return build_run_diagnostic_summary(
+            context_snapshot=self._parse_diagnostic_json_field(
+                getattr(record, "context_snapshot", None),
+                "context_snapshot",
+            ),
+            raw_result=self._parse_diagnostic_json_field(
+                getattr(record, "raw_result", None),
+                "raw_result",
+            ),
+            report_saved=True,
+            query_id=getattr(record, "query_id", None),
+            stock_code=getattr(record, "code", None),
+        )
+
+    def resolve_and_get_run_flow(
+        self,
+        record_id: str,
+        *,
+        code: Optional[str] = None,
+        report_type: Optional[str] = None,
+    ):
+        """
+        Resolve record_id and return a sanitized run-flow snapshot.
+
+        Uses the same strict JSON parsing behavior as diagnostics so malformed
+        persisted payloads surface as backend errors instead of partial graphs.
+        """
+        record = self._resolve_record(record_id, code=code, report_type=report_type)
+        if not record:
+            return None
+
+        from src.services.run_flow import build_history_run_flow_snapshot
+
+        return build_history_run_flow_snapshot(
+            record,
+            context_snapshot=self._parse_diagnostic_json_field(
+                getattr(record, "context_snapshot", None),
+                "context_snapshot",
+            ),
+            raw_result=self._parse_diagnostic_json_field(
+                getattr(record, "raw_result", None),
+                "raw_result",
+            ),
+        )
+
+    @staticmethod
+    def _parse_diagnostic_json_field(value: Any, field_name: str) -> Any:
+        """Strict JSON parser for persisted diagnostic inputs."""
+        if value is None:
+            return None
+        if isinstance(value, str):
+            if not value.strip():
+                return None
+            try:
+                return json.loads(value)
+            except (json.JSONDecodeError, TypeError, ValueError) as exc:
+                raise ValueError(f"invalid {field_name} JSON") from exc
+        return value
+
     def get_history_detail_by_id(self, record_id: int) -> Optional[Dict[str, Any]]:
         """
         Get history report detail.
@@ -219,6 +654,18 @@ class HistoryService:
             logger.error(f"根据 ID 查询历史详情失败: {e}", exc_info=True)
             return None
 
+    def get_latest_fundamental_snapshot(
+        self,
+        *,
+        query_id: str,
+        stock_code: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Read the same persisted fundamental fallback used by history detail APIs."""
+        return self.db.get_latest_fundamental_snapshot(
+            query_id=query_id,
+            code=stock_code,
+        )
+
     @staticmethod
     def _normalize_display_sniper_value(value: Any) -> Optional[str]:
         """Normalize sniper point values for history display."""
@@ -236,7 +683,7 @@ class HistoryService:
             for candidate in (raw_result.get("dashboard"), raw_result):
                 if not isinstance(candidate, dict):
                     continue
-                raw_points = DatabaseManager._find_sniper_in_dashboard(candidate) or raw_points
+                raw_points = find_sniper_points(candidate) or raw_points
                 if any(raw_points.get(k) is not None for k in ("ideal_buy", "secondary_buy", "stop_loss", "take_profit")):
                     break
 
@@ -249,6 +696,53 @@ class HistoryService:
             db_value = getattr(record, field, None)
             display_points[field] = str(db_value) if db_value is not None else None
         return display_points
+
+    @staticmethod
+    def _extract_market_review_content(record, raw_result: Any) -> Optional[str]:
+        """Return persisted market review content from raw_result or news_content."""
+        if isinstance(raw_result, dict):
+            for field in ("raw_response", "market_review_report"):
+                content = raw_result.get(field)
+                if isinstance(content, str) and content.strip():
+                    return content
+
+        news_content = getattr(record, "news_content", None)
+        if isinstance(news_content, str) and news_content.strip():
+            return news_content
+        return None
+
+    @staticmethod
+    def _market_review_summary(
+        persisted_summary: Any,
+        markdown: Any,
+        *,
+        limit: int = 120,
+    ) -> Optional[str]:
+        """Return a stable short summary without leaking report Markdown or metadata."""
+        persisted = str(persisted_summary or "").strip()
+        if persisted:
+            return persisted
+
+        source = str(markdown or "").strip()
+        if not source:
+            return None
+
+        # Full reports can contain internal reference metadata, tables, links and
+        # fenced diagnostic payloads. Keep readable prose only for summary fields.
+        source = re.sub(r"```[^\n]*\n.*?```", " ", source, flags=re.DOTALL)
+        source = re.sub(r"!\[([^\]]*)\]\([^)]*\)", r"\1", source)
+        source = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", source)
+        source = re.sub(r"<[^>]+>", " ", source)
+        text = markdown_to_plain_text(source)
+        text = re.sub(r"[`~|]", " ", text)
+        text = re.sub(r"^\s*:?-{3,}:?(?:\s+:?-{3,}:?)+\s*$", " ", text, flags=re.MULTILINE)
+        text = re.sub(r"^[+\d]+[.)]\s+", "", text, flags=re.MULTILINE)
+        text = re.sub(r"\s+", " ", text).strip(" •-—")
+        if not text:
+            return None
+        if len(text) > limit:
+            return text[:limit].rstrip() + "…"
+        return text
 
     def _record_to_detail_dict(self, record) -> Dict[str, Any]:
         """
@@ -267,16 +761,40 @@ class HistoryService:
             except json.JSONDecodeError:
                 context_snapshot = record.context_snapshot
 
+        report_language = normalize_report_language(
+            raw_result.get("report_language") if isinstance(raw_result, dict) else None
+        )
+        news_disclosure = empty_news_disclosure_from_stored(
+            raw_result,
+            context_snapshot,
+            report_language,
+        )
+
+        market_review_content = None
+        analysis_summary = record.analysis_summary
+        if getattr(record, "report_type", None) == "market_review":
+            market_review_content = self._extract_market_review_content(record, raw_result)
+            analysis_summary = self._market_review_summary(
+                record.analysis_summary,
+                market_review_content,
+            )
+
+        action_fields = self._decision_action_fields_for_record(record, raw_result)
+        display_code = self._display_stock_code(record.code)
+        market_phase_summary = self._display_market_phase_summary(record.code, context_snapshot)
         return {
             "id": record.id,
             "query_id": record.query_id,
-            "stock_code": record.code,
+            "stock_code": display_code,
+            "storage_stock_code": str(record.code or "").strip(),
             "stock_name": record.name,
             "report_type": record.report_type,
-            "created_at": record.created_at.isoformat() if record.created_at else None,
+            "created_at": self._serialize_created_at(record.created_at),
             "model_used": model_used,
-            "analysis_summary": record.analysis_summary,
+            "analysis_summary": analysis_summary,
             "operation_advice": record.operation_advice,
+            "action": action_fields["action"],
+            "action_label": action_fields["action_label"],
             "trend_prediction": record.trend_prediction,
             "sentiment_score": record.sentiment_score,
             "sentiment_label": self._get_sentiment_label(record.sentiment_score or 50),
@@ -284,10 +802,24 @@ class HistoryService:
             "secondary_buy": sniper_points.get("secondary_buy"),
             "stop_loss": sniper_points.get("stop_loss"),
             "take_profit": sniper_points.get("take_profit"),
-            "news_content": record.news_content,
+            "news_content": market_review_content or record.news_content,
+            "empty_news_disclosure": news_disclosure,
             "raw_result": raw_result,
             "context_snapshot": context_snapshot,
+            "market_phase_summary": market_phase_summary,
         }
+
+    def _decision_action_fields_for_record(self, record, raw_result: Any) -> Dict[str, Any]:
+        raw = raw_result if isinstance(raw_result, dict) else {}
+        return display_action_fields(
+            operation_advice=raw.get("operation_advice") or getattr(record, "operation_advice", None),
+            explicit_action=raw.get("action"),
+            action_label=raw.get("action_label"),
+            report_type=getattr(record, "report_type", None),
+            report_language=normalize_report_language(raw.get("report_language")),
+            sentiment_score=getattr(record, "sentiment_score", None),
+            guardrail_reason=extract_decision_guardrail_reason(raw),
+        )
 
     def delete_history_records(self, record_ids: List[int]) -> int:
         """
@@ -470,6 +1002,16 @@ class HistoryService:
                 record_id=record_id
             )
 
+        if getattr(record, "report_type", None) == "market_review":
+            markdown_report = self._extract_market_review_content(record, raw_result)
+            if markdown_report:
+                return markdown_report
+            logger.error(f"get_markdown_report: market review report is empty for {record_id}")
+            raise MarkdownReportGenerationError(
+                f"market review report is empty for record {record_id}",
+                record_id=record_id,
+            )
+
         try:
             result = self._rebuild_analysis_result(raw_result, record)
         except Exception as e:
@@ -482,7 +1024,7 @@ class HistoryService:
         if not result:
             logger.error(f"get_markdown_report: _rebuild_analysis_result returned None for {record_id}")
             raise MarkdownReportGenerationError(
-                f"Failed to rebuild AnalysisResult from raw_result",
+                "Failed to rebuild AnalysisResult from raw_result",
                 record_id=record_id
             )
 
@@ -515,9 +1057,14 @@ class HistoryService:
             from src.analyzer import AnalysisResult
             # Extract dashboard data if available
             dashboard = raw_result.get("dashboard", {})
+            context_snapshot = parse_json_field(getattr(record, "context_snapshot", None))
+            news_result_count, news_result_count_known = persisted_news_result_state(
+                raw_result,
+                context_snapshot,
+            )
 
             # Build AnalysisResult with available data
-            return AnalysisResult(
+            result = AnalysisResult(
                 code=raw_result.get("code", record.code),
                 name=raw_result.get("name", record.name),
                 sentiment_score=raw_result.get("sentiment_score", record.sentiment_score or 50),
@@ -526,6 +1073,8 @@ class HistoryService:
                 decision_type=raw_result.get("decision_type", "hold"),
                 confidence_level=raw_result.get("confidence_level", "中"),
                 report_language=normalize_report_language(raw_result.get("report_language")),
+                action=raw_result.get("action"),
+                action_label=raw_result.get("action_label"),
                 dashboard=dashboard,
                 trend_analysis=raw_result.get("trend_analysis", ""),
                 short_term_outlook=raw_result.get("short_term_outlook", ""),
@@ -546,6 +1095,11 @@ class HistoryService:
                 buy_reason=raw_result.get("buy_reason", ""),
                 market_snapshot=raw_result.get("market_snapshot"),
                 search_performed=raw_result.get("search_performed", False),
+                news_result_count=news_result_count,
+                news_result_count_known=news_result_count_known,
+                news_evidence_present=persisted_news_evidence_present(
+                    raw_result, news_result_count
+                ),
                 data_sources=raw_result.get("data_sources", ""),
                 success=raw_result.get("success", True),
                 error_message=raw_result.get("error_message"),
@@ -553,6 +1107,10 @@ class HistoryService:
                 change_pct=raw_result.get("change_pct"),
                 model_used=raw_result.get("model_used"),
             )
+            guardrail_reason = extract_decision_guardrail_reason(raw_result)
+            if guardrail_reason:
+                setattr(result, "guardrail_reason", guardrail_reason)
+            return result
         except Exception as e:
             logger.error(f"Failed to rebuild AnalysisResult: {e}", exc_info=True)
             return None
@@ -579,14 +1137,22 @@ class HistoryService:
         report_time = record.created_at.strftime("%H:%M:%S") if record.created_at else datetime.now().strftime("%H:%M:%S")
         report_language = normalize_report_language(getattr(result, "report_language", "zh"))
         labels = get_report_labels(report_language)
-        analysis_date_label = "Analysis Date" if report_language == "en" else "分析日期"
-        report_time_label = "Report Time" if report_language == "en" else "报告生成时间"
-        reason_label = "Rationale" if report_language == "en" else "操作理由"
-        risk_warning_label = "Risk Warning" if report_language == "en" else "风险提示"
-        technical_heading = "Technicals" if report_language == "en" else "技术面"
-        ma_label = "Moving Averages" if report_language == "en" else "均线"
-        volume_analysis_label = "Volume" if report_language == "en" else "量能"
-        news_heading = "News Flow" if report_language == "en" else "消息面"
+
+        def _label(en: str, zh: str, ko: str) -> str:
+            if report_language == "en":
+                return en
+            if report_language == "ko":
+                return ko
+            return zh
+
+        analysis_date_label = _label("Analysis Date", "分析日期", "분석일")
+        report_time_label = _label("Report Time", "报告生成时间", "생성 시각")
+        reason_label = _label("Rationale", "操作理由", "판단 근거")
+        risk_warning_label = _label("Risk Warning", "风险提示", "리스크 경고")
+        technical_heading = _label("Technicals", "技术面", "기술적 분석")
+        ma_label = _label("Moving Averages", "均线", "이동평균")
+        volume_analysis_label = _label("Volume", "量能", "거래량")
+        news_heading = _label("News Flow", "消息面", "뉴스 흐름")
 
         # Escape markdown special characters in stock name
         name_escaped = self._escape_md(
@@ -605,6 +1171,10 @@ class HistoryService:
             "---",
             "",
         ]
+
+        news_disclosure = empty_news_disclosure(result, report_language)
+        if news_disclosure:
+            report_lines.extend([news_disclosure, ""])
 
         # ========== 舆情与基本面概览（放在最前面）==========
         intel = dashboard.get('intelligence', {}) if dashboard else {}
@@ -660,7 +1230,7 @@ class HistoryService:
             report_lines.extend([
                 f"| {labels['position_status_label']} | {labels['action_advice_label']} |",
                 "|---------|---------|",
-                f"| 🆕 **{labels['no_position_label']}** | {pos_advice.get('no_position', localize_operation_advice(result.operation_advice, report_language))} |",
+                f"| 🆕 **{labels['no_position_label']}** | {pos_advice.get('no_position', self._get_display_operation_advice(result, report_language))} |",
                 f"| 💼 **{labels['has_position_label']}** | {pos_advice.get('has_position', labels['continue_holding'])} |",
                 "",
             ])
@@ -720,20 +1290,33 @@ class HistoryService:
                 ])
             # 筹码结构
             if chip_data:
-                raw_chip_health = chip_data.get('chip_health', 'N/A')
-                chip_health = localize_chip_health(raw_chip_health, report_language)
-                normalized_chip_health = str(raw_chip_health or "").strip().lower()
-                if normalized_chip_health in {"健康", "healthy"}:
-                    chip_emoji = "✅"
-                elif normalized_chip_health in {"一般", "average"}:
-                    chip_emoji = "⚠️"
+                if is_chip_structure_unavailable(chip_data):
+                    report_lines.extend([
+                        f"**{labels['chip_label']}**: {get_chip_unavailable_reason(chip_data, report_language)}",
+                        "",
+                    ])
                 else:
-                    chip_emoji = "🚨"
-                report_lines.extend([
-                    f"**{labels['chip_label']}**: {chip_data.get('profit_ratio', 'N/A')} | {chip_data.get('avg_cost', 'N/A')} | "
-                    f"{chip_data.get('concentration', 'N/A')} {chip_emoji}{chip_health}",
-                    "",
-                ])
+                    raw_chip_health = chip_data.get('chip_health', 'N/A')
+                    chip_health = localize_chip_health(raw_chip_health, report_language)
+                    normalized_chip_health = str(raw_chip_health or "").strip().lower()
+                    if normalized_chip_health in {"健康", "healthy"}:
+                        chip_emoji = "✅"
+                    elif normalized_chip_health in {"一般", "average"}:
+                        chip_emoji = "⚠️"
+                    else:
+                        chip_emoji = "🚨"
+                    report_lines.extend([
+                        f"**{labels['chip_label']}**: {chip_data.get('profit_ratio', 'N/A')} | {chip_data.get('avg_cost', 'N/A')} | "
+                        f"{chip_data.get('concentration', 'N/A')} {chip_emoji}{chip_health}",
+                        "",
+                    ])
+            else:
+                chip_unavailable_reason = get_chip_unavailable_reason(data_persp, report_language)
+                if chip_unavailable_reason:
+                    report_lines.extend([
+                        f"**{labels['chip_label']}**: {chip_unavailable_reason}",
+                        "",
+                    ])
 
         # ========== 作战计划 ==========
         battle = dashboard.get('battle_plan', {}) if dashboard else {}
@@ -775,6 +1358,79 @@ class HistoryService:
                 for item in checklist:
                     report_lines.append(f"- {item}")
                 report_lines.append("")
+
+        # ========== 信号归因分析 ==========
+        signal_attr = dashboard.get('signal_attribution', {}) if dashboard else {}
+        if signal_attribution_has_content(signal_attr):
+            report_lines.extend([
+                f"### 🎯 {labels.get('signal_attribution_heading', '信号归因分析')}",
+                "",
+            ])
+            weight_items = signal_attribution_weight_items(signal_attr)
+            if weight_items:
+                report_lines.append(f"**{labels.get('attribution_weights_label', '归因权重')}**:")
+                weight_labels = {
+                    "technical_indicators": ("📈", labels.get('technical_indicators_label', '技术指标')),
+                    "news_sentiment": ("📰", labels.get('news_sentiment_label', '新闻舆情')),
+                    "fundamentals": ("📊", labels.get('fundamentals_label', '基本面')),
+                    "market_conditions": ("🌐", labels.get('market_conditions_label', '市场环境')),
+                }
+                for key, value in weight_items:
+                    icon, label = weight_labels[key]
+                    report_lines.append(f"- {icon} {label}: {value}%")
+                report_lines.append("")
+            bullish = signal_attr.get('strongest_bullish_signal')
+            bearish = signal_attr.get('strongest_bearish_signal')
+            if bullish:
+                report_lines.append(f"**🐂 {labels.get('strongest_bullish_signal_label', '最强看多信号')}**: {bullish}")
+            if bearish:
+                report_lines.append(f"**🐻 {labels.get('strongest_bearish_signal_label', '最强看空信号')}**: {bearish}")
+            report_lines.append("")
+
+        # ========== 多策略综合 ==========
+        strategy_synthesis = normalize_strategy_synthesis_payload(
+            dashboard.get('strategy_synthesis') if dashboard else None
+        )
+        if strategy_synthesis:
+            confidence = strategy_synthesis.get('confidence')
+            confidence_text = f"{confidence:.0%}" if isinstance(confidence, (int, float)) else "N/A"
+            report_lines.extend([
+                f"### 🧩 {labels.get('strategy_synthesis_heading', '多策略综合')}",
+                "",
+                (
+                    f"- {labels.get('strategy_final_signal_label', '综合信号')}: "
+                    f"{localize_strategy_signal(strategy_synthesis.get('final_signal', 'N/A'), report_language)} | "
+                    f"{labels.get('strategy_consensus_level_label', '共识度')}: "
+                    f"{localize_consensus_level(strategy_synthesis.get('consensus_level', 'N/A'), report_language)} | "
+                    f"{labels.get('strategy_conflict_label', '冲突')}: "
+                    f"{localize_conflict_severity(strategy_synthesis.get('conflict_severity', 'none'), report_language)} "
+                    f"({strategy_synthesis.get('conflict_count', 0)}) | "
+                    f"{labels.get('strategy_confidence_label', '置信度')}: {confidence_text}"
+                ),
+            ])
+            summary = localize_strategy_synthesis_summary(strategy_synthesis, report_language)
+            if summary:
+                report_lines.append(f"- {labels.get('strategy_summary_label', '综合说明')}: {summary}")
+            report_lines.append(
+                f"- {labels.get('strategy_supporting_skills_label', '支持策略')}: "
+                f"{self._format_strategy_skill_items(strategy_synthesis.get('supporting_skills'), report_language)}"
+            )
+            report_lines.append(
+                f"- {labels.get('strategy_opposing_skills_label', '反方策略')}: "
+                f"{self._format_strategy_skill_items(strategy_synthesis.get('opposing_skills'), report_language)}"
+            )
+            invalid_count = strategy_invalid_opinion_count(strategy_synthesis)
+            if invalid_count:
+                invalid_label_template = labels.get(
+                    "strategy_invalid_opinions_label",
+                    "另有 {count} 个策略解析失败",
+                )
+                try:
+                    invalid_text = invalid_label_template.format(count=invalid_count)
+                except (KeyError, IndexError):
+                    invalid_text = f"{invalid_label_template}: {invalid_count}"
+                report_lines.append(f"- {invalid_text}")
+            report_lines.append("")
 
         # ========== 如果没有 dashboard，显示传统格式 ==========
         if not dashboard:
@@ -819,6 +1475,26 @@ class HistoryService:
         return "\n".join(report_lines)
 
     @staticmethod
+    def _format_strategy_skill_items(items: Any, report_language: str = "zh") -> str:
+        none_text = get_report_labels(report_language).get("none_label", "None")
+        if not isinstance(items, list):
+            return none_text
+        formatted: List[str] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            skill_id = str(item.get("skill_id") or "").strip()
+            signal = str(item.get("signal") or "").strip()
+            confidence = item.get("confidence")
+            if not skill_id:
+                continue
+            suffix = f"/{localize_strategy_signal(signal, report_language)}" if signal else ""
+            if isinstance(confidence, (int, float)):
+                suffix += f"/{confidence:.0%}"
+            formatted.append(f"{localize_strategy_skill(skill_id, report_language)}{suffix}")
+        return "、".join(formatted) if formatted else none_text
+
+    @staticmethod
     def _escape_md(text: Optional[str]) -> str:
         """Escape markdown special characters."""
         if not text:
@@ -835,12 +1511,42 @@ class HistoryService:
             return "N/A"
         return text
 
+    def _get_display_operation_advice(
+        self,
+        result: AnalysisResult,
+        report_language: Optional[str] = None,
+    ) -> str:
+        return display_operation_advice_for_result(
+            result,
+            report_language=report_language or getattr(result, "report_language", "zh"),
+        )
+
     def _get_signal_level(self, result: AnalysisResult) -> Tuple[str, str, str]:
-        """Get signal level based on sentiment score and decision type."""
-        return get_signal_level(
-            result.operation_advice,
+        """Get display text and signal metadata from the resolved action."""
+        report_language = getattr(result, "report_language", "zh")
+        display_fields = display_action_fields_for_result(
+            result,
+            report_language=report_language,
+        )
+        signal_advice = {
+            "buy": "buy",
+            "add": "buy",
+            "hold": "hold",
+            "reduce": "reduce",
+            "sell": "sell",
+            "watch": "watch",
+            "avoid": "hold",
+            "alert": "sell",
+        }.get(display_fields["action"])
+        _, emoji, signal_tag = get_signal_level(
+            signal_advice or self._get_display_operation_advice(result, report_language),
             result.sentiment_score,
-            getattr(result, "report_language", "zh"),
+            report_language,
+        )
+        return (
+            self._get_display_operation_advice(result, report_language),
+            emoji,
+            signal_tag,
         )
 
     @staticmethod

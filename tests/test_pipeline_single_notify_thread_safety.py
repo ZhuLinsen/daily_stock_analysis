@@ -58,7 +58,15 @@ class _CriticalSectionTrackingNotifier:
         self._enter("generate", result.code)
         return f"single:{result.code}"
 
-    def _send(self, content: str, email_stock_codes=None) -> bool:
+    def _send(
+        self,
+        content: str,
+        email_stock_codes=None,
+        route_type=None,
+        severity=None,
+        dedup_key=None,
+        cooldown_key=None,
+    ) -> bool:
         stock_code = (email_stock_codes or ["unknown"])[0]
         self._enter("send", stock_code)
         return True

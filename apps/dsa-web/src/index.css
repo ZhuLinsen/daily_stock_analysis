@@ -1015,6 +1015,12 @@
 .text-purple {
   color: hsl(var(--color-purple));
 }
+.text-price-up {
+  color: var(--home-price-up);
+}
+.text-price-down {
+  color: var(--home-price-down);
+}
 .text-success {
   color: hsl(var(--color-success));
 }
@@ -1185,6 +1191,24 @@ textarea {
   backdrop-filter: blur(18px);
   -webkit-backdrop-filter: blur(18px);
   box-shadow: var(--shadow-soft-card);
+}
+
+/*
+ * Keep the mobile home sidebar's layout shells out of the scroll chain.
+ * This rule is intentionally unlayered and more specific than .glass-card so
+ * Tailwind overflow utilities cannot silently restore clipping on these cards.
+ * The nested ScrollArea viewport remains the only vertical scroll container.
+ */
+.home-stock-scroll-shell,
+.glass-card.home-stock-scroll-shell {
+  overflow: visible;
+}
+
+@media (min-width: 48rem) {
+  .home-stock-scroll-shell,
+  .glass-card.home-stock-scroll-shell {
+    overflow: hidden;
+  }
 }
 
 .glass-card::before {
@@ -1504,12 +1528,12 @@ textarea {
   line-height: 1;
 }
 
-.chat-skill-radio {
+.chat-skill-checkbox {
   appearance: none;
   width: 0.875rem;
   height: 0.875rem;
   flex-shrink: 0;
-  border-radius: 9999px;
+  border-radius: 0.25rem;
   border: 1px solid hsl(var(--border));
   background: hsl(var(--card) / 0.96);
   box-shadow: inset 0 1px 0 hsl(0 0% 100% / 0.72);
@@ -1520,49 +1544,51 @@ textarea {
     transform 0.2s ease;
 }
 
-.chat-skill-radio:hover {
+.chat-skill-checkbox:hover {
   border-color: hsl(var(--primary) / 0.45);
   background: hsl(var(--primary) / 0.04);
 }
 
-.chat-skill-radio:checked {
+.chat-skill-checkbox:checked {
   border-color: hsl(var(--primary) / 0.72);
   background:
-    radial-gradient(circle at center, hsl(var(--primary)) 0 35%, transparent 40%),
+    linear-gradient(135deg, transparent 0 36%, hsl(var(--primary)) 37% 48%, transparent 49%),
+    linear-gradient(45deg, transparent 0 52%, hsl(var(--primary)) 53% 66%, transparent 67%),
     hsl(var(--card) / 0.98);
 }
 
-.chat-skill-radio:focus-visible {
+.chat-skill-checkbox:focus-visible {
   outline: none;
   box-shadow:
     0 0 0 3px hsl(var(--primary) / 0.14),
     inset 0 1px 0 hsl(0 0% 100% / 0.76);
 }
 
-.chat-skill-radio:disabled {
+.chat-skill-checkbox:disabled {
   cursor: not-allowed;
   opacity: 0.55;
 }
 
-.dark .chat-skill-radio {
+.dark .chat-skill-checkbox {
   border-color: hsl(var(--foreground) / 0.16);
   background: hsl(var(--card) / 0.84);
   box-shadow: inset 0 1px 0 hsl(0 0% 100% / 0.04);
 }
 
-.dark .chat-skill-radio:hover {
+.dark .chat-skill-checkbox:hover {
   border-color: hsl(var(--primary) / 0.42);
   background: hsl(var(--primary) / 0.09);
 }
 
-.dark .chat-skill-radio:checked {
+.dark .chat-skill-checkbox:checked {
   border-color: hsl(var(--primary) / 0.68);
   background:
-    radial-gradient(circle at center, hsl(var(--primary)) 0 35%, transparent 40%),
+    linear-gradient(135deg, transparent 0 36%, hsl(var(--primary)) 37% 48%, transparent 49%),
+    linear-gradient(45deg, transparent 0 52%, hsl(var(--primary)) 53% 66%, transparent 67%),
     hsl(var(--card) / 0.88);
 }
 
-.dark .chat-skill-radio:focus-visible {
+.dark .chat-skill-checkbox:focus-visible {
   box-shadow:
     0 0 0 3px hsl(var(--primary) / 0.18),
     inset 0 1px 0 hsl(0 0% 100% / 0.06);
@@ -1911,6 +1937,19 @@ textarea {
   padding: 4px 6px;
 }
 
+.home-markdown-prose :where(td) {
+  /* Keep short labels and values readable when long text can break anywhere. */
+  min-width: 8ch;
+  overflow-wrap: anywhere;
+}
+
+.home-markdown-prose :where(table) {
+  display: block;
+  width: 100%;
+  overflow-x: auto;
+  white-space: normal;
+}
+
 .home-markdown-prose :where(th) {
   background: hsl(var(--elevated) / 0.92);
   color: hsl(var(--foreground));
@@ -2099,17 +2138,13 @@ textarea {
 .settings-nav-item-active {
   border-color: hsl(var(--primary) / 0.36);
   background: hsl(var(--primary) / 0.12);
-  box-shadow:
-    3px 4px 0 hsl(var(--primary) / 0.08),
-    10px 14px 26px hsl(214 24% 38% / 0.12);
+  box-shadow: inset 3px 0 0 hsl(var(--primary) / 0.74);
 }
 
 .dark .settings-nav-item-active {
   border-color: hsl(var(--primary) / 0.34);
   background: hsl(var(--primary) / 0.12);
-  box-shadow:
-    2px 3px 0 hsl(var(--primary) / 0.06),
-    8px 12px 22px hsl(190 100% 50% / 0.07);
+  box-shadow: inset 3px 0 0 hsl(var(--primary) / 0.68);
 }
 
 .settings-button-primary {
@@ -2190,6 +2225,10 @@ textarea {
 /* Touch action utilities */
 .touch-pan-y {
   touch-action: pan-y;
+}
+
+.touch-pan-x {
+  touch-action: pan-x pan-y;
 }
 
 .shell-page-frame::before {
@@ -2640,6 +2679,7 @@ textarea {
 .backtest-summary {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 1rem;
   padding: 0.5rem 0.75rem;
   border-radius: 0.5rem;
@@ -2650,6 +2690,11 @@ textarea {
 }
 .backtest-summary .label {
   color: var(--text-secondary-text);
+}
+.backtest-summary .label.message {
+  flex-basis: 100%;
+  line-height: 1.4;
+  white-space: normal;
 }
 .backtest-summary .value {
   color: hsl(var(--foreground));
@@ -2888,4 +2933,9 @@ textarea {
   .backtest-table-scroll-hint {
     text-align: left;
   }
+}
+
+.num {
+  font-variant-numeric: tabular-nums slashed-zero;
+  font-feature-settings: "tnum" 1, "zero" 1;
 }

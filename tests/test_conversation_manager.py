@@ -9,6 +9,24 @@ from src.agent.conversation import ConversationManager
 
 
 class ConversationManagerThreadSafetyTestCase(unittest.TestCase):
+    @patch("src.agent.conversation.get_db")
+    def test_add_user_message_uses_session_state_transaction(self, get_db):
+        get_db.return_value.save_conversation_user_turn.return_value = 42
+        manager = ConversationManager()
+
+        message_id = manager.add_user_message(
+            "skill-session",
+            "hello",
+            [],
+        )
+
+        self.assertEqual(message_id, 42)
+        get_db.return_value.save_conversation_user_turn.assert_called_once_with(
+            "skill-session",
+            "hello",
+            [],
+        )
+
     def test_add_message_is_safe_under_parallel_session_creation(self):
         manager = ConversationManager()
         errors = []

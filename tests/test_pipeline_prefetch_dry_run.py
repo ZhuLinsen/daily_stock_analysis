@@ -6,7 +6,7 @@ Regression tests for prefetch behavior in StockAnalysisPipeline.run().
 import os
 import sys
 import unittest
-from datetime import date
+from datetime import date, datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock, call
 
@@ -101,6 +101,26 @@ class TestPipelinePrefetchBehavior(unittest.TestCase):
         self.assertEqual(len({id(value) for value in task_reference_times}), 1)
         self.assertEqual(len({id(value) for value in stats_reference_times}), 1)
         self.assertIs(task_reference_times[0], stats_reference_times[0])
+
+    def test_run_uses_supplied_reference_time_for_tasks_and_dry_run_stats(self):
+        pipeline = self._build_pipeline(process_result=None)
+        reference_time = datetime(2026, 3, 27, 1, 30, tzinfo=timezone.utc)
+        pipeline._resolve_resume_target_date = MagicMock(
+            side_effect=[date(2026, 3, 27), date(2026, 3, 26)]
+        )
+        pipeline.db.has_today_data.side_effect = [True, False]
+
+        pipeline.run(
+            stock_codes=["600519", "AAPL"],
+            dry_run=True,
+            send_notification=False,
+            current_time=reference_time,
+        )
+
+        for process_call in pipeline.process_single_stock.call_args_list:
+            self.assertIs(process_call.kwargs["current_time"], reference_time)
+        for resolve_call in pipeline._resolve_resume_target_date.call_args_list:
+            self.assertIs(resolve_call.kwargs["current_time"], reference_time)
 
 
 if __name__ == "__main__":

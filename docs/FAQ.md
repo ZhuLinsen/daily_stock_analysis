@@ -88,6 +88,8 @@
    - `GEMINI_MODEL`
    - `REPORT_TYPE`
 
+> 兼容说明：每日分析 workflow 也会绑定名为 `STOCK_LIST` 的 Environment，因此误把 `STOCK_LIST` 填到该 Environment variables 中也能被读取；但推荐位置仍是 Repository variables。除非你希望每日任务等待人工审批，否则不要给该 Environment 配置 required reviewers、wait timer 或部署分支限制。
+
 ---
 
 ### Q6: 修改 .env 文件后配置没有生效？
@@ -95,11 +97,15 @@
 **解决方案**：
 1. 确保 `.env` 文件位于项目根目录
 2. **Docker 部署 / WebUI 系统设置**：
-   - WebUI 保存后的 `STOCK_LIST`、`SCHEDULE_ENABLED`、`SCHEDULE_TIME`、`SCHEDULE_RUN_IMMEDIATELY`、`RUN_IMMEDIATELY` 会写回容器内的 `.env`
+   - `--env-file .env` / Compose `env_file` 只会把宿主机 `.env` 作为启动环境变量注入容器，不会自动创建或回写容器内 `/app/.env`
+   - WebUI 设置页会在当前活跃 `.env` 文件缺少某些键时展示启动注入的同名环境变量作为兜底；但“导出 `.env`”仍只导出当前活跃配置文件内容
+   - WebUI 保存后的 `STOCK_LIST`、`SCHEDULE_ENABLED`、`SCHEDULE_TIME`、`SCHEDULE_TIMES`、`SCHEDULE_RUN_IMMEDIATELY`、`RUN_IMMEDIATELY` 会写回容器内的 `.env`
    - WebUI 保存后会触发当前进程的配置重载；运行中的读取路径会同步使用最新写回的 `.env`，例如定时任务会继续热读取保存后的 `STOCK_LIST`
-   - 如果容器启动命令里显式传入了这些同名环境变量（如 `docker run -e ...` 或 Compose `environment:`），后续重启时仍以显式进程环境变量为准；要让 WebUI 保存值接管，请同步更新或移除这些显式 override
-   - 其中 `SCHEDULE_*` 与 `RUN_IMMEDIATELY` 属于**启动期调度配置**，保存后不会立即触发一次分析，也不会热重建当前进程里的 scheduler
-   - 如需让调度开关立刻接管当前容器，请重启容器，并确保以 schedule 模式启动
+   - 如果容器启动命令里传入了这些同名环境变量（如 `--env-file .env`、`docker run -e ...` 或 Compose `environment:`），后续重启时仍可能以启动环境变量为准；要让 WebUI 保存值接管，请同步更新或移除这些同名 override
+   - 如需持久化 WebUI 保存的配置，请将 `ENV_FILE` 指向 `/app/data/runtime.env` 等可写数据卷文件，不要把宿主机 `.env` 单文件挂载到 `/app/.env`
+   - `SCHEDULE_ENABLED`、`SCHEDULE_TIME`、`SCHEDULE_TIMES` 保存后会让 WebUI/API/Desktop 长运行进程按新配置启停或重建 runtime scheduler；重启 `--serve-only` 或 Desktop 进程时会恢复已启用的 daily jobs，但不会在启动时立即执行分析
+   - `SCHEDULE_RUN_IMMEDIATELY` 与 `RUN_IMMEDIATELY` 仍属于启动期/一次性运行配置，保存后不会立即触发一次分析
+   - `SCHEDULE_STARTUP_DEDUP` 控制纯 CLI 定时模式启动立即执行的当日去重（当天已有成功全量分析则跳过启动补跑；详见 `docs/full-guide.md` 配置表），同样属于启动期配置
 3. **Docker 手工改 `.env` 后**：修改后仍建议重启容器
    ```bash
    docker-compose down && docker-compose up -d
@@ -132,13 +138,17 @@ PROXY_PORT=10809
 
 系统按优先级只取一种：高级模型路由 YAML（`LITELLM_CONFIG`）> `LLM_CHANNELS` > legacy keys。但 YAML 仅在文件可正常解析且产出了有效 `model_list` 时才生效；如果 YAML 路径无效或内容为空，系统会自动回退到 `LLM_CHANNELS` 或 legacy keys。一旦某一层级实际生效，更低优先级的配置不参与解析。
 
-**Q: test_env 输出“未配置可用 AI 模型”怎么办？**
+**Q: check_env 输出“未配置可用 AI 模型”怎么办？**
 
-默认先选一种服务商并填写对应 API Key；如果需要固定主模型，再补 `LITELLM_MODEL=provider/model`；如果要多模型切换，再配置 `LLM_CHANNELS` 或高级模型路由 YAML。运行 `python test_env.py --config` 校验配置，`python test_env.py --llm` 实际调用 API 测试。
+默认先选一种服务商并填写对应 API Key；如果需要固定主模型，再补 `LITELLM_MODEL=provider/model`；如果要多模型切换，再配置 `LLM_CHANNELS` 或高级模型路由 YAML。运行 `python scripts/check_env.py --config` 校验配置，`python scripts/check_env.py --llm` 实际调用 API 测试。
 
 **Q: 如何同时使用多个模型（如 AIHubmix + DeepSeek + Gemini）？**
 
 使用渠道模式：设置 `LLM_CHANNELS=aihubmix,deepseek,gemini`，并配置各渠道的 `LLM_{NAME}_BASE_URL`、`LLM_{NAME}_API_KEY`、`LLM_{NAME}_MODELS`。也可在 Web 设置页 → AI 模型 → AI 模型接入 中可视化配置。
+
+**Q: 问股/Agent 提示未配置可用 LLM，但我只有旧的 `GEMINI_*` / `OPENAI_*` / `ANTHROPIC_*` 配置，怎么办？**
+
+先确认当前是否启用了 `LITELLM_CONFIG` 或 `LLM_CHANNELS`；如果启用了，上层配置会覆盖 legacy keys。若你没有启用这两层，且 `AGENT_LITELLM_MODEL` 为空，问股 Agent 仍会自动继承 legacy provider 模型：`GEMINI_MODEL`、`OPENAI_MODEL`、`ANTHROPIC_MODEL` 分别映射到对应 provider 前缀的 LiteLLM 模型名。此次修复不会静默迁移或清空旧配置，只是把“真实缺失原因”直接返回到前端，便于你判断到底是缺 key、缺模型名，还是被上层配置覆盖。完整兼容语义见 [LLM 配置指南](LLM_CONFIG_GUIDE.md) 中“问股 Agent / LiteLLM 配置兼容说明”。
 
 ---
 
@@ -157,8 +167,21 @@ PROXY_PORT=10809
 1. **自动分块**：最新版本已实现长消息自动切割
 2. **单股推送模式**：设置 `SINGLE_STOCK_NOTIFY=true`，每分析完一只股票立即推送
 3. **精简报告**：设置 `REPORT_TYPE=simple` 使用精简格式
+4. **仅落盘本地报告**：即使未配置任何通知渠道，`SINGLE_STOCK_NOTIFY=true` 仍会把单股报告保存到 `reports/report_YYYYMMDD_<股票代码>.md`
 
 ---
+
+### Q8.1: 分析结束了，但 `reports/` 里没有生成报告文件？
+
+**常见原因**：
+1. `STOCK_LIST` 为空，且本轮未启用大盘复盘
+2. 股票列表非空，但个股分析全部失败，最终没有成功结果
+3. 个股结果已生成，但写入 `reports/` 时失败（如目录权限或挂载问题）
+
+**现在的行为**：
+1. CLI 启动分析会对上述场景显式记录失败原因
+2. 非 `--serve` 的独立运行模式会返回非零退出码，避免工作流把“未生成报告”误判为成功
+3. 若是单股推送模式且通知未配置，仍会继续保存本地 Markdown 报告用于排查
 
 ### Q9: Telegram 推送收不到消息？
 
@@ -209,13 +232,13 @@ PROXY_PORT=10809
 ```bash
 # 不需要配置 GEMINI_API_KEY
 OPENAI_API_KEY=sk-xxxxxxxx
-OPENAI_BASE_URL=https://api.deepseek.com/v1
-OPENAI_MODEL=deepseek-chat
-# 思考模式：deepseek-reasoner、deepseek-r1、qwq 等自动识别；deepseek-chat 系统按模型名自动启用
+OPENAI_BASE_URL=https://api.deepseek.com
+OPENAI_MODEL=deepseek-v4-flash
+# deepseek-chat / deepseek-reasoner 仍兼容，但官方已标记为 2026/07/24 后废弃
 ```
 
 支持的模型服务：
-- DeepSeek: `https://api.deepseek.com/v1`
+- DeepSeek: `https://api.deepseek.com`
 - 通义千问: `https://dashscope.aliyuncs.com/compatible-mode/v1`
 - Moonshot: `https://api.moonshot.cn/v1`
 
@@ -262,7 +285,7 @@ OPENAI_MODEL=deepseek-chat
    - 若 Ollama 和程序不在同一主机，需将 `OLLAMA_API_BASE` 改为实际 IP，如 `http://192.168.1.100:11434`。
    - 确认防火墙已放行 11434 端口，且 Ollama 启动时绑定了正确地址（`OLLAMA_HOST=0.0.0.0:11434`）。
 
-> 完整配置示例见 [LLM 配置指南 → 示例 4（Ollama）](LLM_CONFIG_GUIDE.md#example-4-ollama)。
+> 完整配置示例见 [LLM 配置指南 → 示例 4（Ollama）](LLM_CONFIG_GUIDE.md#示例-4使用-ollama-本地模型)。
 
 ---
 
@@ -336,9 +359,32 @@ OPENAI_MODEL=deepseek-chat
 
 ---
 
+## 🖥️ 桌面端相关
+
+### Q15: macOS 提示“应用已损坏”或无法打开桌面端？
+
+**原因**：当前 macOS DMG 尚未使用 Apple Developer 证书签名和公证。从浏览器下载后，macOS Gatekeeper 可能给应用添加 quarantine（下载隔离）属性并阻止启动。
+
+**解决方案**：
+
+1. 只从项目的 [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) 下载附件，并确认安装包架构与 Mac 一致。不要对第三方转载或来源不明的应用绕过 Gatekeeper。
+2. 将 `Daily Stock Analysis` 拖入“应用程序”，先在“系统设置 → 隐私与安全性”中尝试“仍要打开”。
+3. 如果仍无法启动，并且已经确认文件来自项目官方 Release，可在终端只针对该应用移除 quarantine 属性并启动：
+
+   ```bash
+   xattr -dr com.apple.quarantine "/Applications/Daily Stock Analysis.app"
+   open "/Applications/Daily Stock Analysis.app"
+   ```
+
+如果应用不在 `/Applications`，请替换为实际 `.app` 路径。不要对整个 `/Applications` 目录执行 `xattr`。该命令只是临时放行受信任的 unsigned 应用，不等同于签名或公证；完整排查说明见 [桌面端打包与发布](desktop-package.md#macos-提示应用已损坏无法打开)。
+
+> 📌 相关 Issue: [#2113](https://github.com/ZhuLinsen/daily_stock_analysis/issues/2113)
+
+---
+
 ## 🔧 其他问题
 
-### Q15: 如何只运行大盘复盘，不分析个股？
+### Q16: 如何只运行大盘复盘，不分析个股？
 
 **方法**：
 ```bash
@@ -351,7 +397,7 @@ python main.py --market-only
 
 ---
 
-### Q16: 分析结果中买入/观望/卖出数量统计不对？
+### Q17: 分析结果中买入/观望/卖出数量统计不对？
 
 **原因**：早期版本使用正则匹配统计，可能与实际建议不一致。
 
@@ -359,7 +405,7 @@ python main.py --market-only
 
 ---
 
-### Q17: 为什么周末在 GitHub Actions 手动触发仍显示“非交易日跳过”？
+### Q18: 为什么周末在 GitHub Actions 手动触发仍显示“非交易日跳过”？
 
 **现象**：已经配置了 `TRADING_DAY_CHECK_ENABLED` 或希望手动运行，但日志仍提示“今日所有相关市场均为非交易日，跳过执行”。
 
@@ -378,6 +424,20 @@ python main.py --market-only
 
 ---
 
+### Q19: Fork 仓库后 GitHub Actions 为什么没有按时自动运行？如何同步更新与自检？
+
+**常见原因**：
+1. GitHub 对 Fork 仓库默认禁用定时 Workflows，需要进入 Fork 的 `Actions` 标签手动点击启用。
+2. GitHub 平台规定若仓库连续 **60 天无仓库活动**，会自动暂停 `schedule` 定时任务。
+3. 未同步上游仓库的最新修复，或本地修改了 `.github/workflows/*.yml` 导致 `Sync fork` 冲突。
+
+**解决方案**：
+1. 在你 Fork 的仓库首页点击 `Sync fork` → `Update branch` 同步最新代码（建议不要直接修改 workflow 文件，所有配置通过 `Settings → Secrets and variables → Actions` 传递）。
+2. 如已被 GitHub 自动暂停定时任务，进入 `Actions → 每日股票分析` 点击 `Enable workflow` 重新开启。
+3. 本地运行可使用 `python main.py --doctor` 一键输出脱敏配置/模型/通知/存储诊断信息，快速定位异常。
+
+---
+
 ## 💬 还有问题？
 
 如果以上内容没有解决你的问题，欢迎：
@@ -387,4 +447,4 @@ python main.py --market-only
 
 ---
 
-*最后更新：2026-04-20*
+*最后更新：2026-08-03*

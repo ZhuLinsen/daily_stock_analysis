@@ -5,20 +5,38 @@ import { useTaskStream } from './useTaskStream';
 type UseDashboardLifecycleOptions = {
   loadInitialHistory: () => Promise<void>;
   refreshHistory: (silent?: boolean) => Promise<void>;
+  refreshHistoryForCompletedTask?: (task: TaskInfo) => Promise<void>;
+  refreshActiveTasks: () => Promise<void>;
+  loadStockBar: () => Promise<void>;
+  refreshStockBar: () => Promise<void>;
+  loadMarketReviewHistory?: () => Promise<void>;
+  refreshMarketReviewHistory?: (silent?: boolean) => Promise<void>;
   syncTaskCreated: (task: TaskInfo) => void;
   syncTaskUpdated: (task: TaskInfo) => void;
   syncTaskFailed: (task: TaskInfo) => void;
   removeTask: (taskId: string) => void;
+  onDashboardDataRefresh?: () => void;
+  onCompletedTaskDataRefreshStarted?: (task: TaskInfo) => void;
+  onCompletedTaskDataRefreshed?: (task: TaskInfo) => void;
   enabled?: boolean;
 };
 
 export function useDashboardLifecycle({
   loadInitialHistory,
   refreshHistory,
+  refreshHistoryForCompletedTask,
+  refreshActiveTasks,
+  loadStockBar,
+  refreshStockBar,
+  loadMarketReviewHistory,
+  refreshMarketReviewHistory,
   syncTaskCreated,
   syncTaskUpdated,
   syncTaskFailed,
   removeTask,
+  onDashboardDataRefresh,
+  onCompletedTaskDataRefreshStarted,
+  onCompletedTaskDataRefreshed,
   enabled = true,
 }: UseDashboardLifecycleOptions): void {
   const removalTimeoutsRef = useRef<number[]>([]);
@@ -29,7 +47,10 @@ export function useDashboardLifecycle({
     }
 
     void loadInitialHistory();
-  }, [enabled, loadInitialHistory]);
+    void loadStockBar();
+    void loadMarketReviewHistory?.();
+    void refreshActiveTasks();
+  }, [enabled, loadInitialHistory, loadMarketReviewHistory, loadStockBar, refreshActiveTasks]);
 
   useEffect(() => {
     if (!enabled) {
@@ -38,10 +59,14 @@ export function useDashboardLifecycle({
 
     const intervalId = window.setInterval(() => {
       void refreshHistory(true);
+      void refreshStockBar();
+      void refreshMarketReviewHistory?.(true);
+      void refreshActiveTasks();
+      onDashboardDataRefresh?.();
     }, 30_000);
 
     return () => window.clearInterval(intervalId);
-  }, [enabled, refreshHistory]);
+  }, [enabled, onDashboardDataRefresh, refreshHistory, refreshMarketReviewHistory, refreshStockBar, refreshActiveTasks]);
 
   useEffect(() => {
     if (!enabled) {
@@ -51,12 +76,16 @@ export function useDashboardLifecycle({
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
         void refreshHistory(true);
+        void refreshStockBar();
+        void refreshMarketReviewHistory?.(true);
+        void refreshActiveTasks();
+        onDashboardDataRefresh?.();
       }
     };
 
     document.addEventListener('visibilitychange', handleVisibilityChange);
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
-  }, [enabled, refreshHistory]);
+  }, [enabled, onDashboardDataRefresh, refreshHistory, refreshMarketReviewHistory, refreshStockBar, refreshActiveTasks]);
 
   useEffect(() => {
     return () => {
@@ -78,9 +107,20 @@ export function useDashboardLifecycle({
     onTaskCreated: syncTaskCreated,
     onTaskStarted: syncTaskUpdated,
     onTaskProgress: syncTaskUpdated,
+    onConnected: () => {
+      void refreshActiveTasks();
+    },
     onTaskCompleted: (task) => {
       syncTaskUpdated(task);
-      void refreshHistory(true);
+      onCompletedTaskDataRefreshStarted?.(task);
+      const historyRefresh = refreshHistoryForCompletedTask
+        ? refreshHistoryForCompletedTask(task)
+        : refreshHistory(true);
+      const stockBarRefresh = refreshStockBar();
+      void Promise.allSettled([historyRefresh, stockBarRefresh]).then(() => {
+        onCompletedTaskDataRefreshed?.(task);
+      });
+      void refreshMarketReviewHistory?.(true);
       scheduleTaskRemoval(task.taskId, 2_000);
     },
     onTaskFailed: (task) => {

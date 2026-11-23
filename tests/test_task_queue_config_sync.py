@@ -17,6 +17,7 @@ _orig_data_provider = sys.modules.get("data_provider")
 if _orig_data_provider_base is None:
     base_mod = types.ModuleType("data_provider.base")
     base_mod.canonical_stock_code = lambda x: (x or "").strip().upper()
+    base_mod.normalize_stock_code = lambda x: (x or "").strip().upper().removesuffix(".SH").removesuffix(".SZ")
     sys.modules["data_provider.base"] = base_mod
 
 if _orig_data_provider is None:
@@ -24,7 +25,7 @@ if _orig_data_provider is None:
     pkg_mod.base = sys.modules["data_provider.base"]
     sys.modules["data_provider"] = pkg_mod
 
-from src.services.task_queue import AnalysisTaskQueue, get_task_queue
+from src.services.task_queue import AnalysisTaskQueue, get_task_queue, _dedupe_stock_code_key
 
 if _orig_data_provider_base is None:
     sys.modules.pop("data_provider.base", None)
@@ -88,6 +89,15 @@ class TaskQueueConfigSyncTestCase(unittest.TestCase):
 
         self.assertIs(first, second)
         self.assertEqual(second.max_workers, 1)
+
+    def test_get_task_queue_supports_string_max_workers(self) -> None:
+        with patch("src.config.get_config", return_value=SimpleNamespace(max_workers="2")):
+            queue = get_task_queue()
+
+        self.assertEqual(queue.max_workers, 2)
+
+    def test_dedupe_stock_code_key_normalizes_market_suffix(self) -> None:
+        self.assertEqual(_dedupe_stock_code_key(" 600519.sh "), "600519")
 
     def test_get_task_queue_defers_sync_when_busy(self) -> None:
         queue = AnalysisTaskQueue(max_workers=3)

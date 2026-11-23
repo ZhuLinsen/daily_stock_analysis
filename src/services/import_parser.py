@@ -9,6 +9,7 @@ Parse CSV/Excel/clipboard text into stock items (code, name, confidence).
 
 from __future__ import annotations
 
+import codecs
 import io
 import logging
 import re
@@ -178,15 +179,20 @@ def parse_import_from_bytes(data: bytes, filename: Optional[str] = None) -> List
     if ext == ".xls":
         raise ValueError("仅支持 .xlsx 格式，请将 .xls 另存为 .xlsx 后重试")
 
-    # CSV / text
-    for encoding in ("utf-8", "gbk"):
+    # UTF-32 LE starts with the same two bytes as UTF-16 LE.
+    is_utf16 = (
+        data.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE))
+        and not data.startswith(codecs.BOM_UTF32_LE)
+    )
+    encodings = ("utf-16",) if is_utf16 else ("utf-8-sig", "gbk")
+    for encoding in encodings:
         try:
             text = data.decode(encoding)
             break
         except UnicodeDecodeError:
             continue
     else:
-        raise ValueError("无法识别文件编码，请使用 UTF-8 或 GBK")
+        raise ValueError("无法识别文件编码，请使用 UTF-8、GBK 或带 BOM 的 UTF-16")
 
     # Single-column (one value per line): bypass pandas to avoid sep=None inference issues
     # e.g. "00700\n600519" or "code\n00700" - pandas with sep=None can produce wrong results

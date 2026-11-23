@@ -96,11 +96,14 @@ jobs:
           from src.notification import NotificationService; print('ok-notification')
           from data_provider import DataFetcherManager; print('ok-data-provider')
           from src.analyzer import GeminiAnalyzer; print('ok-analyzer')
+          import futu; print('ok-futu')
           print('manual-smoke-ok')
           "
 
       - name: Build and push multi-arch images
         uses: docker/build-push-action@v5
+        env:
+          DOCKER_BUILD_RECORD_RETENTION_DAYS: '7'
         with:
           context: .
           file: docker/Dockerfile

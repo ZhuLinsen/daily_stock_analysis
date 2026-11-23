@@ -68,6 +68,54 @@ const mockIndex: StockIndexItem[] = [
     popularity: 98,
   },
   {
+    canonicalCode: "7203.T",
+    displayCode: "7203.T",
+    nameZh: "丰田汽车",
+    pinyinFull: "fengtianqiche",
+    pinyinAbbr: "ftqc",
+    aliases: ["Toyota", "Toyota Motor", "丰田"],
+    market: "JP",
+    assetType: "stock",
+    active: true,
+    popularity: 97,
+  },
+  {
+    canonicalCode: "005930.KS",
+    displayCode: "005930.KS",
+    nameZh: "三星电子",
+    pinyinFull: "sanxingdianzi",
+    pinyinAbbr: "sxdz",
+    aliases: ["Samsung", "Samsung Electronics", "三星"],
+    market: "KR",
+    assetType: "stock",
+    active: true,
+    popularity: 97,
+  },
+  {
+    canonicalCode: "035720.KS",
+    displayCode: "035720.KS",
+    nameZh: "Kakao",
+    pinyinFull: "Kakao",
+    pinyinAbbr: "Kakao",
+    aliases: ["Kakao", "可可", "카카오"],
+    market: "KR",
+    assetType: "stock",
+    active: true,
+    popularity: 92,
+  },
+  {
+    canonicalCode: "247540.KQ",
+    displayCode: "247540.KQ",
+    nameZh: "Ecopro BM",
+    pinyinFull: "Ecopro BM",
+    pinyinAbbr: "Ecopro BM",
+    aliases: ["Ecopro BM", "ECOPRO BM", "에코프로비엠"],
+    market: "KR",
+    assetType: "stock",
+    active: true,
+    popularity: 91,
+  },
+  {
     canonicalCode: "600000.SH",
     displayCode: "600000",
     nameZh: "浦发银行",
@@ -211,6 +259,50 @@ describe('searchStocks', () => {
     expect(results).toHaveLength(1);
     expect(results[0].canonicalCode).toBe('00700.HK');
     expect(results[0].market).toBe('HK');
+  });
+
+  test('日股 Yahoo 后缀代码匹配', () => {
+    const results = searchStocks('7203.T', mockIndex);
+    expect(results).toHaveLength(1);
+    expect(results[0].canonicalCode).toBe('7203.T');
+    expect(results[0].market).toBe('JP');
+  });
+
+  test('日股英文别名匹配', () => {
+    const results = searchStocks('Toyota', mockIndex);
+    expect(results).toHaveLength(1);
+    expect(results[0].canonicalCode).toBe('7203.T');
+    expect(results[0].matchField).toBe('alias');
+  });
+
+  test('韩股 KOSPI Yahoo 后缀代码匹配', () => {
+    const results = searchStocks('005930.KS', mockIndex);
+    expect(results).toHaveLength(1);
+    expect(results[0].canonicalCode).toBe('005930.KS');
+    expect(results[0].market).toBe('KR');
+  });
+
+  test('韩股 KOSDAQ Yahoo 后缀代码匹配', () => {
+    const results = searchStocks('247540.KQ', mockIndex);
+    expect(results).toHaveLength(1);
+    expect(results[0].canonicalCode).toBe('247540.KQ');
+    expect(results[0].market).toBe('KR');
+  });
+
+  test('Kakao 检索返回 KOSPI 代码 035720.KS', () => {
+    const byName = searchStocks('Kakao', mockIndex);
+    expect(byName).toHaveLength(1);
+    expect(byName[0].canonicalCode).toBe('035720.KS');
+
+    const byCode = searchStocks('035720', mockIndex);
+    expect(byCode).toHaveLength(1);
+    expect(byCode[0].canonicalCode).toBe('035720.KS');
+  });
+
+  test('韩股中文别名匹配', () => {
+    const results = searchStocks('三星', mockIndex);
+    expect(results).toHaveLength(1);
+    expect(results[0].canonicalCode).toBe('005930.KS');
   });
 
   describe('Edge case tests', () => {
@@ -413,6 +505,60 @@ describe('searchStocks', () => {
       const results = searchStocks('茅台', mockIndex);
       // Should match 贵州茅台
       expect(results.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('Index row visibility', () => {
+    const indexRows: StockIndexItem[] = [
+      ...mockIndex,
+      {
+        canonicalCode: 'sh000016',
+        displayCode: 'sh000016',
+        nameZh: '上证50',
+        pinyinFull: 'shangzheng50',
+        pinyinAbbr: 'sz50',
+        aliases: ['000016.SH'],
+        market: 'CN',
+        assetType: 'index',
+        active: true,
+        popularity: 99,
+      },
+      {
+        canonicalCode: 'csi930955',
+        displayCode: '930955.CSI',
+        nameZh: '红利低波100',
+        pinyinFull: 'honglidibo100',
+        pinyinAbbr: 'hldb100',
+        aliases: ['930955.CSI'],
+        market: 'CN',
+        assetType: 'index',
+        active: true,
+        popularity: 98,
+      },
+    ];
+
+    test('search by registered index Chinese name returns the index row', () => {
+      const results = searchStocks('上证50', indexRows);
+      expect(results.some(r => r.canonicalCode === 'sh000016')).toBe(true);
+      const hit = results.find(r => r.canonicalCode === 'sh000016');
+      expect(hit?.nameZh).toBe('上证50');
+    });
+
+    test('search by registered index canonical code returns the index row', () => {
+      const results = searchStocks('sh000016', indexRows);
+      expect(results.some(r => r.canonicalCode === 'sh000016')).toBe(true);
+    });
+
+    test('search by registered CSI canonical and display alias converges to one row', () => {
+      const byCanonical = searchStocks('csi930955', indexRows);
+      const byDisplay = searchStocks('930955.CSI', indexRows);
+      expect(byCanonical.some(r => r.canonicalCode === 'csi930955')).toBe(true);
+      expect(byDisplay.some(r => r.canonicalCode === 'csi930955')).toBe(true);
+    });
+
+    test('search by registered index alias (000016.SH) returns the index row', () => {
+      const results = searchStocks('000016.SH', indexRows);
+      expect(results.some(r => r.canonicalCode === 'sh000016')).toBe(true);
     });
   });
 });

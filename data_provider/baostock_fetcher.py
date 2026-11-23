@@ -29,7 +29,14 @@ from tenacity import (
     before_sleep_log,
 )
 
-from .base import BaseFetcher, DataFetchError, STANDARD_COLUMNS, is_bse_code, _is_hk_market
+from .base import (
+    BaseFetcher,
+    DataFetchError,
+    STANDARD_COLUMNS,
+    is_bse_code,
+    normalize_stock_code,
+    _is_hk_market,
+)
 import os
 
 logger = logging.getLogger(__name__)
@@ -136,18 +143,27 @@ class BaostockFetcher(BaseFetcher):
         Returns:
             Baostock 格式代码，如 'sh.600519', 'sz.000001'
         """
-        code = stock_code.strip()
+        raw_code = stock_code.strip()
+        upper = raw_code.upper()
 
         # HK stocks are not supported by Baostock
-        if _is_hk_market(code):
-            raise DataFetchError(f"BaostockFetcher 不支持港股 {code}，请使用 AkshareFetcher")
+        if _is_hk_market(raw_code):
+            raise DataFetchError(f"BaostockFetcher 不支持港股 {raw_code}，请使用 AkshareFetcher")
 
-        # 已经包含前缀的情况
-        if code.startswith(('sh.', 'sz.')):
-            return code.lower()
-        
-        # 去除可能的后缀
-        code = code.replace('.SH', '').replace('.SZ', '').replace('.sh', '').replace('.sz', '')
+        # 保留既有小写 baostock 格式输入的内部容错，但用户配置仍推荐 6 位裸代码。
+        if raw_code.startswith(('sh.', 'sz.')):
+            return raw_code.lower()
+
+        exchange_hint = None
+        if upper.startswith(('SH', 'SS')) or upper.endswith(('.SH', '.SS')):
+            exchange_hint = 'sh'
+        elif upper.startswith('SZ') or upper.endswith('.SZ'):
+            exchange_hint = 'sz'
+
+        code = normalize_stock_code(raw_code)
+
+        if exchange_hint in ('sh', 'sz') and code.isdigit() and len(code) == 6:
+            return f"{exchange_hint}.{code}"
         
         # ETF: Shanghai ETF (51xx, 52xx, 56xx, 58xx) -> sh; Shenzhen ETF (15xx, 16xx, 18xx) -> sz
         if len(code) == 6:
@@ -157,9 +173,9 @@ class BaostockFetcher(BaseFetcher):
                 return f"sz.{code}"
 
         # 根据代码前缀判断市场
-        if code.startswith(('600', '601', '603', '688')):
+        if code.startswith(('600', '601', '603', '605', '688')):
             return f"sh.{code}"
-        elif code.startswith(('000', '002', '300')):
+        elif code.startswith(('000', '001', '002', '003', '300', '301')):
             return f"sz.{code}"
         else:
             logger.warning(f"无法确定股票 {code} 的市场，默认使用深市")

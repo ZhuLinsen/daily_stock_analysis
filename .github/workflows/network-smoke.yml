@@ -40,12 +40,13 @@ jobs:
         continue-on-error: true
         run: |
           set -o pipefail
-          ./test.sh quick --no-notify | tee quick-smoke.log
+          ./scripts/test.sh quick --no-notify | tee quick-smoke.log
 
       - name: 📤 Upload smoke logs
         if: always()
         uses: actions/upload-artifact@v6
         with:
+          retention-days: 7
           name: network-smoke-logs-${{ github.run_number }}
           path: |
             pytest-network.log

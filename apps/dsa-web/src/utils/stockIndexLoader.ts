@@ -7,6 +7,8 @@
 import type { StockIndexData, StockIndexItem, StockIndexTuple } from '../types/stockIndex';
 import { INDEX_FIELD } from './stockIndexFields';
 
+const STOCK_INDEX_LOAD_TIMEOUT_MS = 10_000;
+
 export interface IndexLoadResult {
   /** Index data */
   data: StockIndexItem[];
@@ -24,9 +26,17 @@ export interface IndexLoadResult {
  * @returns Index load result
  */
 export async function loadStockIndex(): Promise<IndexLoadResult> {
+  const abortController = new AbortController();
+  const timeoutId = globalThis.setTimeout(
+    () => abortController.abort(),
+    STOCK_INDEX_LOAD_TIMEOUT_MS,
+  );
   try {
     // Add time parameter to bypass cache (in case the backend doesn't handle ETag/Cache-Control)
-    const response = await fetch(`/stocks.index.json?_t=${Math.floor(Date.now() / 3600000)}`);
+    const response = await fetch(
+      `/stocks.index.json?_t=${Math.floor(Date.now() / 3600000)}`,
+      { signal: abortController.signal },
+    );
 
     if (!response.ok) {
       throw new Error(`Failed to load index: ${response.status} ${response.statusText}`);
@@ -39,8 +49,13 @@ export async function loadStockIndex(): Promise<IndexLoadResult> {
       ? unpackTuples(data as StockIndexTuple[])
       : data as StockIndexItem[];
 
+    // Registered index rows flow to autocomplete/search/group consumers. The
+    // per-consumer gates (popular keeps stock-only) are enforced by each
+    // consumer, not by a global filter here.
+    const visibleItems = items;
+
     return {
-      data: items,
+      data: visibleItems,
       loaded: true,
       fallback: false,
     };
@@ -52,6 +67,8 @@ export async function loadStockIndex(): Promise<IndexLoadResult> {
       error: error as Error,
       fallback: true,  // Load failed, fallback to old mode
     };
+  } finally {
+    globalThis.clearTimeout(timeoutId);
   }
 }
 

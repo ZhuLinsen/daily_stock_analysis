@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -57,6 +57,43 @@ class AnalysisMemoryEntry:
     outcome_5d: Optional[float] = None  # % change after 5 days
     outcome_20d: Optional[float] = None  # % change after 20 days
     was_correct: Optional[bool] = None
+
+
+@dataclass
+class DecisionSignalReview:
+    """Pre-summarized decision-signal review for one stock (read-only).
+
+    Consumed from the service-layer ReviewMemory aggregation; never mixes
+    into the ``AnalysisHistory`` text section.  ``confidence_adjustment`` of
+    ``observe`` means the evidence base is too weak for any confidence shift
+    and the payload is a caution note only.
+    """
+    stock_code: str = ""
+    sample_size: int = 0
+    completed: int = 0
+    hit_rate_pct: Optional[float] = None
+    avg_return_pct: Optional[float] = None
+    common_miss_reasons: List[str] = field(default_factory=list)
+    confidence_adjustment: str = "observe"
+    notes: str = ""
+
+    def to_prompt_line(self) -> str:
+        """Render one compact line for prompt injection."""
+        parts = [
+            f"stock={self.stock_code}",
+            f"completed={self.completed}",
+            f"sample={self.sample_size}",
+        ]
+        if self.confidence_adjustment != "observe" and self.hit_rate_pct is not None:
+            parts.append(f"hit_rate={self.hit_rate_pct}%")
+            if self.avg_return_pct is not None:
+                parts.append(f"avg_return={self.avg_return_pct}%")
+        parts.append(f"adjustment={self.confidence_adjustment}")
+        if self.common_miss_reasons:
+            parts.append("miss_reasons=" + "/".join(self.common_miss_reasons))
+        if self.notes:
+            parts.append(f"note={self.notes}")
+        return ", ".join(parts)
 
 
 class AgentMemory:
@@ -139,6 +176,40 @@ class AgentMemory:
             return []
 
     # -----------------------------------------------------------------
+    # Decision-signal review (read-only feedback loop, Issue #1903)
+    # -----------------------------------------------------------------
+
+    def get_decision_signal_review(self, stock_code: str) -> Optional[DecisionSignalReview]:
+        """Return the pre-summarized decision-signal review for one stock.
+
+        The aggregation lives in the service layer (ReviewMemory contract);
+        this method only maps the payload for agent consumption.  Returns
+        ``None`` when memory is disabled, the stock code is missing, or the
+        review cannot be computed — callers must treat ``None`` as "no review
+        section", preserving pre-existing behaviour.
+        """
+        if not self.enabled or not stock_code:
+            return None
+        try:
+            from src.services.decision_signal_outcome_service import (
+                DecisionSignalOutcomeService,
+            )
+            payload = DecisionSignalOutcomeService().get_stock_review(stock_code)
+            return DecisionSignalReview(
+                stock_code=str(payload.get("stock_code") or stock_code),
+                sample_size=int(payload.get("sample_size") or 0),
+                completed=int(payload.get("completed") or 0),
+                hit_rate_pct=payload.get("hit_rate_pct"),
+                avg_return_pct=payload.get("avg_return_pct"),
+                common_miss_reasons=list(payload.get("common_miss_reasons") or []),
+                confidence_adjustment=str(payload.get("confidence_adjustment") or "observe"),
+                notes=str(payload.get("notes") or ""),
+            )
+        except Exception as exc:
+            logger.debug("[AgentMemory] get_decision_signal_review failed: %s", exc)
+            return None
+
+    # -----------------------------------------------------------------
     # Confidence calibration
     # -----------------------------------------------------------------
 
@@ -165,20 +236,23 @@ class AgentMemory:
             result.total_samples = stats.get("total", 0)
             result.historical_accuracy = stats.get("accuracy", 0.5)
             result.direction_accuracy = stats.get("direction_accuracy", 0.5)
-            result.avg_confidence = stats.get("avg_confidence", 0.5)
+            raw_avg_confidence = stats.get("avg_confidence")
+            has_real_avg_confidence = (
+                isinstance(raw_avg_confidence, (int, float))
+                and not isinstance(raw_avg_confidence, bool)
+                and 0 < raw_avg_confidence <= 1
+            )
+            result.avg_confidence = float(raw_avg_confidence) if has_real_avg_confidence else 0.5
 
-            if result.total_samples >= self.min_samples:
+            if result.total_samples >= self.min_samples and has_real_avg_confidence:
                 result.calibrated = True
                 # Calibration: scale confidence towards historical accuracy
                 # If agent is overconfident: factor < 1
                 # If agent is underconfident: factor > 1
-                if result.avg_confidence > 0:
-                    result.calibration_factor = min(
-                        1.5,
-                        max(0.5, result.historical_accuracy / result.avg_confidence),
-                    )
-                else:
-                    result.calibration_factor = 1.0
+                result.calibration_factor = min(
+                    1.5,
+                    max(0.5, result.historical_accuracy / result.avg_confidence),
+                )
             else:
                 result.calibrated = False
                 result.calibration_factor = 1.0
@@ -305,8 +379,8 @@ class AgentMemory:
                     "total": summary.get("total_evaluations", 0),
                     "accuracy": summary.get("win_rate", 0.5),
                     "direction_accuracy": summary.get("direction_accuracy", 0.5),
-                    "avg_confidence": 0.6,  # approximate from historical data
+                    "avg_confidence": summary.get("avg_confidence"),
                 }
         except Exception:
             pass
-        return {"total": 0, "accuracy": 0.5, "direction_accuracy": 0.5, "avg_confidence": 0.5}
+        return {"total": 0, "accuracy": 0.5, "direction_accuracy": 0.5, "avg_confidence": None}

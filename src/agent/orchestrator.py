@@ -29,29 +29,157 @@ import inspect
 import logging
 import re
 import time
+from contextvars import copy_context
 from dataclasses import dataclass, field
+from math import ceil
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
+from src.agent.chat_context import build_visible_chat_history
+from src.agent.dashboard_payload import sanitize_agent_dashboard_payload
+from src.agent.disagreement import (
+    build_agent_disagreement_summary,
+    build_evidence_debate_brief,
+    should_trigger_evidence_debate,
+)
 from src.agent.llm_adapter import LLMToolAdapter
+from src.core.stock_execution_context import raise_if_stock_cancelled, stock_child_thread_pool
 from src.agent.protocols import (
     AgentContext,
     AgentRunStats,
+    StageFailureReason,
     StageResult,
     StageStatus,
+    is_valid_strategy_signal,
     normalize_decision_signal,
+    normalize_stage_failure_reason,
+)
+from src.agent.skills.defaults import is_skill_agent_name
+from src.agent.skills.engine import EvidencePartition, StrategyEngine, StrategyResult, StrategyResultStatus
+from src.agent.skills.scheduler import AgentSkillScheduler, SkillBatchResult
+from src.agent.risk_override import (
+    RiskOverrideApplication,
+    build_risk_override_application,
+    build_risk_override_plan,
+)
+from src.agent.runtime_facts import (
+    AgentRuntimeFacts,
+    DegradationBoundary,
+    DegradedEvent,
+    PipelineTerminationFact,
+    build_agent_runtime_facts,
 )
 from src.agent.runner import parse_dashboard_json
+from src.agent.stock_scope import StockScopeResolution
+from src.agent.stream_events import stream_event
 from src.agent.tools.registry import ToolRegistry
-from src.config import AGENT_MAX_STEPS_DEFAULT
+from src.config import AGENT_MAX_STEPS_DEFAULT, get_config
 from src.report_language import normalize_report_language
+from src.schemas.decision_action import localize_action_label, normalize_decision_action
 
 if TYPE_CHECKING:
     from src.agent.executor import AgentResult
+    from src.services.agent_chat_session_service import AgentChatSessionService, ResolvedChatTurn
+    from src.storage import DatabaseManager
 
 logger = logging.getLogger(__name__)
 
 # Valid orchestrator modes (ordered by cost/depth)
 VALID_MODES = ("quick", "standard", "full", "specialist")
+NON_CRITICAL_BASE_STAGES = frozenset({"intel", "risk"})
+_INCOMPLETE_RISK_REVIEW_NOTE = {
+    "zh": "风控必审尚未完成，暂缓买入。",
+    "en": "The mandatory risk review is incomplete. Defer buying.",
+    "ko": "필수 위험 검토가 완료되지 않았습니다. 매수를 보류하세요.",
+}
+_APPLIED_RISK_REVIEW_NOTE = {
+    "zh": "风控审查已下调操作建议。",
+    "en": "Risk review downgraded the recommendation.",
+    "ko": "위험 검토 결과에 따라 투자 의견을 하향했습니다.",
+}
+_BUY_BLOCKED_BY_RISK_REVIEW_NOTE = {
+    "zh": "风控审查要求暂缓买入。",
+    "en": "Defer buying per the risk review.",
+    "ko": "위험 검토 결과에 따라 매수를 보류하세요.",
+}
+
+
+def _risk_review_status(stage: Optional[StageResult]) -> StageStatus:
+    if stage is None:
+        return StageStatus.PENDING
+    if stage.success:
+        from src.agent.agents.risk_agent import is_complete_risk_review
+
+        raw_data = stage.opinion.raw_data if stage.opinion else None
+        if not is_complete_risk_review(raw_data):
+            return StageStatus.FAILED
+    return stage.status
+
+
+def _risk_review_incomplete(ctx: AgentContext) -> bool:
+    return bool(ctx.meta.get("risk_review_required")) and ctx.meta.get("risk_review_status") != StageStatus.COMPLETED
+
+
+def _dashboard_recommends_buy(payload: Dict[str, Any]) -> bool:
+    phase = payload.get("phase_decision")
+    phase = phase if isinstance(phase, dict) else {}
+    watch_conditions = phase.get("watch_conditions")
+    core = payload.get("core_conclusion")
+    position = core.get("position_advice") if isinstance(core, dict) else None
+    advice = payload.get("operation_advice")
+    return any(normalize_decision_action(value) in {"buy", "add"} for value in (
+        payload.get("decision_type"),
+        payload.get("action"),
+        payload.get("action_label"),
+        *(advice.values() if isinstance(advice, dict) else (advice,)),
+        *(position.values() if isinstance(position, dict) else ()),
+        phase.get("immediate_action"),
+        *(watch_conditions if isinstance(watch_conditions, list) else ()),
+    ))
+
+
+def _stage_trajectory_snapshot(result: StageResult) -> Dict[str, Any]:
+    """Return the small JSON-safe stage trace exposed to the eval boundary.
+
+    ``StageResult.meta`` also contains runtime-only values such as raw model
+    text.  Keep this boundary deliberately whitelisted so the evaluator sees
+    execution facts without receiving prompts, messages, or arbitrary metadata.
+    """
+    status = getattr(result.status, "value", result.status)
+    failure_reason = result.failure_reason
+    if failure_reason is None and result.status == StageStatus.FAILED:
+        failure_reason = StageFailureReason.STAGE_FAILURE
+    failure_reason = getattr(failure_reason, "value", failure_reason)
+    raw_steps = result.total_steps
+    try:
+        total_steps = max(0, int(raw_steps or 0))
+    except (TypeError, ValueError):
+        total_steps = 0
+    raw_log = result.meta.get("tool_calls_log") or []
+    tool_calls_log = [dict(entry) if isinstance(entry, dict) else entry for entry in raw_log]
+    return {
+        "stage_name": str(result.stage_name or ""),
+        "status": str(status),
+        "total_steps": total_steps,
+        "tool_calls_log": tool_calls_log,
+        "failure_reason": str(failure_reason) if failure_reason is not None else None,
+        "duration_s": result.duration_s,
+        "tokens_used": result.tokens_used,
+        "tool_calls_count": result.tool_calls_count,
+    }
+
+
+def _skipped_stage_trajectory(stage_name: str, reason: StageFailureReason) -> Dict[str, Any]:
+    """Represent a stage that was not started at a pipeline boundary."""
+    return {
+        "stage_name": str(stage_name or ""),
+        "status": StageStatus.SKIPPED.value,
+        "total_steps": 0,
+        "tool_calls_log": [],
+        "failure_reason": reason.value,
+        "duration_s": 0.0,
+        "tokens_used": 0,
+        "tool_calls_count": 0,
+    }
 
 
 @dataclass
@@ -68,6 +196,18 @@ class OrchestratorResult:
     model: str = ""
     error: Optional[str] = None
     stats: Optional[AgentRunStats] = None
+    runtime_facts: Optional[AgentRuntimeFacts] = None
+    stage_trajectories: List[Dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class PreparedOrchestratorChatTurn:
+    """A persisted multi-agent Chat turn ready for pipeline execution."""
+
+    session_id: str
+    context: AgentContext
+    accepted_snapshot: Optional[Dict[str, Any]] = None
+    db_manager: Optional[DatabaseManager] = None
 
 
 class AgentOrchestrator:
@@ -98,6 +238,7 @@ class AgentOrchestrator:
         self.mode = normalized_mode if normalized_mode in VALID_MODES else "standard"
         self.skill_manager = skill_manager
         self.config = config
+        self.strategy_engine = StrategyEngine()
 
     def _get_timeout_seconds(self) -> int:
         """Return the pipeline timeout in seconds.
@@ -111,6 +252,33 @@ class AgentOrchestrator:
         except (TypeError, ValueError):
             return 0
 
+    def _get_sub_agent_timeout_map(self) -> Dict[str, float]:
+        """Return per-agent timeout clamps from config, skipping disabled (0) entries."""
+        config = self.config
+        if config is None:
+            return {}
+        entries = [
+            ("technical", "agent_technical_agent_timeout_s"),
+            ("intel", "agent_intel_agent_timeout_s"),
+            ("risk", "agent_risk_agent_timeout_s"),
+            ("decision", "agent_decision_agent_timeout_s"),
+            ("portfolio", "agent_portfolio_agent_timeout_s"),
+            ("skill", "agent_skill_agent_timeout_s"),
+        ]
+        return {
+            key: float(val)
+            for key, attr in entries
+            if (val := getattr(config, attr, None)) is not None and val > 0
+        }
+
+    def _get_skill_concurrency(self) -> int:
+        raw_value = getattr(self.config, "agent_skill_concurrency", 3)
+        try:
+            parsed = int(raw_value or 3)
+        except (TypeError, ValueError):
+            parsed = 3
+        return max(1, min(4, parsed))
+
     def _build_timeout_result(
         self,
         stats: AgentRunStats,
@@ -120,6 +288,7 @@ class AgentOrchestrator:
         timeout_s: int,
         ctx: Optional[AgentContext] = None,
         parse_dashboard: bool = True,
+        stage_trajectories: Optional[List[Dict[str, Any]]] = None,
     ) -> OrchestratorResult:
         """Build a standard timeout result payload."""
         stats.total_duration_s = round(elapsed_s, 2)
@@ -131,6 +300,7 @@ class AgentOrchestrator:
         dashboard = None
         content = ""
         if ctx is not None:
+            self._prepare_partial_debate_result(ctx, stats)
             dashboard, content = self._resolve_final_output(ctx, parse_dashboard=parse_dashboard)
             if parse_dashboard and dashboard is not None:
                 dashboard = self._mark_partial_dashboard(
@@ -149,8 +319,10 @@ class AgentOrchestrator:
             total_steps=stats.total_stages,
             total_tokens=stats.total_tokens,
             tool_calls_log=all_tool_calls,
+            stage_trajectories=list(stage_trajectories or []),
             provider=provider,
             model=model,
+            runtime_facts=build_agent_runtime_facts(ctx) if ctx is not None else None,
         )
 
     def _build_budget_skip_result(
@@ -165,6 +337,7 @@ class AgentOrchestrator:
         min_stage_budget_s: int,
         ctx: Optional[AgentContext] = None,
         parse_dashboard: bool = True,
+        stage_trajectories: Optional[List[Dict[str, Any]]] = None,
     ) -> OrchestratorResult:
         """Build a result for budget-insufficient stage skip (non-timeout semantics)."""
         stats.total_duration_s = round(elapsed_s, 2)
@@ -172,6 +345,7 @@ class AgentOrchestrator:
         dashboard = None
         content = ""
         if ctx is not None:
+            self._prepare_partial_debate_result(ctx, stats)
             dashboard, content = self._resolve_final_output(ctx, parse_dashboard=parse_dashboard)
             if parse_dashboard and dashboard is not None:
                 dashboard = self._mark_partial_dashboard(
@@ -193,8 +367,10 @@ class AgentOrchestrator:
             total_steps=stats.total_stages,
             total_tokens=stats.total_tokens,
             tool_calls_log=all_tool_calls,
+            stage_trajectories=list(stage_trajectories or []),
             provider=stats.models_used[0] if stats.models_used else "",
             model=", ".join(stats.models_used),
+            runtime_facts=build_agent_runtime_facts(ctx) if ctx is not None else None,
         )
 
 
@@ -259,6 +435,20 @@ class AgentOrchestrator:
         timeout_seconds: Optional[float] = None,
     ) -> StageResult:
         """Run a stage agent while preserving compatibility with older call signatures."""
+        raise_if_stock_cancelled()
+        # Clamp by per-agent limit when configured.
+        # When pipeline budget is disabled (timeout_seconds is None),
+        # the sub-agent's own limit still applies as a standalone cap.
+        sub_agent_timeout_map = self._get_sub_agent_timeout_map()
+        if sub_agent_timeout_map:
+            agent_limit = sub_agent_timeout_map.get(agent.agent_name)
+            if agent_limit is None and agent.agent_name in getattr(self, "_skill_agent_names", set()):
+                agent_limit = sub_agent_timeout_map.get("skill")
+            if agent_limit is not None:
+                if timeout_seconds is not None:
+                    timeout_seconds = min(timeout_seconds, agent_limit)
+                else:
+                    timeout_seconds = agent_limit
         run_kwargs = {"progress_callback": progress_callback}
         if (
             timeout_seconds is not None
@@ -293,6 +483,8 @@ class AgentOrchestrator:
             provider=orch_result.provider,
             model=orch_result.model,
             error=orch_result.error,
+            stage_trajectories=orch_result.stage_trajectories,
+            runtime_facts=orch_result.runtime_facts,
         )
 
     def chat(
@@ -301,6 +493,9 @@ class AgentOrchestrator:
         session_id: str,
         progress_callback: Optional[Callable] = None,
         context: Optional[Dict[str, Any]] = None,
+        selected_skill_ids: Optional[List[str]] = None,
+        resolved_turn: Optional[ResolvedChatTurn] = None,
+        session_service: Optional[AgentChatSessionService] = None,
     ) -> "AgentResult":
         """Run the pipeline in chat mode (free-form answer, no dashboard parse).
 
@@ -308,33 +503,105 @@ class AgentOrchestrator:
         ``conversation_manager``); the orchestrator focuses on multi-agent
         coordination.
         """
-        from src.agent.executor import AgentResult
+        turn = self.prepare_turn(
+            message=message,
+            session_id=session_id,
+            context=context,
+            selected_skill_ids=selected_skill_ids,
+            resolved_turn=resolved_turn,
+            session_service=session_service,
+        )
+        return self.execute_turn(
+            turn,
+            progress_callback=progress_callback,
+        )
+
+    def prepare_turn(
+        self,
+        *,
+        message: str,
+        session_id: str,
+        context: Optional[Dict[str, Any]] = None,
+        selected_skill_ids: Optional[List[str]] = None,
+        resolved_turn: Optional[ResolvedChatTurn] = None,
+        session_service: Optional[AgentChatSessionService] = None,
+    ) -> PreparedOrchestratorChatTurn:
+        """Prepare context and persist the user turn before SSE acceptance."""
         from src.agent.conversation import conversation_manager
 
-        ctx = self._build_context(message, context)
+        config = self.config or getattr(self.llm_adapter, "_config", None) or get_config()
+        if resolved_turn is not None:
+            if (session_service is None or resolved_turn.snapshot["session_id"] != session_id
+                    or resolved_turn.message != message or resolved_turn.clarification is not None):
+                raise ValueError("Resolved Chat preparation requires its session owner and a non-clarification turn")
+            scope_resolution = StockScopeResolution(resolved_turn.effective_context, resolved_turn.stock_scope)
+        else:
+            from src.services.agent_chat_session_service import AgentChatSessionService
+
+            db, snapshot = conversation_manager.prepare_turn(session_id)
+            scope_resolution, disposition = AgentChatSessionService(db).prepare_compatibility_turn(
+                config, snapshot, message, context=context,
+            )
+        ctx = self._build_context(
+            message, scope_resolution.effective_context,
+            scope_resolution=scope_resolution if scope_resolution.stock_scope is not None else None,
+        )
         ctx.session_id = session_id
         ctx.meta["response_mode"] = "chat"
+        if scope_resolution.stock_scope is not None:
+            ctx.meta["stock_scope"] = scope_resolution.stock_scope
 
-        session = conversation_manager.get_or_create(session_id)
-        history = session.get_history()
+        history_kwargs = {"db_manager": db, "source_snapshot": snapshot} if resolved_turn is None else {
+            "db_manager": session_service.db, "source_snapshot": resolved_turn.snapshot,
+        }
+        history = build_visible_chat_history(session_id, self.llm_adapter, config, **history_kwargs)
         if history:
             ctx.meta["conversation_history"] = history
 
         # Persist user turn
-        conversation_manager.add_message(session_id, "user", message)
+        accepted = None
+        if resolved_turn is not None:
+            accepted = session_service.commit_user_turn(resolved_turn)
+        else:
+            accepted = conversation_manager.commit_user_turn(
+                db, snapshot, message, selected_skill_ids, state_disposition=disposition,
+            )
+
+        return PreparedOrchestratorChatTurn(
+            session_id=session_id,
+            context=ctx,
+            accepted_snapshot=accepted,
+            db_manager=session_service.db if resolved_turn is not None else db,
+        )
+
+    def execute_turn(
+        self,
+        turn: PreparedOrchestratorChatTurn,
+        *,
+        progress_callback: Optional[Callable] = None,
+    ) -> "AgentResult":
+        """Execute an accepted multi-agent Chat turn and persist its result."""
+        from src.agent.executor import AgentResult
+        from src.agent.conversation import conversation_manager
 
         orch_result = self._execute_pipeline(
-            ctx,
+            turn.context,
             parse_dashboard=False,
             progress_callback=progress_callback,
         )
 
         # Persist assistant response
-        if orch_result.success:
-            conversation_manager.add_message(session_id, "assistant", orch_result.content)
+        if turn.accepted_snapshot is not None:
+            content = orch_result.content if orch_result.success else f"[分析失败] {orch_result.error or '未知错误'}"
+            conversation_manager.add_message(
+                turn.session_id, "assistant", content, accepted_turn=turn.accepted_snapshot,
+                db_manager=turn.db_manager,
+            )
+        elif orch_result.success:
+            conversation_manager.add_message(turn.session_id, "assistant", orch_result.content)
         else:
             conversation_manager.add_message(
-                session_id, "assistant",
+                turn.session_id, "assistant",
                 f"[分析失败] {orch_result.error or '未知错误'}",
             )
 
@@ -348,6 +615,8 @@ class AgentOrchestrator:
             provider=orch_result.provider,
             model=orch_result.model,
             error=orch_result.error,
+            stage_trajectories=orch_result.stage_trajectories,
+            runtime_facts=orch_result.runtime_facts,
         )
 
     # -----------------------------------------------------------------
@@ -363,12 +632,16 @@ class AgentOrchestrator:
         """Run the agent pipeline according to ``self.mode``."""
         stats = AgentRunStats()
         all_tool_calls: List[Dict[str, Any]] = []
+        stage_trajectories: List[Dict[str, Any]] = []
         models_used: List[str] = []
         t0 = time.time()
         timeout_s = self._get_timeout_seconds()
 
         agents = self._build_agent_chain(ctx)
+        debate_enabled = bool(getattr(self.config, "agent_debate_enabled", False))
         specialist_agents_inserted = False
+        strategy_engine_ran = False
+        risk_stage = None
         index = 0
 
         # Minimum seconds required for a stage to do useful work.  Starting
@@ -382,6 +655,80 @@ class AgentOrchestrator:
             agent = agents[index]
             elapsed_s = time.time() - t0
             remaining_budget = timeout_s - elapsed_s if timeout_s else None
+
+            if (
+                index == 0
+                and len(agents) >= 2
+                and self._can_parallelize_discovery_pair(agents[0], agents[1])
+                and not (timeout_s and remaining_budget is not None and remaining_budget <= 0)
+            ):
+                tech_agent, intel_agent = agents[0], agents[1]
+                tech_result, intel_result = self._run_discovery_wave_parallel(
+                    tech_agent,
+                    intel_agent,
+                    ctx,
+                    progress_callback=progress_callback,
+                    timeout_seconds=remaining_budget,
+                )
+                for stage_agent, stage_result in ((tech_agent, tech_result), (intel_agent, intel_result)):
+                    stats.record_stage(stage_result)
+                    stage_trajectories.append(_stage_trajectory_snapshot(stage_result))
+                    all_tool_calls.extend(
+                        tc for tc in (stage_result.meta.get("tool_calls_log") or [])
+                    )
+                    models_used.extend(stage_result.meta.get("models_used", []))
+
+                elapsed_s = time.time() - t0
+                if tech_result.status == StageStatus.FAILED:
+                    logger.error("[Orchestrator] critical stage '%s' failed: %s", tech_agent.agent_name, tech_result.error)
+                    return OrchestratorResult(
+                        success=False,
+                        error=f"Stage '{tech_agent.agent_name}' failed: {tech_result.error}",
+                        stats=stats,
+                        total_steps=stats.total_stages,
+                        total_tokens=stats.total_tokens,
+                        tool_calls_log=all_tool_calls,
+                        stage_trajectories=stage_trajectories,
+                        runtime_facts=build_agent_runtime_facts(ctx),
+                    )
+                if intel_result.status == StageStatus.FAILED:
+                    self._record_degraded_stage(ctx, intel_agent.agent_name, intel_result)
+                    logger.warning(
+                        "[Orchestrator] stage '%s' failed (non-critical, degrading): %s",
+                        intel_agent.agent_name,
+                        intel_result.error,
+                    )
+
+                if timeout_s and elapsed_s >= timeout_s:
+                    logger.error("[Orchestrator] pipeline timed out after discovery wave")
+                    self._record_pipeline_termination(
+                        ctx,
+                        last_completed_stage=intel_agent.agent_name
+                        if intel_result.status == StageStatus.COMPLETED
+                        else tech_agent.agent_name,
+                    )
+                    if progress_callback:
+                        progress_callback(stream_event(
+                            "pipeline_timeout",
+                            stage=intel_agent.agent_name,
+                            elapsed=round(elapsed_s, 2),
+                            timeout=timeout_s,
+                        ))
+                    self._apply_partition_fallback(ctx)
+                    return self._build_timeout_result(
+                        stats,
+                        all_tool_calls,
+                        models_used,
+                        elapsed_s,
+                        timeout_s,
+                        ctx=ctx,
+                        parse_dashboard=parse_dashboard,
+                        stage_trajectories=stage_trajectories,
+                    )
+
+                index = 2
+                continue
+
             stage_min_budget_s = (
                 _MIN_STAGE_BUDGET_S
             )
@@ -398,13 +745,24 @@ class AgentOrchestrator:
             )
             if timeout_exhausted:
                 logger.error("[Orchestrator] pipeline timed out before stage '%s'", agent.agent_name)
+                self._record_degraded_event(
+                    ctx,
+                    stage=agent.agent_name,
+                    reason=StageFailureReason.TIMEOUT,
+                    boundary=DegradationBoundary.BEFORE_STAGE,
+                )
                 if progress_callback:
-                    progress_callback({
-                        "type": "pipeline_timeout",
-                        "stage": agent.agent_name,
-                        "elapsed": round(elapsed_s, 2),
-                        "timeout": timeout_s,
-                    })
+                    progress_callback(stream_event(
+                        "pipeline_timeout",
+                        stage=agent.agent_name,
+                        elapsed=round(elapsed_s, 2),
+                        timeout=timeout_s,
+                    ))
+                if ctx is not None:
+                    self._apply_partition_fallback(ctx)
+                stage_trajectories.append(
+                    _skipped_stage_trajectory(agent.agent_name, StageFailureReason.TIMEOUT)
+                )
                 return self._build_timeout_result(
                     stats,
                     all_tool_calls,
@@ -413,6 +771,7 @@ class AgentOrchestrator:
                     timeout_s,
                     ctx=ctx,
                     parse_dashboard=parse_dashboard,
+                    stage_trajectories=stage_trajectories,
                 )
 
             if budget_guard_triggered:
@@ -422,13 +781,31 @@ class AgentOrchestrator:
                     remaining_budget,
                     stage_min_budget_s,
                 )
+                self._record_degraded_event(
+                    ctx,
+                    stage=agent.agent_name,
+                    reason=StageFailureReason.BUDGET_SKIP,
+                    boundary=DegradationBoundary.BEFORE_STAGE,
+                )
                 if progress_callback:
-                    progress_callback({
-                        "type": "pipeline_timeout",
-                        "stage": agent.agent_name,
-                        "elapsed": round(elapsed_s, 2),
-                        "timeout": timeout_s,
-                    })
+                    progress_callback(stream_event(
+                        "pipeline_budget_skipped",
+                        stage=agent.agent_name,
+                        elapsed=round(elapsed_s, 2),
+                        timeout=timeout_s,
+                        remaining=round(remaining_budget, 2),
+                        minimum=stage_min_budget_s,
+                        reason="insufficient_budget",
+                        message=(
+                            f"Skipped {agent.agent_name} analysis due to insufficient "
+                            "remaining budget"
+                        ),
+                    ))
+                if ctx is not None:
+                    self._apply_partition_fallback(ctx)
+                stage_trajectories.append(
+                    _skipped_stage_trajectory(agent.agent_name, StageFailureReason.BUDGET_SKIP)
+                )
                 return self._build_budget_skip_result(
                     stats,
                     all_tool_calls,
@@ -440,30 +817,71 @@ class AgentOrchestrator:
                     stage_min_budget_s,
                     ctx=ctx,
                     parse_dashboard=parse_dashboard,
+                    stage_trajectories=stage_trajectories,
                 )
 
             if (
                 self.mode == "specialist"
-                and agent.agent_name == "decision"
+                and (agent.agent_name == "decision" or (debate_enabled and agent.agent_name == "risk"))
                 and not specialist_agents_inserted
             ):
                 specialist_agents = self._build_specialist_agents(ctx)
                 self._skill_agent_names = {a.agent_name for a in specialist_agents}
                 specialist_agents_inserted = True
                 if specialist_agents:
-                    agents[index:index] = specialist_agents
+                    batch = self._run_specialist_agent_batch(
+                        specialist_agents,
+                        ctx,
+                        progress_callback=progress_callback,
+                        timeout_seconds=remaining_budget,
+                    )
+                    for stage_result in batch.stage_results:
+                        stats.record_stage(stage_result)
+                        stage_trajectories.append(_stage_trajectory_snapshot(stage_result))
+                        all_tool_calls.extend(
+                            tc for tc in (stage_result.meta.get("tool_calls_log") or [])
+                        )
+                        models_used.extend(stage_result.meta.get("models_used", []))
+                        if stage_result.status == StageStatus.FAILED:
+                            self._record_degraded_stage(ctx, stage_result.stage_name, stage_result)
+                    ctx.opinions.extend(batch.opinions)
+                    invalid_bucket = ctx.meta.get("invalid_opinions")
+                    if not isinstance(invalid_bucket, list):
+                        invalid_bucket = []
+                    invalid_bucket.extend(batch.invalid_records)
+                    ctx.meta["invalid_opinions"] = invalid_bucket
+                    ctx.meta["skill_scheduler"] = {
+                        "mode": "thread_pool",
+                        "max_concurrency": batch.max_concurrency,
+                        "timeout_per_skill": batch.timeout_per_skill,
+                        "scheduled_skill_count": len(specialist_agents),
+                        "completed_skill_count": sum(1 for item in batch.stage_results if item.success),
+                        "invalid_skill_count": len(batch.invalid_records),
+                    }
                     continue
 
-            # Aggregate skill opinions before the decision agent
-            if agent.agent_name == "decision" and getattr(self, "_skill_agent_names", None):
-                self._aggregate_skill_opinions(ctx)
+            if agent.agent_name == "decision":
+                if not strategy_engine_ran:
+                    self._run_strategy_engine(ctx)
+                    strategy_engine_ran = True
+                self._prepare_decision_context(ctx, risk_stage)
+                if ctx.meta["risk_review_required"] and risk_stage is None:
+                    from src.agent.agents.risk_agent import RiskAgent
+
+                    agents.insert(index, self._build_base_agent(RiskAgent))
+                    continue
+            elif agent.agent_name == "risk" and debate_enabled and not ctx.meta.get("risk_review_required"):
+                if self.mode == "specialist":
+                    self._run_strategy_engine(ctx)
+                    strategy_engine_ran = True
+                self._prepare_decision_context(ctx)
 
             if progress_callback:
-                progress_callback({
-                    "type": "stage_start",
-                    "stage": agent.agent_name,
-                    "message": f"Starting {agent.agent_name} analysis...",
-                })
+                progress_callback(stream_event(
+                    "stage_start",
+                    stage=agent.agent_name,
+                    message=f"Starting {agent.agent_name} analysis...",
+                ))
 
             remaining_timeout_s = (
                 max(0.0, timeout_s - elapsed_s)
@@ -476,22 +894,82 @@ class AgentOrchestrator:
                 progress_callback=progress_callback,
                 timeout_seconds=remaining_timeout_s,
             )
+            if agent.agent_name == "risk":
+                risk_stage = result
+                if ctx.meta.get("risk_review_required"):
+                    review_status = _risk_review_status(result)
+                    ctx.meta["risk_review_status"] = review_status
+                    if result.success and review_status == StageStatus.FAILED:
+                        result.status = StageStatus.FAILED
+                        result.failure_reason = StageFailureReason.STAGE_FAILURE
+                        result.error = "Risk review did not return a complete risk assessment"
             stats.record_stage(result)
+            stage_trajectories.append(_stage_trajectory_snapshot(result))
             all_tool_calls.extend(
                 tc for tc in (result.meta.get("tool_calls_log") or [])
             )
             models_used.extend(result.meta.get("models_used", []))
-
             elapsed_s = time.time() - t0
+            if progress_callback:
+                progress_callback(stream_event(
+                    "stage_done",
+                    stage=agent.agent_name,
+                    status=result.status.value,
+                    duration=result.duration_s,
+                ))
+
+            if ctx.meta.get("response_mode") == "chat" and agent.agent_name == "decision":
+                final_text = result.meta.get("raw_text")
+                if isinstance(final_text, str) and final_text.strip():
+                    ctx.set_data("final_response_text", final_text.strip())
+
+            # Abort pipeline on critical failure.
+            # Non-critical stages that degrade gracefully:
+            #   - intel / risk (standard support stages)
+            #   - skill agents (specialist evaluation, optional)
+            if result.status == StageStatus.FAILED:
+                if not self._is_non_critical_stage(agent.agent_name):
+                    logger.error("[Orchestrator] critical stage '%s' failed: %s", agent.agent_name, result.error)
+                    return OrchestratorResult(
+                        success=False,
+                        error=f"Stage '{agent.agent_name}' failed: {result.error}",
+                        stats=stats,
+                        total_steps=stats.total_stages,
+                        total_tokens=stats.total_tokens,
+                        tool_calls_log=all_tool_calls,
+                        stage_trajectories=stage_trajectories,
+                        runtime_facts=build_agent_runtime_facts(ctx),
+                    )
+                else:
+                    self._record_degraded_stage(ctx, agent.agent_name, result)
+                    logger.warning(
+                        "[Orchestrator] stage '%s' failed (non-critical, degrading): %s",
+                        agent.agent_name,
+                        result.error,
+                    )
+
             if timeout_s and elapsed_s >= timeout_s:
                 logger.error("[Orchestrator] pipeline timed out after stage '%s'", agent.agent_name)
+                last_completed_stage = next(
+                    (
+                        stage.stage_name
+                        for stage in reversed(stats.stage_results)
+                        if stage.status == StageStatus.COMPLETED
+                    ),
+                    None,
+                )
+                self._record_pipeline_termination(
+                    ctx,
+                    last_completed_stage=last_completed_stage,
+                )
                 if progress_callback:
-                    progress_callback({
-                        "type": "pipeline_timeout",
-                        "stage": agent.agent_name,
-                        "elapsed": round(elapsed_s, 2),
-                        "timeout": timeout_s,
-                    })
+                    progress_callback(stream_event(
+                        "pipeline_timeout",
+                        stage=agent.agent_name,
+                        elapsed=round(elapsed_s, 2),
+                        timeout=timeout_s,
+                    ))
+                self._apply_partition_fallback(ctx)
                 return self._build_timeout_result(
                     stats,
                     all_tool_calls,
@@ -500,44 +978,8 @@ class AgentOrchestrator:
                     timeout_s,
                     ctx=ctx,
                     parse_dashboard=parse_dashboard,
+                    stage_trajectories=stage_trajectories,
                 )
-
-            if progress_callback:
-                progress_callback({
-                    "type": "stage_done",
-                    "stage": agent.agent_name,
-                    "status": result.status.value,
-                    "duration": result.duration_s,
-                })
-
-            if ctx.meta.get("response_mode") == "chat" and agent.agent_name == "decision":
-                final_text = result.meta.get("raw_text")
-                if isinstance(final_text, str) and final_text.strip():
-                    ctx.set_data("final_response_text", final_text.strip())
-
-            if result.success and agent.agent_name == "decision":
-                self._apply_risk_override(ctx)
-
-            # Abort pipeline on critical failure.
-            # Non-critical stages that degrade gracefully:
-            #   - intel / risk (standard support stages)
-            #   - skill agents (specialist evaluation, optional)
-            if result.status == StageStatus.FAILED:
-                non_critical = (
-                    agent.agent_name in ("intel", "risk")
-                    or agent.agent_name in getattr(self, "_skill_agent_names", set())
-                )
-                if not non_critical:
-                    logger.error("[Orchestrator] critical stage '%s' failed: %s", agent.agent_name, result.error)
-                    return OrchestratorResult(
-                        success=False,
-                        error=f"Stage '{agent.agent_name}' failed: {result.error}",
-                        stats=stats,
-                        total_tokens=stats.total_tokens,
-                        tool_calls_log=all_tool_calls,
-                    )
-                else:
-                    logger.warning("[Orchestrator] stage '%s' failed (non-critical, degrading): %s", agent.agent_name, result.error)
 
             index += 1
 
@@ -563,6 +1005,8 @@ class AgentOrchestrator:
                 model=model_str,
                 error="Failed to parse dashboard JSON from agent response",
                 stats=stats,
+                stage_trajectories=stage_trajectories,
+                runtime_facts=build_agent_runtime_facts(ctx),
             )
 
         return OrchestratorResult(
@@ -575,11 +1019,21 @@ class AgentOrchestrator:
             provider=provider,
             model=model_str,
             stats=stats,
+            stage_trajectories=stage_trajectories,
+            runtime_facts=build_agent_runtime_facts(ctx),
         )
 
     # -----------------------------------------------------------------
     # Agent chain construction
     # -----------------------------------------------------------------
+
+    def _build_base_agent(self, agent_type):
+        return self._prepare_agent(agent_type(
+            tool_registry=self.tool_registry,
+            llm_adapter=self.llm_adapter,
+            skill_instructions=self.skill_instructions,
+            technical_skill_policy=self.technical_skill_policy,
+        ))
 
     def _build_agent_chain(self, ctx: AgentContext) -> list:
         """Instantiate the ordered agent list based on ``self.mode``."""
@@ -590,17 +1044,10 @@ class AgentOrchestrator:
 
         self._skill_agent_names = set()
 
-        common_kwargs = dict(
-            tool_registry=self.tool_registry,
-            llm_adapter=self.llm_adapter,
-            skill_instructions=self.skill_instructions,
-            technical_skill_policy=self.technical_skill_policy,
-        )
-
-        technical = self._prepare_agent(TechnicalAgent(**common_kwargs))
-        intel = self._prepare_agent(IntelAgent(**common_kwargs))
-        risk = self._prepare_agent(RiskAgent(**common_kwargs))
-        decision = self._prepare_agent(DecisionAgent(**common_kwargs))
+        technical = self._build_base_agent(TechnicalAgent)
+        intel = self._build_base_agent(IntelAgent)
+        risk = self._build_base_agent(RiskAgent)
+        decision = self._build_base_agent(DecisionAgent)
 
         if self.mode == "quick":
             return [technical, decision]
@@ -609,11 +1056,110 @@ class AgentOrchestrator:
         elif self.mode == "full":
             return [technical, intel, risk, decision]
         elif self.mode == "specialist":
-            # Specialist agents are inserted lazily right before the decision
-            # stage so the router can see the finished technical opinion.
+            # The router needs discovery opinions before it can select specialists.
             return [technical, intel, risk, decision]
         else:
             return [technical, intel, decision]
+
+    def _can_parallelize_discovery_pair(self, first_agent: Any, second_agent: Any) -> bool:
+        """Enable parallel Wave-1 discovery only for real TechnicalAgent + IntelAgent pairs."""
+        from src.agent.agents.intel_agent import IntelAgent
+        from src.agent.agents.technical_agent import TechnicalAgent
+
+        parallel_enabled = getattr(self.config, "agent_parallel_discovery", True)
+        return (
+            bool(parallel_enabled)
+            and type(first_agent) is TechnicalAgent
+            and type(second_agent) is IntelAgent
+        )
+
+    @staticmethod
+    def _clone_context_for_discovery(ctx: AgentContext) -> AgentContext:
+        return AgentContext(
+            query=ctx.query,
+            stock_code=ctx.stock_code,
+            stock_name=ctx.stock_name,
+            session_id=ctx.session_id,
+            data=dict(ctx.data or {}),
+            opinions=list(ctx.opinions or []),
+            risk_flags=[dict(flag) for flag in (ctx.risk_flags or []) if isinstance(flag, dict)],
+            meta=dict(ctx.meta or {}),
+            created_at=ctx.created_at,
+        )
+
+    def _run_discovery_wave_parallel(
+        self,
+        tech_agent: Any,
+        intel_agent: Any,
+        ctx: AgentContext,
+        *,
+        progress_callback: Optional[Callable] = None,
+        timeout_seconds: Optional[float] = None,
+    ) -> tuple[StageResult, StageResult]:
+        """Run TechnicalAgent and IntelAgent concurrently on isolated context clones."""
+        tech_ctx = self._clone_context_for_discovery(ctx)
+        intel_ctx = self._clone_context_for_discovery(ctx)
+        base_opinion_len = len(ctx.opinions or [])
+        base_risk_len = len(ctx.risk_flags or [])
+        base_data = dict(ctx.data or {})
+        base_meta = dict(ctx.meta or {})
+        def forward_progress_event(event: Dict[str, Any]) -> None:
+            if progress_callback is None:
+                return
+            # Worker progress must reach streaming callers while the wave is
+            # still running.  The callback is responsible for its own
+            # thread-safe delivery (the Chat SSE callback enqueues events).
+            progress_callback(event)
+
+        if progress_callback:
+            for agent in (tech_agent, intel_agent):
+                progress_callback(stream_event(
+                    "stage_start",
+                    stage=agent.agent_name,
+                    message=f"Starting {agent.agent_name} analysis...",
+                ))
+
+        with stock_child_thread_pool(2, "dsa-wave1") as pool:
+            tech_future = pool.submit(
+                copy_context().run,
+                self._run_stage_agent,
+                tech_agent,
+                tech_ctx,
+                progress_callback=forward_progress_event if progress_callback else None,
+                timeout_seconds=timeout_seconds,
+            )
+            intel_future = pool.submit(
+                copy_context().run,
+                self._run_stage_agent,
+                intel_agent,
+                intel_ctx,
+                progress_callback=forward_progress_event if progress_callback else None,
+                timeout_seconds=timeout_seconds,
+            )
+            tech_result = tech_future.result()
+            intel_result = intel_future.result()
+
+        # Deterministic main-thread merge in [technical, intel] order.
+        for sub_ctx in (tech_ctx, intel_ctx):
+            ctx.opinions.extend(sub_ctx.opinions[base_opinion_len:])
+            ctx.risk_flags.extend(sub_ctx.risk_flags[base_risk_len:])
+            for k, v in (sub_ctx.data or {}).items():
+                if k not in base_data or base_data[k] != v:
+                    ctx.data[k] = v
+            for k, v in (sub_ctx.meta or {}).items():
+                if k not in base_meta or base_meta[k] != v:
+                    ctx.meta[k] = v
+
+        if progress_callback:
+            for res in (tech_result, intel_result):
+                progress_callback(stream_event(
+                    "stage_done",
+                    stage=res.stage_name,
+                    status=res.status.value,
+                    duration=res.duration_s,
+                ))
+
+        return tech_result, intel_result
 
     def _build_specialist_agents(self, ctx: AgentContext) -> list:
         """Build specialist sub-agents based on requested skills.
@@ -630,13 +1176,13 @@ class AgentOrchestrator:
                 technical_skill_policy=self.technical_skill_policy,
             )
             router = SkillRouter()
-            selected = router.select_skills(ctx)
+            selected = router.select_skills(ctx, max_count=4)
             if not selected:
                 return []
 
             from src.agent.skills.skill_agent import SkillAgent
             agents = []
-            for skill_id in selected[:3]:  # cap at 3 concurrent skills
+            for skill_id in selected:
                 agent = self._prepare_agent(SkillAgent(
                     skill_id=skill_id,
                     **common_kwargs,
@@ -655,9 +1201,132 @@ class AgentOrchestrator:
         """Compatibility wrapper for legacy tests/imports."""
         return self._build_specialist_agents(ctx)
 
+    def _run_specialist_agent_batch(
+        self,
+        agents: list,
+        ctx: AgentContext,
+        *,
+        progress_callback: Optional[Callable] = None,
+        timeout_seconds: Optional[float] = None,
+    ) -> SkillBatchResult:
+        sub_agent_timeout_map = self._get_sub_agent_timeout_map()
+        configured_skill_timeout = sub_agent_timeout_map.get("skill", 0.0)
+        budget_per_skill = self._skill_batch_timeout_slice(
+            len(agents),
+            timeout_seconds=timeout_seconds,
+        )
+        if configured_skill_timeout and budget_per_skill is not None:
+            timeout_per_skill = min(configured_skill_timeout, budget_per_skill)
+        elif configured_skill_timeout:
+            timeout_per_skill = configured_skill_timeout
+        elif budget_per_skill is not None:
+            timeout_per_skill = budget_per_skill
+        else:
+            timeout_per_skill = 0.0
+        scheduler = AgentSkillScheduler(
+            max_concurrency=self._get_skill_concurrency(),
+            timeout_per_skill=timeout_per_skill,
+        )
+        if progress_callback:
+            for agent in agents:
+                progress_callback(stream_event(
+                    "stage_start",
+                    stage=agent.agent_name,
+                    message=f"Starting {agent.agent_name} analysis...",
+                ))
+
+        batch = scheduler.run(
+            agents,
+            ctx,
+            self._run_stage_agent,
+            progress_callback=progress_callback,
+        )
+        if progress_callback:
+            for result in batch.stage_results:
+                progress_callback(stream_event(
+                    "stage_done",
+                    stage=result.stage_name,
+                    status=result.status.value,
+                    duration=result.duration_s,
+                ))
+        return batch
+
+    def _skill_batch_timeout_slice(
+        self,
+        agent_count: int,
+        *,
+        timeout_seconds: Optional[float],
+    ) -> Optional[float]:
+        """Split remaining specialist budget across queued concurrency waves."""
+        if timeout_seconds is None:
+            return None
+        try:
+            remaining = float(timeout_seconds)
+        except (TypeError, ValueError):
+            return None
+        if remaining <= 0:
+            return 0.0
+
+        count = max(1, int(agent_count or 1))
+        worker_count = min(self._get_skill_concurrency(), count)
+        wave_count = max(1, ceil(count / worker_count))
+        return remaining / wave_count
+
     # -----------------------------------------------------------------
     # Skill aggregation
     # -----------------------------------------------------------------
+
+    def _partition_skill_opinions(self, ctx: AgentContext) -> None:
+        """Split skill opinions into Evidence Chain (valid) and Diagnostics (invalid).
+
+        Per docs/multi-strategy-contract.md §"Evidence Chain 与 Diagnostics 分离":
+        this is the ONLY partition point. After this method, ctx.opinions
+        contains only valid skill opinions; invalid ones are moved to
+        ctx.meta["invalid_opinions"] and never re-enter downstream evidence.
+        """
+        kept: List = []
+        invalid_bucket: List[Dict[str, Any]] = ctx.meta.setdefault("invalid_opinions", [])
+        if not isinstance(invalid_bucket, list):
+            invalid_bucket = []
+            ctx.meta["invalid_opinions"] = invalid_bucket
+
+        for op in ctx.opinions:
+            if not is_skill_agent_name(op.agent_name):
+                kept.append(op)
+                continue
+
+            raw_signal = op.signal if op.signal else (
+                op.raw_data.get("signal") if isinstance(op.raw_data, dict) else None
+            )
+
+            if raw_signal is None or (isinstance(raw_signal, str) and not raw_signal.strip()):
+                reason = "missing_signal"
+                raw_display = raw_signal if isinstance(raw_signal, str) else None
+                is_valid = False
+            elif is_valid_strategy_signal(raw_signal):
+                is_valid = True
+                reason = ""
+                raw_display = str(raw_signal)
+            else:
+                is_valid = False
+                reason = "unrecognized_signal"
+                raw_display = str(raw_signal)
+
+            if is_valid:
+                kept.append(op)
+            else:
+                invalid_bucket.append({
+                    "agent_name": op.agent_name,
+                    "raw_signal": raw_display,
+                    "confidence": op.confidence,
+                    "reason": reason,
+                })
+                logger.info(
+                    "[Orchestrator] invalid skill opinion moved to diagnostics: agent=%s raw_signal=%r reason=%s",
+                    op.agent_name, raw_display, reason,
+                )
+
+        ctx.opinions = kept
 
     def _aggregate_skill_opinions(self, ctx: AgentContext) -> None:
         """Run SkillAggregator to produce a consensus opinion.
@@ -675,6 +1344,9 @@ class AgentOrchestrator:
                     "signal": consensus.signal,
                     "confidence": consensus.confidence,
                     "reasoning": consensus.reasoning,
+                    "raw_data": consensus.raw_data,
+                    "strategy_synthesis": consensus.raw_data.get("strategy_synthesis"),
+                    "conflicts": consensus.raw_data.get("conflicts", []),
                 })
                 logger.info(
                     "[Orchestrator] skill consensus: signal=%s confidence=%.2f",
@@ -689,11 +1361,177 @@ class AgentOrchestrator:
         """Compatibility wrapper for legacy tests/imports."""
         self._aggregate_skill_opinions(ctx)
 
+    def _run_strategy_engine(self, ctx: AgentContext) -> None:
+        """Run the full skill pipeline via StrategyEngine and update ctx.
+
+        Replaces the old two-step _partition_skill_opinions + _aggregate_skill_opinions
+        calls. The engine is the single authoritative owner of strategy_synthesis.
+        """
+        existing_invalid = ctx.meta.get("invalid_opinions")
+        if not isinstance(existing_invalid, list):
+            existing_invalid = []
+        result = self.strategy_engine.process(
+            ctx.opinions,
+            diagnostic_records=existing_invalid,
+        )
+
+        ctx.meta["invalid_opinions"] = list(result.invalid_records)
+        ctx.opinions = list(result.non_skill_opinions) + list(result.valid_skill_opinions)
+        if result.consensus_opinion is not None:
+            ctx.opinions.append(result.consensus_opinion)
+
+        if result.skill_consensus_data is not None:
+            ctx.set_data("skill_consensus", result.skill_consensus_data)
+
+        if result.status == StrategyResultStatus.CONSENSUS:
+            logger.info(
+                "[Orchestrator] strategy engine: signal=%s confidence=%.2f",
+                result.consensus_opinion.signal,
+                result.consensus_opinion.confidence,
+            )
+        elif result.status == StrategyResultStatus.NO_CONSENSUS:
+            logger.info(
+                "[Orchestrator] strategy engine: NO_CONSENSUS invalid_count=%d",
+                result.invalid_count,
+            )
+        else:
+            logger.info("[Orchestrator] strategy engine: NO_SKILLS")
+
+    def _apply_partition_fallback(self, ctx: AgentContext) -> None:
+        """Partition skill opinions for timeout/budget-skip early-exit paths.
+
+        Does not aggregate — only ensures invalid diagnostics are preserved
+        in ctx.meta["invalid_opinions"] before the pipeline bails out.
+        Idempotent: skips if the engine already ran fully (skill_consensus present).
+        """
+        if ctx.get_data("skill_consensus") is not None:
+            return
+
+        partition = self.strategy_engine.partition_only(ctx.opinions)
+        ctx.opinions = list(partition.non_skill_opinions) + list(partition.valid_skill_opinions)
+        invalid_bucket = ctx.meta.get("invalid_opinions")
+        if not isinstance(invalid_bucket, list):
+            invalid_bucket = []
+        invalid_bucket.extend(partition.invalid_records)
+        ctx.meta["invalid_opinions"] = invalid_bucket
+
+    def _prepare_decision_context(self, ctx: AgentContext, risk_stage: Optional[StageResult] = None) -> None:
+        """Populate low-sensitivity summaries consumed by DecisionAgent."""
+        summary = build_agent_disagreement_summary(
+            ctx,
+            risk_override_enabled=getattr(self.config, "agent_risk_override", True),
+        )
+        ctx.meta["agent_disagreement_summary"] = summary
+        debate_enabled = bool(getattr(self.config, "agent_debate_enabled", False))
+        triggered, reason = should_trigger_evidence_debate(
+            ctx,
+            enabled=debate_enabled,
+        )
+        if triggered:
+            previous_brief = ctx.meta.get("evidence_debate_brief")
+            if not previous_brief:
+                logger.info("[Orchestrator] evidence debate triggered (reason=%s)", reason)
+            brief = build_evidence_debate_brief(ctx, summary, trigger_reason=reason)
+            ctx.meta["evidence_debate_brief"] = brief
+            ctx.meta["risk_review_required"] = True
+            ctx.meta["risk_review_status"] = _risk_review_status(risk_stage)
+        else:
+            ctx.meta.pop("evidence_debate_brief", None)
+            ctx.meta["risk_review_required"] = False
+            ctx.meta.pop("risk_review_status", None)
+
+    def _prepare_partial_debate_result(self, ctx: AgentContext, stats: AgentRunStats) -> None:
+        if not getattr(self.config, "agent_debate_enabled", False):
+            return
+        risk_stage = next((stage for stage in stats.stage_results if stage.stage_name == "risk"), None)
+        self._prepare_decision_context(ctx, risk_stage)
+        if ctx.meta["risk_review_required"] and risk_stage is None:
+            ctx.meta["risk_review_status"] = StageStatus.SKIPPED
+
+    def _record_degraded_stage(
+        self,
+        ctx: AgentContext,
+        agent_name: str,
+        result: StageResult,
+    ) -> None:
+        """Record a low-sensitivity degraded stage marker for downstream synthesis."""
+        if result.status != StageStatus.FAILED:
+            raise ValueError("degraded stage markers are only produced for failed stages")
+
+        degraded_stages = ctx.meta.setdefault("degraded_stages", [])
+        if not isinstance(degraded_stages, list):
+            degraded_stages = []
+            ctx.meta["degraded_stages"] = degraded_stages
+        degraded_stages.append({
+            "stage_name": agent_name,
+            "status": result.status.value,
+            "non_critical": self._is_non_critical_stage(agent_name),
+        })
+        self._record_degraded_event(
+            ctx,
+            stage=agent_name,
+            reason=normalize_stage_failure_reason(result.failure_reason),
+            boundary=DegradationBoundary.DURING_STAGE,
+        )
+
+    @staticmethod
+    def _record_degraded_event(
+        ctx: AgentContext,
+        *,
+        stage: str,
+        reason: Any,
+        boundary: DegradationBoundary,
+    ) -> None:
+        """Record one deduplicated fact for an incomplete stage."""
+        normalized = DegradedEvent(
+            stage=stage,
+            reason=reason,
+            boundary=boundary,
+        )
+        event = {
+            "stage": normalized.stage,
+            "reason": normalized.reason.value,
+            "boundary": normalized.boundary.value,
+        }
+        events = ctx.meta.setdefault("degraded_events", [])
+        if not isinstance(events, list):
+            events = []
+            ctx.meta["degraded_events"] = events
+        if event not in events:
+            events.append(event)
+
+    @staticmethod
+    def _record_pipeline_termination(
+        ctx: AgentContext,
+        *,
+        last_completed_stage: Optional[str],
+    ) -> None:
+        """Record a pipeline timeout without attributing it to a stage."""
+        termination = PipelineTerminationFact(
+            reason=StageFailureReason.TIMEOUT,
+            last_completed_stage=last_completed_stage,
+        )
+        ctx.meta["pipeline_termination"] = {
+            "reason": termination.reason.value,
+            "last_completed_stage": termination.last_completed_stage,
+        }
+
+    def _is_non_critical_stage(self, agent_name: str) -> bool:
+        """Return whether a failed stage should degrade instead of aborting."""
+        normalized_name = str(agent_name or "").strip()
+        return (
+            normalized_name in NON_CRITICAL_BASE_STAGES
+            or normalized_name in getattr(self, "_skill_agent_names", set())
+        )
+
     # -----------------------------------------------------------------
     # Helpers
     # -----------------------------------------------------------------
 
-    def _build_context(self, task: str, context: Optional[Dict[str, Any]] = None) -> AgentContext:
+    def _build_context(
+        self, task: str, context: Optional[Dict[str, Any]] = None, *,
+        scope_resolution: Optional[StockScopeResolution] = None,
+    ) -> AgentContext:
         """Seed an ``AgentContext`` from the user request."""
         ctx = AgentContext(query=task)
 
@@ -706,6 +1544,17 @@ class AgentOrchestrator:
             ctx.meta["skills_requested"] = requested_skills or []
             ctx.meta["strategies_requested"] = requested_skills or []
             ctx.meta["report_language"] = normalize_report_language(context.get("report_language", "zh"))
+            if context.get("market_phase_context"):
+                ctx.meta["market_phase_context"] = context["market_phase_context"]
+            daily_market_context = context.get("daily_market_context")
+            if isinstance(daily_market_context, dict) and daily_market_context:
+                ctx.meta["daily_market_context"] = dict(daily_market_context)
+            market_structure_context = context.get("market_structure_context")
+            if isinstance(market_structure_context, dict) and market_structure_context:
+                ctx.meta["market_structure_context"] = dict(market_structure_context)
+            analysis_context_pack_summary = context.get("analysis_context_pack_summary")
+            if isinstance(analysis_context_pack_summary, str) and analysis_context_pack_summary:
+                ctx.meta["analysis_context_pack_summary"] = analysis_context_pack_summary
 
             # Pre-populate data fields that the caller already has
             for data_key in ("realtime_quote", "daily_history", "chip_distribution",
@@ -714,7 +1563,12 @@ class AgentOrchestrator:
                     ctx.set_data(data_key, context[data_key])
 
         # Try to extract stock code from the query text
-        if not ctx.stock_code:
+        if scope_resolution is not None:
+            ctx.stock_code = scope_resolution.stock_scope.expected_stock_code
+            ctx.meta["stock_scope"] = scope_resolution.stock_scope
+            ctx.meta["stock_canonical_id"] = (context or {}).get("canonical_id")
+            ctx.meta["stock_asset_type"] = (context or {}).get("asset_type")
+        elif not ctx.stock_code:
             ctx.stock_code = _extract_stock_code(task)
 
         if "report_language" not in ctx.meta:
@@ -764,12 +1618,20 @@ class AgentOrchestrator:
                 return None, self._fallback_summary(ctx)
             return None, ""
 
+        if _risk_review_incomplete(ctx):
+            language = normalize_report_language(ctx.meta.get("report_language"))
+            return None, _INCOMPLETE_RISK_REVIEW_NOTE[language]
+        if ctx.meta.get("risk_review_required") and self._risk_blocks_buy(ctx):
+            # Free-form Chat replies can mix signals. Use the authoritative
+            # review result before the reply is returned or saved to history.
+            language = normalize_report_language(ctx.meta.get("report_language"))
+            return None, _BUY_BLOCKED_BY_RISK_REVIEW_NOTE[language]
         if chat_mode and isinstance(final_text, str) and final_text.strip():
             return None, final_text.strip()
         if isinstance(final_raw, str) and final_raw.strip():
             return None, final_raw
         if isinstance(final_dashboard, dict):
-            dashboard = self._normalize_dashboard_payload(final_dashboard, ctx)
+            dashboard = self._finalize_dashboard_payload(final_dashboard, ctx)
             if dashboard is not None:
                 return dashboard, json.dumps(dashboard, ensure_ascii=False, indent=2)
         if ctx.opinions:
@@ -782,38 +1644,89 @@ class AgentOrchestrator:
         final_dashboard: Any,
         final_raw: Any,
     ) -> Optional[Dict[str, Any]]:
-        """Return a normalized dashboard, or synthesize one from partial context."""
-        dashboard: Optional[Dict[str, Any]] = None
+        """Resolve one dashboard, apply risk once, then derive signal fields."""
+        candidate: Optional[Dict[str, Any]] = None
 
         if isinstance(final_dashboard, dict):
-            dashboard = self._normalize_dashboard_payload(final_dashboard, ctx)
+            candidate = final_dashboard
         elif isinstance(final_raw, str) and final_raw.strip():
             parsed = parse_dashboard_json(final_raw)
             if isinstance(parsed, dict):
-                dashboard = self._normalize_dashboard_payload(parsed, ctx)
+                candidate = parsed
 
-        if dashboard is None:
-            dashboard = self._normalize_dashboard_payload({}, ctx)
-
-        if dashboard is None:
+        prepared = self._prepare_dashboard_payload(candidate or {}, ctx)
+        if prepared is None:
             return None
 
-        ctx.set_data("final_dashboard", dashboard)
-        # Apply risk override (idempotent — safe to call even if already
-        # applied in _execute_pipeline after the decision stage).
+        if ctx.meta.get("risk_review_required"):
+            self._apply_mandatory_review_to_signal(ctx, prepared)
+        ctx.set_data("final_dashboard", prepared)
         self._apply_risk_override(ctx)
-        overridden = ctx.get_data("final_dashboard")
-        if isinstance(overridden, dict):
-            return overridden
+        post_risk = ctx.get_data("final_dashboard")
+        if not isinstance(post_risk, dict):
+            return None
+
+        dashboard = self._finalize_dashboard_payload(post_risk, ctx)
+        if dashboard is None:
+            return None
+        ctx.set_data("final_dashboard", dashboard)
         return dashboard
 
-    def _normalize_dashboard_payload(
+    def _apply_mandatory_review_to_signal(self, ctx: AgentContext, payload: Dict[str, Any]) -> None:
+        signal = payload["decision_type"]
+        nested = payload.get("dashboard")
+        has_buy_advice = _dashboard_recommends_buy(payload) or (
+            isinstance(nested, dict) and _dashboard_recommends_buy(nested)
+        )
+        if _risk_review_incomplete(ctx):
+            if signal == "buy" or has_buy_advice:
+                payload["decision_type"] = "hold"
+        elif signal != "buy" and has_buy_advice and self._risk_blocks_buy(ctx):
+            # The veto must see the buy recommendation even when the model's
+            # three-state statistics field disagrees with the actionable advice.
+            payload["decision_type"] = "buy"
+
+    def _risk_blocks_buy(self, ctx: AgentContext) -> bool:
+        return bool(build_risk_override_plan(
+            ctx, current_signal="buy", override_enabled=getattr(self.config, "agent_risk_override", True),
+        ).will_apply)
+
+    def _prepare_dashboard_payload(
         self,
         payload: Optional[Dict[str, Any]],
         ctx: AgentContext,
     ) -> Optional[Dict[str, Any]]:
-        """Normalize or synthesize the dashboard shape expected downstream."""
-        payload = dict(payload or {})
+        """Select a safe payload and canonical signal without deriving advice."""
+        prepared = sanitize_agent_dashboard_payload(dict(payload or {}))
+        meaningful_data_keys = (
+            "realtime_quote",
+            "daily_history",
+            "chip_distribution",
+            "trend_result",
+            "news_context",
+            "intel_opinion",
+            "fundamental_context",
+        )
+        has_meaningful_context = any(
+            ctx.get_data(key) is not None for key in meaningful_data_keys
+        )
+        if not prepared and not ctx.opinions and not has_meaningful_context:
+            return None
+
+        base_opinion = self._select_base_opinion(ctx)
+        prepared["decision_type"] = normalize_decision_signal(
+            prepared.get("decision_type")
+            or (base_opinion.signal if base_opinion else "hold")
+        )
+        return prepared
+
+    def _finalize_dashboard_payload(
+        self,
+        payload: Optional[Dict[str, Any]],
+        ctx: AgentContext,
+    ) -> Optional[Dict[str, Any]]:
+        """Derive the downstream dashboard shape from the post-risk signal."""
+        payload = sanitize_agent_dashboard_payload(dict(payload or {}))
         meaningful_data_keys = (
             "realtime_quote",
             "daily_history",
@@ -828,21 +1741,37 @@ class AgentOrchestrator:
             return None
 
         base_opinion = self._select_base_opinion(ctx)
-        decision_type = normalize_decision_signal(
-            payload.get("decision_type") or (base_opinion.signal if base_opinion else "hold")
+        application = ctx.meta.get("risk_override_application")
+        risk_applied = isinstance(application, RiskOverrideApplication) and application.applied
+        decision_type = (
+            application.post_risk_signal.value
+            if risk_applied
+            else normalize_decision_signal(
+                payload.get("decision_type")
+                or (base_opinion.signal if base_opinion else "hold")
+            )
         )
+        review_incomplete = _risk_review_incomplete(ctx)
+        review_blocks_buy = review_incomplete or (
+            ctx.meta.get("risk_review_required") and (risk_applied or self._risk_blocks_buy(ctx))
+        )
+        risk_adjusted = risk_applied or review_blocks_buy
         confidence = float(base_opinion.confidence if base_opinion is not None else 0.5)
         sentiment_score = payload.get("sentiment_score")
         try:
             sentiment_score = int(sentiment_score)
         except (TypeError, ValueError):
             sentiment_score = _estimate_sentiment_score(decision_type, confidence)
+        if risk_adjusted:
+            sentiment_score = _adjust_sentiment_score(sentiment_score, decision_type)
 
         dashboard_block = payload.get("dashboard")
         if not isinstance(dashboard_block, dict):
             dashboard_block = {}
         else:
             dashboard_block = dict(dashboard_block)
+            # Strip any LLM-written strategy_synthesis — StrategyEngine is the sole writer.
+            dashboard_block.pop("strategy_synthesis", None)
 
         core = dashboard_block.get("core_conclusion")
         if not isinstance(core, dict):
@@ -862,13 +1791,28 @@ class AgentOrchestrator:
         else:
             battle = dict(battle)
 
-        analysis_summary = _first_non_empty_text(
-            payload.get("analysis_summary"),
-            core.get("one_sentence"),
-            getattr(base_opinion, "reasoning", ""),
-        )
+        report_language = normalize_report_language(ctx.meta.get("report_language"))
+        review_note = _INCOMPLETE_RISK_REVIEW_NOTE[report_language]
+        if review_incomplete:
+            analysis_summary = review_note
+        elif review_blocks_buy:
+            notes = _APPLIED_RISK_REVIEW_NOTE if risk_applied else _BUY_BLOCKED_BY_RISK_REVIEW_NOTE
+            analysis_summary = notes[report_language]
+        else:
+            analysis_summary = _first_non_empty_text(
+                payload.get("analysis_summary"),
+                core.get("one_sentence"),
+                getattr(base_opinion, "reasoning", ""),
+            )
         if not analysis_summary:
             analysis_summary = f"多 Agent 未生成完整仪表盘，当前按{_signal_to_operation(decision_type)}处理。"
+        if risk_applied:
+            transition_prefix = (
+                f"[风控下调: {application.from_signal.value} -> "
+                f"{application.post_risk_signal.value}]"
+            )
+            if not analysis_summary.startswith(transition_prefix):
+                analysis_summary = f"{transition_prefix} {analysis_summary}"
         analysis_summary = _truncate_text(analysis_summary, 220)
 
         trend_prediction = _first_non_empty_text(
@@ -887,26 +1831,52 @@ class AgentOrchestrator:
                 trend_prediction = "待结合更多阶段结果确认"
 
         operation_advice_raw = payload.get("operation_advice")
-        operation_advice = _normalize_operation_advice_value(operation_advice_raw, decision_type)
+        if review_blocks_buy:
+            action = "watch"
+            if decision_type == "sell":
+                model_action = normalize_decision_action(payload.get("action") or operation_advice_raw)
+                action = "reduce" if model_action == "reduce" else "sell"
+            operation_advice = localize_action_label(action, report_language)
+        elif risk_applied:
+            pre_risk_advice = _normalize_operation_advice_value(
+                operation_advice_raw,
+                application.from_signal.value,
+            )
+            operation_advice = _adjust_operation_advice(
+                pre_risk_advice,
+                decision_type,
+            )
+        else:
+            operation_advice = _normalize_operation_advice_value(
+                operation_advice_raw,
+                decision_type,
+            )
 
         existing_position = core.get("position_advice")
-        position_advice = dict(existing_position) if isinstance(existing_position, dict) else {}
-        if isinstance(operation_advice_raw, dict):
-            no_position = _first_non_empty_text(
-                operation_advice_raw.get("no_position"),
-                operation_advice_raw.get("empty_position"),
+        if risk_adjusted:
+            position_advice = _post_risk_position_advice(decision_type)
+        else:
+            position_advice = (
+                dict(existing_position)
+                if isinstance(existing_position, dict)
+                else {}
             )
-            has_position = _first_non_empty_text(
-                operation_advice_raw.get("has_position"),
-                operation_advice_raw.get("holding_position"),
-            )
-            if no_position and "no_position" not in position_advice:
-                position_advice["no_position"] = no_position
-            if has_position and "has_position" not in position_advice:
-                position_advice["has_position"] = has_position
-        defaults = _default_position_advice(decision_type)
-        position_advice.setdefault("no_position", defaults["no_position"])
-        position_advice.setdefault("has_position", defaults["has_position"])
+            if isinstance(operation_advice_raw, dict):
+                no_position = _first_non_empty_text(
+                    operation_advice_raw.get("no_position"),
+                    operation_advice_raw.get("empty_position"),
+                )
+                has_position = _first_non_empty_text(
+                    operation_advice_raw.get("has_position"),
+                    operation_advice_raw.get("holding_position"),
+                )
+                if no_position and "no_position" not in position_advice:
+                    position_advice["no_position"] = no_position
+                if has_position and "has_position" not in position_advice:
+                    position_advice["has_position"] = has_position
+            defaults = _default_position_advice(decision_type)
+            position_advice.setdefault("no_position", defaults["no_position"])
+            position_advice.setdefault("has_position", defaults["has_position"])
 
         key_levels = self._collect_key_levels(ctx, payload, dashboard_block)
         sniper = battle.get("sniper_points")
@@ -960,19 +1930,51 @@ class AgentOrchestrator:
         if latest_news and not intelligence.get("latest_news"):
             intelligence["latest_news"] = latest_news
 
-        if not core.get("one_sentence"):
-            core["one_sentence"] = _truncate_text(analysis_summary, 60)
+        one_sentence = analysis_summary if review_blocks_buy else _first_non_empty_text(
+            core.get("one_sentence"),
+            analysis_summary,
+        )
+        if risk_applied and not one_sentence.startswith(transition_prefix):
+            one_sentence = f"{transition_prefix} {one_sentence}"
+        core["one_sentence"] = _truncate_text(one_sentence, 60)
         if not core.get("time_sensitivity"):
             core["time_sensitivity"] = "本周内"
-        if not core.get("signal_type"):
+        if risk_adjusted or not core.get("signal_type"):
             core["signal_type"] = _signal_to_signal_type(decision_type)
         core["position_advice"] = position_advice
 
         battle["sniper_points"] = sniper
-        if "action_checklist" not in battle:
+        if review_blocks_buy:
+            for block in (payload, dashboard_block):
+                block.update(action=action, action_label=operation_advice)
+                phase_decision = block.get("phase_decision")
+                if isinstance(phase_decision, dict):
+                    block["phase_decision"] = {
+                        **phase_decision,
+                        "action_window": None,
+                        "immediate_action": operation_advice,
+                        "watch_conditions": [analysis_summary],
+                    }
+            if "decision_type" in dashboard_block:
+                dashboard_block["decision_type"] = decision_type
+            if "operation_advice" in dashboard_block:
+                dashboard_block["operation_advice"] = operation_advice
+            battle["action_checklist"] = [analysis_summary]
+        elif "action_checklist" not in battle:
             battle["action_checklist"] = []
         position_strategy = battle.get("position_strategy")
-        if not isinstance(position_strategy, dict) or not position_strategy:
+        if risk_adjusted:
+            position_strategy = (
+                dict(position_strategy)
+                if isinstance(position_strategy, dict)
+                else {}
+            )
+            position_strategy["suggested_position"] = _default_position_size(decision_type)
+            position_strategy["entry_plan"] = position_advice["no_position"]
+            if review_blocks_buy or "risk_control" not in position_strategy:
+                position_strategy["risk_control"] = f"止损参考：{sniper.get('stop_loss', '待补充')}"
+            battle["position_strategy"] = position_strategy
+        elif not isinstance(position_strategy, dict) or not position_strategy:
             battle["position_strategy"] = {
                 "suggested_position": _default_position_size(decision_type),
                 "entry_plan": position_advice["no_position"],
@@ -989,16 +1991,21 @@ class AgentOrchestrator:
         if data_perspective:
             dashboard_block["data_perspective"] = data_perspective
 
+        strategy_synthesis = self._collect_strategy_synthesis(ctx, dashboard_block)
+        if strategy_synthesis:
+            dashboard_block["strategy_synthesis"] = strategy_synthesis
+
         dashboard_block["core_conclusion"] = core
         dashboard_block["intelligence"] = intelligence
         dashboard_block["battle_plan"] = battle
 
-        key_points = payload.get("key_points")
+        key_points = None if review_blocks_buy else payload.get("key_points")
         if not isinstance(key_points, list) or not key_points:
             key_points = [
                 _truncate_text(op.reasoning, 120)
                 for op in ctx.opinions
                 if isinstance(op.reasoning, str) and op.reasoning.strip()
+                and not (review_blocks_buy and op.agent_name == "decision")
             ][:5]
 
         risk_warning = _first_non_empty_text(
@@ -1008,6 +2015,21 @@ class AgentOrchestrator:
         )
         if not risk_warning:
             risk_warning = "暂无额外风险提示"
+        if risk_applied:
+            risk_opinion = self._latest_opinion(ctx, {"risk"})
+            risk_raw = (
+                risk_opinion.raw_data
+                if risk_opinion and isinstance(risk_opinion.raw_data, dict)
+                else {}
+            )
+            risk_warning = self._merge_risk_warning(
+                risk_warning,
+                risk_raw,
+                ctx.risk_flags,
+                decision_type,
+            )
+        if review_incomplete and not risk_warning.startswith(review_note):
+            risk_warning = f"{review_note} {risk_warning}"
 
         payload["stock_name"] = _first_non_empty_text(payload.get("stock_name"), ctx.stock_name, ctx.stock_code)
         payload["sentiment_score"] = sentiment_score
@@ -1019,7 +2041,41 @@ class AgentOrchestrator:
         payload["key_points"] = key_points
         payload["risk_warning"] = risk_warning
         payload["dashboard"] = dashboard_block
+        if risk_adjusted:
+            for opinion in reversed(ctx.opinions):
+                if opinion.agent_name == "decision":
+                    opinion.signal = decision_type
+                    opinion.reasoning = analysis_summary
+                    opinion.raw_data = payload
+                    break
         return payload
+
+    def _collect_strategy_synthesis(
+        self,
+        ctx: AgentContext,
+        dashboard_block: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        # Deterministic synthesis from skill_consensus is the authoritative source
+        consensus_data = ctx.get_data("skill_consensus")
+        if isinstance(consensus_data, dict):
+            synthesis = consensus_data.get("strategy_synthesis")
+            if isinstance(synthesis, dict) and synthesis:
+                return synthesis
+            raw_data = consensus_data.get("raw_data")
+            if isinstance(raw_data, dict):
+                synthesis = raw_data.get("strategy_synthesis")
+                if isinstance(synthesis, dict) and synthesis:
+                    return synthesis
+
+        # Fallback: scan opinions
+        for opinion in reversed(ctx.opinions):
+            if getattr(opinion, "agent_name", "") != "skill_consensus":
+                continue
+            raw_data = opinion.raw_data if isinstance(opinion.raw_data, dict) else {}
+            synthesis = raw_data.get("strategy_synthesis")
+            if isinstance(synthesis, dict) and synthesis:
+                return synthesis
+        return None
 
     def _collect_key_levels(
         self,
@@ -1231,107 +2287,50 @@ class AgentOrchestrator:
             tagged["dashboard"] = nested
         return tagged
 
-    def _apply_risk_override(self, ctx: AgentContext) -> None:
-        """Apply risk-agent veto/downgrade rules to the final dashboard.
-
-        Idempotent: skips if already applied in this pipeline run.
-        """
-        if ctx.get_data("risk_override_applied"):
-            return
-
-        if not getattr(self.config, "agent_risk_override", True):
-            return
-
+    def _apply_risk_override(self, ctx: AgentContext) -> Optional[RiskOverrideApplication]:
+        """Apply risk rules and retain their validated actual outcome."""
         dashboard = ctx.get_data("final_dashboard")
         if not isinstance(dashboard, dict):
-            return
-
-        risk_opinion = next((op for op in reversed(ctx.opinions) if op.agent_name == "risk"), None)
-        risk_raw = risk_opinion.raw_data if risk_opinion and isinstance(risk_opinion.raw_data, dict) else {}
-
-        adjustment = str(risk_raw.get("signal_adjustment") or "").lower()
-        has_high_flag = any(str(flag.get("severity", "")).lower() == "high" for flag in ctx.risk_flags)
-        veto_buy = bool(risk_raw.get("veto_buy")) or adjustment == "veto" or has_high_flag
+            return None
 
         current_signal = normalize_decision_signal(dashboard.get("decision_type", "hold"))
-        new_signal = current_signal
-        if veto_buy and current_signal == "buy":
-            new_signal = "hold"
-        elif adjustment == "downgrade_one":
-            new_signal = _downgrade_signal(current_signal, steps=1)
-        elif adjustment == "downgrade_two":
-            new_signal = _downgrade_signal(current_signal, steps=2)
+        existing = ctx.meta.get("risk_override_application")
+        if (
+            isinstance(existing, RiskOverrideApplication)
+            and existing.post_risk_signal.value == current_signal
+        ):
+            return existing
 
-        if new_signal == current_signal:
-            return
-
-        dashboard["decision_type"] = new_signal
-        dashboard["risk_warning"] = self._merge_risk_warning(
-            dashboard.get("risk_warning"),
-            risk_raw,
-            ctx.risk_flags,
-            new_signal,
+        plan = build_risk_override_plan(
+            ctx,
+            current_signal=current_signal,
+            override_enabled=getattr(self.config, "agent_risk_override", True),
         )
+        application = build_risk_override_application(plan)
+        ctx.meta["risk_override_application"] = application
+        if not application.applied:
+            return application
 
-        sentiment_score = dashboard.get("sentiment_score")
-        try:
-            score = int(sentiment_score)
-        except (TypeError, ValueError):
-            score = 50
-        dashboard["sentiment_score"] = _adjust_sentiment_score(score, new_signal)
-
-        operation_advice = dashboard.get("operation_advice")
-        if isinstance(operation_advice, str):
-            dashboard["operation_advice"] = _adjust_operation_advice(operation_advice, new_signal)
-
-        summary = dashboard.get("analysis_summary")
-        if isinstance(summary, str) and summary:
-            dashboard["analysis_summary"] = f"[风控下调: {current_signal} -> {new_signal}] {summary}"
-
-        dashboard_block = dashboard.get("dashboard")
-        if isinstance(dashboard_block, dict):
-            core = dashboard_block.get("core_conclusion")
-            if isinstance(core, dict):
-                signal_type = {
-                    "buy": "🟡持有观望",
-                    "hold": "🟡持有观望",
-                    "sell": "🔴卖出信号",
-                }.get(new_signal, "⚠️风险警告")
-                core["signal_type"] = signal_type
-                sentence = core.get("one_sentence")
-                if isinstance(sentence, str) and sentence:
-                    core["one_sentence"] = f"{sentence}（风控下调）"
-                position = core.get("position_advice")
-                if isinstance(position, dict):
-                    if new_signal == "hold":
-                        position["no_position"] = "风险未解除前先观望，等待更清晰的入场条件。"
-                        position["has_position"] = "谨慎持有并收紧止损，待风险缓解后再考虑加仓。"
-                    elif new_signal == "sell":
-                        position["no_position"] = "风险明显偏高，暂不新开仓。"
-                        position["has_position"] = "优先控制回撤，建议减仓或退出高风险仓位。"
+        current_signal = application.from_signal.value
+        new_signal = application.to_signal.value
+        dashboard["decision_type"] = new_signal
 
         ctx.set_data("final_dashboard", dashboard)
         ctx.set_data("risk_override_applied", {
             "from": current_signal,
             "to": new_signal,
-            "adjustment": adjustment or ("veto" if veto_buy else "none"),
+            "adjustment": plan.adjustment or ("veto" if plan.veto_buy else "none"),
+            "reason": plan.reason,
         })
-
-        for opinion in reversed(ctx.opinions):
-            if opinion.agent_name == "decision":
-                opinion.signal = new_signal
-                if isinstance(dashboard.get("analysis_summary"), str):
-                    opinion.reasoning = dashboard["analysis_summary"]
-                opinion.raw_data = dashboard
-                break
 
         logger.info(
             "[Orchestrator] risk override applied: %s -> %s (adjustment=%s, high_flag=%s)",
             current_signal,
             new_signal,
-            adjustment or ("veto" if veto_buy else "none"),
-            has_high_flag,
+            plan.adjustment or ("veto" if plan.veto_buy else "none"),
+            plan.has_high_flag,
         )
+        return application
 
     @staticmethod
     def _merge_risk_warning(
@@ -1361,6 +2360,9 @@ class AgentOrchestrator:
 # be kept at module level to avoid re-creating it on every call.
 _COMMON_WORDS: set[str] = {
     # Pronouns / articles / prepositions / conjunctions
+    "AM", "AS", "AT", "BE", "BY", "DO", "GO", "HE", "IF", "IN",
+    "IS", "IT", "ME", "MY", "NO", "OF", "ON", "OR", "SO", "TO",
+    "UP", "US", "WE",
     "THE", "AND", "FOR", "ARE", "BUT", "NOT", "YOU", "ALL",
     "CAN", "HAD", "HER", "WAS", "ONE", "OUR", "OUT", "HAS",
     "HIS", "HOW", "ITS", "LET", "MAY", "NEW", "NOW", "OLD",
@@ -1379,7 +2381,10 @@ _COMMON_WORDS: set[str] = {
     "STOCK", "TRADE", "PRICE", "INDEX", "FUND",
     "HIGH", "LOW", "OPEN", "CLOSE", "STOP", "LOSS",
     "TREND", "BULL", "BEAR", "RISK", "CASH", "BOND",
-    "MACD", "VWAP", "BOLL",
+    "MACD", "VWAP", "BOLL", "KDJ",
+    "TTM", "LTM", "NTM", "FWD", "YOY", "QOQ", "YTD",
+    "EBIT", "EBITDA", "DCF", "CAGR", "FCF", "NAV", "AUM",
+    "PE", "PB",
     # Greetings / filler words that often appear in chat messages
     "HELLO", "PLEASE", "THANKS", "CHECK", "LOOK", "THINK",
     "MAYBE", "GUESS", "TELL", "SHOW", "WHAT", "WHATS",
@@ -1389,6 +2394,11 @@ _COMMON_WORDS: set[str] = {
 _LOWERCASE_TICKER_HINTS = re.compile(
     r"分析|看看|查一?下|研究|诊断|走势|趋势|股价|股票|个股",
 )
+
+
+def _is_denied_ticker_candidate(candidate: str) -> bool:
+    """Return whether a text token should not be auto-treated as a ticker."""
+    return (candidate or "").strip().upper() in _COMMON_WORDS
 
 
 def _extract_stock_code(text: str) -> str:
@@ -1403,17 +2413,16 @@ def _extract_stock_code(text: str) -> str:
     if m:
         return m.group(1).upper()
     # US ticker — require 2+ uppercase letters bounded by non-alpha chars.
-    m = re.search(r'(?<![a-zA-Z])([A-Z]{2,5}(?:\.[A-Z]{1,2})?)(?![a-zA-Z])', text)
-    if m:
-        candidate = m.group(1)
-        if candidate not in _COMMON_WORDS:
+    for match in re.finditer(r'(?<![a-zA-Z])([A-Z]{2,5}(?:\.[A-Z]{1,2})?)(?![a-zA-Z])', text):
+        candidate = match.group(1)
+        if not _is_denied_ticker_candidate(candidate):
             return candidate
 
     stripped = (text or "").strip()
     bare_match = re.fullmatch(r'([A-Za-z]{2,5}(?:\.[A-Za-z]{1,2})?)', stripped)
     if bare_match:
         candidate = bare_match.group(1).upper()
-        if candidate not in _COMMON_WORDS:
+        if not _is_denied_ticker_candidate(candidate):
             return candidate
 
     if not _LOWERCASE_TICKER_HINTS.search(stripped):
@@ -1422,20 +2431,10 @@ def _extract_stock_code(text: str) -> str:
     for match in re.finditer(r'(?<![a-zA-Z])([A-Za-z]{2,5}(?:\.[A-Za-z]{1,2})?)(?![a-zA-Z])', text):
         raw_candidate = match.group(1)
         candidate = raw_candidate.upper()
-        if candidate in _COMMON_WORDS:
+        if _is_denied_ticker_candidate(candidate):
             continue
         return candidate
     return ""
-
-
-def _downgrade_signal(signal: str, steps: int = 1) -> str:
-    """Downgrade a dashboard decision signal by one or more levels."""
-    order = ["buy", "hold", "sell"]
-    try:
-        index = order.index(signal)
-    except ValueError:
-        return signal
-    return order[min(len(order) - 1, index + max(0, steps))]
 
 
 def _adjust_sentiment_score(score: int, signal: str) -> int:
@@ -1475,10 +2474,10 @@ def _signal_to_operation(signal: str) -> str:
 def _signal_to_signal_type(signal: str) -> str:
     mapping = {
         "buy": "🟢买入信号",
-        "hold": "⚪观望信号",
+        "hold": "🟡持有观望",
         "sell": "🔴卖出信号",
     }
-    return mapping.get(signal, "⚪观望信号")
+    return mapping.get(signal, "⚠️风险警告")
 
 
 def _default_position_advice(signal: str) -> Dict[str, str]:
@@ -1497,6 +2496,21 @@ def _default_position_advice(signal: str) -> Dict[str, str]:
         },
     }
     return mapping.get(signal, mapping["hold"])
+
+
+def _post_risk_position_advice(signal: str) -> Dict[str, str]:
+    """Return authoritative position advice after an applied risk transition."""
+    mapping = {
+        "hold": {
+            "no_position": "风险未解除前先观望，等待更清晰的入场条件。",
+            "has_position": "谨慎持有并收紧止损，待风险缓解后再考虑加仓。",
+        },
+        "sell": {
+            "no_position": "风险明显偏高，暂不新开仓。",
+            "has_position": "优先控制回撤，建议减仓或退出高风险仓位。",
+        },
+    }
+    return dict(mapping.get(signal, _default_position_advice(signal)))
 
 
 def _default_position_size(signal: str) -> str:

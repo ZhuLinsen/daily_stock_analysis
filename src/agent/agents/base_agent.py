@@ -11,16 +11,27 @@ runner, and structured opinion output.
 from __future__ import annotations
 
 import logging
+import json
 import time
 from abc import ABC, abstractmethod
 from typing import Any, Callable, Dict, List, Optional
 
 from src.agent.llm_adapter import LLMToolAdapter
 from src.agent.memory import AgentMemory
-from src.agent.protocols import AgentContext, AgentOpinion, StageResult, StageStatus
+from src.agent.protocols import (
+    AgentContext,
+    AgentOpinion,
+    StageFailureReason,
+    StageResult,
+    StageStatus,
+)
 from src.agent.runner import RunLoopResult, run_agent_loop
 from src.agent.skills.defaults import extract_skill_id
 from src.agent.tools.registry import ToolRegistry
+from src.market_phase_prompt import format_market_phase_prompt_section
+from src.market_structure_prompt import format_market_structure_prompt_section
+from src.report_language import normalize_report_language
+from src.services.daily_market_context import format_daily_market_context_prompt_section
 
 logger = logging.getLogger(__name__)
 
@@ -117,33 +128,52 @@ class BaseAgent(ABC):
                 max_steps=self.max_steps,
                 progress_callback=progress_callback,
                 max_wall_clock_seconds=timeout_seconds,
+                stock_scope=ctx.meta.get("stock_scope"),
+                emit_stage_events=False,
             )
 
             result.tokens_used = loop_result.total_tokens
             result.tool_calls_count = len(loop_result.tool_calls_log)
+            # Keep compatibility with lightweight test doubles and legacy
+            # adapters that predate RunLoopResult.total_steps.
+            result.total_steps = getattr(loop_result, "total_steps", 0)
             result.meta["raw_text"] = loop_result.content
             result.meta["models_used"] = loop_result.models_used
             result.meta["tool_calls_log"] = loop_result.tool_calls_log
+            failure_reason = getattr(loop_result, "failure_reason", None)
+            result.failure_reason = failure_reason
 
             if not loop_result.success:
                 result.status = StageStatus.FAILED
                 result.error = loop_result.error or "Agent loop did not produce a final answer"
+                result.failure_reason = failure_reason or StageFailureReason.STAGE_FAILURE
                 return result
 
             # Post-process into structured opinion
             opinion = self.post_process(ctx, loop_result.content)
             if opinion is not None:
                 opinion.agent_name = self.agent_name
+                opinion.source_evidence_ids = tuple(dict.fromkeys(
+                    f"tool:{entry['tool_call_id']}"
+                    for entry in loop_result.tool_calls_log
+                    if entry.get("success") and entry.get("tool_call_id")
+                ))
                 self._apply_memory_calibration(ctx, opinion, result)
                 ctx.add_opinion(opinion)
                 result.opinion = opinion
 
             result.status = StageStatus.COMPLETED
 
+        except TimeoutError as exc:
+            logger.error("[%s] execution timed out: %s", self.agent_name, exc, exc_info=True)
+            result.status = StageStatus.FAILED
+            result.error = str(exc)
+            result.failure_reason = StageFailureReason.TIMEOUT
         except Exception as exc:
             logger.error("[%s] execution failed: %s", self.agent_name, exc, exc_info=True)
             result.status = StageStatus.FAILED
             result.error = str(exc)
+            result.failure_reason = StageFailureReason.STAGE_FAILURE
         finally:
             result.duration_s = round(time.time() - t0, 2)
 
@@ -158,6 +188,16 @@ class BaseAgent(ABC):
         messages: List[Dict[str, Any]] = [
             {"role": "system", "content": self.system_prompt(ctx)},
         ]
+        scope = ctx.meta.get("stock_scope")
+        strict_chat = scope is not None and scope.strict
+        if strict_chat:
+            messages[0]["content"] += (
+                "\n\n[Server-confirmed Chat scope]\n"
+                + json.dumps(scope.as_log_payload(), ensure_ascii=False)
+                + "\nAn empty main object is intentional, not missing input. Do not select a main "
+                "stock from history or from the allowed comparison set. Use only the allowed identities "
+                "for stock tools. With an empty allowed set, answer the general question without stock tools."
+            )
 
         history = ctx.meta.get("conversation_history")
         if isinstance(history, list):
@@ -169,13 +209,43 @@ class BaseAgent(ABC):
                 if role in {"user", "assistant", "system"} and isinstance(content, str) and content:
                     messages.append({"role": role, "content": content})
 
+        report_language = normalize_report_language(ctx.meta.get("report_language", "zh"))
+        market_phase_section = format_market_phase_prompt_section(
+            ctx.meta.get("market_phase_context"),
+            report_language=report_language,
+        )
+        if market_phase_section:
+            messages.append({"role": "user", "content": market_phase_section})
+
+        daily_market_context_section = format_daily_market_context_prompt_section(
+            ctx.meta.get("daily_market_context"),
+            report_language=report_language,
+        )
+        if daily_market_context_section:
+            messages.append({"role": "user", "content": daily_market_context_section})
+
+        market_structure_section = format_market_structure_prompt_section(
+            ctx.meta.get("market_structure_context"),
+            report_language=report_language,
+        )
+        if market_structure_section:
+            messages.append({"role": "user", "content": market_structure_section})
+
+        analysis_context_pack_summary = ctx.meta.get("analysis_context_pack_summary")
+        if isinstance(analysis_context_pack_summary, str) and analysis_context_pack_summary:
+            messages.append({"role": "user", "content": analysis_context_pack_summary})
+
         # Inject pre-fetched data as a synthetic assistant context
         cached_data = self._inject_cached_data(ctx)
         if cached_data:
             messages.append({"role": "user", "content": cached_data})
             messages.append({"role": "assistant", "content": "Understood, I have the pre-fetched data. Proceeding with analysis."})
 
-        messages.append({"role": "user", "content": self.build_user_message(ctx)})
+        if strict_chat and not ctx.stock_code:
+            user_message = f"Current Chat question: {ctx.query}\nNo main object is confirmed. Apply your stage to this question within the server-confirmed scope."
+        else:
+            user_message = self.build_user_message(ctx)
+        messages.append({"role": "user", "content": user_message})
         return messages
 
     def _inject_cached_data(self, ctx: AgentContext) -> str:
@@ -210,7 +280,9 @@ class BaseAgent(ABC):
             return self.tool_registry
 
         from src.agent.tools.registry import ToolRegistry as TR
-        filtered = TR()
+        # Carry the source registry's category-timeout map so the filtered subset
+        # still enforces the per-category ceilings (review OR-COM-7f3d3f5b).
+        filtered = TR(category_timeout_map=self.tool_registry.category_timeout_map)
         for name in self.tool_names:
             tool_def = self.tool_registry.get(name)
             if tool_def:
@@ -225,27 +297,39 @@ class BaseAgent(ABC):
             return ""
 
         entries = self.memory.get_stock_history(ctx.stock_code, limit=3)
-        if not entries:
+        review = self.memory.get_decision_signal_review(ctx.stock_code)
+        if not entries and review is None:
             return ""
 
-        lines = ["[Memory: recent analysis history]"]
-        for entry in entries:
-            parts = [
-                entry.date or "unknown_date",
-                f"signal={entry.signal or 'unknown'}",
-                f"sentiment={entry.sentiment_score}",
+        sections: List[str] = []
+        if entries:
+            lines = ["[Memory: recent analysis history]"]
+            for entry in entries:
+                parts = [
+                    entry.date or "unknown_date",
+                    f"signal={entry.signal or 'unknown'}",
+                    f"sentiment={entry.sentiment_score}",
+                ]
+                if entry.price_at_analysis:
+                    parts.append(f"price={entry.price_at_analysis}")
+                if entry.outcome_5d is not None:
+                    parts.append(f"outcome_5d={entry.outcome_5d}")
+                if entry.outcome_20d is not None:
+                    parts.append(f"outcome_20d={entry.outcome_20d}")
+                if entry.was_correct is not None:
+                    parts.append(f"was_correct={entry.was_correct}")
+                lines.append("- " + ", ".join(parts))
+            lines.append("Use this memory as context only; do not copy it verbatim into the final answer.")
+            sections.append("\n".join(lines))
+        if review is not None:
+            review_lines = [
+                "[Memory: decision-signal review]",
+                "- " + review.to_prompt_line(),
+                "This review is observation-only context; do not treat historical "
+                "hit rate as a buy/sell strength signal.",
             ]
-            if entry.price_at_analysis:
-                parts.append(f"price={entry.price_at_analysis}")
-            if entry.outcome_5d is not None:
-                parts.append(f"outcome_5d={entry.outcome_5d}")
-            if entry.outcome_20d is not None:
-                parts.append(f"outcome_20d={entry.outcome_20d}")
-            if entry.was_correct is not None:
-                parts.append(f"was_correct={entry.was_correct}")
-            lines.append("- " + ", ".join(parts))
-        lines.append("Use this memory as context only; do not copy it verbatim into the final answer.")
-        return "\n".join(lines)
+            sections.append("\n".join(review_lines))
+        return "\n\n".join(sections)
 
     def _apply_memory_calibration(self, ctx: AgentContext, opinion: AgentOpinion, result: StageResult) -> None:
         """Adjust confidence using historical calibration when enabled."""
