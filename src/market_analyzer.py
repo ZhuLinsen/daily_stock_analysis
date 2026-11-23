@@ -80,6 +80,10 @@ _MARKET_REVIEW_FENCE_PATTERN = re.compile(
     flags=re.DOTALL | re.IGNORECASE,
 )
 
+# OR-COR-50abc372：JSON 解码会保留未配对的 UTF-16 代理码点（\ud800–\udfff）。它们无法编码为
+# UTF-8，一旦进入 payload，历史快照写 SQLite 会抛 UnicodeEncodeError 并丢掉整条复盘记录。
+_MARKET_REVIEW_LONE_SURROGATE_PATTERN = re.compile(r"[\ud800-\udfff]")
+
 # OR-COR-f4725a90：指数点评按内部代码挂载，但模型常按行情习惯回传 Yahoo 符号或带
 # 交易所前后缀的代码（^N225、000001.SH、SZ399001）。下面把它们归一成匹配键；
 # 美股别名（SPX / GSPC / DJIA …）直接复用 data_provider 的既有映射。
@@ -1287,6 +1291,11 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         text = value.strip()
         if not text:
             return None
+        if _MARKET_REVIEW_LONE_SURROGATE_PATTERN.search(text):
+            # 仅剔除未配对的代理码点：成对代理已被 json 解码为正常的非 BMP 字符（如 emoji）。
+            text = _MARKET_REVIEW_LONE_SURROGATE_PATTERN.sub("", text).strip()
+            if not text:
+                return None
         return text[:limit]
 
     @classmethod

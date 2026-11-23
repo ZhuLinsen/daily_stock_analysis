@@ -437,7 +437,7 @@ While keeping the existing Markdown report and history records fully compatible,
 - `next_day_plan`: next-day watchlist (`watchlist`), position adjustment advice (`position_advice`), and the invalidation trigger (`invalidation`).
 - `cross_market_note` (optional P3): cross-market reference from US/JP/KR sessions; introduces no new external data-source dependency.
 
-Implementation: the review prompt asks the LLM to append one ```json structured appendix at the very end of the report; the backend extracts it, strips it from the Markdown, and merges the validated fields into the payload. Parse failures or missing fields degrade per-field to null/omission and never interrupt report generation; no new environment configuration keys are introduced. The Web market-review view renders these fields optionally (identical to the legacy rendering when absent).
+Implementation: the review prompt asks the LLM to append one ```json structured appendix at the very end of the report; the backend extracts it, strips it from the Markdown, and merges the validated fields into the payload. Parse failures or missing fields degrade per-field to null/omission and never interrupt report generation; text fields drop unpaired UTF-16 surrogate code points so a single stray character cannot fail the history snapshot write; no new environment configuration keys are introduced. The Web market-review view renders these fields optionally (identical to the legacy rendering when absent).
 
 ### Other Configuration
 

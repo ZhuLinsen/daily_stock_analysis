@@ -9,13 +9,17 @@
 """
 
 import json
+import sqlite3
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from src.core.market_profile import CN_PROFILE, JP_PROFILE, US_PROFILE
 from src.core.market_strategy import get_market_strategy_blueprint
 from src.core.market_review import _render_market_review_payload_markdown
 from src.market_analyzer import MarketAnalyzer, MarketIndex, MarketOverview
+from src.storage import DatabaseManager
 
 
 def _make_analyzer(region="cn", profile=None, report_text="复盘报告"):
@@ -644,6 +648,73 @@ class TestDivergenceDiagnosisFallback:
 
         assert "基本匹配" in diagnosis, diagnosis
         assert "指数行情缺失" not in diagnosis, diagnosis
+
+
+class TestStructuredTextSanitizing:
+    """OR-COR-50abc372：附录里的未配对 UTF-16 代理码点不得进入 payload。
+
+    JSON 解码会保留孤立代理码点；历史快照以 ensure_ascii=False 序列化后绑定 UTF-8 文本列，
+    SQLite 拒绝该码点，导致整条复盘历史写入抛 UnicodeEncodeError。
+    """
+
+    @staticmethod
+    def _report_with_raw_appendix(raw_json: str) -> str:
+        # 直接拼接模型原始输出：JSON 文本里是字面量转义序列（模型只输出了 emoji 代理对的一半）。
+        return (
+            "## 2026-06-05 A股大盘复盘\n\n> 权重护盘。\n\n### 一、盘面总览\n市场震荡分化。\n\n"
+            "---\n\n```json\n" + raw_json + "\n```\n"
+        )
+
+    def test_lone_surrogate_in_appendix_does_not_break_history_snapshot_write(self):
+        raw_json = (
+            '{"summary": {"market_status": "震荡分化", "core_conclusion": "权重护盘\\ud83d"}, '
+            '"catalysts": [{"title": "降准\\udc00落地", "direction": "利好"}], '
+            '"next_day_plan": {"watchlist": ["上证3350支撑\\ud83d"], "notes": "\\ud800"}}'
+        )
+        ma = _make_analyzer(report_text=self._report_with_raw_appendix(raw_json))
+
+        payload = ma._run_daily_review_parts().structured_payload
+        snapshot_text = DatabaseManager._safe_json_dumps({"market_review_payload": payload})
+
+        conn = sqlite3.connect(":memory:")
+        try:
+            conn.execute("CREATE TABLE analysis_history (context_snapshot TEXT)")
+            try:
+                conn.execute(
+                    "INSERT INTO analysis_history (context_snapshot) VALUES (?)", (snapshot_text,)
+                )
+            except UnicodeEncodeError as exc:
+                pytest.fail(f"孤立代理码点进入 payload，整条复盘历史快照写 SQLite 失败: {exc}")
+        finally:
+            conn.close()
+
+        assert payload["summary"]["core_conclusion"] == "权重护盘"
+        assert payload["catalysts"][0]["title"] == "降准落地"
+        assert payload["next_day_plan"]["watchlist"] == ["上证3350支撑"]
+        assert payload["next_day_plan"]["notes"] is None
+
+    def test_valid_surrogate_pairs_in_appendix_are_preserved(self):
+        """成对的代理转义是合法的非 BMP 字符（emoji），必须原样保留。"""
+        raw_json = (
+            '{"summary": {"core_conclusion": "普涨\\ud83d\\ude00"}, '
+            '"cross_market_note": "外围\\ud83c\\udf0d风险偏好回升"}'
+        )
+        ma = _make_analyzer(report_text=self._report_with_raw_appendix(raw_json))
+
+        payload = ma._run_daily_review_parts().structured_payload
+
+        assert payload["summary"]["core_conclusion"] == "普涨😀"
+        assert payload["cross_market_note"] == "外围🌍风险偏好回升"
+
+    def test_clean_structured_text_strips_only_unpaired_surrogates(self):
+        clean = MarketAnalyzer._clean_structured_text
+
+        assert clean("权重护盘\ud83d", limit=200) == "权重护盘"
+        assert clean("a\ud83db\ude00", limit=200) == "ab"
+        assert clean("\ud800\udfff", limit=200) is None
+        assert clean("普涨😀", limit=200) == "普涨😀"
+        # 先剔除代理码点再截断，长度预算按清洗后的文本计算
+        assert clean("ab\ud83d" + "c" * 300, limit=5) == "abccc"
 
 
 class TestBackwardCompatibility:
