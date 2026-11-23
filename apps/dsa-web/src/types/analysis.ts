@@ -250,15 +250,6 @@ export interface MarketReviewPayloadSection {
   markdown: string;
 }
 
-/** Issue #1584: MA5/MA10/MA20 standing state; null when undeterminable. */
-export type MarketReviewMaState = 'above' | 'below' | 'near';
-
-export interface MarketReviewIndexMaStatus {
-  ma5?: MarketReviewMaState | null;
-  ma10?: MarketReviewMaState | null;
-  ma20?: MarketReviewMaState | null;
-}
-
 export interface MarketReviewIndex {
   code: string;
   name: string;
@@ -271,8 +262,11 @@ export interface MarketReviewIndex {
   volume?: number;
   amount?: number;
   amplitude?: number;
-  /** Optional technical status from the LLM appendix; absent on legacy records. */
-  maStatus?: MarketReviewIndexMaStatus | null;
+  /**
+   * Optional one-line comment from the LLM appendix; absent on legacy records.
+   * Note: there is deliberately no MA-status field — index quotes carry no
+   * moving-average input, so a model-provided standing would be unverifiable.
+   */
   comment?: string | null;
 }
 

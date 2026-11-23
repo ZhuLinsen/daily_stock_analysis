@@ -334,7 +334,6 @@ describe('MarketReviewReportView enhanced structured fields (issue #1584)', () =
       name: '上证指数',
       current: 3372.4,
       changePct: 0.9,
-      maStatus: { ma5: 'above', ma10: 'below', ma20: 'above' },
       comment: '上证受MA10压制',
     }],
     styleRotation: { signal: '成长→防御', comment: '银行煤炭获避险资金' },
@@ -367,7 +366,8 @@ describe('MarketReviewReportView enhanced structured fields (issue #1584)', () =
     expect(screen.getByText('0-3成')).toBeInTheDocument();
     expect(screen.getByText('权重护盘、成长杀跌，风险偏好回落')).toBeInTheDocument();
     expect(screen.getByText('指数与个股宽度背离，权重护盘特征明显')).toBeInTheDocument();
-    expect(screen.getByText('5↑ 10↓ 20↑')).toBeInTheDocument();
+    // OR-COR-91e5bc73：指数行情未提供均线数值，均线状态列已下线
+    expect(screen.queryByText('均线状态')).not.toBeInTheDocument();
     expect(screen.getByText('上证受MA10压制')).toBeInTheDocument();
     expect(screen.getByText('成长→防御')).toBeInTheDocument();
     expect(screen.getByText('银行煤炭获避险资金')).toBeInTheDocument();
@@ -378,6 +378,30 @@ describe('MarketReviewReportView enhanced structured fields (issue #1584)', () =
     expect(screen.getByText('维持0-3成，等待宽度修复')).toBeInTheDocument();
     expect(screen.getByText('若上证放量收复MA10则可加至4-5成')).toBeInTheDocument();
     expect(screen.getByText('隔夜美股纳指期货走弱，明日开盘承压概率较高')).toBeInTheDocument();
+  });
+
+  it('never renders an MA status column, even when a legacy record still carries maStatus', () => {
+    // OR-COR-91e5bc73：历史快照可能残留模型推断的 maStatus；无真实均线输入支撑，视图必须忽略。
+    const legacyPayload = {
+      ...enhancedPayload,
+      indices: [{
+        ...enhancedPayload.indices?.[0],
+        maStatus: { ma5: 'above', ma10: 'below', ma20: 'above' },
+      }],
+    } as unknown as MarketReviewPayload;
+
+    render(
+      <MarketReviewReportView
+        payload={legacyPayload}
+        content="# 大盘复盘"
+        reportLanguage="zh"
+      />,
+    );
+
+    expect(screen.getByText('上证指数')).toBeInTheDocument();
+    expect(screen.getByText('上证受MA10压制')).toBeInTheDocument();
+    expect(screen.queryByText('均线状态')).not.toBeInTheDocument();
+    expect(screen.queryByText('5↑ 10↓ 20↑')).not.toBeInTheDocument();
   });
 
   it('keeps legacy rendering untouched when enhanced fields are absent', () => {

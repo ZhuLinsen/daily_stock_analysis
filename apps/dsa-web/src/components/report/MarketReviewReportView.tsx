@@ -5,7 +5,6 @@ import { historyApi } from '../../api/history';
 import { formatUiText, UI_TEXT } from '../../i18n/uiText';
 import type {
   AnalysisReport,
-  MarketReviewIndexMaStatus,
   MarketReviewPayload,
   MarketReviewPayloadSection,
   ReportLanguage,
@@ -289,25 +288,6 @@ const formatMarketHighLow = (high: unknown, low: unknown): string => {
   return highText === '-' && lowText === '-' ? '-' : `${highText} / ${lowText}`;
 };
 
-/** Issue #1584: render ma_status as compact tokens, e.g. "5↑ 10↓ 20↑"; null when absent. */
-const MA_STATE_TOKENS: Record<string, string> = { above: '↑', below: '↓', near: '—' };
-
-const formatMaStatus = (maStatus?: MarketReviewIndexMaStatus | null): string | null => {
-  if (!maStatus || typeof maStatus !== 'object') {
-    return null;
-  }
-  const tokens = (['ma5', 'ma10', 'ma20'] as const)
-    .map((key) => {
-      const token = MA_STATE_TOKENS[maStatus[key] || ''];
-      return token ? `${key.slice(2)}${token}` : null;
-    })
-    .filter((token): token is string => Boolean(token));
-  return tokens.length > 0 ? tokens.join(' ') : null;
-};
-
-const hasAnyMaStatus = (indices: NonNullable<MarketReviewPayload['indices']>): boolean =>
-  indices.some((index) => formatMaStatus(index.maStatus) !== null);
-
 type MarketReviewCatalystItem = NonNullable<MarketReviewPayload['catalysts']>[number];
 
 const formatCatalystDirection = (
@@ -348,7 +328,6 @@ const MARKET_REVIEW_TEXT: Record<ReportLanguage, {
   positionAdvice: string;
   coreConclusion: string;
   divergenceDiagnosis: string;
-  maStatusColumn: string;
   styleRotation: string;
   catalysts: string;
   nextDayPlan: string;
@@ -386,7 +365,6 @@ const MARKET_REVIEW_TEXT: Record<ReportLanguage, {
     positionAdvice: '建议仓位',
     coreConclusion: '核心结论',
     divergenceDiagnosis: '宽度分化诊断',
-    maStatusColumn: '均线状态',
     styleRotation: '风格轮动',
     catalysts: '消息催化',
     nextDayPlan: '明日计划',
@@ -424,7 +402,6 @@ const MARKET_REVIEW_TEXT: Record<ReportLanguage, {
     positionAdvice: 'Position Advice',
     coreConclusion: 'Core Conclusion',
     divergenceDiagnosis: 'Breadth Divergence',
-    maStatusColumn: 'MA Status',
     styleRotation: 'Style Rotation',
     catalysts: 'News Catalysts',
     nextDayPlan: 'Next-Day Plan',
@@ -462,7 +439,6 @@ const MARKET_REVIEW_TEXT: Record<ReportLanguage, {
     positionAdvice: '포지션 권고',
     coreConclusion: '핵심 결론',
     divergenceDiagnosis: '지수-개별주 괴리 진단',
-    maStatusColumn: '이동평균 상태',
     styleRotation: '스타일 로테이션',
     catalysts: '뉴스 촉매',
     nextDayPlan: '익일 계획',
@@ -779,7 +755,6 @@ export const MarketReviewReportView: React.FC<MarketReviewReportViewProps> = ({
                   </p>
                 ) : null}
                 {(() => {
-                  const showMaColumn = hasAnyMaStatus(marketData.indices);
                   if (marketData.indices.length === 0) {
                     return null;
                   }
@@ -792,31 +767,22 @@ export const MarketReviewReportView: React.FC<MarketReviewReportViewProps> = ({
                             <th className="px-2 py-2">{marketReviewText.last}</th>
                             <th className="px-2 py-2">{marketReviewText.change}</th>
                             <th className="px-2 py-2">{marketReviewText.highLow}</th>
-                            {showMaColumn ? (
-                              <th className="px-2 py-2">{marketReviewText.maStatusColumn}</th>
-                            ) : null}
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-subtle">
-                          {marketData.indices.map((index) => {
-                            const maStatusText = formatMaStatus(index.maStatus);
-                            return (
-                              <tr key={index.code || index.name}>
-                                <td className="px-2 py-2">
-                                  <div className="font-medium text-foreground">{index.name}</div>
-                                  {index.comment ? (
-                                    <div className="mt-0.5 text-xs text-muted-text">{index.comment}</div>
-                                  ) : null}
-                                </td>
-                                <td className="px-2 py-2 text-secondary-text">{formatMarketNumber(index.current)}</td>
-                                <td className="px-2 py-2 text-secondary-text">{formatMarketPercent(index.changePct)}</td>
-                                <td className="px-2 py-2 text-secondary-text">{formatMarketHighLow(index.high, index.low)}</td>
-                                {showMaColumn ? (
-                                  <td className="px-2 py-2 font-mono text-secondary-text">{maStatusText || '-'}</td>
+                          {marketData.indices.map((index) => (
+                            <tr key={index.code || index.name}>
+                              <td className="px-2 py-2">
+                                <div className="font-medium text-foreground">{index.name}</div>
+                                {index.comment ? (
+                                  <div className="mt-0.5 text-xs text-muted-text">{index.comment}</div>
                                 ) : null}
-                              </tr>
-                            );
-                          })}
+                              </td>
+                              <td className="px-2 py-2 text-secondary-text">{formatMarketNumber(index.current)}</td>
+                              <td className="px-2 py-2 text-secondary-text">{formatMarketPercent(index.changePct)}</td>
+                              <td className="px-2 py-2 text-secondary-text">{formatMarketHighLow(index.high, index.low)}</td>
+                            </tr>
+                          ))}
                         </tbody>
                       </table>
                     </div>

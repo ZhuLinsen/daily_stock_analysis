@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Issue #1584: 大盘复盘结构化字段（summary / ma_status / divergence / style_rotation / catalysts / next_day_plan）。
+"""Issue #1584: 大盘复盘结构化字段（summary / index comment / divergence / style_rotation / catalysts / next_day_plan）。
 
 覆盖目标：
 1. LLM 输出的结构化附录（fenced JSON）可被提取并从 Markdown 中剥离；
@@ -198,11 +198,10 @@ class TestPayloadStructuredFields:
         assert "### 一、盘面总览" in result.report
 
         assert payload["summary"] == FULL_APPENDIX["summary"]
-        assert payload["indices"][0]["ma_status"] == {
-            "ma5": "above",
-            "ma10": "below",
-            "ma20": "above",
-        }
+        # OR-COR-91e5bc73：指数行情与 Prompt 均未提供均线/历史收盘价，模型回传的 ma_status
+        # 属未验证推断——即使模型照旧模板返回，后端也不得接受并写入 payload。
+        assert "ma_status" not in payload["indices"][0], payload["indices"][0]
+        assert "ma_status" not in payload["indices"][1], payload["indices"][1]
         assert payload["indices"][0]["comment"] == "上证受MA10压制"
         assert "comment" not in payload["indices"][1]
         # LLM 诊断优先于确定性兜底
@@ -323,7 +322,7 @@ class TestPayloadStructuredFields:
         assert payload["summary"]["position_advice"] == "0-3成防守"
         assert payload["summary"]["core_conclusion"] == "指数弱势整理，等待宽度修复"
         assert payload["summary"]["temperature"] == light_score  # 降级：亮灯分兜底
-        assert payload["indices"][0]["ma_status"] == {"ma5": "above"}
+        assert "ma_status" not in payload["indices"][0]  # OR-COR-91e5bc73：无均线输入支撑，丢弃
         assert payload["indices"][0]["comment"] == "上证站上MA5"
         assert payload["catalysts"][0]["title"] == "降准落地"
         assert payload["catalysts"][0]["direction"] == "bullish"
@@ -373,7 +372,8 @@ class TestPayloadStructuredFields:
         assert catalysts[3]["title"] == "方向未知"
         assert catalysts[3]["direction"] is None
 
-    def test_ma_status_ignores_unknown_codes_and_invalid_states(self):
+    def test_index_annotation_drops_ma_status_and_ignores_unknown_codes(self):
+        """OR-COR-91e5bc73：附录仍带回 ma_status 时后端一律丢弃；未知 code 的点评不落地。"""
         partial = {
             "indices": [
                 {"code": "999999", "ma_status": {"ma5": "above"}, "comment": "未知指数"},
@@ -389,9 +389,9 @@ class TestPayloadStructuredFields:
         # 未知 code 不落地
         assert "ma_status" not in indices[1]
         assert "comment" not in indices[1]
-        # 上证按 code 匹配；非法状态 "hover" 被剔除
         assert indices[0]["name"] == "上证指数"
-        assert indices[0]["ma_status"] == {"ma5": "above", "ma20": "below"}
+        # 指数行情没有均线输入：无论取值是否合法，ma_status 都不得进入 payload
+        assert "ma_status" not in indices[0], indices[0]
         assert "comment" not in indices[0]
 
     def test_us_market_without_breadth_still_carries_llm_fields(self):
@@ -417,7 +417,8 @@ class TestPayloadStructuredFields:
 
         assert "breadth" not in payload
         assert payload["summary"]["market_status"] == "index-strong-stock-weak"
-        assert payload["indices"][0]["ma_status"] == {"ma5": "above"}
+        # OR-COR-91e5bc73：仅有当日行情、无任何均线输入，模型回传的 ma_status 必须丢弃
+        assert "ma_status" not in payload["indices"][0], payload["indices"][0]
 
 
 class TestDivergenceDiagnosisFallback:
@@ -485,6 +486,7 @@ class TestBackwardCompatibility:
                 "cross_market_note": "note",
             }
         )
+        # 历史快照可能残留已下线的 ma_status（OR-COR-91e5bc73），渲染必须继续零差异。
         enriched["indices"] = [dict(item, ma_status={"ma5": "above"}) for item in base_payload["indices"]]
 
         base_markdown = _render_market_review_payload_markdown(base_payload, wrapper_title="🎯 大盘复盘")
@@ -526,9 +528,12 @@ class TestPromptAppendix:
         prompt = ma._build_review_prompt(_cn_overview(), [])
 
         assert "结构化数据附录" in prompt
-        for key in ("summary", "ma_status", "divergence_diagnosis", "style_rotation", "catalysts", "next_day_plan"):
+        for key in ("summary", "divergence_diagnosis", "style_rotation", "catalysts", "next_day_plan"):
             assert key in prompt
         assert "严禁编造" in prompt
+        # OR-COR-91e5bc73：指数行情未提供均线/历史收盘价，附录模板不得再要求 ma_status
+        assert "ma_status" not in prompt, "附录模板仍在要求无行情支撑的 ma_status"
+        assert "均线状态" not in prompt, "附录模板仍在提及均线状态"
 
     def test_en_prompt_requires_structured_appendix(self):
         ma = _make_analyzer(region="us", profile=US_PROFILE)
@@ -541,6 +546,9 @@ class TestPromptAppendix:
         prompt = ma._build_review_prompt(overview, [])
 
         assert "structured data appendix" in prompt.lower()
-        for key in ("summary", "ma_status", "divergence_diagnosis", "style_rotation", "catalysts", "next_day_plan"):
+        for key in ("summary", "divergence_diagnosis", "style_rotation", "catalysts", "next_day_plan"):
             assert key in prompt
         assert "never fabricate" in prompt.lower()
+        # OR-COR-91e5bc73：附录模板不得再要求无行情支撑的 ma_status
+        assert "ma_status" not in prompt, "appendix template still requests unsupported ma_status"
+        assert "moving-average" not in prompt.lower(), "appendix template still mentions moving-average status"

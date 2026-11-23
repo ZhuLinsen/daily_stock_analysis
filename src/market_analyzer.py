@@ -79,9 +79,6 @@ _MARKET_REVIEW_FENCE_PATTERN = re.compile(
     flags=re.DOTALL | re.IGNORECASE,
 )
 
-# indices[].ma_status 合法状态；其余取值一律降级为 null。
-_MARKET_REVIEW_MA_STATES = frozenset({"above", "below", "near"})
-
 # catalysts[].direction 归一化映射（中英文均接受）。
 _MARKET_REVIEW_CATALYST_DIRECTIONS = {
     "bullish": "bullish",
@@ -103,7 +100,7 @@ _MARKET_REVIEW_DIGESTED_FALSE = {"false", "no", "n", "0", "否", "未消化", "�
 
 _MARKET_REVIEW_APPENDIX_SPEC_ZH = """【结构化数据附录（系统解析用，必须输出在报告最后）】
 在报告全部内容输出完毕后，最后追加一个 ```json 代码块（这是全文唯一允许出现的代码块），内容为如下结构的 JSON：
-- 无法判断的字段一律填 null，严禁编造（尤其是均线状态、成交额等数值）
+- 无法判断的字段一律填 null，严禁编造（尤其是成交额等数值）
 - 若本市场不提供某类数据（如美股无涨跌家数），相关字段填 null
 {
   "summary": {
@@ -113,7 +110,7 @@ _MARKET_REVIEW_APPENDIX_SPEC_ZH = """【结构化数据附录（系统解析用�
     "core_conclusion": "<一句话结论，点明普涨/普跌/权重护盘/成长杀跌/风险偏好回落等结构> 或 null"
   },
   "indices": [
-    {"code": "<指数代码>", "ma_status": {"ma5": "above|below|near 或 null", "ma10": "同上", "ma20": "同上"}, "comment": "<一句话点评> 或 null"}
+    {"code": "<指数代码>", "comment": "<一句话点评> 或 null"}
   ],
   "breadth": {"divergence_diagnosis": "<结合涨跌家数/涨跌停/成交额与指数结构的宽度与分化诊断> 或 null"},
   "style_rotation": {"signal": "<如 成长→防御> 或 null", "comment": "<风格切换说明> 或 null"},
@@ -131,7 +128,7 @@ _MARKET_REVIEW_APPENDIX_SPEC_ZH = """【结构化数据附录（系统解析用�
 
 _MARKET_REVIEW_APPENDIX_SPEC_EN = """[Structured Data Appendix (machine-readable, must be the last element of the report)]
 After the report content, append ONE ```json fenced block (the only code block allowed in the whole output) with this exact shape:
-- Use null for any field you cannot determine from the provided data. Never fabricate values (especially moving-average status).
+- Use null for any field you cannot determine from the provided data. Never fabricate values (especially turnover and other figures).
 - If a data category is unavailable for this market (e.g. no advancers/decliners stats), fill the related fields with null.
 {
   "summary": {
@@ -141,7 +138,7 @@ After the report content, append ONE ```json fenced block (the only code block a
     "core_conclusion": "<one sentence naming the structure: broad rally / broad selloff / heavyweight support / growth selloff / risk-appetite pullback> or null"
   },
   "indices": [
-    {"code": "<index code>", "ma_status": {"ma5": "above|below|near or null", "ma10": "same", "ma20": "same"}, "comment": "<one-line comment> or null"}
+    {"code": "<index code>", "comment": "<one-line comment> or null"}
   ],
   "breadth": {"divergence_diagnosis": "<breadth/divergence diagnosis from advancers, limit counts, turnover and index structure> or null"},
   "style_rotation": {"signal": "<e.g. growth -> defensives> or null", "comment": "<style rotation note> or null"},
@@ -1327,8 +1324,6 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                     target = by_name.get(annotation["name"].strip().lower())
                 if target is None:
                     continue
-                if annotation.get("ma_status"):
-                    target["ma_status"] = annotation["ma_status"]
                 if annotation.get("comment"):
                     target["comment"] = annotation["comment"]
 
@@ -1430,21 +1425,12 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             name = cls._clean_structured_text(item.get("name"), limit=60)
             if not code and not name:
                 continue
-            ma_status: Optional[Dict[str, str]] = None
-            ma_status_raw = item.get("ma_status")
-            if isinstance(ma_status_raw, dict):
-                validated = {
-                    key: str(ma_status_raw.get(key)).strip().lower()
-                    for key in ("ma5", "ma10", "ma20")
-                    if isinstance(ma_status_raw.get(key), str)
-                    and str(ma_status_raw.get(key)).strip().lower() in _MARKET_REVIEW_MA_STATES
-                }
-                if validated:
-                    ma_status = validated
             comment = cls._clean_structured_text(item.get("comment"), limit=160)
-            if ma_status is None and comment is None:
+            if comment is None:
+                # OR-COR-91e5bc73：指数行情不含历史收盘价/均线数值，模型回传的 ma_status
+                # 属未验证推断，已从附录契约移除、不再接受；无点评的条目直接丢弃。
                 continue
-            annotations.append({"code": code, "name": name, "ma_status": ma_status, "comment": comment})
+            annotations.append({"code": code, "name": name, "comment": comment})
         return annotations
 
     @classmethod
