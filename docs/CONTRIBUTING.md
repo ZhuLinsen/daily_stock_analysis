@@ -70,6 +70,7 @@ docs: 更新 README 部署说明
 ### 代码规范
 
 - Python 代码遵循 PEP 8
+- 运行日志（`logger.*` / `logging.*`）统一使用简洁英文；用户可见报告、推送通知与机器人回复保留多语言配置
 - 函数和类需要添加 docstring
 - 重要逻辑添加注释
 - 新功能需要更新相关文档
@@ -94,6 +95,9 @@ docs: 更新 README 部署说明
 # backend gate（推荐）
 python -m pip install -r .github/requirements-ci.txt
 ./scripts/ci_gate.sh
+
+# 单独检查运行时日志是否为英文
+python scripts/check_english_logs.py
 
 # 前端 gate（如修改了 apps/dsa-web）
 cd apps/dsa-web

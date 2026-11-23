@@ -468,7 +468,8 @@ class MainScheduleModeTestCase(unittest.TestCase):
         )
         run_full_analysis.assert_called_once_with(config, args, None)
         warning_log.assert_any_call(
-            "定时模式下检测到 --stocks 参数；计划执行将忽略启动时股票快照，并在每次运行前重新读取最新的 STOCK_LIST。"
+            "--stocks flag detected in schedule mode; scheduled runs will ignore the startup stock snapshot "
+            "and reload the latest STOCK_LIST before each run."
         )
 
     def test_standalone_run_resolves_stocks_before_run_full_analysis(self) -> None:
@@ -696,7 +697,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
         self.assertEqual(exit_code, 1)
         run_full_analysis.assert_not_called()
         error_log.assert_any_call(
-            "%s 包含不支持的目标 %r：%s；本轮不执行任何分析。",
+            "%s contains unsupported target %r: %s; skipping all analysis for this run.",
             "GitHub Actions STOCK_LIST",
             "930956.CSI",
             unittest.mock.ANY,
@@ -863,7 +864,8 @@ class MainScheduleModeTestCase(unittest.TestCase):
         )
         run_full_analysis.assert_called_once_with(config, args, None)
         warning_log.assert_any_call(
-            "定时模式下检测到 --stocks 参数；计划执行将忽略启动时股票快照，并在每次运行前重新读取最新的 STOCK_LIST。"
+            "--stocks flag detected in schedule mode; scheduled runs will ignore the startup stock snapshot "
+            "and reload the latest STOCK_LIST before each run."
         )
 
     def test_serve_only_with_bad_stocks_token_enters_service_loop(self) -> None:
@@ -1165,7 +1167,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
             background_task["task"]()
 
         worker.run_once.assert_called_once_with()
-        info_log.assert_any_call("[EventMonitor] 本轮触发 %d 条提醒", 2)
+        info_log.assert_any_call("[EventMonitor] Triggered %d alert(s) in this cycle", 2)
 
     def test_schedule_mode_registers_event_monitor_worker_without_legacy_rules(self) -> None:
         args = self._make_args(schedule=True)
@@ -1446,7 +1448,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
         run_with_lock.assert_called_once_with(config, args, None, None)
         start_bots.assert_called_once_with(config)
         exception_log.assert_any_call(
-            "Futu 持仓导入失败，Web/API 服务继续运行: %s",
+            "Futu portfolio import failed, Web/API server continues running: %s",
             error,
         )
 
@@ -2783,7 +2785,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
 
         self.assertEqual(exit_code, 1)
         output = capture_stream.getvalue()
-        self.assertIn("加载配置失败", output)
+        self.assertIn("Failed to load config", output)
         self.assertIn("config boom", output)
 
     def test_bootstrap_logging_failure_does_not_block_startup(self) -> None:
@@ -2831,9 +2833,9 @@ class MainScheduleModeTestCase(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         run_mock.assert_called_once()
         output = capture_stream.getvalue()
-        self.assertIn("文件日志初始化失败，已降级为控制台日志输出", output)
+        self.assertIn("File logging initialization failed, degraded to console output", output)
         self.assertIn("/app/logs", output)
-        self.assertIn("官方 Docker 镜像启动入口会自动修复默认挂载目录权限", output)
+        self.assertIn("The official Docker image entrypoint automatically fixes default mount permissions", output)
 
     def test_run_full_analysis_import_failure_propagates(self) -> None:
         """P1: import failures in run_full_analysis must propagate, not be swallowed."""

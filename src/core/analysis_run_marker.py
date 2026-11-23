@@ -100,15 +100,21 @@ def _read_marker_payload(marker_path: Path) -> tuple[Optional[dict], str]:
     except FileNotFoundError:
         return None, "missing"
     except OSError as exc:
-        logger.warning("读取分析运行标记失败（视为无标记）: %s", exc)
+        logger.warning(
+            "Failed to read analysis run marker (treating as missing): %s", exc
+        )
         return None, f"unreadable ({exc})"
     try:
         payload = json.loads(raw)
     except (TypeError, ValueError) as exc:
-        logger.warning("分析运行标记损坏（视为无标记）: %s", exc)
+        logger.warning(
+            "Analysis run marker is corrupt (treating as missing): %s", exc
+        )
         return None, f"corrupt ({exc})"
     if not isinstance(payload, dict):
-        logger.warning("分析运行标记内容不是 JSON 对象（视为无标记）")
+        logger.warning(
+            "Analysis run marker content is not a JSON object (treating as missing)"
+        )
         return None, "not-object"
     return payload, "ok"
 
@@ -260,7 +266,7 @@ def record_analysis_run_marker(
                 and existing.get("run_date") == date.today().isoformat()
             ):
                 logger.info(
-                    "当日已有全量分析记录，subset 运行不覆盖当日 full 标记: %s",
+                    "Full analysis already recorded today; subset run will not overwrite today's full marker: %s",
                     marker_path,
                 )
                 return
@@ -282,7 +288,7 @@ def record_analysis_run_marker(
         }
 
         if dry_run:
-            logger.info("dry-run 模式不写入分析运行标记: %s", marker_path)
+            logger.info("Skipping analysis run marker write in dry-run mode: %s", marker_path)
             return
 
         marker_path.parent.mkdir(parents=True, exist_ok=True)
@@ -297,7 +303,10 @@ def record_analysis_run_marker(
         )
         os.replace(tmp_path, marker_path)
         logger.info(
-            "已记录分析运行标记（%s）: %s", normalized_scope, marker_path
+            "Recorded analysis run marker (%s): %s", normalized_scope, marker_path
         )
     except Exception as exc:
-        logger.warning("写入分析运行标记失败（忽略，不影响分析结果）: %s", exc)
+        logger.warning(
+            "Failed to write analysis run marker (ignored; analysis result unaffected): %s",
+            exc,
+        )

@@ -141,7 +141,7 @@ def _task_asset_type(task: Any) -> Optional[str]:
     # 空格形态）都必须记录 warning 后降级，避免静默掩盖漂移；仅非字符串
     # 代理（如 MagicMock 子对象）保持静默 None。
     logger.warning(
-        "task asset_type 超出字面量域，降级为 None: task_id=%s asset_type=%r",
+        "task asset_type is outside literal domain, falling back to None: task_id=%s asset_type=%r",
         getattr(task, "task_id", None),
         raw,
     )
@@ -649,7 +649,7 @@ def _handle_sync_analysis(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"分析失败: {e}", exc_info=True)
+        logger.error(f"Analysis failed: {e}", exc_info=True)
         raise api_error(500, "internal_error", f"分析过程发生错误: {str(e)}")
 
 
@@ -955,7 +955,7 @@ def get_task_run_flow(task_id: str) -> RunFlowSnapshot:
         if history_snapshot is not None:
             return history_snapshot
     except Exception as e:
-        logger.error(f"查询任务运行流失败: {e}", exc_info=True)
+        logger.error(f"Failed to query task run flow: {e}", exc_info=True)
         raise api_error(500, "internal_error", f"查询任务运行流失败: {str(e)}")
 
     raise api_error(404, "not_found", f"任务 {task_id} 不存在或已过期")
@@ -1209,7 +1209,7 @@ def get_analysis_status(task_id: str) -> TaskStatus:
                     result = _build_task_analysis_result(task)
                 except Exception:
                     logger.warning(
-                        "解析任务结果失败，回退为空返回: task_id=%s",
+                        "Failed to parse task result, falling back to empty: task_id=%s",
                         task.task_id,
                     )
 
@@ -1414,7 +1414,7 @@ def get_analysis_status(task_id: str) -> TaskStatus:
             )
 
     except Exception as e:
-        logger.error(f"查询任务状态失败: {e}", exc_info=True)
+        logger.error(f"Failed to query task status: {e}", exc_info=True)
         raise api_error(500, "internal_error", f"查询任务状态失败: {str(e)}")
 
     # 3. 任务不存在
