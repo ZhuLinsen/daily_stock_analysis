@@ -1452,7 +1452,7 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                 normalized["cross_market_note"] = cross_market_note
         except Exception as exc:
             # 单字段解析异常时保留已解析部分，绝不影响复盘主流程。
-            logger.debug("[大盘] %s action=normalize_structured_fields status=degraded error=%s", self._log_context(), exc)
+            logger.debug("[Market] %s action=normalize_structured_fields status=degraded error=%s", self._log_context(), exc)
         return normalized
 
     @classmethod
