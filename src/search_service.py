@@ -334,7 +334,7 @@ class BaseSearchProvider(ABC):
                     return key
             
             # 所有 key 都有问题，重置错误计数并返回第一个
-            logger.warning(f"[{self._name}] 所有 API Key 都有错误记录，重置错误计数")
+            logger.warning(f"[{self._name}] All API keys have error records, resetting error counts")
             self._key_errors = {key: 0 for key in self._api_keys}
             return self._api_keys[0] if self._api_keys else None
     
@@ -351,7 +351,7 @@ class BaseSearchProvider(ABC):
         with self._state_lock:
             self._key_errors[key] = self._key_errors.get(key, 0) + 1
             error_count = self._key_errors[key]
-        logger.warning(f"[{self._name}] API Key {key[:8]}... 错误计数: {error_count}")
+        logger.warning(f"[{self._name}] API key {key[:8]}... error count: {error_count}")
     
     @abstractmethod
     def _do_search(self, query: str, api_key: str, max_results: int, days: int = 7) -> SearchResponse:
@@ -386,7 +386,10 @@ class BaseSearchProvider(ABC):
             if response.success:
                 response.mark_retrieved()
                 self._record_success(api_key)
-                logger.info(f"[{self._name}] 搜索 '{query}' 成功，返回 {len(response.results)} 条结果，耗时 {response.search_time:.2f}s")
+                logger.info(
+                    f"[{self._name}] Search '{query}' succeeded, "
+                    f"{len(response.results)} results in {response.search_time:.2f}s"
+                )
             else:
                 self._record_error(api_key)
 
@@ -395,7 +398,7 @@ class BaseSearchProvider(ABC):
         except Exception as e:
             self._record_error(api_key)
             elapsed = time.time() - start_time
-            logger.error(f"[{self._name}] 搜索 '{query}' 失败: {e}")
+            logger.error(f"[{self._name}] Search '{query}' failed: {e}")
             return SearchResponse(
                 query=query,
                 results=[],
@@ -475,8 +478,8 @@ class TavilySearchProvider(BaseSearchProvider):
             )
             
             # 记录原始响应到日志
-            logger.info(f"[Tavily] 搜索完成，query='{query}', 返回 {len(response.get('results', []))} 条结果")
-            logger.debug(f"[Tavily] 原始响应: {response}")
+            logger.info(f"[Tavily] Search completed, query='{query}', {len(response.get('results', []))} results")
+            logger.debug(f"[Tavily] Raw response: {response}")
             
             # 解析结果
             results = []
@@ -539,7 +542,10 @@ class TavilySearchProvider(BaseSearchProvider):
             if response.success:
                 response.mark_retrieved()
                 self._record_success(api_key)
-                logger.info(f"[{self._name}] 搜索 '{query}' 成功，返回 {len(response.results)} 条结果，耗时 {response.search_time:.2f}s")
+                logger.info(
+                    f"[{self._name}] Search '{query}' succeeded, "
+                    f"{len(response.results)} results in {response.search_time:.2f}s"
+                )
             else:
                 self._record_error(api_key)
 
@@ -548,7 +554,7 @@ class TavilySearchProvider(BaseSearchProvider):
         except Exception as e:
             self._record_error(api_key)
             elapsed = time.time() - start_time
-            logger.error(f"[{self._name}] 搜索 '{query}' 失败: {e}")
+            logger.error(f"[{self._name}] Search '{query}' failed: {e}")
             return SearchResponse(
                 query=query,
                 results=[],
@@ -666,7 +672,7 @@ class SerpAPISearchProvider(BaseSearchProvider):
             response = search.get_dict()
             
             # 记录原始响应到日志
-            logger.debug(f"[SerpAPI] 原始响应 keys: {response.keys()}")
+            logger.debug(f"[SerpAPI] Raw response keys: {response.keys()}")
             
             # 解析结果
             results = []
@@ -1095,7 +1101,7 @@ class BochaSearchProvider(BaseSearchProvider):
                 else:
                     error_msg = f"HTTP {response.status_code}: {error_message}"
                 
-                logger.warning(f"[Bocha] 搜索失败: {error_msg}")
+                logger.warning(f"[Bocha] Search failed: {error_msg}")
                 
                 return SearchResponse(
                     query=query,
@@ -1131,8 +1137,8 @@ class BochaSearchProvider(BaseSearchProvider):
                 )
             
             # 记录原始响应到日志
-            logger.info(f"[Bocha] 搜索完成，query='{query}'")
-            logger.debug(f"[Bocha] 原始响应: {data}")
+            logger.info(f"[Bocha] Search completed, query='{query}'")
+            logger.debug(f"[Bocha] Raw response: {data}")
             
             # 解析搜索结果
             results = []
@@ -1155,7 +1161,7 @@ class BochaSearchProvider(BaseSearchProvider):
                     published_date=item.get('datePublished'),  # UTC+8格式，无需转换
                 ))
             
-            logger.info(f"[Bocha] 成功解析 {len(results)} 条结果")
+            logger.info(f"[Bocha] Parsed {len(results)} results")
             
             return SearchResponse(
                 query=query,
@@ -1278,7 +1284,7 @@ class AnspireSearchProvider(BaseSearchProvider):
                 else:
                     error_msg = f"HTTP {response.status_code}: {error_message}"
                 
-                logger.warning(f"[Anspire] 搜索失败：{error_msg}")
+                logger.warning(f"[Anspire] Search failed: {error_msg}")
                 
                 return SearchResponse(
                     query=query,
@@ -1304,7 +1310,7 @@ class AnspireSearchProvider(BaseSearchProvider):
             
             if 'code' in data and data.get('code') != 200:
                 error_msg = data.get('msg') or f"API 返回错误码：{data.get('code')}"
-                logger.warning(f"[Anspire] 搜索失败：{error_msg}")
+                logger.warning(f"[Anspire] Search failed: {error_msg}")
                 return SearchResponse(
                     query=query,
                     results=[],
@@ -1315,7 +1321,7 @@ class AnspireSearchProvider(BaseSearchProvider):
             
             if 'results' not in data:
                 error_msg = "响应中缺少 results 字段"
-                logger.error(f"[Anspire] {error_msg}，原始响应：{data}")
+                logger.error(f"[Anspire] {error_msg}, raw response: {data}")
                 return SearchResponse(
                     query=query,
                     results=[],
@@ -1325,8 +1331,8 @@ class AnspireSearchProvider(BaseSearchProvider):
                 )
             
             # 记录原始响应到日志
-            logger.info(f"[Anspire] 搜索完成，query='{query}'")
-            logger.debug(f"[Anspire] 原始响应：{data}")
+            logger.info(f"[Anspire] Search completed, query='{query}'")
+            logger.debug(f"[Anspire] Raw response: {data}")
             
             results = []
             value_list = data.get('results', [])
@@ -1344,7 +1350,7 @@ class AnspireSearchProvider(BaseSearchProvider):
                     published_date=item.get('date', '')
                 ))
             
-            logger.info(f"[Anspire] 成功解析 {len(results)} 条结果")
+            logger.info(f"[Anspire] Parsed {len(results)} results")
             
             return SearchResponse(
                 query=query,
@@ -1696,7 +1702,7 @@ class BraveSearchProvider(BaseSearchProvider):
             # 检查HTTP状态码
             if response.status_code != 200:
                 error_msg = self._parse_error(response)
-                logger.warning(f"[Brave] 搜索失败: {error_msg}")
+                logger.warning(f"[Brave] Search failed: {error_msg}")
                 return SearchResponse(
                     query=query,
                     results=[],
@@ -1719,8 +1725,8 @@ class BraveSearchProvider(BaseSearchProvider):
                     error_message=error_msg
                 )
 
-            logger.info(f"[Brave] 搜索完成，query='{query}'")
-            logger.debug(f"[Brave] 原始响应: {data}")
+            logger.info(f"[Brave] Search completed, query='{query}'")
+            logger.debug(f"[Brave] Raw response: {data}")
 
             # 解析搜索结果
             results = []
@@ -1747,7 +1753,7 @@ class BraveSearchProvider(BaseSearchProvider):
                     published_date=published_date
                 ))
 
-            logger.info(f"[Brave] 成功解析 {len(results)} 条结果")
+            logger.info(f"[Brave] Parsed {len(results)} results")
 
             return SearchResponse(
                 query=query,
@@ -1967,7 +1973,7 @@ class SearXNGSearchProvider(BaseSearchProvider):
             stale_urls: List[str] = []
             if cls._public_instances_cache is None and cls._public_instances_stale_retry_after > now:
                 logger.debug(
-                    "[SearXNG] 公共实例冷启动刷新退避中，剩余 %.0fs",
+                    "[SearXNG] Public instance cold-start refresh in backoff, %.0fs remaining",
                     cls._public_instances_stale_retry_after - now,
                 )
                 return []
@@ -1978,7 +1984,7 @@ class SearXNGSearchProvider(BaseSearchProvider):
                 stale_urls = list(cached_urls)
                 if cls._public_instances_stale_retry_after > now:
                     logger.debug(
-                        "[SearXNG] 公共实例刷新退避中，继续使用过期缓存，剩余 %.0fs",
+                        "[SearXNG] Public instance refresh in backoff, using stale cache, %.0fs remaining",
                         cls._public_instances_stale_retry_after - now,
                     )
                     return stale_urls
@@ -1990,7 +1996,7 @@ class SearXNGSearchProvider(BaseSearchProvider):
                 )
                 if response.status_code != 200:
                     logger.warning(
-                        "[SearXNG] 拉取公共实例列表失败: HTTP %s",
+                        "[SearXNG] Failed to fetch public instance list: HTTP %s",
                         response.status_code,
                     )
                 else:
@@ -1998,19 +2004,21 @@ class SearXNGSearchProvider(BaseSearchProvider):
                     if urls:
                         cls._public_instances_cache = (now, list(urls))
                         cls._public_instances_stale_retry_after = 0.0
-                        logger.info("[SearXNG] 已刷新公共实例池，共 %s 个候选实例", len(urls))
+                        logger.info("[SearXNG] Refreshed public instance pool, %s candidates total", len(urls))
                         return list(urls)
-                    logger.warning("[SearXNG] searx.space 未返回可用公共实例，保留已有缓存")
+                    logger.warning(
+                        "[SearXNG] searx.space returned no available public instances, keeping existing cache"
+                    )
             except Exception as exc:
-                logger.warning("[SearXNG] 拉取公共实例列表失败: %s", exc)
+                logger.warning("[SearXNG] Failed to fetch public instance list: %s", exc)
 
             if stale_urls:
                 cls._public_instances_stale_retry_after = (
                     now + cls.PUBLIC_INSTANCES_STALE_REFRESH_BACKOFF_SECONDS
                 )
                 logger.warning(
-                    "[SearXNG] 公共实例刷新失败，继续使用过期缓存，共 %s 个候选实例；"
-                    "%.0fs 内不再刷新",
+                    "[SearXNG] Public instance refresh failed, continuing with stale cache (%s candidates); "
+                    "skipping refresh for %.0fs",
                     len(stale_urls),
                     cls.PUBLIC_INSTANCES_STALE_REFRESH_BACKOFF_SECONDS,
                 )
@@ -2019,7 +2027,7 @@ class SearXNGSearchProvider(BaseSearchProvider):
                 now + cls.PUBLIC_INSTANCES_STALE_REFRESH_BACKOFF_SECONDS
             )
             logger.warning(
-                "[SearXNG] 公共实例冷启动刷新失败，%.0fs 内不再刷新",
+                "[SearXNG] Public instance cold-start refresh failed, skipping refresh for %.0fs",
                 cls.PUBLIC_INSTANCES_STALE_REFRESH_BACKOFF_SECONDS,
             )
             return []
@@ -2220,7 +2228,7 @@ class SearXNGSearchProvider(BaseSearchProvider):
             if response.success:
                 response.mark_retrieved()
                 logger.info(
-                    "[%s] 搜索 '%s' 成功，实例=%s，返回 %s 条结果，耗时 %.2fs",
+                    "[%s] Search '%s' succeeded, instance=%s, %s results in %.2fs",
                     self.name,
                     query,
                     base_url,
@@ -2230,7 +2238,7 @@ class SearXNGSearchProvider(BaseSearchProvider):
                 return response
 
             errors.append(f"{base_url}: {response.error_message or '未知错误'}")
-            logger.warning("[%s] 实例 %s 搜索失败: %s", self.name, base_url, response.error_message)
+            logger.warning("[%s] Instance %s search failed: %s", self.name, base_url, response.error_message)
 
         elapsed = time.time() - start_time
         return SearchResponse(
@@ -2455,7 +2463,7 @@ class SearchService:
         self.news_strategy_profile = normalize_news_strategy_profile(news_strategy_profile)
         if raw_profile != self.news_strategy_profile:
             logger.warning(
-                "NEWS_STRATEGY_PROFILE '%s' 无效，已回退为 'short'",
+                "Invalid NEWS_STRATEGY_PROFILE '%s', falling back to 'short'",
                 news_strategy_profile,
             )
         self.news_window_days = resolve_news_window_days(
@@ -2471,32 +2479,32 @@ class SearchService:
         # 1. Bocha 优先（中文搜索优化，AI摘要）
         if bocha_keys:
             self._providers.append(BochaSearchProvider(bocha_keys))
-            logger.info(f"已配置 Bocha 搜索，共 {len(bocha_keys)} 个 API Key")
+            logger.info(f"Configured Bocha search with {len(bocha_keys)} API key(s)")
 
         # 2. Tavily（免费额度更多，每月 1000 次）
         if tavily_keys:
             self._providers.append(TavilySearchProvider(tavily_keys))
-            logger.info(f"已配置 Tavily 搜索，共 {len(tavily_keys)} 个 API Key")
+            logger.info(f"Configured Tavily search with {len(tavily_keys)} API key(s)")
 
         # 3. Brave Search（隐私优先，全球覆盖）
         if brave_keys:
             self._providers.append(BraveSearchProvider(brave_keys))
-            logger.info(f"已配置 Brave 搜索，共 {len(brave_keys)} 个 API Key")
+            logger.info(f"Configured Brave search with {len(brave_keys)} API key(s)")
 
         # 4. SerpAPI 作为备选（每月 100 次）
         if serpapi_keys:
             self._providers.append(SerpAPISearchProvider(serpapi_keys))
-            logger.info(f"已配置 SerpAPI 搜索，共 {len(serpapi_keys)} 个 API Key")
+            logger.info(f"Configured SerpAPI search with {len(serpapi_keys)} API key(s)")
 
         # 5. Anspire Search（可选，位于 SerpAPI 之后）
         if anspire_keys:
             self._providers.append(AnspireSearchProvider(anspire_keys))
-            logger.info(f"已配置 Anspire Search 搜索，共 {len(anspire_keys)} 个 API Key")
+            logger.info(f"Configured Anspire Search with {len(anspire_keys)} API key(s)")
 
         # 6. MiniMax（Coding Plan Web Search，结构化结果）
         if minimax_keys:
             self._providers.append(MiniMaxSearchProvider(minimax_keys))
-            logger.info(f"已配置 MiniMax 搜索，共 {len(minimax_keys)} 个 API Key")
+            logger.info(f"Configured MiniMax search with {len(minimax_keys)} API key(s)")
 
         # 7. SearXNG（自建实例优先；未配置时可自动发现公共实例）
         searxng_provider = SearXNGSearchProvider(
@@ -2507,12 +2515,12 @@ class SearchService:
         if searxng_provider.is_available:
             self._providers.append(searxng_provider)
             if searxng_base_urls:
-                logger.info("已配置 SearXNG 搜索，共 %s 个自建实例", len(searxng_base_urls))
+                logger.info("Configured SearXNG search with %s self-hosted instance(s)", len(searxng_base_urls))
             else:
-                logger.info("已启用 SearXNG 公共实例自动发现模式")
+                logger.info("Enabled SearXNG public instance auto-discovery mode")
 
         if not self._providers:
-            logger.warning("未配置任何搜索能力，新闻搜索功能将不可用")
+            logger.warning("No search capability configured; news search will be unavailable")
 
         # In-memory search result cache: {cache_key: (timestamp, SearchResponse)}
         self._cache: Dict[str, Tuple[float, 'SearchResponse']] = {}
@@ -2521,7 +2529,7 @@ class SearchService:
         # Default cache TTL in seconds (10 minutes)
         self._cache_ttl: int = 600
         logger.info(
-            "新闻时效策略已启用: profile=%s, profile_days=%s, NEWS_MAX_AGE_DAYS=%s, effective_window=%s",
+            "News freshness policy enabled: profile=%s, profile_days=%s, NEWS_MAX_AGE_DAYS=%s, effective_window=%s",
             self.news_strategy_profile,
             self.news_profile_days,
             self.news_max_age_days,
@@ -3432,14 +3440,14 @@ class SearchService:
         if limited_results:
             top = limited_results[0]
             logger.info(
-                "[新闻相关度] %s: direct=%s, sector=%s, macro=%s, top_score=%s, top_category=%s, reasons=%s",
+                "[NewsRelevance] %s: direct=%s, sector=%s, macro=%s, top_score=%s, top_category=%s, reasons=%s",
                 log_scope,
                 category_counts[cls._DIRECT_NEWS_CATEGORY],
                 category_counts[cls._SECTOR_NEWS_CATEGORY],
                 category_counts[cls._MACRO_NEWS_CATEGORY],
                 top.relevance_score,
                 top.relevance_category,
-                "；".join(top.relevance_reasons or []),
+                "; ".join(top.relevance_reasons or []),
             )
 
         return SearchResponse(
@@ -3497,7 +3505,7 @@ class SearchService:
 
         if dropped_low_quality or dropped_adult_spam or dropped_zero_relevance:
             logger.info(
-                "[新闻准入] %s: provider=%s, total=%s, kept=%s, "
+                "[NewsAdmission] %s: provider=%s, total=%s, kept=%s, "
                 "drop_low_quality=%s, drop_adult_spam=%s, drop_zero_relevance=%s",
                 log_scope,
                 response.provider,
@@ -3902,7 +3910,8 @@ class SearchService:
 
         if dropped_unknown or dropped_old or dropped_future:
             logger.info(
-                "[新闻过滤] %s: provider=%s, total=%s, kept=%s, drop_unknown=%s, drop_old=%s, drop_future=%s, window=[%s,%s]",
+                "[NewsFilter] %s: provider=%s, total=%s, kept=%s, "
+                "drop_unknown=%s, drop_old=%s, drop_future=%s, window=[%s,%s]",
                 log_scope,
                 response.provider,
                 len(response.results),
@@ -4064,7 +4073,7 @@ class SearchService:
                         error_type=type(exc).__name__,
                         error_message=exc,
                     )
-                    logger.warning("%s 题材搜索失败: %s，尝试下一个引擎", provider.name, exc)
+                    logger.warning("%s topic search failed: %s, trying next engine", provider.name, exc)
                     continue
 
                 raise_if_stock_cancelled()
@@ -4245,8 +4254,8 @@ class SearchService:
         subject_label = f"{stock_name}({stock_code})" if stock_code else stock_name
         logger.info(
             (
-                "搜索股票新闻: %s, query='%s', 时间范围: 近%s天 "
-                "(profile=%s, NEWS_MAX_AGE_DAYS=%s, prefer_chinese=%s), 目标条数=%s, provider请求条数=%s"
+                "Searching stock news: %s, query='%s', window: last %s day(s) "
+                "(profile=%s, NEWS_MAX_AGE_DAYS=%s, prefer_chinese=%s), target=%s, provider_request=%s"
             ),
             subject_label,
             query,
@@ -4270,7 +4279,7 @@ class SearchService:
         if cached is not None:
             logger.info(
                 "%s: %s(%s)",
-                "使用并发填充后的缓存搜索结果" if waited else "使用缓存搜索结果",
+                "Using concurrently populated cached search results" if waited else "Using cached search results",
                 stock_name,
                 stock_code,
             )
@@ -4373,7 +4382,7 @@ class SearchService:
                     )
                     if not admitted_count:
                         logger.info(
-                            "%s 搜索成功但准入过滤后无有效新闻，继续尝试下一引擎",
+                            "%s search succeeded but no valid news after admission filter, trying next engine",
                             provider.name,
                         )
                         continue
@@ -4396,7 +4405,7 @@ class SearchService:
                         not prefer_chinese or stats["preferred_direct_count"] > 0
                     ):
                         logger.info(
-                            "%s 搜索成功，识别到 %s 条直接个股新闻，优先返回",
+                            "%s search succeeded with %s direct stock news item(s), returning with priority",
                             provider.name,
                             stats["direct_count"],
                         )
@@ -4405,7 +4414,8 @@ class SearchService:
 
                     if prefer_chinese and stats["direct_count"] > 0:
                         logger.info(
-                            "%s 搜索成功，识别到 %s 条直接个股新闻但缺少中文直接命中，继续尝试下一引擎",
+                            "%s search succeeded with %s direct stock news item(s) "
+                            "but lacks Chinese direct hits, trying next engine",
                             provider.name,
                             stats["direct_count"],
                         )
@@ -4413,21 +4423,23 @@ class SearchService:
 
                     if prefer_chinese and stats["preferred_count"] >= max_results:
                         logger.info(
-                            "%s 搜索成功，中文结果已满足目标条数但缺少直接个股命中，继续尝试下一引擎",
+                            "%s search succeeded and Chinese results met target count "
+                            "but lack direct stock hits, trying next engine",
                             provider.name,
                         )
                         continue
 
                     if prefer_chinese and stats["preferred_count"] > 0:
                         logger.info(
-                            "%s 搜索成功，识别到 %s/%s 条中文新闻但缺少直接个股命中，继续尝试下一引擎",
+                            "%s search succeeded with %s/%s Chinese news item(s) "
+                            "but lacks direct stock hits, trying next engine",
                             provider.name,
                             stats["preferred_count"],
                             len(limited_response.results),
                         )
                     else:
                         logger.info(
-                            "%s 搜索成功但未识别直接个股新闻，继续尝试下一引擎",
+                            "%s search succeeded but no direct stock news identified, trying next engine",
                             provider.name,
                         )
                 else:
@@ -4445,12 +4457,12 @@ class SearchService:
                     )
                     if response.success and not filtered_response.results:
                         logger.info(
-                            "%s 搜索成功但过滤后无有效新闻，继续尝试下一引擎",
+                            "%s search succeeded but no valid news after filtering, trying next engine",
                             provider.name,
                         )
                     else:
                         logger.warning(
-                            "%s 搜索失败: %s，尝试下一个引擎",
+                            "%s search failed: %s, trying next engine",
                             provider.name,
                             response.error_message,
                         )
@@ -4521,10 +4533,10 @@ class SearchService:
         )
         cached = self._get_cached(cache_key)
         if cached is not None:
-            logger.info("使用缓存事件搜索结果: %s(%s)", stock_name, stock_code)
+            logger.info("Using cached event search results: %s(%s)", stock_name, stock_code)
             return cached
         
-        logger.info(f"搜索股票事件: {stock_name}({stock_code}) - {event_types}")
+        logger.info(f"Searching stock events: {stock_name}({stock_code}) - {event_types}")
         
         # 依次尝试各个搜索引擎
         for provider in self._providers:
@@ -4692,8 +4704,8 @@ class SearchService:
 
         logger.info(
             (
-                "开始多维度情报搜索: %s(%s), 时间范围: 近%s天 "
-                "(profile=%s, NEWS_MAX_AGE_DAYS=%s), 目标条数=%s, provider请求条数=%s"
+                "Starting multi-dimensional intel search: %s(%s), window: last %s day(s) "
+                "(profile=%s, NEWS_MAX_AGE_DAYS=%s), target=%s, provider_request=%s"
             ),
             stock_name,
             stock_code,
@@ -4727,7 +4739,7 @@ class SearchService:
             )
 
             logger.info(
-                "[情报搜索] %s: 使用 %s，请求窗口: 近%s天",
+                "[IntelSearch] %s: using %s, request window: last %s day(s)",
                 dim['desc'],
                 provider.name,
                 request_days,
@@ -4795,13 +4807,13 @@ class SearchService:
             
             if response.success:
                 logger.info(
-                    "[情报搜索] %s: 原始=%s条, 过滤后=%s条",
+                    "[IntelSearch] %s: raw=%s, filtered=%s",
                     dim['desc'],
                     len(response.results),
                     len(filtered_response.results),
                 )
             else:
-                logger.warning(f"[情报搜索] {dim['desc']}: 搜索失败 - {response.error_message}")
+                logger.warning(f"[IntelSearch] {dim['desc']}: search failed - {response.error_message}")
             
             # 短暂延迟避免请求过快
             time.sleep(0.5)
@@ -4949,7 +4961,7 @@ class SearchService:
                 error_message="未配置搜索能力"
             )
         
-        logger.info(f"[增强搜索] 数据源失败，启动增强搜索: {stock_name}({stock_code})")
+        logger.info(f"[EnhancedSearch] Data source failed, starting enhanced search: {stock_name}({stock_code})")
         
         all_results = []
         seen_urls = set()
@@ -4961,7 +4973,7 @@ class SearchService:
         for i, keyword_template in enumerate(keywords[:max_attempts]):
             query = keyword_template.format(name=stock_name, code=stock_code)
             
-            logger.info(f"[增强搜索] 第 {i+1}/{max_attempts} 次搜索: {query}")
+            logger.info(f"[EnhancedSearch] Search attempt {i+1}/{max_attempts}: {query}")
             
             # 依次尝试各个搜索引擎
             for provider in self._providers:
@@ -4981,13 +4993,13 @@ class SearchService:
                         if provider.name not in successful_providers:
                             successful_providers.append(provider.name)
                         
-                        logger.info(f"[增强搜索] {provider.name} 返回 {len(response.results)} 条结果")
+                        logger.info(f"[EnhancedSearch] {provider.name} returned {len(response.results)} result(s)")
                         break  # 成功后跳到下一个关键词
                     else:
-                        logger.debug(f"[增强搜索] {provider.name} 无结果或失败")
+                        logger.debug(f"[EnhancedSearch] {provider.name} returned no results or failed")
                         
                 except Exception as e:
-                    logger.warning(f"[增强搜索] {provider.name} 搜索异常: {e}")
+                    logger.warning(f"[EnhancedSearch] {provider.name} search exception: {e}")
                     continue
             
             # 短暂延迟避免请求过快
@@ -5000,7 +5012,9 @@ class SearchService:
             final_results = all_results[:max_results]
             provider_str = ", ".join(successful_providers) if successful_providers else "None"
             
-            logger.info(f"[增强搜索] 完成，共获取 {len(final_results)} 条结果（来源: {provider_str}）")
+            logger.info(
+                f"[EnhancedSearch] Completed, retrieved {len(final_results)} result(s) (sources: {provider_str})"
+            )
             
             return SearchResponse(
                 query=f"{stock_name}({stock_code}) 股价走势",
@@ -5009,7 +5023,7 @@ class SearchService:
                 success=True,
             )
         else:
-            logger.warning(f"[增强搜索] 所有搜索均未返回结果")
+            logger.warning("[EnhancedSearch] All searches returned no results")
             return SearchResponse(
                 query=f"{stock_name}({stock_code}) 股价走势",
                 results=[],

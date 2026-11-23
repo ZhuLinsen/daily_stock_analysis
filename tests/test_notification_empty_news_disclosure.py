@@ -439,7 +439,7 @@ class PipelineCountSemanticsTestCase(unittest.TestCase):
     def test_count_set_to_zero_once_search_is_attempted(self):
         """检索一旦发起就置 0，不能等到拿到结果对象才赋值。"""
         src = self._read_pipeline_source()
-        idx = src.index("开始多维度情报搜索")
+        idx = src.index("starting multi-dimensional intelligence search")
         window = src[idx : idx + 600]
 
         self.assertIn("news_result_count = 0", window)
@@ -457,7 +457,7 @@ class PipelineCountSemanticsTestCase(unittest.TestCase):
         src/agent/news_evidence.py 的证据作用域收集。
         """
         src = self._read_pipeline_source()
-        idx = src.index("Agent 模式: 新闻情报已保存")
+        idx = src.index("Agent mode: saved ")
         window = src[max(0, idx - 1200) : idx]
         # 只看代码：解释这条约束的注释本身就含有该标识符。
         code_only = "\n".join(

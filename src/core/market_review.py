@@ -78,7 +78,7 @@ def _refresh_market_review_history_diagnostics(*, query_id: str) -> None:
                 diagnostics=diagnostic_snapshot,
             )
     except Exception as exc:
-        logger.warning("回写大盘复盘运行诊断失败（fail-open）: %s", exc)
+        logger.warning("Failed to write back market review run diagnostics (fail-open): %s", exc)
 
 
 def _record_market_review_notification_run(
@@ -868,9 +868,9 @@ def _persist_market_review_history(
         )
         _refresh_market_review_history_diagnostics(query_id=history_query_id)
         if saved_history_id:
-            logger.info("大盘复盘历史记录已保存: query_id=%s", history_query_id)
+            logger.info("Market review history record saved: query_id=%s", history_query_id)
         else:
-            logger.warning("大盘复盘历史记录保存失败: query_id=%s", history_query_id)
+            logger.warning("Failed to save market review history record: query_id=%s", history_query_id)
         return saved_history_id
     except Exception as exc:
         record_history_run(
@@ -878,7 +878,11 @@ def _persist_market_review_history(
             metadata_saved=False,
             error_message=exc,
         )
-        logger.warning("大盘复盘历史记录保存异常，报告文件与推送流程继续: %s", exc, exc_info=True)
+        logger.warning(
+            "Exception saving market review history record, report file and notification continue: %s",
+            exc,
+            exc_info=True,
+        )
         return 0
 
 

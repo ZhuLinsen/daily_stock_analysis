@@ -72,6 +72,7 @@ docs: update README deployment section
 ### Code Style
 
 - Python code follows PEP 8 (line length: 120).
+- Write all runtime `logger.*` / `logging.*` messages in concise English; keep user-facing reports, notifications, and bot replies localized.
 - Add docstrings to functions and classes.
 - Add comments for non-obvious logic.
 - Update relevant documentation when adding new features.

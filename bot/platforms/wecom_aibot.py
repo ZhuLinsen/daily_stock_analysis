@@ -85,8 +85,8 @@ except ImportError:
     WECOM_AIBOT_SDK_AVAILABLE = False
     WSClient = None
     WSClientOptions = None
-    logger.warning("[WeCom AI Bot] wecom-aibot-python-sdk SDK 未安装，长连接模式不可用")
-    logger.warning("[WeCom AI Bot] 请运行: pip install wecom-aibot-python-sdk")
+    logger.warning("[WeCom AI Bot] wecom-aibot-python-sdk SDK not installed, long-connection mode unavailable")
+    logger.warning("[WeCom AI Bot] Please run: pip install wecom-aibot-python-sdk")
 
 from bot.dispatcher import RateLimiter
 from bot.models import BotMessage, ChatType
@@ -164,7 +164,7 @@ class WecomAibotHandler:
             config = get_config()
             if not getattr(config, "bot_enabled", True):
                 logger.info(
-                    "[WeCom AI Bot] 机器人功能未启用（BOT_ENABLED=false），消息忽略"
+                    "[WeCom AI Bot] Bot feature disabled (BOT_ENABLED=false), ignoring message"
                 )
                 return
 
@@ -174,7 +174,7 @@ class WecomAibotHandler:
 
             if self._is_duplicate_msgid(bot_message.message_id):
                 logger.warning(
-                    "[WeCom AI Bot] 重复消息已丢弃: msgid=%s",
+                    "[WeCom AI Bot] Duplicate message dropped: msgid=%s",
                     bot_message.message_id,
                 )
                 return
@@ -182,7 +182,7 @@ class WecomAibotHandler:
             conversation_key = self._conversation_key(bot_message)
             if not self._allow_conversation(conversation_key):
                 logger.warning(
-                    "[WeCom AI Bot] 会话频率限制（30条/分钟），消息已丢弃: key=%s",
+                    "[WeCom AI Bot] Conversation rate limit exceeded (30/min), message dropped: key=%s",
                     conversation_key,
                 )
                 return
@@ -190,7 +190,7 @@ class WecomAibotHandler:
             self._log_incoming_message(bot_message)
             self._enqueue_message(bot_message)
         except Exception as exc:
-            logger.error("[WeCom AI Bot] 处理消息失败: %s", exc)
+            logger.error("[WeCom AI Bot] Failed to process message: %s", exc)
             logger.exception(exc)
 
     # ------------------------------------------------------------------ #
@@ -203,7 +203,7 @@ class WecomAibotHandler:
             body = (frame or {}).get("body") or {}
             if body.get("msgtype") != "text":
                 logger.debug(
-                    "[WeCom AI Bot] 忽略非文本消息: msgtype=%s", body.get("msgtype")
+                    "[WeCom AI Bot] Ignoring non-text message: msgtype=%s", body.get("msgtype")
                 )
                 return None
 
@@ -246,7 +246,7 @@ class WecomAibotHandler:
                 },
             )
         except Exception as exc:
-            logger.error("[WeCom AI Bot] 解析消息失败: %s", exc)
+            logger.error("[WeCom AI Bot] Failed to parse message: %s", exc)
             return None
 
     def _is_duplicate_msgid(self, msgid: str) -> bool:
@@ -305,21 +305,21 @@ class WecomAibotHandler:
         with self._outbound_quota_lock:
             if not self._outbound_minute_limiter.would_allow(conversation_key):
                 logger.warning(
-                    "[WeCom AI Bot] 会话回复超限（分钟30条或小时1000条配额），"
-                    "回复已丢弃: key=%s",
+                    "[WeCom AI Bot] Conversation reply rate limit exceeded (30/min or 1000/hour quota), "
+                    "reply dropped: key=%s",
                     conversation_key,
                 )
                 return None
             if not self._outbound_hour_limiter.would_allow(conversation_key):
                 logger.warning(
-                    "[WeCom AI Bot] 会话回复超限（分钟30条或小时1000条配额），"
-                    "回复已丢弃: key=%s",
+                    "[WeCom AI Bot] Conversation reply rate limit exceeded (30/min or 1000/hour quota), "
+                    "reply dropped: key=%s",
                     conversation_key,
                 )
                 return None
             loop = self._loop
             if loop is None or loop.is_closed():
-                logger.error("[WeCom AI Bot] 无法回复：SDK 事件循环不可用")
+                logger.error("[WeCom AI Bot] Cannot reply: SDK event loop unavailable")
                 return None
             token = uuid.uuid4().hex
             self._outbound_minute_limiter.record(conversation_key, token=token)
@@ -369,7 +369,7 @@ class WecomAibotHandler:
 
     def _enqueue_message(self, bot_message: BotMessage) -> None:
         if self._shutdown:
-            logger.debug("[WeCom AI Bot] 处理器已停止，丢弃消息")
+            logger.debug("[WeCom AI Bot] Handler already stopped, dropping message")
             return
 
         conversation_key = self._conversation_key(bot_message)
@@ -388,7 +388,7 @@ class WecomAibotHandler:
                 with self._queue_lock:
                     self._active_conversations.discard(conversation_key)
                     self._pending_messages.pop(conversation_key, None)
-                logger.error("[WeCom AI Bot] 无法启动消息处理线程: %s", exc)
+                logger.error("[WeCom AI Bot] Failed to start message handler thread: %s", exc)
 
     def _drain_conversation(self, conversation_key: str) -> None:
         while True:
@@ -416,7 +416,7 @@ class WecomAibotHandler:
             if response and response.text:
                 self._reply_to_frame(frame, response.text)
         except Exception as exc:
-            logger.error("[WeCom AI Bot] 异步处理消息失败: %s", exc)
+            logger.error("[WeCom AI Bot] Async message processing failed: %s", exc)
             logger.exception(exc)
 
     # ------------------------------------------------------------------ #
@@ -436,7 +436,7 @@ class WecomAibotHandler:
         errcode != 0）均按发送标识退还本次扣量（r5）。
         """
         if not frame:
-            logger.warning("[WeCom AI Bot] 无回调帧，无法回复")
+            logger.warning("[WeCom AI Bot] No callback frame, cannot reply")
             return False
 
         outbound_key = self._outbound_key_from_frame(frame)
@@ -456,7 +456,7 @@ class WecomAibotHandler:
         except Exception as exc:
             self._refund_outbound_send(outbound_key, token)
             logger.error(
-                "[WeCom AI Bot] 回复调度失败，已退还配额: key=%s, error=%s",
+                "[WeCom AI Bot] Reply dispatch failed, quota refunded: key=%s, error=%s",
                 outbound_key,
                 exc,
             )
@@ -466,7 +466,7 @@ class WecomAibotHandler:
             # 槽位检查后循环被清理：如实拒绝并退还本次扣量（r5）
             self._refund_outbound_send(outbound_key, token)
             logger.error(
-                "[WeCom AI Bot] SDK 事件循环在调度时不可用（已退还配额）: key=%s",
+                "[WeCom AI Bot] SDK event loop unavailable at dispatch (quota refunded): key=%s",
                 outbound_key,
             )
             return False
@@ -497,14 +497,14 @@ class WecomAibotHandler:
                 if _is_server_rejection_error(exc):
                     self._refund_outbound_send(conversation_key, token)
                     logger.warning(
-                        "[WeCom AI Bot] 发送被服务端拒绝（已退还配额）: "
+                        "[WeCom AI Bot] Send rejected by server (quota refunded): "
                         "key=%s, error=%s",
                         conversation_key,
                         exc,
                     )
                 else:
                     logger.warning(
-                        "[WeCom AI Bot] 发送结果不确定（保留记账）: key=%s, "
+                        "[WeCom AI Bot] Send result uncertain (quota kept): key=%s, "
                         "error=%s",
                         conversation_key,
                         exc,
@@ -514,14 +514,14 @@ class WecomAibotHandler:
             if errcode:
                 self._refund_outbound_send(conversation_key, token)
                 logger.warning(
-                    "[WeCom AI Bot] 发送被拒（已退还配额）: key=%s, errcode=%s, "
+                    "[WeCom AI Bot] Send rejected (quota refunded): key=%s, errcode=%s, "
                     "errmsg=%s",
                     conversation_key,
                     errcode,
                     ack.get("errmsg") if isinstance(ack, dict) else None,
                 )
         except Exception as exc:  # 回调自身异常不影响主流程
-            logger.error("[WeCom AI Bot] 发送完成回调异常: %s", exc)
+            logger.error("[WeCom AI Bot] Send completion callback exception: %s", exc)
 
     def _schedule_reply(self, coro):
         """把回复协程调度到 SDK 事件循环（回复必须走持有 WebSocket 的循环）
@@ -532,7 +532,7 @@ class WecomAibotHandler:
         """
         loop = self._loop
         if loop is None or loop.is_closed():
-            logger.error("[WeCom AI Bot] 无法回复：SDK 事件循环不可用")
+            logger.error("[WeCom AI Bot] Cannot reply: SDK event loop unavailable")
             coro.close()
             return None
         return asyncio.run_coroutine_threadsafe(coro, loop)
@@ -634,7 +634,7 @@ class WecomAibotClient:
 
         @sdk_client.on("connected")
         def _on_connected():
-            logger.info("[WeCom AI Bot] WebSocket 已连接，等待认证...")
+            logger.info("[WeCom AI Bot] WebSocket connected, waiting for authentication...")
 
         @sdk_client.on("authenticated")
         def _on_authenticated():
@@ -642,11 +642,11 @@ class WecomAibotClient:
 
         @sdk_client.on("disconnected")
         def _on_disconnected(reason):
-            logger.warning("[WeCom AI Bot] 连接断开: %s", reason)
+            logger.warning("[WeCom AI Bot] Disconnected: %s", reason)
 
         @sdk_client.on("reconnecting")
         def _on_reconnecting(attempt):
-            logger.info("[WeCom AI Bot] 第 %s 次重连...", attempt)
+            logger.info("[WeCom AI Bot] Reconnecting (attempt %s)...", attempt)
 
         @sdk_client.on("error")
         def _on_error(error):
@@ -700,7 +700,7 @@ class WecomAibotClient:
         self._cycle_failed = False
         self._planned_cycle_delay = None
         self._cycle_attempts = 0
-        logger.info("[WeCom AI Bot] 认证成功（aibot_subscribe errcode=0），开始收消息")
+        logger.info("[WeCom AI Bot] Authentication succeeded (aibot_subscribe errcode=0), listening for messages")
 
     def _handle_auth_error(self, error: BaseException) -> None:
         """SDK error 事件入口：按错误类别分流（认证失败 / 重连预算耗尽 / 其他）"""
@@ -714,8 +714,8 @@ class WecomAibotClient:
             self._cycle_failed = True
             self._planned_cycle_delay = self._next_cycle_retry_delay()
             logger.warning(
-                "[WeCom AI Bot] SDK 重连预算耗尽（%s），%.1f 秒后由监督循环"
-                "重建连接周期（第 %s 次）",
+                "[WeCom AI Bot] SDK reconnect budget exhausted (%s), "
+                "rebuilding connection cycle in %.1fs (attempt %s)",
                 message,
                 self._planned_cycle_delay,
                 self._cycle_attempts,
@@ -724,15 +724,15 @@ class WecomAibotClient:
             return
 
         if "Authentication failed" not in message:
-            logger.error("[WeCom AI Bot] 运行错误: %s", message)
+            logger.error("[WeCom AI Bot] Runtime error: %s", message)
             return
 
         self._auth_failed = True
         delay = self._next_auth_retry_delay()
         if delay is None:
             logger.error(
-                "[WeCom AI Bot] 认证连续失败 %s 次，放弃重试（give up）。"
-                "请检查 WECOM_AIBOT_BOT_ID / WECOM_AIBOT_SECRET 配置。",
+                "[WeCom AI Bot] Authentication failed %s consecutive times, "
+                "giving up. Please check WECOM_AIBOT_BOT_ID / WECOM_AIBOT_SECRET.",
                 self._auth_attempts,
             )
             self._running = False
@@ -740,7 +740,7 @@ class WecomAibotClient:
         else:
             self._planned_auth_delay = delay
             logger.warning(
-                "[WeCom AI Bot] 认证失败（%s），%.1f 秒后重试（第 %s/%s 次）",
+                "[WeCom AI Bot] Authentication failed (%s), retrying in %.1fs (attempt %s/%s)",
                 message,
                 delay,
                 self._auth_attempts,
@@ -764,13 +764,13 @@ class WecomAibotClient:
     def start_background(self) -> bool:
         """在后台线程启动客户端；已有存活线程时拒绝（单连接互斥）"""
         if not WECOM_AIBOT_SDK_AVAILABLE:
-            logger.warning("[WeCom AI Bot] SDK 未安装，无法启动")
-            logger.warning("[WeCom AI Bot] 请运行: pip install wecom-aibot-python-sdk")
+            logger.warning("[WeCom AI Bot] SDK not installed, cannot start")
+            logger.warning("[WeCom AI Bot] Please run: pip install wecom-aibot-python-sdk")
             return False
 
         if self._background_thread and self._background_thread.is_alive():
             logger.warning(
-                "[WeCom AI Bot] 客户端已在运行，拒绝重复启动（单机器人单连接互斥）"
+                "[WeCom AI Bot] Client is already running, rejecting duplicate start (single-bot single-connection)"
             )
             return False
 
@@ -782,7 +782,7 @@ class WecomAibotClient:
             name="WecomAibotClient",
         )
         self._background_thread.start()
-        logger.info("[WeCom AI Bot] 后台客户端已启动")
+        logger.info("[WeCom AI Bot] Background client started")
         return True
 
     def _run_background(self) -> None:
@@ -809,7 +809,7 @@ class WecomAibotClient:
                 if not self._auth_failed and not self._cycle_failed:
                     loop.run_forever()
             except Exception as exc:
-                logger.error("[WeCom AI Bot] 运行异常: %s", exc)
+                logger.error("[WeCom AI Bot] Runtime exception: %s", exc)
             finally:
                 self._teardown_cycle(loop)
 
@@ -821,7 +821,7 @@ class WecomAibotClient:
                 if delay is None:
                     break  # 已在 _handle_auth_error 记录放弃并置 _running=False
                 logger.warning(
-                    "[WeCom AI Bot] 将在 %.1f 秒后重建连接并重新认证", delay
+                    "[WeCom AI Bot] Rebuilding connection and re-authenticating in %.1fs", delay
                 )
                 if self._stop_event.wait(delay):
                     break
@@ -834,8 +834,8 @@ class WecomAibotClient:
                 else self._next_cycle_retry_delay()
             )
             logger.info(
-                "[WeCom AI Bot] 连接周期结束，%.1f 秒后重建连接周期"
-                "（第 %s 次周期重建）",
+                "[WeCom AI Bot] Connection cycle ended, rebuilding cycle in %.1fs "
+                "(cycle rebuild #%s)",
                 delay,
                 self._cycle_attempts,
             )
@@ -848,7 +848,7 @@ class WecomAibotClient:
             if self._sdk_client is not None:
                 self._sdk_client.disconnect()
         except Exception as exc:
-            logger.debug("[WeCom AI Bot] 断开 SDK 客户端异常: %s", exc)
+            logger.debug("[WeCom AI Bot] Exception disconnecting SDK client: %s", exc)
 
         try:
             # 给 SDK 内部排队的清理协程一个执行窗口
@@ -892,27 +892,27 @@ class WecomAibotClient:
         with handler._outbound_quota_lock:
             if not handler._outbound_minute_limiter.would_allow(conversation_key):
                 logger.warning(
-                    "[WeCom AI Bot] 会话推送超限（分钟30条或小时1000条配额），"
-                    "消息已丢弃: key=%s",
+                    "[WeCom AI Bot] Conversation push rate limit exceeded (30/min or 1000/hour quota), "
+                    "message dropped: key=%s",
                     conversation_key,
                 )
                 return False
             if not handler._outbound_hour_limiter.would_allow(conversation_key):
                 logger.warning(
-                    "[WeCom AI Bot] 会话推送超限（分钟30条或小时1000条配额），"
-                    "消息已丢弃: key=%s",
+                    "[WeCom AI Bot] Conversation push rate limit exceeded (30/min or 1000/hour quota), "
+                    "message dropped: key=%s",
                     conversation_key,
                 )
                 return False
             if not self._running or self._sdk_client is None:
                 logger.warning(
-                    "[WeCom AI Bot] 长连接客户端未运行，无法主动推送: key=%s",
+                    "[WeCom AI Bot] Long-connection client not running, cannot proactively push: key=%s",
                     conversation_key,
                 )
                 return False  # 零记账
             loop = self._loop
             if loop is None or loop.is_closed():
-                logger.error("[WeCom AI Bot] 无法主动推送：SDK 事件循环不可用")
+                logger.error("[WeCom AI Bot] Cannot proactively push: SDK event loop unavailable")
                 return False  # 零记账
             send_token = uuid.uuid4().hex
             handler._outbound_minute_limiter.record(
@@ -937,7 +937,7 @@ class WecomAibotClient:
                 )
                 send_coro.close()
                 logger.error(
-                    "[WeCom AI Bot] 主动推送调度失败（已退还配额）: key=%s, "
+                    "[WeCom AI Bot] Proactive push dispatch failed (quota refunded): key=%s, "
                     "error=%s",
                     conversation_key,
                     exc,
@@ -952,7 +952,7 @@ class WecomAibotClient:
                 # RuntimeError 形态送达）→ 确定失败，按 token 退款
                 handler._refund_outbound_send(conversation_key, send_token)
                 logger.warning(
-                    "[WeCom AI Bot] 主动推送被服务端拒绝（已退还配额）: "
+                    "[WeCom AI Bot] Proactive push rejected by server (quota refunded): "
                     "key=%s, error=%s",
                     conversation_key,
                     exc,
@@ -968,7 +968,7 @@ class WecomAibotClient:
                 )
             )
             logger.warning(
-                "[WeCom AI Bot] 主动推送结果不确定（保留记账）: key=%s, error=%s",
+                "[WeCom AI Bot] Proactive push result uncertain (quota kept): key=%s, error=%s",
                 conversation_key,
                 exc,
             )
@@ -978,8 +978,8 @@ class WecomAibotClient:
         if errcode:
             handler._refund_outbound_send(conversation_key, send_token)
             logger.warning(
-                "[WeCom AI Bot] 主动推送被拒（已退还配额）: key=%s, errcode=%s, "
-                "errmsg=%s（官方前置条件：目标用户须先与机器人建过会话）",
+                "[WeCom AI Bot] Proactive push rejected (quota refunded): key=%s, errcode=%s, "
+                "errmsg=%s (official precondition: target user must have an existing session with the bot)",
                 conversation_key,
                 errcode,
                 ack.get("errmsg") if isinstance(ack, dict) else None,
@@ -996,7 +996,7 @@ class WecomAibotClient:
         thread = self._background_thread
         if thread and thread.is_alive() and thread is not threading.current_thread():
             thread.join(timeout=5)
-        logger.info("[WeCom AI Bot] 客户端已停止")
+        logger.info("[WeCom AI Bot] Client stopped")
 
     @property
     def is_running(self) -> bool:
@@ -1022,16 +1022,16 @@ def get_wecom_aibot_client() -> Optional[WecomAibotClient]:
         if _wecom_aibot_client is None:
             if not WECOM_AIBOT_SDK_AVAILABLE:
                 logger.warning(
-                    "[WeCom AI Bot] wecom-aibot-python-sdk SDK 未安装，长连接模式不可用"
+                    "[WeCom AI Bot] wecom-aibot-python-sdk SDK not installed, long-connection mode unavailable"
                 )
                 logger.warning(
-                    "[WeCom AI Bot] 请运行: pip install wecom-aibot-python-sdk"
+                    "[WeCom AI Bot] Please run: pip install wecom-aibot-python-sdk"
                 )
                 return None
             try:
                 _wecom_aibot_client = WecomAibotClient()
             except (ImportError, ValueError) as exc:
-                logger.warning("[WeCom AI Bot] 无法创建客户端: %s", exc)
+                logger.warning("[WeCom AI Bot] Failed to create client: %s", exc)
                 return None
         return _wecom_aibot_client
 
@@ -1043,14 +1043,14 @@ def start_wecom_aibot_background() -> bool:
         是否成功启动（未启用 / 缺凭证 / 缺 SDK 均为 False，零副作用）
     """
     if not WECOM_AIBOT_SDK_AVAILABLE:
-        logger.warning("[WeCom AI Bot] SDK 未安装，无法启动长连接客户端")
-        logger.warning("[WeCom AI Bot] 请运行: pip install wecom-aibot-python-sdk")
+        logger.warning("[WeCom AI Bot] SDK not installed, cannot start long-connection client")
+        logger.warning("[WeCom AI Bot] Please run: pip install wecom-aibot-python-sdk")
         return False
 
     config = get_config()
 
     if not getattr(config, "wecom_aibot_enabled", False):
-        logger.debug("[WeCom AI Bot] WECOM_AIBOT_ENABLED 未开启，跳过启动")
+        logger.debug("[WeCom AI Bot] WECOM_AIBOT_ENABLED is not enabled, skipping startup")
         return False
 
     client = get_wecom_aibot_client()

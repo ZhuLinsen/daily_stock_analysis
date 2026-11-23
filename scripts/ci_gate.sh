@@ -17,6 +17,11 @@ flake8_checks() {
 
 deterministic_checks() {
   echo "==> backend-gate: local deterministic checks"
+  local python_bin="python3"
+  if command -v python >/dev/null 2>&1; then
+    python_bin="python"
+  fi
+  "$python_bin" scripts/check_english_logs.py
   ./scripts/test.sh code
   ./scripts/test.sh yfinance
 }

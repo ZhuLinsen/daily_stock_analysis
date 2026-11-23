@@ -1872,7 +1872,7 @@ class Config:
                 invalid_searxng_urls.append(u)
         if invalid_searxng_urls:
             logger.warning(
-                "SEARXNG_BASE_URLS 中存在无效 URL，已忽略（数量: %d）",
+                "Invalid URL(s) in SEARXNG_BASE_URLS ignored (count: %d)",
                 len(invalid_searxng_urls),
             )
         searxng_public_instances_enabled = parse_env_bool(
@@ -3202,7 +3202,8 @@ class Config:
             return normalized
 
         logging.getLogger(__name__).warning(
-            f"MARKET_REVIEW_REGION 配置值 '{value}' 无效，已回退为默认值 'cn'（合法值：cn / hk / us / jp / kr / tw / both；支持逗号分隔有效值）"
+            f"Invalid MARKET_REVIEW_REGION value '{value}', falling back to default 'cn' "
+            "(valid: cn / hk / us / jp / kr / tw / both; comma-separated valid values supported)"
         )
         return 'cn'
 
@@ -3214,7 +3215,8 @@ class Config:
         if v in ('green_up', 'red_up'):
             return v
         logging.getLogger(__name__).warning(
-            "MARKET_REVIEW_COLOR_SCHEME 配置值 '%s' 无效，已回退为默认值 'green_up'（合法值：green_up / red_up）",
+            "Invalid MARKET_REVIEW_COLOR_SCHEME value '%s', falling back to default 'green_up' "
+            "(valid: green_up / red_up)",
             value,
         )
         return 'green_up'
