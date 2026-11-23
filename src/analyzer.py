@@ -4349,14 +4349,17 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
             time.sleep(request_delay)
         
         # 优先从上下文获取股票名称（由 main.py 传入）
-        name = context.get('stock_name')
-        if not name or name.startswith('股票'):
+        raw_name = context.get('stock_name')
+        resolved_name = raw_name if raw_name and not raw_name.startswith('股票') else None
+        if not resolved_name:
             # 备选：从 realtime 中获取
             if 'realtime' in context and context['realtime'].get('name'):
-                name = context['realtime']['name']
+                resolved_name = context['realtime']['name']
             else:
                 # 最后从映射表获取
-                name = STOCK_NAME_MAP.get(code, f'股票{code}')
+                resolved_name = STOCK_NAME_MAP.get(code)
+        name = resolved_name or f'股票{code}'
+        log_name = resolved_name or code
 
         backend_error = self.get_generation_backend_config_error()
         if backend_error is not None and not self._can_use_generation_fallback(backend_error):
@@ -4476,7 +4479,7 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
             if backend_id in LOCAL_CLI_GENERATION_BACKEND_IDS:
                 model_name = backend_id
                 legacy_audit_context["transport"] = backend_id
-            logger.info(f"========== AI Analysis {name}({code}) ==========")
+            logger.info(f"========== AI Analysis {log_name}({code}) ==========")
             logger.info(f"[LLM Config] Model: {model_name}")
             logger.info(f"[LLM Config] Prompt length: {len(prompt)} chars")
             logger.info(f"[LLM Config] Includes news: {'Yes' if news_context else 'No'}")
@@ -4520,7 +4523,7 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                     if exc.last_response_text is not None:
                         logger.warning(
                             "[LLM JSON] %s(%s): all models returned invalid JSON, using text fallback",
-                            name,
+                            log_name,
                             code,
                         )
                         response_text = exc.last_response_text
@@ -4601,7 +4604,7 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                 persist_llm_usage(llm_usage, model_used, call_type="analysis", stock_code=code)
 
             logger.info(
-                f"[LLM Parse] {name}({code}) analysis done: "
+                f"[LLM Parse] {log_name}({code}) analysis done: "
                 f"{result.trend_prediction}, score {result.sentiment_score}"
             )
 
@@ -4609,7 +4612,7 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
             
         except Exception as e:
             safe_error = self._sanitize_hermes_exception_text(e)
-            logger.error("AI analysis %s(%s) failed: %s", name, code, safe_error)
+            logger.error("AI analysis %s(%s) failed: %s", log_name, code, safe_error)
             return AnalysisResult(
                 code=code,
                 name=name,

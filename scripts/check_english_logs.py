@@ -100,7 +100,11 @@ def _iter_log_string_constants(node: ast.AST) -> Iterator[ast.Constant]:
         return
 
     if isinstance(node, ast.Subscript):
-        yield from _iter_log_string_constants(node.value)
+        if isinstance(node.value, ast.Dict):
+            for val in node.value.values:
+                yield from _iter_log_string_constants(val)
+        else:
+            yield from _iter_log_string_constants(node.value)
         return
 
     if isinstance(node, ast.Compare) and node.ops and all(isinstance(op, (ast.In, ast.NotIn)) for op in node.ops):
@@ -111,54 +115,404 @@ def _iter_log_string_constants(node: ast.AST) -> Iterator[ast.Constant]:
         and isinstance(node.func, ast.Attribute)
         and node.func.attr == "get"
         and node.args
-        and isinstance(node.args[0], ast.Constant)
-        and isinstance(node.args[0].value, str)
     ):
-        yield from _iter_log_string_constants(node.func.value)
+        if isinstance(node.func.value, ast.Dict):
+            for val in node.func.value.values:
+                yield from _iter_log_string_constants(val)
+        else:
+            yield from _iter_log_string_constants(node.func.value)
         for arg in node.args[1:]:
             yield from _iter_log_string_constants(arg)
         for kw in node.keywords:
-            yield from _iter_log_string_constants(kw.value)
+            if kw.arg != "key":
+                yield from _iter_log_string_constants(kw.value)
         return
 
     for child in ast.iter_child_nodes(node):
         yield from _iter_log_string_constants(child)
 
 
-def find_cjk_logs_in_source(source: str, path: Path) -> List[LogViolation]:
-    """Inspect Python source text and return logger calls with CJK string literals."""
-    tree = ast.parse(source, filename=str(path))
-    violations: List[LogViolation] = []
-    seen: set[tuple[int, str]] = set()
+def _cjk_from_string_expr(
+    expr: ast.AST,
+    env: dict[str, str],
+    dict_env: dict[str, dict[str, str]],
+) -> List[str]:
+    """Collect static or locally propagated CJK text fragments produced by *expr*."""
+    if isinstance(expr, ast.Constant):
+        if isinstance(expr.value, str) and CJK_RE.search(expr.value):
+            return [expr.value.strip().replace("\n", "\\n")]
+        return []
+    if isinstance(expr, ast.Name):
+        return [env[expr.id]] if expr.id in env else []
+    if isinstance(expr, ast.Compare) and expr.ops and all(isinstance(op, (ast.In, ast.NotIn)) for op in expr.ops):
+        return []
+    if isinstance(expr, ast.Subscript):
+        if isinstance(expr.value, ast.Name) and expr.value.id in dict_env:
+            if isinstance(expr.slice, ast.Constant) and isinstance(expr.slice.value, str):
+                val = dict_env[expr.value.id].get(expr.slice.value)
+                return [val] if val else []
+            return list(dict_env[expr.value.id].values())[:1]
+        if isinstance(expr.value, ast.Dict):
+            hits: List[str] = []
+            for val in expr.value.values:
+                hits.extend(_cjk_from_string_expr(val, env, dict_env))
+            return hits
+        return _cjk_from_string_expr(expr.value, env, dict_env)
+    if isinstance(expr, ast.JoinedStr):
+        hits = []
+        for part in expr.values:
+            inner = part.value if isinstance(part, ast.FormattedValue) else part
+            hits.extend(_cjk_from_string_expr(inner, env, dict_env))
+        return hits
+    if isinstance(expr, ast.BinOp) and isinstance(expr.op, (ast.Add, ast.Mod)):
+        return _cjk_from_string_expr(expr.left, env, dict_env) + _cjk_from_string_expr(expr.right, env, dict_env)
+    if isinstance(expr, ast.BoolOp):
+        hits = []
+        for val in expr.values:
+            hits.extend(_cjk_from_string_expr(val, env, dict_env))
+        return hits
+    if isinstance(expr, ast.IfExp):
+        return _cjk_from_string_expr(expr.body, env, dict_env) + _cjk_from_string_expr(expr.orelse, env, dict_env)
+    if isinstance(expr, ast.Call) and isinstance(expr.func, ast.Attribute):
+        if expr.func.attr == "get":
+            hits = []
+            if isinstance(expr.func.value, ast.Dict):
+                for val in expr.func.value.values:
+                    hits.extend(_cjk_from_string_expr(val, env, dict_env))
+            elif isinstance(expr.func.value, ast.Name) and expr.func.value.id in dict_env:
+                if expr.args and isinstance(expr.args[0], ast.Constant) and isinstance(expr.args[0].value, str):
+                    val = dict_env[expr.func.value.id].get(expr.args[0].value)
+                    if val:
+                        hits.append(val)
+                else:
+                    hits.extend(list(dict_env[expr.func.value.id].values())[:1])
+            else:
+                hits.extend(_cjk_from_string_expr(expr.func.value, env, dict_env))
+            for arg in expr.args[1:]:
+                hits.extend(_cjk_from_string_expr(arg, env, dict_env))
+            for kw in expr.keywords:
+                if kw.arg != "key":
+                    hits.extend(_cjk_from_string_expr(kw.value, env, dict_env))
+            return hits
+        if expr.func.attr in {"format", "join"}:
+            hits = _cjk_from_string_expr(expr.func.value, env, dict_env)
+            for arg in expr.args:
+                hits.extend(_cjk_from_string_expr(arg, env, dict_env))
+            for kw in expr.keywords:
+                hits.extend(_cjk_from_string_expr(kw.value, env, dict_env))
+            return hits
+        if expr.func.attr in {"strip", "lstrip", "rstrip", "lower", "upper", "replace"}:
+            hits = _cjk_from_string_expr(expr.func.value, env, dict_env)
+            if expr.func.attr == "replace" and len(expr.args) >= 2:
+                hits.extend(_cjk_from_string_expr(expr.args[1], env, dict_env))
+            return hits
+    return []
 
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call) or not _is_logger_call(node):
+
+def _extract_dict_cjk(
+    node: ast.Dict,
+    env: dict[str, str],
+    dict_env: dict[str, dict[str, str]],
+) -> dict[str, str]:
+    """Extract CJK values (ignoring dict keys) from a dict literal."""
+    res: dict[str, str] = {}
+    for key, val in zip(node.keys, node.values):
+        if key is None or val is None:
             continue
+        hits = _cjk_from_string_expr(val, env, dict_env)
+        if hits:
+            key_name = key.value if isinstance(key, ast.Constant) and isinstance(key.value, str) else "*"
+            res[key_name] = hits[0]
+    return res
 
+
+def _merge_env(e1: dict[str, str], e2: dict[str, str]) -> dict[str, str]:
+    merged = dict(e1)
+    for k, v in e2.items():
+        merged.setdefault(k, v)
+    return merged
+
+
+def _merge_dict_env(
+    d1: dict[str, dict[str, str]],
+    d2: dict[str, dict[str, str]],
+) -> dict[str, dict[str, str]]:
+    merged = {k: dict(v) for k, v in d1.items()}
+    for k, v in d2.items():
+        if k not in merged:
+            merged[k] = dict(v)
+        else:
+            for mk, mv in v.items():
+                merged[k].setdefault(mk, mv)
+    return merged
+
+
+def _cjk_in_log_expr(
+    expr: ast.AST,
+    env: dict[str, str],
+    dict_env: dict[str, dict[str, str]],
+) -> List[str]:
+    """Return CJK snippets found directly or via propagated local bindings in a log argument."""
+    snippets: List[str] = []
+    for const in _iter_log_string_constants(expr):
+        if isinstance(const.value, str) and CJK_RE.search(const.value):
+            snippets.append(const.value.strip().replace("\n", "\\n"))
+
+    def _walk_refs(node: ast.AST) -> None:
+        if isinstance(node, ast.Compare) and node.ops and all(isinstance(op, (ast.In, ast.NotIn)) for op in node.ops):
+            return
+        if isinstance(node, ast.Subscript):
+            if isinstance(node.value, ast.Name) and node.value.id in dict_env:
+                if isinstance(node.slice, ast.Constant) and isinstance(node.slice.value, str):
+                    val = dict_env[node.value.id].get(node.slice.value)
+                    if val:
+                        snippets.append(val)
+                else:
+                    snippets.extend(list(dict_env[node.value.id].values())[:1])
+                return
+            _walk_refs(node.value)
+            return
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "get" and node.args:
+            if isinstance(node.func.value, ast.Name) and node.func.value.id in dict_env:
+                if isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
+                    val = dict_env[node.func.value.id].get(node.args[0].value)
+                    if val:
+                        snippets.append(val)
+                else:
+                    snippets.extend(list(dict_env[node.func.value.id].values())[:1])
+            else:
+                _walk_refs(node.func.value)
+            for arg in node.args[1:]:
+                _walk_refs(arg)
+            for kw in node.keywords:
+                if kw.arg != "key":
+                    _walk_refs(kw.value)
+            return
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load) and node.id in env:
+            snippets.append(env[node.id])
+            return
+        for child in ast.iter_child_nodes(node):
+            _walk_refs(child)
+
+    _walk_refs(expr)
+    return snippets
+
+
+def _bind_target(
+    target: ast.AST,
+    value: ast.AST,
+    env: dict[str, str],
+    dict_env: dict[str, dict[str, str]],
+) -> None:
+    """Update *env* / *dict_env* for an assignment target and RHS expression."""
+    if isinstance(target, ast.Name):
+        dict_hits = _extract_dict_cjk(value, env, dict_env) if isinstance(value, ast.Dict) else {}
+        str_hits = _cjk_from_string_expr(value, env, dict_env)
+        if str_hits:
+            env[target.id] = str_hits[0]
+            dict_env.pop(target.id, None)
+        elif dict_hits:
+            dict_env[target.id] = dict_hits
+            env.pop(target.id, None)
+        else:
+            env.pop(target.id, None)
+            dict_env.pop(target.id, None)
+        return
+
+    if isinstance(target, (ast.Tuple, ast.List)):
+        if isinstance(value, (ast.Tuple, ast.List)) and len(target.elts) == len(value.elts):
+            for sub_tgt, sub_val in zip(target.elts, value.elts):
+                _bind_target(sub_tgt, sub_val, env, dict_env)
+            return
+        for sub_tgt in target.elts:
+            if isinstance(sub_tgt, ast.Name):
+                env.pop(sub_tgt.id, None)
+                dict_env.pop(sub_tgt.id, None)
+
+
+def _unbind_target(target: ast.AST, env: dict[str, str], dict_env: dict[str, dict[str, str]]) -> None:
+    if isinstance(target, ast.Name):
+        env.pop(target.id, None)
+        dict_env.pop(target.id, None)
+    elif isinstance(target, (ast.Tuple, ast.List, ast.Starred)):
+        children = target.elts if isinstance(target, (ast.Tuple, ast.List)) else [target.value]
+        for child in children:
+            _unbind_target(child, env, dict_env)
+
+
+def _scan_expr_calls(
+    node: ast.AST,
+    env: dict[str, str],
+    dict_env: dict[str, dict[str, str]],
+    path: Path,
+    violations: List[LogViolation],
+    seen: set[tuple[int, str]],
+    *,
+    descend_scopes: bool = False,
+) -> None:
+    """Inspect logger calls inside non-statement expressions (or nested functions if queued)."""
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and not descend_scopes:
+        return
+    if isinstance(node, ast.Call) and _is_logger_call(node):
         exprs: List[ast.AST] = list(node.args) + [kw.value for kw in node.keywords]
         matched_snippets: List[str] = []
         for expr in exprs:
-            for const in _iter_log_string_constants(expr):
-                if isinstance(const.value, str) and CJK_RE.search(const.value):
-                    matched_snippets.append(const.value.strip().replace("\n", "\\n"))
-
+            for snippet in _cjk_in_log_expr(expr, env, dict_env):
+                if snippet not in matched_snippets:
+                    matched_snippets.append(snippet)
         if matched_snippets:
             key = (node.lineno, node.func.attr)
-            if key in seen:
-                continue
-            seen.add(key)
-            joined = " | ".join(matched_snippets)
-            if len(joined) > 120:
-                joined = joined[:117] + "..."
-            violations.append(
-                LogViolation(
-                    path=path,
-                    line=node.lineno,
-                    method=node.func.attr,
-                    snippet=joined,
+            if key not in seen:
+                seen.add(key)
+                joined = " | ".join(matched_snippets)
+                if len(joined) > 120:
+                    joined = joined[:117] + "..."
+                violations.append(
+                    LogViolation(
+                        path=path,
+                        line=node.lineno,
+                        method=node.func.attr,
+                        snippet=joined,
+                    )
                 )
-            )
+    for child in ast.iter_child_nodes(node):
+        _scan_expr_calls(child, env, dict_env, path, violations, seen, descend_scopes=descend_scopes)
 
+
+def _scan_statements(
+    stmts: Sequence[ast.stmt],
+    init_env: dict[str, str],
+    init_dict_env: dict[str, dict[str, str]],
+    path: Path,
+    violations: List[LogViolation],
+    seen: set[tuple[int, str]],
+) -> tuple[dict[str, str], dict[str, dict[str, str]]]:
+    """Flow-sensitively scan statements and propagate local CJK variable/dict bindings."""
+    env = dict(init_env)
+    dict_env = {k: dict(v) for k, v in init_dict_env.items()}
+
+    for stmt in stmts:
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            fn_env = dict(env)
+            fn_dict_env = {k: dict(v) for k, v in dict_env.items()}
+            for arg in list(stmt.args.posonlyargs) + list(stmt.args.args) + list(stmt.args.kwonlyargs):
+                fn_env.pop(arg.arg, None)
+                fn_dict_env.pop(arg.arg, None)
+            if stmt.args.vararg:
+                fn_env.pop(stmt.args.vararg.arg, None)
+                fn_dict_env.pop(stmt.args.vararg.arg, None)
+            if stmt.args.kwarg:
+                fn_env.pop(stmt.args.kwarg.arg, None)
+                fn_dict_env.pop(stmt.args.kwarg.arg, None)
+            _scan_statements(stmt.body, fn_env, fn_dict_env, path, violations, seen)
+            continue
+
+        if isinstance(stmt, ast.ClassDef):
+            for child in stmt.body:
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    _scan_statements([child], env, dict_env, path, violations, seen)
+            continue
+
+        if isinstance(stmt, ast.Assign):
+            _scan_expr_calls(stmt.value, env, dict_env, path, violations, seen)
+            for tgt in stmt.targets:
+                _bind_target(tgt, stmt.value, env, dict_env)
+            continue
+
+        if isinstance(stmt, ast.AnnAssign):
+            if stmt.value is not None:
+                _scan_expr_calls(stmt.value, env, dict_env, path, violations, seen)
+                _bind_target(stmt.target, stmt.value, env, dict_env)
+            continue
+
+        if isinstance(stmt, ast.AugAssign):
+            _scan_expr_calls(stmt.value, env, dict_env, path, violations, seen)
+            if isinstance(stmt.target, ast.Name):
+                str_hits = _cjk_from_string_expr(stmt.value, env, dict_env)
+                if str_hits:
+                    env[stmt.target.id] = str_hits[0]
+                    dict_env.pop(stmt.target.id, None)
+            continue
+
+        if isinstance(stmt, ast.If):
+            _scan_expr_calls(stmt.test, env, dict_env, path, violations, seen)
+            e_body, d_body = _scan_statements(stmt.body, env, dict_env, path, violations, seen)
+            e_else, d_else = (
+                _scan_statements(stmt.orelse, env, dict_env, path, violations, seen)
+                if stmt.orelse
+                else (env, dict_env)
+            )
+            env = _merge_env(e_body, e_else)
+            dict_env = _merge_dict_env(d_body, d_else)
+            continue
+
+        if isinstance(stmt, ast.Try):
+            e_try, d_try = _scan_statements(stmt.body, env, dict_env, path, violations, seen)
+            e_norm, d_norm = (
+                _scan_statements(stmt.orelse, e_try, d_try, path, violations, seen)
+                if stmt.orelse
+                else (e_try, d_try)
+            )
+            e_join, d_join = dict(e_norm), {k: dict(v) for k, v in d_norm.items()}
+            e_pre_h, d_pre_h = _merge_env(env, e_try), _merge_dict_env(dict_env, d_try)
+            for handler in stmt.handlers:
+                eh_in = dict(e_pre_h)
+                dh_in = {k: dict(v) for k, v in d_pre_h.items()}
+                if handler.name:
+                    eh_in.pop(handler.name, None)
+                    dh_in.pop(handler.name, None)
+                eh, dh = _scan_statements(handler.body, eh_in, dh_in, path, violations, seen)
+                e_join = _merge_env(e_join, eh)
+                d_join = _merge_dict_env(d_join, dh)
+            if stmt.finalbody:
+                env, dict_env = _scan_statements(stmt.finalbody, e_join, d_join, path, violations, seen)
+            else:
+                env, dict_env = e_join, d_join
+            continue
+
+        if isinstance(stmt, (ast.For, ast.AsyncFor)):
+            _scan_expr_calls(stmt.iter, env, dict_env, path, violations, seen)
+            e_loop, d_loop = dict(env), {k: dict(v) for k, v in dict_env.items()}
+            _unbind_target(stmt.target, e_loop, d_loop)
+            e_body, d_body = _scan_statements(stmt.body, e_loop, d_loop, path, violations, seen)
+            env = _merge_env(env, e_body)
+            dict_env = _merge_dict_env(dict_env, d_body)
+            if stmt.orelse:
+                e_else, d_else = _scan_statements(stmt.orelse, env, dict_env, path, violations, seen)
+                env = _merge_env(env, e_else)
+                dict_env = _merge_dict_env(dict_env, d_else)
+            continue
+
+        if isinstance(stmt, ast.While):
+            _scan_expr_calls(stmt.test, env, dict_env, path, violations, seen)
+            e_body, d_body = _scan_statements(stmt.body, env, dict_env, path, violations, seen)
+            env = _merge_env(env, e_body)
+            dict_env = _merge_dict_env(dict_env, d_body)
+            if stmt.orelse:
+                e_else, d_else = _scan_statements(stmt.orelse, env, dict_env, path, violations, seen)
+                env = _merge_env(env, e_else)
+                dict_env = _merge_dict_env(dict_env, d_else)
+            continue
+
+        if isinstance(stmt, (ast.With, ast.AsyncWith)):
+            for item in stmt.items:
+                _scan_expr_calls(item.context_expr, env, dict_env, path, violations, seen)
+                if item.optional_vars is not None:
+                    _unbind_target(item.optional_vars, env, dict_env)
+            env, dict_env = _scan_statements(stmt.body, env, dict_env, path, violations, seen)
+            continue
+
+        _scan_expr_calls(stmt, env, dict_env, path, violations, seen)
+
+    return env, dict_env
+
+
+def find_cjk_logs_in_source(source: str, path: Path) -> List[LogViolation]:
+    """Inspect Python source text and return logger calls with CJK strings or propagated vars."""
+    tree = ast.parse(source, filename=str(path))
+    violations: List[LogViolation] = []
+    seen: set[tuple[int, str]] = set()
+    _scan_statements(tree.body, {}, {}, path, violations, seen)
     violations.sort(key=lambda item: (item.line, item.method))
     return violations
 

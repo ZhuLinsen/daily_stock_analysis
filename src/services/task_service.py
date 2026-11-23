@@ -239,8 +239,10 @@ class TaskService:
                 return {"success": True, "task_id": task_id, "result": result_data}
             else:
                 fail_message = "分析返回空结果"
+                log_fail_message = "empty analysis result"
                 if result is not None:
                     fail_message = result.error_message or fail_message
+                    log_fail_message = result.error_message or log_fail_message
                 with self._tasks_lock:
                     self._tasks[task_id].update({
                         "status": "failed",
@@ -248,7 +250,7 @@ class TaskService:
                         "error": fail_message
                     })
 
-                logger.warning(f"[TaskService] Stock {code} analysis failed: {fail_message}")
+                logger.warning(f"[TaskService] Stock {code} analysis failed: {log_fail_message}")
                 return {"success": False, "task_id": task_id, "error": fail_message}
 
         except Exception as e:

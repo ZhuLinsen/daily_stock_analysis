@@ -1082,7 +1082,7 @@ class DataFetcherManager:
                     len(source_order),
                     source_name,
                     target.canonical_id,
-                    reason,
+                    "data source not configured or temporarily unavailable",
                 )
                 errors.append(f"[{source_name}] {reason}")
                 continue
@@ -1106,7 +1106,7 @@ class DataFetcherManager:
                     len(source_order),
                     source_name,
                     target.canonical_id,
-                    reason,
+                    "circuit breaker open",
                 )
                 errors.append(reason)
                 continue
@@ -1297,7 +1297,7 @@ class DataFetcherManager:
                     len(source_order),
                     source_name,
                     target.canonical_id,
-                    reason,
+                    "data source not configured or temporarily unavailable",
                 )
                 errors.append(f"[{source_name}] {reason}")
                 continue

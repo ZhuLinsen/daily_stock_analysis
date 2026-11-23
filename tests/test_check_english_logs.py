@@ -85,16 +85,47 @@ def test_allows_membership_checks_with_chinese_column_names() -> None:
     assert find_cjk_logs_in_source(source, Path("membership.py")) == []
 
 
-def test_detects_inline_cjk_format_args_while_allowing_dynamic_vars() -> None:
+def test_allows_dynamic_runtime_vars_and_cjk_lookup_key_mappings() -> None:
     source = (
-        'localized = "用户报告正文"\n'
-        'logger.info("Report: %s", localized)\n'
-        'logger.info("US %s %s route", "AAPL", "首选")\n'
+        'def run(report_loader, src):\n'
+        '    localized = report_loader()\n'
+        '    logger.info("Report: %s", localized)\n'
+        '    logger.info("Source: %s", {"新浪": "Sina", "腾讯": "Tencent"}.get(src, src))\n'
+        '    return localized\n'
     )
-    violations = find_cjk_logs_in_source(source, Path("format_args.py"))
-    assert [(v.line, v.method, v.snippet) for v in violations] == [
-        (3, "info", "首选"),
+    assert find_cjk_logs_in_source(source, Path("dynamic_runtime.py")) == []
+
+
+def test_detects_inline_and_assigned_cjk_variables_and_dict_values(tmp_path: Path) -> None:
+    source = (
+        'def run(code):\n'
+        '    logger.info("US %s %s route", "AAPL", "首选")\n'
+        '    error_summary = "所有数据源获取 AAPL 失败"\n'
+        '    logger.error(f"fetch failed: {error_summary}")\n'
+        '    logger.error("fetch failed: %s", error_summary)\n'
+        '    if code == 403:\n'
+        '        err = "余额不足"\n'
+        '    else:\n'
+        '        err = "HTTP 500"\n'
+        '    logger.warning("Failed: %s", err)\n'
+        '    dim = {"desc": "最新消息", "name": "latest"}\n'
+        '    logger.info("Allowed field: %s", dim["name"])\n'
+        '    logger.info("Blocked field: %s", dim["desc"])\n'
+    )
+    violations = find_cjk_logs_in_source(source, Path("propagated_vars.py"))
+    assert [(v.line, v.method) for v in violations] == [
+        (2, "info"),
+        (4, "error"),
+        (5, "error"),
+        (10, "warning"),
+        (13, "info"),
     ]
+    sample_file = tmp_path / "propagated.py"
+    sample_file.write_text(
+        'error_summary = "所有数据源获取 AAPL 失败"\nlogger.error(f"fetch failed: {error_summary}")\n',
+        encoding="utf-8",
+    )
+    assert main([str(sample_file)]) == 1
 
 
 def test_cli_exit_code_on_clean_and_dirty_files(tmp_path: Path) -> None:

@@ -611,7 +611,7 @@ class StockAnalysisPipeline:
 
         except Exception as e:
             error_msg = f"获取/保存数据失败: {str(e)}"
-            logger.error(f"{stock_name}({code}) {error_msg}")
+            logger.error(f"{stock_name}({code}) failed to fetch/save data: {e}")
             return False, error_msg
     
     def analyze_stock(
@@ -734,6 +734,7 @@ class StockAnalysisPipeline:
                 )
 
             # 如果还是没有名称，使用代码作为名称
+            log_stock_name = stock_name or code
             if not stock_name:
                 stock_name = f'股票{code}'
 
@@ -743,19 +744,19 @@ class StockAnalysisPipeline:
             # 指数目标跳过筹码分布（INDEX_SKIP_MODULES 能力矩阵）
             chip_data = None
             if is_index and "chip_distribution" in INDEX_SKIP_MODULES:
-                logger.debug(f"{stock_name}({code}) skipping chip distribution for index target")
+                logger.debug(f"{log_stock_name}({code}) skipping chip distribution for index target")
             else:
                 try:
                     chip_data = self.fetcher_manager.get_chip_distribution(code)
                     if chip_data:
                         logger.info(
-                            f"{stock_name}({code}) chip distribution: profit_ratio={chip_data.profit_ratio:.1%}, "
+                            f"{log_stock_name}({code}) chip distribution: profit_ratio={chip_data.profit_ratio:.1%}, "
                             f"90%_concentration={chip_data.concentration_90:.2%}"
                         )
                     else:
-                        logger.debug(f"{stock_name}({code}) chip distribution fetch failed or disabled")
+                        logger.debug(f"{log_stock_name}({code}) chip distribution fetch failed or disabled")
                 except Exception as e:
-                    logger.warning(f"{stock_name}({code}) failed to fetch chip distribution: {e}")
+                    logger.warning(f"{log_stock_name}({code}) failed to fetch chip distribution: {e}")
 
             # If agent mode is explicitly enabled, or specific agent skills are configured, use the Agent analysis pipeline.
             # NOTE: use config.agent_mode (explicit opt-in) instead of
@@ -766,13 +767,13 @@ class StockAnalysisPipeline:
             if not use_agent:
                 if self.analysis_skills:
                     use_agent = True
-                    logger.info(f"{stock_name}({code}) Auto-enabled agent mode due to request skills: {self.analysis_skills}")
+                    logger.info(f"{log_stock_name}({code}) Auto-enabled agent mode due to request skills: {self.analysis_skills}")
             if not use_agent:
                 # Auto-enable agent mode when specific skills are configured (e.g., scheduled task with strategy)
                 configured_skills = getattr(self.config, 'agent_skills', [])
                 if configured_skills and configured_skills != ['all']:
                     use_agent = True
-                    logger.info(f"{stock_name}({code}) Auto-enabled agent mode due to configured skills: {configured_skills}")
+                    logger.info(f"{log_stock_name}({code}) Auto-enabled agent mode due to configured skills: {configured_skills}")
 
             self._emit_progress(32, f"{stock_name}：正在聚合基本面与趋势数据")
             if _is_current_stock_cancelled():
@@ -791,7 +792,7 @@ class StockAnalysisPipeline:
                 "corporate_events",
             }
             if is_index and INDEX_SKIP_MODULES.intersection(fundamental_modules):
-                logger.debug(f"{stock_name}({code}) skipping fundamental aggregation for index target")
+                logger.debug(f"{log_stock_name}({code}) skipping fundamental aggregation for index target")
                 fundamental_context = self.fetcher_manager.build_not_supported_fundamental_context(
                     code,
                     "index target: fundamental modules skipped",
@@ -808,13 +809,13 @@ class StockAnalysisPipeline:
                         ),
                     )
                 except Exception as e:
-                    logger.warning(f"{stock_name}({code}) fundamental aggregation failed: {e}")
+                    logger.warning(f"{log_stock_name}({code}) fundamental aggregation failed: {e}")
                     fundamental_context = self.fetcher_manager.build_failed_fundamental_context(code, str(e))
 
             if _is_current_stock_cancelled():
                 return None
             if is_index and "belong_boards" in INDEX_SKIP_MODULES:
-                logger.debug(f"{stock_name}({code}) skipping belong boards for index target")
+                logger.debug(f"{log_stock_name}({code}) skipping belong boards for index target")
                 if isinstance(fundamental_context, dict):
                     fundamental_context = dict(fundamental_context)
                     fundamental_context["belong_boards"] = []
@@ -845,7 +846,7 @@ class StockAnalysisPipeline:
                         coverage=fundamental_context.get("coverage", {}),
                     )
                 except Exception as e:
-                    logger.debug(f"{stock_name}({code}) failed to write fundamental snapshot: {e}")
+                    logger.debug(f"{log_stock_name}({code}) failed to write fundamental snapshot: {e}")
 
             # Step 3: 趋势分析（基于交易理念）— 在 Agent 分支之前执行，供两条路径共用
             trend_result: Optional[TrendAnalysisResult] = None
@@ -865,14 +866,14 @@ class StockAnalysisPipeline:
                         )
                     trend_result = self.trend_analyzer.analyze(df, code)
                     logger.info(
-                        f"{stock_name}({code}) trend analysis: {trend_result.trend_status.value}, "
+                        f"{log_stock_name}({code}) trend analysis: {trend_result.trend_status.value}, "
                         f"buy_signal={trend_result.buy_signal.value}, score={trend_result.signal_score}"
                     )
             except Exception as e:
-                logger.warning(f"{stock_name}({code}) trend analysis failed: {e}", exc_info=True)
+                logger.warning(f"{log_stock_name}({code}) trend analysis failed: {e}", exc_info=True)
 
             if use_agent:
-                logger.info(f"{stock_name}({code}) enabling Agent mode for analysis")
+                logger.info(f"{log_stock_name}({code}) enabling Agent mode for analysis")
                 self._emit_progress(58, f"{stock_name}：正在切换 Agent 分析链路")
                 return self._analyze_with_agent(
                     code,
@@ -901,7 +902,7 @@ class StockAnalysisPipeline:
             news_result_count: Optional[int] = None
             self._emit_progress(46, f"{stock_name}：正在检索新闻与舆情")
             if self.search_service is not None and self.search_service.is_available:
-                logger.info(f"{stock_name}({code}) starting multi-dimensional intelligence search...")
+                logger.info(f"{log_stock_name}({code}) starting multi-dimensional intelligence search...")
 
                 # 检索已发起：此后即使一条都没拿到，也是「执行了但零命中」而非
                 # 「未执行检索」。若停留在 None，搜索源全线失败这一最该提示的场景
@@ -928,8 +929,8 @@ class StockAnalysisPipeline:
                         len(r.results) for r in intel_results.values() if r.success
                     )
                     news_result_count = total_results
-                    logger.info(f"{stock_name}({code}) intelligence search completed: {total_results} total results")
-                    logger.debug(f"{stock_name}({code}) intelligence search results:\n{news_context}")
+                    logger.info(f"{log_stock_name}({code}) intelligence search completed: {total_results} total results")
+                    logger.debug(f"{log_stock_name}({code}) intelligence search results:\n{news_context}")
 
                     # 保存新闻情报到数据库（用于后续复盘与查询）
                     try:
@@ -947,9 +948,9 @@ class StockAnalysisPipeline:
                                     query_context=query_context
                                 )
                     except Exception as e:
-                        logger.warning(f"{stock_name}({code}) failed to save news intelligence: {e}")
+                        logger.warning(f"{log_stock_name}({code}) failed to save news intelligence: {e}")
             else:
-                logger.info(f"{stock_name}({code}) search service unavailable, skipping intelligence search")
+                logger.info(f"{log_stock_name}({code}) search service unavailable, skipping intelligence search")
 
             # Step 4.5: Social sentiment intelligence (US stocks only)
             social_evidence_context: Optional[str] = None
@@ -961,14 +962,14 @@ class StockAnalysisPipeline:
                     if _is_current_stock_cancelled():
                         return None
                     if social_context:
-                        logger.info(f"{stock_name}({code}) Social sentiment data retrieved")
+                        logger.info(f"{log_stock_name}({code}) Social sentiment data retrieved")
                         social_evidence_context = social_context
                         if news_context:
                             news_context = news_context + "\n\n" + social_context
                         else:
                             news_context = social_context
                 except Exception as e:
-                    logger.warning(f"{stock_name}({code}) Social sentiment fetch failed: {e}")
+                    logger.warning(f"{log_stock_name}({code}) Social sentiment fetch failed: {e}")
 
             if persisted_intelligence_context:
                 news_context = (
@@ -985,7 +986,7 @@ class StockAnalysisPipeline:
 
             if context is None:
                 logger.warning(
-                    f"{stock_name}({code}) unable to get historical market data, "
+                    f"{log_stock_name}({code}) unable to get historical market data, "
                     "analyzing from news and realtime quote only"
                 )
                 _mkt_date = get_market_now(
@@ -1187,7 +1188,7 @@ class StockAnalysisPipeline:
 
             # Step 8: 保存分析历史记录
             if result and result.success and _is_current_stock_cancelled():
-                logger.warning(f"{stock_name}({code}) cancelled due to timeout, skipping analysis history save")
+                logger.warning(f"{log_stock_name}({code}) cancelled due to timeout, skipping analysis history save")
                 return None
             if result and result.success:
                 try:
@@ -1242,13 +1243,13 @@ class StockAnalysisPipeline:
                         metadata_saved=False,
                         error_message=e,
                     )
-                    logger.warning(f"{stock_name}({code}) failed to save analysis history: {e}")
+                    logger.warning(f"{log_stock_name}({code}) failed to save analysis history: {e}")
 
             return result
 
         except Exception as e:
-            logger.error(f"{stock_name}({code}) analysis failed: {e}")
-            logger.exception(f"{stock_name}({code}) detailed error:")
+            logger.error(f"{log_stock_name}({code}) analysis failed: {e}")
+            logger.exception(f"{log_stock_name}({code}) detailed error:")
             return None
     
     def _enhance_context(

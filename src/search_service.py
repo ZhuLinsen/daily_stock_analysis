@@ -1092,16 +1092,21 @@ class BochaSearchProvider(BaseSearchProvider):
                 # 根据错误码处理
                 if response.status_code == 403:
                     error_msg = f"余额不足: {error_message}"
+                    log_error = f"Insufficient balance/quota: {error_message}"
                 elif response.status_code == 401:
                     error_msg = f"API KEY无效: {error_message}"
+                    log_error = f"Invalid API key: {error_message}"
                 elif response.status_code == 400:
                     error_msg = f"请求参数错误: {error_message}"
+                    log_error = f"Invalid request parameters: {error_message}"
                 elif response.status_code == 429:
                     error_msg = f"请求频率达到限制: {error_message}"
+                    log_error = f"Rate limit exceeded: {error_message}"
                 else:
                     error_msg = f"HTTP {response.status_code}: {error_message}"
+                    log_error = error_msg
                 
-                logger.warning(f"[Bocha] Search failed: {error_msg}")
+                logger.warning(f"[Bocha] Search failed: {log_error}")
                 
                 return SearchResponse(
                     query=query,
@@ -1116,7 +1121,7 @@ class BochaSearchProvider(BaseSearchProvider):
                 data = response.json()
             except ValueError as e:
                 error_msg = f"响应JSON解析失败: {str(e)}"
-                logger.error(f"[Bocha] {error_msg}")
+                logger.error(f"[Bocha] Response JSON parse failed: {str(e)}")
                 return SearchResponse(
                     query=query,
                     results=[],
@@ -1172,7 +1177,7 @@ class BochaSearchProvider(BaseSearchProvider):
             
         except requests.exceptions.Timeout:
             error_msg = "请求超时"
-            logger.error(f"[Bocha] {error_msg}")
+            logger.error("[Bocha] Request timed out")
             return SearchResponse(
                 query=query,
                 results=[],
@@ -1182,7 +1187,7 @@ class BochaSearchProvider(BaseSearchProvider):
             )
         except requests.exceptions.RequestException as e:
             error_msg = f"网络请求失败: {str(e)}"
-            logger.error(f"[Bocha] {error_msg}")
+            logger.error(f"[Bocha] Network request failed: {str(e)}")
             return SearchResponse(
                 query=query,
                 results=[],
@@ -1192,7 +1197,7 @@ class BochaSearchProvider(BaseSearchProvider):
             )
         except Exception as e:
             error_msg = f"未知错误: {str(e)}"
-            logger.error(f"[Bocha] {error_msg}")
+            logger.error(f"[Bocha] Unexpected error: {str(e)}")
             return SearchResponse(
                 query=query,
                 results=[],
@@ -1277,14 +1282,18 @@ class AnspireSearchProvider(BaseSearchProvider):
                 # 根据错误码处理
                 if response.status_code == 403:
                     error_msg = f"余额不足或权限不足：{error_message}"
+                    log_error = f"Insufficient balance or permission: {error_message}"
                 elif response.status_code == 401:
                     error_msg = f"API KEY 无效：{error_message}"
+                    log_error = f"Invalid API key: {error_message}"
                 elif response.status_code == 400:
                     error_msg = f"请求参数错误：{error_message}"
+                    log_error = f"Invalid request parameters: {error_message}"
                 else:
                     error_msg = f"HTTP {response.status_code}: {error_message}"
+                    log_error = error_msg
                 
-                logger.warning(f"[Anspire] Search failed: {error_msg}")
+                logger.warning(f"[Anspire] Search failed: {log_error}")
                 
                 return SearchResponse(
                     query=query,
@@ -1299,7 +1308,7 @@ class AnspireSearchProvider(BaseSearchProvider):
                 data = response.json()
             except ValueError as e:
                 error_msg = f"响应 JSON 解析失败：{str(e)}"
-                logger.error(f"[Anspire] {error_msg}")
+                logger.error(f"[Anspire] Response JSON parse failed: {str(e)}")
                 return SearchResponse(
                     query=query,
                     results=[],
@@ -1310,7 +1319,8 @@ class AnspireSearchProvider(BaseSearchProvider):
             
             if 'code' in data and data.get('code') != 200:
                 error_msg = data.get('msg') or f"API 返回错误码：{data.get('code')}"
-                logger.warning(f"[Anspire] Search failed: {error_msg}")
+                log_error = data.get('msg') or f"API returned error code: {data.get('code')}"
+                logger.warning(f"[Anspire] Search failed: {log_error}")
                 return SearchResponse(
                     query=query,
                     results=[],
@@ -1321,7 +1331,7 @@ class AnspireSearchProvider(BaseSearchProvider):
             
             if 'results' not in data:
                 error_msg = "响应中缺少 results 字段"
-                logger.error(f"[Anspire] {error_msg}, raw response: {data}")
+                logger.error(f"[Anspire] Missing results field in response, raw response: {data}")
                 return SearchResponse(
                     query=query,
                     results=[],
@@ -1361,7 +1371,7 @@ class AnspireSearchProvider(BaseSearchProvider):
             
         except requests.exceptions.Timeout:
             error_msg = "请求超时"
-            logger.error(f"[Anspire] {error_msg}")
+            logger.error("[Anspire] Request timed out")
             return SearchResponse(
                 query=query,
                 results=[],
@@ -1371,7 +1381,7 @@ class AnspireSearchProvider(BaseSearchProvider):
             )
         except requests.exceptions.RequestException as e:
             error_msg = f"网络请求失败：{str(e)}"
-            logger.error(f"[Anspire] {error_msg}")
+            logger.error(f"[Anspire] Network request failed: {str(e)}")
             return SearchResponse(
                 query=query,
                 results=[],
@@ -1381,7 +1391,7 @@ class AnspireSearchProvider(BaseSearchProvider):
             )
         except Exception as e:
             error_msg = f"未知错误：{str(e)}"
-            logger.error(f"[Anspire] {error_msg}")
+            logger.error(f"[Anspire] Unexpected error: {str(e)}")
             return SearchResponse(
                 query=query,
                 results=[],
@@ -1716,7 +1726,7 @@ class BraveSearchProvider(BaseSearchProvider):
                 data = response.json()
             except ValueError as e:
                 error_msg = f"响应JSON解析失败: {str(e)}"
-                logger.error(f"[Brave] {error_msg}")
+                logger.error(f"[Brave] Response JSON parse failed: {str(e)}")
                 return SearchResponse(
                     query=query,
                     results=[],
@@ -1764,7 +1774,7 @@ class BraveSearchProvider(BaseSearchProvider):
 
         except requests.exceptions.Timeout:
             error_msg = "请求超时"
-            logger.error(f"[Brave] {error_msg}")
+            logger.error("[Brave] Request timed out")
             return SearchResponse(
                 query=query,
                 results=[],
@@ -1774,7 +1784,7 @@ class BraveSearchProvider(BaseSearchProvider):
             )
         except requests.exceptions.RequestException as e:
             error_msg = f"网络请求失败: {str(e)}"
-            logger.error(f"[Brave] {error_msg}")
+            logger.error(f"[Brave] Network request failed: {str(e)}")
             return SearchResponse(
                 query=query,
                 results=[],
@@ -1784,7 +1794,7 @@ class BraveSearchProvider(BaseSearchProvider):
             )
         except Exception as e:
             error_msg = f"未知错误: {str(e)}"
-            logger.error(f"[Brave] {error_msg}")
+            logger.error(f"[Brave] Unexpected error: {str(e)}")
             return SearchResponse(
                 query=query,
                 results=[],
@@ -4252,13 +4262,14 @@ class SearchService:
             query = f"{stock_name} {stock_code} 股票 最新消息"
 
         subject_label = f"{stock_name}({stock_code})" if stock_code else stock_name
+        query_len = len(query)
         logger.info(
             (
-                "Searching stock news: %s, query='%s', window: last %s day(s) "
+                "Searching stock news: %s, query_len=%d, window: last %s day(s) "
                 "(profile=%s, NEWS_MAX_AGE_DAYS=%s, prefer_chinese=%s), target=%s, provider_request=%s"
             ),
             subject_label,
-            query,
+            query_len,
             search_days,
             self.news_strategy_profile,
             self.news_max_age_days,
