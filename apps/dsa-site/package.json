@@ -11,7 +11,7 @@
     "predev": "node scripts/prepare-docs.mjs",
     "dev": "astro dev",
     "prebuild": "node scripts/prepare-docs.mjs",
-    "build": "astro build",
+    "build": "node scripts/build.mjs",
     "preview": "astro preview",
     "test": "node --test tests/*.test.mjs",
     "deploy": "npx wrangler deploy"
