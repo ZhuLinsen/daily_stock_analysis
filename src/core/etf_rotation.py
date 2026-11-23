@@ -233,10 +233,14 @@ def run_backtest(
             can_trade = all(pd.notna(quoted.loc[day, code]) for code in involved)
             # Same holdings -> no trade; drifted weights are not re-equalised.
             if can_trade and (entry is None or set(target) != set(weights)):
-                if entry is None:
-                    entry = i
                 turnover = _turnover(weights, target)
                 if turnover > 1e-9:
+                    # ``entry`` marks the first real fill, not the first
+                    # executed schedule: an all-cash target traded against an
+                    # all-cash portfolio moves nothing, so the curves must not
+                    # start there.
+                    if entry is None:
+                        entry = i
                     equity *= 1.0 - turnover * cost_rate
                     trades.append(Trade(signal_day, day, dict(weights), target, turnover))
                 weights, holdings = target, new_holdings
