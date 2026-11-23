@@ -72,6 +72,7 @@ docs: update README deployment section
 ### Code Style
 
 - Python code follows PEP 8 (line length: 120).
+- Write all runtime `logger.*` / `logging.*` messages in concise English; keep user-facing reports, notifications, and bot replies localized.
 - Add docstrings to functions and classes.
 - Add comments for non-obvious logic.
 - Update relevant documentation when adding new features.
@@ -97,6 +98,9 @@ Separately, the repository also has a non-blocking `network-smoke` workflow in `
 # Backend gate (recommended)
 python -m pip install -r .github/requirements-ci.txt
 ./scripts/ci_gate.sh
+
+# Check runtime Python logs for English-only messages
+python scripts/check_english_logs.py
 
 # Frontend gate (only if you changed apps/dsa-web/)
 cd apps/dsa-web

@@ -76,7 +76,7 @@ class TelegramSender:
         )
 
         if not (self._telegram_config["bot_token"] and target_chat_id):
-            logger.warning("Telegram 配置不完整，跳过推送")
+            logger.warning("Telegram configuration incomplete, skipping")
             return False
 
         bot_token = self._telegram_config['bot_token']
@@ -92,7 +92,7 @@ class TelegramSender:
 
             sanitized_content = strip_hidden_markdown_metadata(content).strip()
             if not sanitized_content:
-                logger.warning("Telegram 消息内容为空，跳过推送")
+                logger.warning("Telegram message content is empty, skipping")
                 return False
 
             telegram_content = self._convert_to_telegram_markdown(sanitized_content)
@@ -118,7 +118,7 @@ class TelegramSender:
                 )
 
         except Exception as e:
-            logger.error(f"发送 Telegram 消息失败: {e}")
+            logger.error(f"Failed to send Telegram message: {e}")
             import traceback
             logger.debug(traceback.format_exc())
             return False
@@ -165,11 +165,11 @@ class TelegramSender:
             if response.status_code == 200:
                 result = response.json()
                 if result.get('ok'):
-                    logger.info("Telegram 消息发送成功")
+                    logger.info("Telegram message sent successfully")
                     return True
                 else:
-                    error_desc = result.get('description', '未知错误')
-                    logger.error(f"Telegram 返回错误: {error_desc}")
+                    error_desc = result.get('description', 'unknown error')
+                    logger.error(f"Telegram returned error: {error_desc}")
 
                     # If Markdown parsing failed, fall back to plain text
                     if self._should_fallback_to_plain_text(error_desc=error_desc):
@@ -197,8 +197,8 @@ class TelegramSender:
                 if self._should_fallback_to_plain_text(response_text=response.text):
                     if self._send_plain_text_fallback(api_url, payload, text, timeout_seconds=timeout_seconds):
                         return True
-                logger.error(f"Telegram 请求失败: HTTP {response.status_code}")
-                logger.error(f"响应内容: {response.text}")
+                logger.error(f"Telegram request failed: HTTP {response.status_code}")
+                logger.error(f"Response body: {response.text}")
                 return False
 
         return False
@@ -243,7 +243,7 @@ class TelegramSender:
         timeout_seconds: Optional[float] = None,
     ) -> bool:
         """Retry Telegram send without parse_mode when Markdown parsing fails."""
-        logger.info("Telegram Markdown 解析失败，尝试使用纯文本格式重新发送...")
+        logger.info("Telegram Markdown parsing failed, retrying in plain text...")
         plain_payload = dict(payload)
         plain_payload.pop('parse_mode', None)
         plain_payload['text'] = text
@@ -258,20 +258,20 @@ class TelegramSender:
             try:
                 result = response.json()
             except ValueError:
-                logger.error("Telegram 纯文本回退失败: 响应不是有效 JSON")
-                logger.error(f"响应内容: {response.text}")
+                logger.error("Telegram plain-text fallback failed: response is not valid JSON")
+                logger.error(f"Response body: {response.text}")
                 return False
 
             if result.get('ok'):
-                logger.info("Telegram 消息发送成功（纯文本）")
+                logger.info("Telegram message sent successfully (plain text)")
                 return True
 
-            logger.error("Telegram 纯文本回退失败: Telegram API 返回 ok=false")
-            logger.error(f"响应内容: {response.text}")
+            logger.error("Telegram plain-text fallback failed: Telegram API returned ok=false")
+            logger.error(f"Response body: {response.text}")
             return False
 
-        logger.error(f"Telegram 纯文本回退失败: HTTP {response.status_code}")
-        logger.error(f"响应内容: {response.text}")
+        logger.error(f"Telegram plain-text fallback failed: HTTP {response.status_code}")
+        logger.error(f"Response body: {response.text}")
         return False
 
     def _send_telegram_chunked(
@@ -301,7 +301,7 @@ class TelegramSender:
                 return all_success
 
             chunk_content = "\n---\n".join(current_chunk)
-            logger.info(f"发送 Telegram 消息块 {chunk_index}...")
+            logger.info(f"Sending Telegram message chunk {chunk_index}...")
             chunk_index += 1
             current_chunk = []
             current_length = 0
@@ -331,7 +331,7 @@ class TelegramSender:
                 if not _flush_chunk():
                     return False
                 for long_chunk in _split_long_section(section, max_length):
-                    logger.info(f"发送 Telegram 消息块 {chunk_index}...")
+                    logger.info(f"Sending Telegram message chunk {chunk_index}...")
                     chunk_index += 1
                     if not self._send_telegram_message(
                         api_url,
@@ -378,12 +378,12 @@ class TelegramSender:
             files = {"photo": ("report.png", image_bytes, "image/png")}
             response = requests.post(api_url, data=data, files=files, timeout=30)
             if response.status_code == 200 and response.json().get('ok'):
-                logger.info("Telegram 图片发送成功")
+                logger.info("Telegram image sent successfully")
                 return True
-            logger.error("Telegram 图片发送失败: %s", response.text[:200])
+            logger.error("Telegram image send failed: %s", response.text[:200])
             return False
         except Exception as e:
-            logger.error("Telegram 图片发送异常: %s", e)
+            logger.error("Telegram image send exception: %s", e)
             return False
 
     def _convert_to_telegram_markdown(self, text: str) -> str:

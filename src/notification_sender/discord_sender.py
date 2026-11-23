@@ -73,7 +73,7 @@ class DiscordSender:
         """
         sanitized_content = strip_hidden_markdown_metadata(content).strip()
         if not sanitized_content:
-            logger.warning("Discord 消息内容为空，跳过推送")
+            logger.warning("Discord message content is empty, skipping notification")
             return False
 
         # 分割内容，避免单条消息超过 Discord 限制
@@ -97,7 +97,7 @@ class DiscordSender:
                 timeout_seconds=timeout_seconds,
             )
 
-        logger.warning("Discord 配置不完整，跳过推送")
+        logger.warning("Discord configuration incomplete, skipping notification")
         return False
 
     def _split_discord_content(self, content: str) -> list[str]:
@@ -112,7 +112,7 @@ class DiscordSender:
                 )
             return chunks
         except ValueError as e:
-            logger.error("分割 Discord 消息失败: %s", e)
+            logger.error("Failed to split Discord message: %s", e)
             return chunk_content_by_max_words(
                 content,
                 DISCORD_MAX_CONTENT_LENGTH,
@@ -132,15 +132,15 @@ class DiscordSender:
         success_count = 0
 
         if total_chunks > 1:
-            logger.info("Discord %s 分批发送：共 %d 批", channel_name, total_chunks)
+            logger.info("Discord %s sending in %d chunks", channel_name, total_chunks)
 
         for i, chunk in enumerate(chunks):
             if send_once(chunk, timeout_seconds=timeout_seconds):
                 success_count += 1
                 if total_chunks > 1:
-                    logger.info("Discord %s 第 %d/%d 批发送成功", channel_name, i + 1, total_chunks)
+                    logger.info("Discord %s chunk %d/%d sent successfully", channel_name, i + 1, total_chunks)
             else:
-                logger.error("Discord %s 第 %d/%d 批发送失败", channel_name, i + 1, total_chunks)
+                logger.error("Discord %s chunk %d/%d send failed", channel_name, i + 1, total_chunks)
 
             if i < total_chunks - 1:
                 time.sleep(DISCORD_CHUNK_SLEEP_SECONDS)
@@ -229,7 +229,7 @@ class DiscordSender:
                 if attempt < DISCORD_MAX_RETRIES:
                     delay = 2 ** attempt
                     logger.warning(
-                        "Discord %s 请求异常（%d/%d）：%s，%s 秒后重试",
+                        "Discord %s request error (%d/%d): %s; retrying in %ss",
                         channel_name,
                         attempt,
                         DISCORD_MAX_RETRIES,
@@ -238,17 +238,17 @@ class DiscordSender:
                     )
                     time.sleep(delay)
                     continue
-                logger.error("Discord %s 请求重试后仍失败: %s", channel_name, e)
+                logger.error("Discord %s request failed after retries: %s", channel_name, e)
                 return False
 
             if response.status_code in success_statuses:
-                logger.info("Discord %s 消息发送成功", channel_name)
+                logger.info("Discord %s message sent successfully", channel_name)
                 return True
 
             if response.status_code == 429 and attempt < DISCORD_MAX_RETRIES:
                 retry_after = self._get_retry_after_seconds(response, attempt)
                 logger.warning(
-                    "Discord %s 触发限流，%s 秒后重试（%d/%d）",
+                    "Discord %s rate limited; retrying in %ss (%d/%d)",
                     channel_name,
                     retry_after,
                     attempt,
@@ -260,7 +260,7 @@ class DiscordSender:
             if response.status_code >= 500 and attempt < DISCORD_MAX_RETRIES:
                 delay = 2 ** attempt
                 logger.warning(
-                    "Discord %s 服务端错误 HTTP %s（%d/%d），%s 秒后重试",
+                    "Discord %s server error HTTP %s (%d/%d); retrying in %ss",
                     channel_name,
                     response.status_code,
                     attempt,
@@ -271,7 +271,7 @@ class DiscordSender:
                 continue
 
             logger.error(
-                "Discord %s 发送失败: %s %s",
+                "Discord %s send failed: %s %s",
                 channel_name,
                 response.status_code,
                 response.text,

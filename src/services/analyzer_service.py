@@ -130,7 +130,7 @@ def perform_market_review(
 
     lock_token = try_acquire_market_review_lock(config)
     if lock_token is None:
-        logger.warning("大盘复盘正在执行中，跳过本次大盘复盘")
+        logger.warning("Market review is already running, skipping this market review")
         return None
 
     try:

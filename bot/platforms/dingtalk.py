@@ -60,14 +60,14 @@ class DingtalkPlatform(BotPlatform):
         3. 比对签名
         """
         if not self._app_secret:
-            logger.warning("[DingTalk] 未配置 app_secret，跳过签名验证")
+            logger.warning("[DingTalk] app_secret not configured, skipping signature verification")
             return True
         
         timestamp = headers.get('timestamp', '')
         sign = headers.get('sign', '')
         
         if not timestamp or not sign:
-            logger.warning("[DingTalk] 缺少签名参数")
+            logger.warning("[DingTalk] Missing signature parameters")
             return True  # 可能是不需要签名的请求
         
         # 验证时间戳（1小时内有效）
@@ -75,10 +75,10 @@ class DingtalkPlatform(BotPlatform):
             request_time = int(timestamp)
             current_time = int(time.time() * 1000)
             if abs(current_time - request_time) > 3600 * 1000:
-                logger.warning("[DingTalk] 时间戳过期")
+                logger.warning("[DingTalk] Timestamp expired")
                 return False
         except ValueError:
-            logger.warning("[DingTalk] 无效的时间戳")
+            logger.warning("[DingTalk] Invalid timestamp")
             return False
         
         # 计算签名
@@ -91,7 +91,7 @@ class DingtalkPlatform(BotPlatform):
         expected_sign = base64.b64encode(hmac_code).decode('utf-8')
         
         if sign != expected_sign:
-            logger.warning(f"[DingTalk] 签名验证失败")
+            logger.warning("[DingTalk] Signature verification failed")
             return False
         
         return True
@@ -129,7 +129,7 @@ class DingtalkPlatform(BotPlatform):
         # 检查消息类型
         msg_type = data.get('msgtype', '')
         if msg_type != 'text':
-            logger.debug(f"[DingTalk] 忽略非文本消息: {msg_type}")
+            logger.debug(f"[DingTalk] Ignoring non-text message: {msg_type}")
             return None
         
         # 获取消息内容
@@ -260,7 +260,7 @@ class DingtalkPlatform(BotPlatform):
             是否发送成功
         """
         if not session_webhook:
-            logger.warning("[DingTalk] 没有可用的 sessionWebhook")
+            logger.warning("[DingTalk] No available sessionWebhook")
             return False
         
         import requests
@@ -300,15 +300,15 @@ class DingtalkPlatform(BotPlatform):
             if resp.status_code == 200:
                 result = resp.json()
                 if result.get('errcode') == 0:
-                    logger.info("[DingTalk] sessionWebhook 发送成功")
+                    logger.info("[DingTalk] sessionWebhook sent successfully")
                     return True
                 else:
-                    logger.error(f"[DingTalk] sessionWebhook 发送失败: {result}")
+                    logger.error(f"[DingTalk] sessionWebhook send failed: {result}")
                     return False
             else:
-                logger.error(f"[DingTalk] sessionWebhook 请求失败: {resp.status_code}")
+                logger.error(f"[DingTalk] sessionWebhook request failed: {resp.status_code}")
                 return False
                 
         except Exception as e:
-            logger.error(f"[DingTalk] sessionWebhook 发送异常: {e}")
+            logger.error(f"[DingTalk] sessionWebhook send exception: {e}")
             return False

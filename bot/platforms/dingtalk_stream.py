@@ -35,8 +35,8 @@ try:
     DINGTALK_STREAM_AVAILABLE = True
 except ImportError:
     DINGTALK_STREAM_AVAILABLE = False
-    logger.warning("[DingTalk Stream] dingtalk-stream SDK 未安装，Stream 模式不可用")
-    logger.warning("[DingTalk Stream] 请运行: pip install dingtalk-stream")
+    logger.warning("[DingTalk Stream] dingtalk-stream SDK not installed, Stream mode unavailable")
+    logger.warning("[DingTalk Stream] Please run: pip install dingtalk-stream")
 
 from bot.models import BotMessage, BotResponse, ChatType
 
@@ -117,7 +117,7 @@ class DingtalkStreamHandler:
                     return AckMessage.STATUS_OK, 'OK'
 
                 except Exception as e:
-                    self.logger.error(f"[DingTalk Stream] 处理消息失败: {e}")
+                    self.logger.error(f"[DingTalk Stream] Failed to process message: {e}")
                     self.logger.exception(e)
                     return AckMessage.STATUS_SYSTEM_EXCEPTION, str(e)
 
@@ -179,7 +179,7 @@ class DingtalkStreamHandler:
             )
 
         except Exception as e:
-            logger.error(f"[DingTalk Stream] 解析消息失败: {e}")
+            logger.error(f"[DingTalk Stream] Failed to parse message: {e}")
             return None
 
     def _extract_command(self, text: str) -> str:
@@ -250,7 +250,7 @@ class DingtalkStreamClient:
 
         此方法会阻塞当前线程，直到客户端停止。
         """
-        logger.info("[DingTalk Stream] 正在启动...")
+        logger.info("[DingTalk Stream] Starting...")
 
         # 创建凭证
         credential = dingtalk_stream.Credential(
@@ -269,7 +269,7 @@ class DingtalkStreamClient:
         )
 
         self._running = True
-        logger.info("[DingTalk Stream] 客户端已启动，等待消息...")
+        logger.info("[DingTalk Stream] Client started, waiting for messages...")
 
         # 启动（阻塞）
         self._client.start_forever()
@@ -281,7 +281,7 @@ class DingtalkStreamClient:
         适用于与其他服务（如 WebUI）同时运行的场景。
         """
         if self._background_thread and self._background_thread.is_alive():
-            logger.warning("[DingTalk Stream] 客户端已在运行")
+            logger.warning("[DingTalk Stream] Client is already running")
             return
 
         self._running = True
@@ -291,7 +291,7 @@ class DingtalkStreamClient:
             name="DingtalkStreamClient"
         )
         self._background_thread.start()
-        logger.info("[DingTalk Stream] 后台客户端已启动")
+        logger.info("[DingTalk Stream] Background client started")
 
     def _run_in_background(self) -> None:
         """后台运行（处理异常和重连）"""
@@ -301,15 +301,15 @@ class DingtalkStreamClient:
             try:
                 self.start()
             except Exception as e:
-                logger.error(f"[DingTalk Stream] 运行异常: {e}")
+                logger.error(f"[DingTalk Stream] Runtime exception: {e}")
                 if self._running:
-                    logger.info("[DingTalk Stream] 5 秒后重连...")
+                    logger.info("[DingTalk Stream] Reconnecting in 5 seconds...")
                     time.sleep(5)
 
     def stop(self) -> None:
         """停止客户端"""
         self._running = False
-        logger.info("[DingTalk Stream] 客户端已停止")
+        logger.info("[DingTalk Stream] Client stopped")
 
     @property
     def is_running(self) -> bool:
@@ -329,7 +329,7 @@ def get_dingtalk_stream_client() -> Optional[DingtalkStreamClient]:
         try:
             _stream_client = DingtalkStreamClient()
         except (ImportError, ValueError) as e:
-            logger.warning(f"[DingTalk Stream] 无法创建客户端: {e}")
+            logger.warning(f"[DingTalk Stream] Failed to create client: {e}")
             return None
 
     return _stream_client

@@ -71,12 +71,12 @@ class WechatSender:
             是否发送成功
         """
         if not self._wechat_url:
-            logger.warning("企业微信 Webhook 未配置，跳过推送")
+            logger.warning("WeChat Work Webhook not configured, skipping notification")
             return False
         
         sanitized_content = strip_hidden_markdown_metadata(content).strip()
         if not sanitized_content:
-            logger.warning("企业微信消息内容为空，跳过推送")
+            logger.warning("WeChat Work message content is empty, skipping notification")
             return False
 
         # 根据消息类型动态限制上限，避免 text 类型超过企业微信 2048 字节限制
@@ -88,13 +88,13 @@ class WechatSender:
         # 检查字节长度，超长则分批发送
         content_bytes = len(sanitized_content.encode('utf-8'))
         if content_bytes > max_bytes:
-            logger.info(f"消息内容超长({content_bytes}字节/{len(content)}字符)，将分批发送")
+            logger.info(f"Message exceeds limit ({content_bytes} bytes/{len(content)} chars), sending in chunks")
             return self._send_wechat_chunked(sanitized_content, max_bytes)
         
         try:
             return self._send_wechat_message(sanitized_content, timeout_seconds=timeout_seconds)
         except Exception as e:
-            logger.error(f"发送企业微信消息失败: {e}")
+            logger.error(f"Failed to send WeChat Work message: {e}")
             return False
 
     def _send_wechat_image(self, image_bytes: bytes) -> bool:
@@ -103,7 +103,7 @@ class WechatSender:
             return False
         if len(image_bytes) > WECHAT_IMAGE_MAX_BYTES:
             logger.warning(
-                "企业微信图片超限 (%d > %d bytes)，拒绝发送，调用方应 fallback 为文本",
+                "WeChat Work image exceeds limit (%d > %d bytes); refusing to send, caller should fall back to text",
                 len(image_bytes), WECHAT_IMAGE_MAX_BYTES,
             )
             return False
@@ -120,14 +120,14 @@ class WechatSender:
             if response.status_code == 200:
                 result = response.json()
                 if result.get("errcode") == 0:
-                    logger.info("企业微信图片发送成功")
+                    logger.info("WeChat Work image sent successfully")
                     return True
-                logger.error("企业微信图片发送失败: %s", result.get("errmsg", ""))
+                logger.error("WeChat Work image send failed: %s", result.get("errmsg", ""))
             else:
-                logger.error("企业微信请求失败: HTTP %s", response.status_code)
+                logger.error("WeChat Work request failed: HTTP %s", response.status_code)
             return False
         except Exception as e:
-            logger.error("企业微信图片发送异常: %s", e)
+            logger.error("WeChat Work image send error: %s", e)
             return False
     
     def _send_wechat_message(self, content: str, *, timeout_seconds: Optional[float] = None) -> bool:
@@ -144,13 +144,13 @@ class WechatSender:
         if response.status_code == 200:
             result = response.json()
             if result.get('errcode') == 0:
-                logger.info("企业微信消息发送成功")
+                logger.info("WeChat Work message sent successfully")
                 return True
             else:
-                logger.error(f"企业微信返回错误: {result}")
+                logger.error(f"WeChat Work returned error: {result}")
                 return False
         else:
-            logger.error(f"企业微信请求失败: {response.status_code}")
+            logger.error(f"WeChat Work request failed: {response.status_code}")
             return False
         
     def _send_wechat_chunked(self, content: str, max_bytes: int) -> bool:
@@ -173,7 +173,7 @@ class WechatSender:
             if self._send_wechat_message(chunk):
                 success_count += 1
             else:
-                logger.error(f"企业微信第 {i+1}/{total_chunks} 批发送失败")
+                logger.error(f"WeChat Work chunk {i+1}/{total_chunks} send failed")
             if i < total_chunks - 1:
                 time.sleep(1)
         return success_count == len(chunks)
