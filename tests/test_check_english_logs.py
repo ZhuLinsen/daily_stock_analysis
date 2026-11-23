@@ -54,15 +54,47 @@ def test_detects_adjacent_literals_and_log_message_forms() -> None:
     ]
 
 
-def test_ignores_localized_dynamic_logging_parameters_and_extra_fields() -> None:
+def test_detects_japanese_korean_and_extension_b_cjk(tmp_path: Path) -> None:
+    source = (
+        'logger.warning("テスト")\n'
+        'logger.info("エラーです")\n'
+        'logger.error("실패")\n'
+        'logger.warning("𠮷")\n'
+    )
+    violations = find_cjk_logs_in_source(source, Path("multi_cjk.py"))
+    assert [(v.line, v.method) for v in violations] == [
+        (1, "warning"),
+        (2, "info"),
+        (3, "error"),
+        (4, "warning"),
+    ]
+    for idx, line in enumerate(source.splitlines()):
+        sample_file = tmp_path / f"sample_{idx}.py"
+        sample_file.write_text(f"{line}\n", encoding="utf-8")
+        assert main([str(sample_file)]) == 1
+
+
+def test_allows_membership_checks_with_chinese_column_names() -> None:
+    source = (
+        'def run(df, col):\n'
+        '    logger.info("Has close column: %s", "收盘" in df.columns)\n'
+        '    logger.info("Missing close column: %s", "收盘" not in df.columns)\n'
+        '    logger.info(f"has close={\'收盘\' in df.columns}")\n'
+        '    logger.info("Expected col: %s", col in ("收盘", "开盘"))\n'
+    )
+    assert find_cjk_logs_in_source(source, Path("membership.py")) == []
+
+
+def test_detects_inline_cjk_format_args_while_allowing_dynamic_vars() -> None:
     source = (
         'localized = "用户报告正文"\n'
         'logger.info("Report: %s", localized)\n'
-        'logger.info("Report", extra={"用户": "alice"})\n'
-        'logger.log(logging.INFO, "Report: %s", {"名称": "示例"})\n'
+        'logger.info("US %s %s route", "AAPL", "首选")\n'
     )
-    violations = find_cjk_logs_in_source(source, Path("dynamic_params.py"))
-    assert violations == []
+    violations = find_cjk_logs_in_source(source, Path("format_args.py"))
+    assert [(v.line, v.method, v.snippet) for v in violations] == [
+        (3, "info", "首选"),
+    ]
 
 
 def test_cli_exit_code_on_clean_and_dirty_files(tmp_path: Path) -> None:

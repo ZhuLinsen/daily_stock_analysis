@@ -124,7 +124,7 @@ class PushplusSender:
                 logger.info("PushPlus message sent successfully")
                 return True
 
-            error_msg = result.get('msg', '未知错误')
+            error_msg = result.get('msg', 'unknown error')
             logger.error(f"PushPlus returned error: {error_msg}")
             return False
 

@@ -142,7 +142,7 @@ class PushoverSender:
                     logger.info("Pushover message sent successfully")
                     return True
                 else:
-                    errors = result.get('errors', ['未知错误'])
+                    errors = result.get('errors', ['unknown error'])
                     logger.error(f"Pushover returned error: {errors}")
                     return False
             else:

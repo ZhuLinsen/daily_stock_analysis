@@ -168,7 +168,7 @@ class TelegramSender:
                     logger.info("Telegram message sent successfully")
                     return True
                 else:
-                    error_desc = result.get('description', '未知错误')
+                    error_desc = result.get('description', 'unknown error')
                     logger.error(f"Telegram returned error: {error_desc}")
 
                     # If Markdown parsing failed, fall back to plain text

@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 from data_provider.base import BaseFetcher, DataFetchError, DataFetcherManager
 from data_provider.efinance_fetcher import EfinanceFetcher
+from scripts.check_english_logs import CJK_RE
 
 
 def _sample_df() -> pd.DataFrame:
@@ -165,6 +166,31 @@ class TestFetcherLogging(unittest.TestCase):
                         self.assertIn("category=remote_disconnect", log_text)
                         self.assertIn(f"WARNING:data_provider.base:[EfinanceFetcher] {code} fetch failed:", log_text)
                         self.assertIn(f"[data source complete] {code} fetched via [SuccessFetcher]:", log_text)
+
+    def test_us_daily_routing_logs_english_primary_and_fallback_without_cjk(self):
+        finnhub = _FailureFetcher()
+        finnhub.name = "FinnhubFetcher"
+        finnhub.priority = 2
+        yfinance = _SuccessFetcher()
+        yfinance.name = "YfinanceFetcher"
+        yfinance.priority = 4
+
+        manager = DataFetcherManager(fetchers=[finnhub, yfinance])
+        with (
+            patch.object(DataFetcherManager, "_is_daily_source_available", return_value=True),
+            patch.object(DataFetcherManager, "_record_daily_source_failure"),
+            patch.object(DataFetcherManager, "_record_daily_source_success"),
+            self.assertLogs("data_provider.base", level="INFO") as captured,
+        ):
+            df, source = manager.get_daily_data("AAPL", start_date="2026-05-01", end_date="2026-05-08")
+
+        self.assertFalse(df.empty)
+        self.assertEqual(source, "YfinanceFetcher")
+        route_messages = [record.getMessage() for record in captured.records if "route..." in record.getMessage()]
+        self.assertIn("[data source attempt 1/2] [FinnhubFetcher] US AAPL primary route...", route_messages)
+        self.assertIn("[data source attempt 2/2] [YfinanceFetcher] US AAPL fallback route...", route_messages)
+        for msg in route_messages:
+            self.assertIsNone(CJK_RE.search(msg), f"Unexpected CJK text in log: {msg}")
 
 
 if __name__ == "__main__":

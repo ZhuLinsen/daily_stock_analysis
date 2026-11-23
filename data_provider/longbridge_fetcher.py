@@ -607,9 +607,9 @@ class LongbridgeFetcher(BaseFetcher):
                     logger.info("[Longbridge] Config.from_apikey() created successfully")
                 elif lb_config is None:
                     reason = (
-                        f"OAuth 初始化失败: {oauth_error}"
+                        f"OAuth initialization failed: {oauth_error}"
                         if oauth_error
-                        else "未找到可用 OAuth token 缓存且未配置完整 Legacy 三件套"
+                        else "No available OAuth token cache found and incomplete Legacy credential trio"
                     )
                     logger.warning("[Longbridge] Authentication config not established: %s", reason)
                     self._available = False

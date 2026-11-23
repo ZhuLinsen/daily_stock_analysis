@@ -46,7 +46,27 @@ LOG_METHODS: frozenset[str] = frozenset(
     }
 )
 
-CJK_RE = re.compile(r"[\u4e00-\u9fff\u3400-\u4dbf\u3001-\u303f\uff00-\uffef]")
+CJK_RE = re.compile(
+    "["
+    "\u1100-\u11ff"          # Hangul Jamo
+    "\u2e80-\u2fdf"          # CJK Radicals Supplement & Kangxi Radicals
+    "\u3000-\u303f"          # CJK Symbols and Punctuation
+    "\u3040-\u309f"          # Hiragana
+    "\u30a0-\u30ff"          # Katakana
+    "\u3100-\u31ff"          # Bopomofo, Hangul Compat Jamo, Kanbun, CJK Strokes, Katakana Ext
+    "\u3200-\u33ff"          # Enclosed CJK & CJK Compatibility
+    "\u3400-\u4dbf"          # CJK Unified Ideographs Extension A
+    "\u4e00-\u9fff"          # CJK Unified Ideographs
+    "\ua960-\ua97f"          # Hangul Jamo Extended-A
+    "\uac00-\ud7ff"          # Hangul Syllables & Hangul Jamo Extended-B
+    "\uf900-\ufaff"          # CJK Compatibility Ideographs
+    "\ufe30-\ufe4f"          # CJK Compatibility Forms
+    "\uff00-\uffef"          # Halfwidth and Fullwidth Forms
+    "\U00020000-\U0002ebef"  # CJK Unified Ideographs Extensions B-F (incl. 𠮷 U+20BB7)
+    "\U0002f800-\U0002fa1f"  # CJK Compatibility Ideographs Supplement
+    "\U00030000-\U000323af"  # CJK Unified Ideographs Extensions G-H
+    "]"
+)
 
 
 @dataclass(frozen=True)
@@ -73,7 +93,7 @@ def _is_logger_call(node: ast.Call) -> bool:
 
 
 def _iter_log_string_constants(node: ast.AST) -> Iterator[ast.Constant]:
-    """Yield string constants while skipping lookup keys in subscripts and ``get`` calls."""
+    """Yield string constants while skipping subscripts, ``get`` keys, and membership checks."""
     if isinstance(node, ast.Constant):
         if isinstance(node.value, str):
             yield node
@@ -81,6 +101,9 @@ def _iter_log_string_constants(node: ast.AST) -> Iterator[ast.Constant]:
 
     if isinstance(node, ast.Subscript):
         yield from _iter_log_string_constants(node.value)
+        return
+
+    if isinstance(node, ast.Compare) and node.ops and all(isinstance(op, (ast.In, ast.NotIn)) for op in node.ops):
         return
 
     if (
@@ -102,18 +125,6 @@ def _iter_log_string_constants(node: ast.AST) -> Iterator[ast.Constant]:
         yield from _iter_log_string_constants(child)
 
 
-def _log_message_expressions(node: ast.Call) -> Iterator[ast.AST]:
-    """Yield only the message expression from a logging call."""
-    for keyword in node.keywords:
-        if keyword.arg == "msg":
-            yield keyword.value
-            return
-
-    message_index = 1 if node.func.attr == "log" else 0
-    if len(node.args) > message_index:
-        yield node.args[message_index]
-
-
 def find_cjk_logs_in_source(source: str, path: Path) -> List[LogViolation]:
     """Inspect Python source text and return logger calls with CJK string literals."""
     tree = ast.parse(source, filename=str(path))
@@ -124,8 +135,9 @@ def find_cjk_logs_in_source(source: str, path: Path) -> List[LogViolation]:
         if not isinstance(node, ast.Call) or not _is_logger_call(node):
             continue
 
+        exprs: List[ast.AST] = list(node.args) + [kw.value for kw in node.keywords]
         matched_snippets: List[str] = []
-        for expr in _log_message_expressions(node):
+        for expr in exprs:
             for const in _iter_log_string_constants(expr):
                 if isinstance(const.value, str) and CJK_RE.search(const.value):
                     matched_snippets.append(const.value.strip().replace("\n", "\\n"))

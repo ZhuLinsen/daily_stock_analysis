@@ -17,6 +17,7 @@ if "newspaper" not in sys.modules:
     sys.modules["newspaper"] = mock_np
 
 from src.search_service import SearchResponse, SearchResult, SearchService
+from scripts.check_english_logs import CJK_RE
 from src.services.run_diagnostics import (
     activate_run_diagnostic_context,
     current_diagnostic_snapshot,
@@ -2702,6 +2703,31 @@ class SearchNewsFreshnessTestCase(unittest.TestCase):
             industry = service.search_comprehensive_intel("600519", "贵州茅台", max_searches=6)["industry"]
 
         self.assertEqual([item.title for item in industry.results], titles[:2])
+
+    def test_comprehensive_intel_logs_english_dimensions_while_preserving_report_labels(self) -> None:
+        today = datetime.now().date().isoformat()
+        news = _response([_result("Apple AAPL latest news", today, snippet="Apple AAPL earnings outlook")])
+        service, _ = self._create_service_with_mock_provider(response=news)
+
+        with (
+            self.assertLogs("src.search_service", level="INFO") as captured,
+            patch("src.search_service.time.sleep"),
+        ):
+            intel = service.search_comprehensive_intel("AAPL", "Apple", max_searches=2)
+
+        intel_messages = [
+            record.getMessage()
+            for record in captured.records
+            if "[IntelSearch]" in record.getMessage()
+        ]
+        self.assertTrue(any("latest news" in msg for msg in intel_messages))
+        self.assertTrue(any("analyst research" in msg for msg in intel_messages))
+        for msg in intel_messages:
+            self.assertIsNone(CJK_RE.search(msg), f"Unexpected CJK text in [IntelSearch] log: {msg}")
+
+        formatted = service.format_intel_report(intel, "Apple")
+        self.assertIn("📰 最新消息", formatted)
+        self.assertIn("📈 机构分析", formatted)
 
 
 if __name__ == "__main__":

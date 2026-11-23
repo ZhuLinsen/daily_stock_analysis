@@ -2064,6 +2064,7 @@ class DataFetcherManager:
             pin_first = bool(is_us_index or prefer_lb)
             source_order = self._order_us_sources_by_priority(source_order, pin_first=pin_first)
             market_label = "美股指数" if is_us_index else "美股"
+            log_market_label = "US index" if is_us_index else "US"
 
             for order_index, src_name in enumerate(source_order):
                 fallback_to = (
@@ -2079,10 +2080,10 @@ class DataFetcherManager:
                         break
                     attempt_start = time.time()
                     try:
-                        role = "首选" if src_name == source_order[0] else "兜底"
+                        role = "primary" if src_name == source_order[0] else "fallback"
                         logger.info(
                             f"[data source attempt {attempt}/{total_fetchers}] [{fetcher.name}] "
-                            f"{market_label} {stock_code} {role} route..."
+                            f"{log_market_label} {stock_code} {role} route..."
                         )
                         record_provider_run_started(
                             data_type="daily_data",
@@ -2552,7 +2553,7 @@ class DataFetcherManager:
         is_tw = (not is_us) and (not is_hk) and _is_tw_market(stock_code)
 
         if is_jp or is_kr or is_tw:
-            market_label = "日股" if is_jp else "韩股" if is_kr else "台股"
+            market_label = "JP" if is_jp else "KR" if is_kr else "TW"
             quote = self._try_fetcher_quote(stock_code, "YfinanceFetcher", **target_kwargs)
             if quote is not None:
                 logger.info(f"[realtime quote] {market_label} {stock_code} fetched (source: YfinanceFetcher)")
@@ -2569,7 +2570,7 @@ class DataFetcherManager:
             if is_us:
                 primary_src = "LongbridgeFetcher" if prefer_lb else "YfinanceFetcher"
                 secondary_src = "YfinanceFetcher" if prefer_lb else "LongbridgeFetcher"
-                market_label = "美股指数" if is_us_index else "美股"
+                market_label = "US index" if is_us_index else "US"
                 primary_kw: dict = {}
                 secondary_kw: dict = {}
             else:
@@ -5058,7 +5059,7 @@ class DataFetcherManager:
                         bottom = data[1] or []
                         logger.info(f"[{fetcher.name}] fetched concept rankings")
                         break
-                    last_error = f"{fetcher.name}返回空结果"
+                    last_error = f"{fetcher.name} returned empty result"
                 except Exception as e:
                     error_type, error_reason = summarize_exception(e)
                     last_error = f"{fetcher.name} ({error_type}) {error_reason}"
@@ -5090,7 +5091,7 @@ class DataFetcherManager:
                 if data:
                     logger.info(f"[{fetcher.name}] fetched hot stocks")
                     return data[:n]
-                last_error = f"{fetcher.name}返回空结果"
+                last_error = f"{fetcher.name} returned empty result"
             except Exception as e:
                 error_type, error_reason = summarize_exception(e)
                 last_error = f"{fetcher.name} ({error_type}) {error_reason}"
@@ -5112,7 +5113,7 @@ class DataFetcherManager:
                 if data:
                     logger.info(f"[{fetcher.name}] fetched limit-up pool")
                     return data[:n]
-                last_error = f"{fetcher.name}返回空结果"
+                last_error = f"{fetcher.name} returned empty result"
             except Exception as e:
                 error_type, error_reason = summarize_exception(e)
                 last_error = f"{fetcher.name} ({error_type}) {error_reason}"
