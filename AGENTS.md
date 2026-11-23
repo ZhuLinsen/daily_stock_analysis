@@ -76,8 +76,12 @@ python scripts/check_ai_assets.py
 | `backend-tests (1/3)`..`(3/3)` | `.github/workflows/ci.yml` | 语法、flake8、确定性检查与 3 分片离线 pytest | 是（触发时） |
 | `backend-gate` | `.github/workflows/ci.yml` | 汇总前置与后端测试门禁 | 是 |
 | `docker-build` | `.github/workflows/ci.yml` | Docker 构建与关键模块导入 smoke | 是（触发时） |
-| `web-gate` | `.github/workflows/ci.yml` | `npm run lint` + `npm run build` + Playwright smoke | 是（触发时） |
+| `web-gate` | `.github/workflows/ci.yml` | `npm run lint` + `npm test` (Vitest) + `npm run build` + Playwright smoke（含浏览器缓存） | 是（触发时） |
+| `desktop-tests` | `.github/workflows/ci.yml` | `apps/dsa-desktop` 单元测试（`npm test`） | 是（触发时） |
+| `site-gate` | `.github/workflows/ci.yml` | `apps/dsa-site` 文档站构建与契约测试 | 是（触发时） |
 | `desktop-futu-package-windows` / `desktop-futu-package-macos` | `.github/workflows/ci.yml` | 桌面端 Futu 打包验证 | 是（触发时） |
+| `ci-gate` | `.github/workflows/ci.yml` | 统一汇聚 PR / `merge_group` / `main` 全链路门禁结果 | 是 |
+| `release` | `.github/workflows/release.yml` | 统一原子发布编排（前置 Gate -> 原生 amd64/arm64 Docker 合并 manifest 与溯源 -> Windows/macOS 打包 -> Release） | tag/手动 |
 | `network-smoke` | `.github/workflows/network-smoke.yml` | `pytest -m network` + `scripts/test.sh quick` | 否 |
 | `pr-review` | `.github/workflows/pr-review.yml` | 手动触发的只读静态检查 + AI 审查 | 否 |
 
