@@ -225,6 +225,27 @@ class TestFetcherLogging(unittest.TestCase):
         for msg in route_messages:
             self.assertIsNone(CJK_RE.search(msg), f"Unexpected CJK text in log: {msg}")
 
+    def test_cn_index_exhausted_logs_english_without_cjk(self):
+        manager = DataFetcherManager(fetchers=[_FailureFetcher()])
+        with (
+            patch("data_provider.base.record_provider_run") as record_run,
+            self.assertLogs("data_provider.base", level="WARNING") as captured,
+        ):
+            df, source = manager.get_daily_data("sh000688")
+            quote = manager.get_realtime_quote("sh000688")
+
+        self.assertTrue(df.empty)
+        self.assertEqual(source, "")
+        self.assertIsNone(quote)
+        log_messages = [record.getMessage() for record in captured.records]
+        self.assertTrue(any("[index source exhausted]" in m for m in log_messages))
+        self.assertTrue(any("[index realtime exhausted]" in m for m in log_messages))
+        for msg in log_messages:
+            self.assertIsNone(CJK_RE.search(msg), f"Unexpected CJK text in CN index log: {msg}")
+        self.assertTrue(
+            any(call.kwargs.get("error_message") == "数据源未配置或暂不可用" for call in record_run.call_args_list)
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

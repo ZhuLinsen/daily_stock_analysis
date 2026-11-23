@@ -2768,6 +2768,37 @@ class SearchNewsFreshnessTestCase(unittest.TestCase):
             self.assertIsNone(CJK_RE.search(msg), f"Unexpected CJK text in Bocha JSON log: {msg}")
         self.assertTrue(any("Response JSON parse failed" in r.getMessage() for r in cap_json.records))
 
+    def test_rank_news_response_logs_english_reasons_while_preserving_chinese_payload(self):
+        response = SearchResponse(
+            query="AAPL news",
+            provider="Tavily",
+            success=True,
+            results=[
+                SearchResult(
+                    title="AAPL reports earnings beat",
+                    snippet="Apple posted strong quarterly results.",
+                    url="https://example.com/aapl-earnings",
+                    source="reuters.com",
+                )
+            ],
+        )
+        with self.assertLogs("src.search_service", level="INFO") as captured:
+            ranked = SearchService._rank_news_response(
+                response,
+                stock_code="AAPL",
+                stock_name="苹果",
+                prefer_chinese=False,
+                max_results=5,
+                log_scope="AAPL",
+            )
+
+        self.assertEqual(len(ranked.results), 1)
+        self.assertIn("标题命中股票代码 AAPL", ranked.results[0].relevance_reasons or [])
+        log_messages = [record.getMessage() for record in captured.records]
+        self.assertTrue(any("[NewsRelevance]" in m for m in log_messages))
+        for msg in log_messages:
+            self.assertIsNone(CJK_RE.search(msg), f"Unexpected CJK text in NewsRelevance log: {msg}")
+
 
 if __name__ == "__main__":
     unittest.main()

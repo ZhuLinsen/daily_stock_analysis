@@ -128,6 +128,64 @@ def test_detects_inline_and_assigned_cjk_variables_and_dict_values(tmp_path: Pat
     assert main([str(sample_file)]) == 1
 
 
+def test_detects_container_append_helper_attribute_and_cjk_enum_value() -> None:
+    source = (
+        'from enum import Enum\n'
+        'class CustomStatus(Enum):\n'
+        '    HOLD = "观望"\n'
+        'def fetch():\n'
+        '    errors = []\n'
+        '    reason = "数据源未配置"\n'
+        '    errors.append(f"[src] {reason}")\n'
+        '    logger.error("exhausted: %s", "; ".join(errors))\n'
+        'def score():\n'
+        '    reasons = []\n'
+        '    def add_reason(r):\n'
+        '        reasons.append(r)\n'
+        '    add_reason("标题命中股票代码 AAPL")\n'
+        '    return dict(relevance_reasons=reasons)\n'
+        'def rank(top, trend_result, status: CustomStatus):\n'
+        '    logger.info("reasons=%s", "; ".join(top.relevance_reasons))\n'
+        '    logger.info("trend=%s", trend_result.trend_status.value)\n'
+        '    logger.info("status=%s", status.value)\n'
+        '    logger.info("safe=%s, count=%d", trend_result.trend_status.name, len(top.relevance_reasons))\n'
+    )
+    violations = find_cjk_logs_in_source(source, Path("indirect_cjk.py"))
+    assert [(v.line, v.method) for v in violations] == [
+        (8, "error"),
+        (16, "info"),
+        (17, "info"),
+        (18, "info"),
+    ]
+
+
+def test_trend_analyzer_enum_names_are_english_for_pipeline_logs() -> None:
+    import ast
+    from scripts.check_english_logs import CJK_RE, find_cjk_logs_in_source
+
+    repo_root = Path(__file__).resolve().parent.parent
+    analyzer_tree = ast.parse((repo_root / "src" / "stock_analyzer.py").read_text(encoding="utf-8"))
+    enum_members: dict[str, list[str]] = {}
+    for node in ast.walk(analyzer_tree):
+        if isinstance(node, ast.ClassDef) and node.name in {"TrendStatus", "BuySignal"}:
+            enum_members[node.name] = [
+                stmt.targets[0].id
+                for stmt in node.body
+                if isinstance(stmt, ast.Assign)
+                and len(stmt.targets) == 1
+                and isinstance(stmt.targets[0], ast.Name)
+            ]
+    assert enum_members["TrendStatus"]
+    assert enum_members["BuySignal"]
+    for names in enum_members.values():
+        assert all(CJK_RE.search(name) is None for name in names)
+
+    pipeline_source = (repo_root / "src" / "core" / "pipeline.py").read_text(encoding="utf-8")
+    assert "trend_result.trend_status.name" in pipeline_source
+    assert "trend_result.buy_signal.name" in pipeline_source
+    assert find_cjk_logs_in_source(pipeline_source, repo_root / "src" / "core" / "pipeline.py") == []
+
+
 def test_cli_exit_code_on_clean_and_dirty_files(tmp_path: Path) -> None:
     clean_file = tmp_path / "clean_mod.py"
     clean_file.write_text('logger.info("Pipeline finished in %.2fs", 1.5)\n', encoding="utf-8")

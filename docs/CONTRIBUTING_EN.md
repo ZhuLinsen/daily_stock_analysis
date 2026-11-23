@@ -99,6 +99,9 @@ Separately, the repository also has a non-blocking `network-smoke` workflow in `
 python -m pip install -r .github/requirements-ci.txt
 ./scripts/ci_gate.sh
 
+# Check runtime Python logs for English-only messages
+python scripts/check_english_logs.py
+
 # Frontend gate (only if you changed apps/dsa-web/)
 cd apps/dsa-web
 npm ci

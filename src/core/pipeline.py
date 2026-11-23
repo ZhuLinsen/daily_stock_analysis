@@ -866,8 +866,8 @@ class StockAnalysisPipeline:
                         )
                     trend_result = self.trend_analyzer.analyze(df, code)
                     logger.info(
-                        f"{log_stock_name}({code}) trend analysis: {trend_result.trend_status.value}, "
-                        f"buy_signal={trend_result.buy_signal.value}, score={trend_result.signal_score}"
+                        f"{log_stock_name}({code}) trend analysis: {trend_result.trend_status.name}, "
+                        f"buy_signal={trend_result.buy_signal.name}, score={trend_result.signal_score}"
                     )
             except Exception as e:
                 logger.warning(f"{log_stock_name}({code}) trend analysis failed: {e}", exc_info=True)

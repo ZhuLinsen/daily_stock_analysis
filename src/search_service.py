@@ -3388,6 +3388,51 @@ class SearchService:
             retrieved_at=item.retrieved_at,
         )
 
+    _LOG_REASON_EXACT = {
+        "命中公告/财报/交易等公司事件词": "matched company event term",
+        "来源接近公告或交易所渠道": "official or exchange-adjacent source",
+        "未命中目标公司身份，归为宏观/市场新闻": "no target company identity; classified as macro/market news",
+        "仅命中行业或板块背景": "matched industry/sector context only",
+        "未命中股票代码或公司全称，降级为背景新闻": "no stock code or company name; downgraded to background news",
+    }
+
+    _LOG_REASON_PREFIXES = (
+        ("标题命中股票代码 ", "title matches stock code"),
+        ("摘要命中股票代码 ", "snippet matches stock code"),
+        ("链接命中股票代码 ", "url matches stock code"),
+        ("标题命中公司名 ", "title matches company name"),
+        ("摘要命中公司名 ", "snippet matches company name"),
+        ("标题命中公司英文别名 ", "title matches English alias"),
+        ("摘要命中公司英文别名 ", "snippet matches English alias"),
+    )
+
+    @classmethod
+    def _format_relevance_reasons_for_log(cls, reasons: Optional[List[str]]) -> str:
+        """Format Chinese relevance reasons into concise ASCII English for runtime logs."""
+        if not reasons:
+            return ""
+        formatted: List[str] = []
+        for reason in reasons:
+            if reason in cls._LOG_REASON_EXACT:
+                formatted.append(cls._LOG_REASON_EXACT[reason])
+                continue
+            translated = None
+            for prefix, label in cls._LOG_REASON_PREFIXES:
+                if reason.startswith(prefix):
+                    term = reason[len(prefix):].strip()
+                    if term and not cls._contains_chinese_text(term) and term.isascii():
+                        translated = f"{label} {term}"
+                    else:
+                        translated = label
+                    break
+            if translated is not None:
+                formatted.append(translated)
+            elif not cls._contains_chinese_text(reason) and reason.isascii():
+                formatted.append(reason)
+            else:
+                formatted.append("localized relevance match")
+        return "; ".join(formatted)
+
     @classmethod
     def _rank_news_response(
         cls,
@@ -3449,6 +3494,7 @@ class SearchService:
                 category_counts[result.relevance_category] += 1
         if limited_results:
             top = limited_results[0]
+            log_reasons = cls._format_relevance_reasons_for_log(top.relevance_reasons)
             logger.info(
                 "[NewsRelevance] %s: direct=%s, sector=%s, macro=%s, top_score=%s, top_category=%s, reasons=%s",
                 log_scope,
@@ -3457,7 +3503,7 @@ class SearchService:
                 category_counts[cls._MACRO_NEWS_CATEGORY],
                 top.relevance_score,
                 top.relevance_category,
-                "; ".join(top.relevance_reasons or []),
+                log_reasons,
             )
 
         return SearchResponse(
@@ -4547,7 +4593,7 @@ class SearchService:
             logger.info("Using cached event search results: %s(%s)", stock_name, stock_code)
             return cached
         
-        logger.info(f"Searching stock events: {stock_name}({stock_code}) - {event_types}")
+        logger.info("Searching stock events: %s(%s), event_count=%d", stock_name, stock_code, len(event_types))
         
         # 依次尝试各个搜索引擎
         for provider in self._providers:

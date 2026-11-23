@@ -1065,6 +1065,7 @@ class DataFetcherManager:
                 fetcher, capability="daily_data"
             ):
                 reason = "数据源未配置或暂不可用"
+                log_reason = "data source not configured or temporarily unavailable"
                 record_provider_run(
                     data_type="daily_data",
                     provider=source_name,
@@ -1082,9 +1083,9 @@ class DataFetcherManager:
                     len(source_order),
                     source_name,
                     target.canonical_id,
-                    "data source not configured or temporarily unavailable",
+                    log_reason,
                 )
-                errors.append(f"[{source_name}] {reason}")
+                errors.append(f"[{source_name}] {log_reason}")
                 continue
 
             if not self._is_daily_source_available(fetcher, "cn_index"):
@@ -1108,7 +1109,7 @@ class DataFetcherManager:
                     target.canonical_id,
                     "circuit breaker open",
                 )
-                errors.append(reason)
+                errors.append(f"[{source_name}] (CircuitOpen) circuit breaker open")
                 continue
 
             attempt_start = time.time()
@@ -1280,6 +1281,7 @@ class DataFetcherManager:
                 fetcher, capability="realtime_quote"
             ):
                 reason = "数据源未配置或暂不可用"
+                log_reason = "data source not configured or temporarily unavailable"
                 record_provider_run(
                     data_type="realtime_quote",
                     provider=source_name,
@@ -1297,9 +1299,9 @@ class DataFetcherManager:
                     len(source_order),
                     source_name,
                     target.canonical_id,
-                    "data source not configured or temporarily unavailable",
+                    log_reason,
                 )
-                errors.append(f"[{source_name}] {reason}")
+                errors.append(f"[{source_name}] {log_reason}")
                 continue
 
             attempt_start = time.time()

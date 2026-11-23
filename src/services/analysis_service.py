@@ -167,8 +167,13 @@ class AnalysisService:
                 return None
 
             if not getattr(result, "success", True):
-                self.last_error = getattr(result, "error_message", None) or f"分析股票 {stock_code} 失败"
-                logger.warning(f"Stock analysis for {stock_code} did not complete successfully: {self.last_error}")
+                err_msg = getattr(result, "error_message", None)
+                self.last_error = err_msg or f"分析股票 {stock_code} 失败"
+                logger.warning(
+                    "Stock analysis for %s did not complete successfully: %s",
+                    stock_code,
+                    err_msg or "analysis failed",
+                )
                 return None
             
             # 构建响应

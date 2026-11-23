@@ -96,6 +96,9 @@ docs: 更新 README 部署说明
 python -m pip install -r .github/requirements-ci.txt
 ./scripts/ci_gate.sh
 
+# 单独检查运行时日志是否为英文
+python scripts/check_english_logs.py
+
 # 前端 gate（如修改了 apps/dsa-web）
 cd apps/dsa-web
 npm ci
