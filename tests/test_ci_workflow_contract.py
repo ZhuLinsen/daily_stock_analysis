@@ -311,7 +311,12 @@ def test_release_workflow_unifies_atomic_publish_and_native_arm64() -> None:
     docker_matrix = jobs["docker-build"]["strategy"]["matrix"]["include"]
     assert {"platform": "linux/amd64", "arch": "amd64", "runner": "ubuntu-24.04"} in docker_matrix
     assert {"platform": "linux/arm64", "arch": "arm64", "runner": "ubuntu-24.04-arm"} in docker_matrix
-    assert jobs["docker-merge-manifest"]["needs"] == ["pre-release-gate", "docker-build"]
+    assert set(jobs["docker-merge-manifest"]["needs"]) == {
+        "pre-release-gate",
+        "docker-build",
+        "desktop-windows",
+        "desktop-macos",
+    }
     assert set(jobs["publish-release"]["needs"]) == {
         "pre-release-gate",
         "docker-merge-manifest",
@@ -320,12 +325,39 @@ def test_release_workflow_unifies_atomic_publish_and_native_arm64() -> None:
     }
     pre_outputs = jobs["pre-release-gate"]["outputs"]
     assert "ghcr_repo" in pre_outputs
-    assert "dockerhub_repo" in pre_outputs
-    pre_text = yaml.dump(jobs["pre-release-gate"], sort_keys=False)
-    assert "tr '[:upper:]' '[:lower:]'" in pre_text
-    build_text = yaml.dump(jobs["docker-build"], sort_keys=False)
-    merge_text = yaml.dump(jobs["docker-merge-manifest"], sort_keys=False)
+    assert "dockerhub_repo" not in pre_outputs
+    assert any(
+        "tr '[:upper:]' '[:lower:]'" in str(step.get("run", ""))
+        for step in jobs["pre-release-gate"]["steps"]
+    )
+    assert any(
+        "tr '[:upper:]' '[:lower:]'" in str(step.get("run", ""))
+        for step in jobs["docker-build"]["steps"]
+    )
+    assert any(
+        "tr '[:upper:]' '[:lower:]'" in str(step.get("run", ""))
+        for step in jobs["docker-merge-manifest"]["steps"]
+    )
+    build_text = yaml.dump(jobs["docker-build"], sort_keys=False, width=4096)
+    merge_text = yaml.dump(jobs["docker-merge-manifest"], sort_keys=False, width=4096)
     assert "needs.pre-release-gate.outputs.ghcr_repo" in build_text
     assert "needs.pre-release-gate.outputs.ghcr_repo" in merge_text
+    assert "needs.pre-release-gate.outputs.dockerhub_repo" not in build_text
+    assert "needs.pre-release-gate.outputs.dockerhub_repo" not in merge_text
     assert "${{ env.GHCR_REGISTRY }}/${{ env.GHCR_IMAGE_NAME }}" not in build_text
     assert "${{ env.GHCR_REGISTRY }}/${{ env.GHCR_IMAGE_NAME }}" not in merge_text
+
+    merge_steps = jobs["docker-merge-manifest"]["steps"]
+    step_names = [step.get("name", "") or step.get("uses", "") for step in merge_steps]
+    idx_prev = step_names.index("Record previous latest digests")
+    idx_stage = step_names.index("Stage immutable GHCR multi-arch manifest")
+    idx_attest = next(
+        i for i, step in enumerate(merge_steps)
+        if str(step.get("uses", "")).startswith("actions/attest-build-provenance@")
+    )
+    idx_public_ghcr = step_names.index("Publish public GHCR tags")
+    idx_dockerhub = step_names.index("Publish Docker Hub tags")
+    assert idx_prev < idx_stage < idx_attest < idx_public_ghcr < idx_dockerhub
+    stage_run = merge_steps[idx_stage]["run"]
+    assert ":latest" not in stage_run
+    assert "release_tag" not in stage_run

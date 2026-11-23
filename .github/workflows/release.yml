@@ -35,7 +35,6 @@ jobs:
       version: ${{ steps.release_ref.outputs.version }}
       revision: ${{ steps.release_ref.outputs.revision }}
       ghcr_repo: ${{ steps.release_ref.outputs.ghcr_repo }}
-      dockerhub_repo: ${{ steps.release_ref.outputs.dockerhub_repo }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -66,11 +65,6 @@ jobs:
           echo "version=${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
           echo "revision=$(git rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
           echo "ghcr_repo=$(printf '%s/%s' "${GHCR_REGISTRY}" "${GHCR_IMAGE_NAME}" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
-          if [[ "${HAS_DOCKERHUB_USERNAME}" == "true" ]]; then
-            echo "dockerhub_repo=$(printf '%s/%s' "${DOCKERHUB_REGISTRY}" "${DOCKERHUB_IMAGE_NAME}" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
-          else
-            echo "dockerhub_repo=" >> "$GITHUB_OUTPUT"
-          fi
 
       - uses: actions/setup-python@v6
         with:
@@ -198,6 +192,12 @@ jobs:
             DSA_WEB_REVISION=${{ needs.pre-release-gate.outputs.revision }}
           cache-from: type=gha,scope=release-docker-${{ matrix.arch }}
 
+      - name: Resolve Docker Hub repository
+        if: ${{ env.HAS_DOCKERHUB_TOKEN == 'true' && env.HAS_DOCKERHUB_USERNAME == 'true' }}
+        run: |
+          DOCKERHUB_REPO="$(printf '%s/%s' "${DOCKERHUB_REGISTRY}" "${DOCKERHUB_IMAGE_NAME}" | tr '[:upper:]' '[:lower:]')"
+          echo "DOCKERHUB_REPO=${DOCKERHUB_REPO}" >> "$GITHUB_ENV"
+
       - name: Push Docker Hub image by digest
         if: ${{ env.HAS_DOCKERHUB_TOKEN == 'true' && env.HAS_DOCKERHUB_USERNAME == 'true' }}
         id: push_dockerhub
@@ -208,7 +208,7 @@ jobs:
           context: .
           file: docker/Dockerfile
           platforms: ${{ matrix.platform }}
-          outputs: type=image,name=${{ needs.pre-release-gate.outputs.dockerhub_repo }},push-by-digest=true,name-canonical=true,push=true
+          outputs: type=image,name=${{ env.DOCKERHUB_REPO }},push-by-digest=true,name-canonical=true,push=true
           build-args: |
             DSA_WEB_VERSION=${{ needs.pre-release-gate.outputs.version }}
             DSA_WEB_REVISION=${{ needs.pre-release-gate.outputs.revision }}
@@ -231,7 +231,7 @@ jobs:
 
   docker-merge-manifest:
     name: Docker Merge Multi-Arch Manifest & Attest
-    needs: [pre-release-gate, docker-build]
+    needs: [pre-release-gate, docker-build, desktop-windows, desktop-macos]
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -262,46 +262,38 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Extract metadata for GHCR
-        id: meta-ghcr
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ needs.pre-release-gate.outputs.ghcr_repo }}
-          tags: |
-            type=raw,value=latest
-            type=raw,value=${{ needs.pre-release-gate.outputs.release_tag }}
-            type=raw,value=sha-${{ needs.pre-release-gate.outputs.revision }}
+      - name: Resolve Docker Hub repository
+        if: ${{ env.HAS_DOCKERHUB_TOKEN == 'true' && env.HAS_DOCKERHUB_USERNAME == 'true' }}
+        run: |
+          DOCKERHUB_REPO="$(printf '%s/%s' "${DOCKERHUB_REGISTRY}" "${DOCKERHUB_IMAGE_NAME}" | tr '[:upper:]' '[:lower:]')"
+          echo "DOCKERHUB_REPO=${DOCKERHUB_REPO}" >> "$GITHUB_ENV"
 
-      - name: Merge and push GHCR manifest
+      - name: Record previous latest digests
+        id: prev_digests
+        run: |
+          set -euo pipefail
+          GHCR_PREV="$(docker buildx imagetools inspect "${{ needs.pre-release-gate.outputs.ghcr_repo }}:latest" --format '{{json .Manifest.Digest}}' 2>/dev/null | tr -d '"' || true)"
+          echo "ghcr_latest=${GHCR_PREV}" >> "$GITHUB_OUTPUT"
+          DOCKERHUB_PREV=""
+          if [[ "${{ env.HAS_DOCKERHUB_TOKEN }}" == "true" && "${{ env.HAS_DOCKERHUB_USERNAME }}" == "true" && -n "${DOCKERHUB_REPO:-}" ]]; then
+            DOCKERHUB_PREV="$(docker buildx imagetools inspect "${DOCKERHUB_REPO}:latest" --format '{{json .Manifest.Digest}}' 2>/dev/null | tr -d '"' || true)"
+          fi
+          echo "dockerhub_latest=${DOCKERHUB_PREV}" >> "$GITHUB_OUTPUT"
+
+      - name: Stage immutable GHCR multi-arch manifest
         id: merge_ghcr
         run: |
           set -euo pipefail
           AMD64_DIGEST="$(tr -d '[:space:]' < /tmp/digests/ghcr-amd64.txt)"
           ARM64_DIGEST="$(tr -d '[:space:]' < /tmp/digests/ghcr-arm64.txt)"
           REPO="${{ needs.pre-release-gate.outputs.ghcr_repo }}"
-          TAG_ARGS=()
-          while IFS= read -r tag; do
-            [[ -n "$tag" ]] && TAG_ARGS+=(-t "$tag")
-          done <<< "${{ steps.meta-ghcr.outputs.tags }}"
-          docker buildx imagetools create "${TAG_ARGS[@]}" \
-            "${REPO}@${AMD64_DIGEST}" \
-            "${REPO}@${ARM64_DIGEST}"
-          MANIFEST_DIGEST="$(docker buildx imagetools inspect "${REPO}:${{ needs.pre-release-gate.outputs.release_tag }}" --format '{{json .Manifest.Digest}}' | tr -d '"')"
-          echo "digest=${MANIFEST_DIGEST}" >> "$GITHUB_OUTPUT"
-
-      - name: Merge and push Docker Hub manifest
-        if: ${{ env.HAS_DOCKERHUB_TOKEN == 'true' && env.HAS_DOCKERHUB_USERNAME == 'true' }}
-        run: |
-          set -euo pipefail
-          AMD64_DIGEST="$(tr -d '[:space:]' < /tmp/digests/dockerhub-amd64.txt)"
-          ARM64_DIGEST="$(tr -d '[:space:]' < /tmp/digests/dockerhub-arm64.txt)"
-          REPO="${{ needs.pre-release-gate.outputs.dockerhub_repo }}"
+          REV_TAG="sha-${{ needs.pre-release-gate.outputs.revision }}"
           docker buildx imagetools create \
-            -t "${REPO}:latest" \
-            -t "${REPO}:${{ needs.pre-release-gate.outputs.release_tag }}" \
-            -t "${REPO}:sha-${{ needs.pre-release-gate.outputs.revision }}" \
+            -t "${REPO}:${REV_TAG}" \
             "${REPO}@${AMD64_DIGEST}" \
             "${REPO}@${ARM64_DIGEST}"
+          MANIFEST_DIGEST="$(docker buildx imagetools inspect "${REPO}:${REV_TAG}" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          echo "digest=${MANIFEST_DIGEST}" >> "$GITHUB_OUTPUT"
 
       - name: Attest GHCR build provenance
         uses: actions/attest-build-provenance@v2
@@ -310,13 +302,51 @@ jobs:
           subject-digest: ${{ steps.merge_ghcr.outputs.digest }}
           push-to-registry: true
 
+      - name: Publish public GHCR tags
+        run: |
+          set -euo pipefail
+          AMD64_DIGEST="$(tr -d '[:space:]' < /tmp/digests/ghcr-amd64.txt)"
+          ARM64_DIGEST="$(tr -d '[:space:]' < /tmp/digests/ghcr-arm64.txt)"
+          REPO="${{ needs.pre-release-gate.outputs.ghcr_repo }}"
+          RELEASE_TAG="${{ needs.pre-release-gate.outputs.release_tag }}"
+          docker buildx imagetools create \
+            -t "${REPO}:${RELEASE_TAG}" \
+            -t "${REPO}:latest" \
+            "${REPO}@${AMD64_DIGEST}" \
+            "${REPO}@${ARM64_DIGEST}"
+          PUBLISHED_DIGEST="$(docker buildx imagetools inspect "${REPO}:${RELEASE_TAG}" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          if [[ "${PUBLISHED_DIGEST}" != "${{ steps.merge_ghcr.outputs.digest }}" ]]; then
+            echo "ERROR: Published digest ${PUBLISHED_DIGEST} differs from attested digest ${{ steps.merge_ghcr.outputs.digest }}" >&2
+            exit 1
+          fi
+
+      - name: Publish Docker Hub tags
+        if: ${{ env.HAS_DOCKERHUB_TOKEN == 'true' && env.HAS_DOCKERHUB_USERNAME == 'true' }}
+        run: |
+          set -euo pipefail
+          AMD64_DIGEST="$(tr -d '[:space:]' < /tmp/digests/dockerhub-amd64.txt)"
+          ARM64_DIGEST="$(tr -d '[:space:]' < /tmp/digests/dockerhub-arm64.txt)"
+          REPO="${DOCKERHUB_REPO}"
+          docker buildx imagetools create \
+            -t "${REPO}:latest" \
+            -t "${REPO}:${{ needs.pre-release-gate.outputs.release_tag }}" \
+            -t "${REPO}:sha-${{ needs.pre-release-gate.outputs.revision }}" \
+            "${REPO}@${AMD64_DIGEST}" \
+            "${REPO}@${ARM64_DIGEST}"
+
       - name: Publish Docker summary
         run: |
           echo "### Docker release published" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "- GHCR: \`${{ needs.pre-release-gate.outputs.ghcr_repo }}:${{ needs.pre-release-gate.outputs.release_tag }}\` (\`${{ steps.merge_ghcr.outputs.digest }}\`)" >> "$GITHUB_STEP_SUMMARY"
+          if [[ -n "${{ steps.prev_digests.outputs.ghcr_latest }}" ]]; then
+            echo "  - Previous GHCR \`latest\`: \`${{ steps.prev_digests.outputs.ghcr_latest }}\` (rollback: \`docker buildx imagetools create -t ${{ needs.pre-release-gate.outputs.ghcr_repo }}:latest ${{ needs.pre-release-gate.outputs.ghcr_repo }}@${{ steps.prev_digests.outputs.ghcr_latest }}\`)" >> "$GITHUB_STEP_SUMMARY"
+          fi
           if [[ "${{ env.HAS_DOCKERHUB_TOKEN }}" == "true" && "${{ env.HAS_DOCKERHUB_USERNAME }}" == "true" ]]; then
-            echo "- Docker Hub: \`${{ needs.pre-release-gate.outputs.dockerhub_repo }}:${{ needs.pre-release-gate.outputs.release_tag }}\`" >> "$GITHUB_STEP_SUMMARY"
+            echo "- Docker Hub: \`${DOCKERHUB_REPO}:${{ needs.pre-release-gate.outputs.release_tag }}\`" >> "$GITHUB_STEP_SUMMARY"
+            if [[ -n "${{ steps.prev_digests.outputs.dockerhub_latest }}" ]]; then
+              echo "  - Previous Docker Hub \`latest\`: \`${{ steps.prev_digests.outputs.dockerhub_latest }}\` (rollback: \`docker buildx imagetools create -t ${DOCKERHUB_REPO}:latest ${DOCKERHUB_REPO}@${{ steps.prev_digests.outputs.dockerhub_latest }}\`)" >> "$GITHUB_STEP_SUMMARY"
+            fi
           else
             echo "- Docker Hub: skipped (missing \`DOCKERHUB_TOKEN\` / \`DOCKERHUB_USERNAME\` secret)" >> "$GITHUB_STEP_SUMMARY"
           fi
