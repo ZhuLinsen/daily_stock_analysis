@@ -564,6 +564,77 @@ describe('HomePage', () => {
     expect(inputsAfterReopen.every((input) => (input as HTMLInputElement).value === '2026-05-18')).toBe(true);
   });
 
+  it('restores the daily list scroll position and scrolls the drawer own row on mobile reopen (issue #1661)', async () => {
+    vi.mocked(historyApi.getStockBarList).mockResolvedValue({ total: 0, items: [] });
+    vi.mocked(historyApi.getList).mockResolvedValue({ total: 0, page: 1, limit: 20, items: [] });
+    vi.mocked(historyApi.getDaily).mockResolvedValue({
+      total: 1,
+      page: 1,
+      limit: 20,
+      items: [{
+        id: 11,
+        code: '600519',
+        name: '贵州茅台',
+        reportType: 'detailed',
+        sentimentScore: 82,
+        sentimentLabel: '极度乐观',
+        operationAdvice: '持有',
+        action: 'hold' as const,
+        actionLabel: '持有',
+        trendPrediction: null,
+        isLatest: true,
+        analysisCount: 1,
+        createdAt: '2026-03-18T08:00:00Z',
+      }],
+    });
+    // 报告详情的 id 与当日行一致，抽屉重开后才有「当前报告行」可定位
+    vi.mocked(historyApi.getDetail).mockResolvedValue({ ...historyReport, meta: { ...historyReport.meta, id: 11 } });
+
+    // 记录每次 scrollIntoView 的调用目标（this），不依赖 mock.instances 的版本语义
+    const scrolledTargets: Element[] = [];
+    Element.prototype.scrollIntoView = function scrollIntoView(this: Element) {
+      scrolledTargets.push(this);
+    };
+
+    try {
+      render(
+        <MemoryRouter>
+          <HomePage />
+        </MemoryRouter>,
+      );
+
+      // 选择昨天并等待列表加载，然后打开手机抽屉（DOM 中桌面实例在前、抽屉实例在后）
+      fireEvent.change(screen.getAllByTestId('daily-history-date-input')[0], { target: { value: '2026-05-18' } });
+      await screen.findByTestId('daily-history-row-11');
+      fireEvent.click(screen.getByRole('button', { name: '历史记录' }));
+      await waitFor(() => expect(screen.getAllByTestId('daily-history-list')).toHaveLength(2));
+      const drawerList = screen.getAllByTestId('daily-history-list')[1];
+
+      // 在抽屉里滚到首屏之外
+      drawerList.scrollTop = 480;
+      fireEvent.scroll(drawerList);
+
+      // 点行打开报告 → 抽屉关闭卸载
+      fireEvent.click(drawerList.querySelector('[data-testid="daily-history-row-11"]') as Element);
+      expect(await screen.findByText('趋势维持强势')).toBeInTheDocument();
+      await waitFor(() => expect(screen.getAllByTestId('daily-history-date-input')).toHaveLength(1));
+      scrolledTargets.length = 0;
+
+      // 重新打开历史抽屉：可见列表回到原滚动位置（OR-COR-278fd558，修复前回到顶部）
+      fireEvent.click(screen.getByRole('button', { name: '历史记录' }));
+      await waitFor(() => expect(screen.getAllByTestId('daily-history-list')).toHaveLength(2));
+      const reopenedDrawerList = screen.getAllByTestId('daily-history-list')[1];
+      await waitFor(() => expect(reopenedDrawerList.scrollTop).toBe(480));
+
+      // 滚动定位命中抽屉内的选中行，而不是 DOM 中排在前面的隐藏桌面列表那一行
+      const reopenedRow = reopenedDrawerList.querySelector('[data-testid="daily-history-row-11"]');
+      await waitFor(() => expect(scrolledTargets.length).toBeGreaterThan(0));
+      expect(scrolledTargets[scrolledTargets.length - 1]).toBe(reopenedRow);
+    } finally {
+      delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView;
+    }
+  });
+
   it('treats timezone-less stock-bar timestamps as Shanghai local time for watchlist pending state', async () => {
     const todayInShanghai = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date());
     vi.mocked(systemConfigApi.getWatchlist).mockResolvedValue(['600519']);

@@ -291,6 +291,8 @@ const HomePage: React.FC = () => {
   // issue #1661（OR-COR-278fd558）：手机上点行会关闭并卸载历史抽屉，日期必须
   // 寄存在本组件（不随抽屉卸载），重开抽屉才能回到所选日期。
   const [dailyHistoryDate, setDailyHistoryDate] = useState(() => getTodayInShanghai());
+  // 同理：各日期的滚动位置也寄存在这里，重开抽屉才能回到原位置（而非顶部）。
+  const dailyHistoryScrollMemory = useRef<Record<string, number>>({});
   const [isSubmittingMarketReview, setIsSubmittingMarketReview] = useState(false);
   const [marketReviewNotice, setMarketReviewNotice] = useState<MarketReviewNotice>(null);
   const [marketReviewError, setMarketReviewError] = useState<ParsedApiError | null>(null);
@@ -1468,6 +1470,7 @@ const HomePage: React.FC = () => {
           onHistoryItemClick={handleHistoryItemClick}
           dailyHistoryDate={dailyHistoryDate}
           onDailyHistoryDateChange={setDailyHistoryDate}
+          dailyHistoryScrollMemory={dailyHistoryScrollMemory}
           marketReviewEntry={marketReviewEntry}
           className="flex-1"
         />
@@ -1477,6 +1480,7 @@ const HomePage: React.FC = () => {
       activeTasks,
       batchAnalyzeStatus,
       dailyHistoryDate,
+      dailyHistoryScrollMemory,
       handleAnalyzeWatchlist,
       handleHistoryItemClick,
       handleRefreshWatchlist,

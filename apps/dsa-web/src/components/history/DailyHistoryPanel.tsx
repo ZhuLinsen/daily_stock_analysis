@@ -1,5 +1,5 @@
 import type React from 'react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { History } from 'lucide-react';
 import { historyApi } from '../../api/history';
 import { Badge } from '../common';
@@ -10,6 +10,11 @@ import { getSentimentColor } from '../../types/analysis';
 import { getTodayInShanghai } from '../../utils/format';
 import { buildDecisionActionLabelMap, getDecisionActionLabel } from '../../utils/decisionAction';
 import { truncateStockName } from '../../utils/stockName';
+
+/** 各日期列表上次滚动到的位置（issue #1661 OR-COR-278fd558）。 */
+interface DailyHistoryScrollMemory {
+  current: Record<string, number>;
+}
 
 interface DailyHistoryPanelProps {
   selectedRecordId?: number | null;
@@ -22,6 +27,12 @@ interface DailyHistoryPanelProps {
   dateKey?: string;
   onDateKeyChange?: (dateKey: string) => void;
   /**
+   * 滚动位置存储（issue #1661 OR-COR-278fd558）：与日期同理，抽屉卸载会连带丢掉
+   * 列表的滚动位置，须寄存在不卸载的父级（HomePage），重开抽屉才能回到原位置。
+   * 隐藏的桌面实例与抽屉实例共享同一份。缺省时退回组件内部存储（独立使用/测试）。
+   */
+  scrollMemory?: DailyHistoryScrollMemory;
+  /**
    * 最近一份大盘复盘入口（OR-COM-91cc3feb）：旧个股栏把 MARKET 行注入历史区，
    * 换成按日列表后由 HomePage 传入最新复盘，保住「重开已保存复盘」的入口。
    */
@@ -33,6 +44,12 @@ interface DailyHistoryPanelProps {
 const DAILY_PAGE_SIZE = 100;
 /** 防御上限：超过该页数视为异常响应，停止翻页避免死循环 */
 const DAILY_MAX_PAGES = 50;
+/**
+ * 自动翻页重取上限（OR-COR-e9d99614）：后端每次请求重新排序并按偏移量切页，翻页
+ * 期间有新报告写入/删除时页边界会移动（后一页重复前一页末尾的行、新报告无入口）。
+ * 检测到边界移动即从第 1 页重取；持续写入时收尾于按记录去重后的结果。
+ */
+const DAILY_MAX_RESYNC_ATTEMPTS = 2;
 
 /**
  * 首页历史区「日期回看」面板（issue #1661，G1a 方案一）。
@@ -45,12 +62,15 @@ const DailyHistoryPanel: React.FC<DailyHistoryPanelProps> = ({
   onSelectRecord,
   dateKey: controlledDateKey,
   onDateKeyChange,
+  scrollMemory: controlledScrollMemory,
   marketReviewEntry = null,
   className = '',
 }) => {
   const { t } = useUiLanguage();
   const [internalDateKey, setInternalDateKey] = useState(() => getTodayInShanghai());
   const dateKey = controlledDateKey ?? internalDateKey;
+  const internalScrollMemory = useRef<Record<string, number>>({});
+  const scrollMemory = controlledScrollMemory ?? internalScrollMemory;
 
   const changeDate = (nextDateKey: string) => {
     setInternalDateKey(nextDateKey);
@@ -102,6 +122,7 @@ const DailyHistoryPanel: React.FC<DailyHistoryPanelProps> = ({
         dateKey={dateKey}
         selectedRecordId={selectedRecordId}
         onSelectRecord={onSelectRecord}
+        scrollMemory={scrollMemory}
         className="flex-1"
       />
     </div>
@@ -112,8 +133,9 @@ const DailyHistoryList: React.FC<{
   dateKey: string;
   selectedRecordId?: number | null;
   onSelectRecord: (recordId: number) => void;
+  scrollMemory: DailyHistoryScrollMemory;
   className?: string;
-}> = ({ dateKey, selectedRecordId = null, onSelectRecord, className = '' }) => {
+}> = ({ dateKey, selectedRecordId = null, onSelectRecord, scrollMemory, className = '' }) => {
   const { t } = useUiLanguage();
   // 初始态即重置态（配合按日期 key 重挂载）
   const [items, setItems] = useState<DailyHistoryItem[]>([]);
@@ -121,7 +143,9 @@ const DailyHistoryList: React.FC<{
   const [isLoading, setIsLoading] = useState(true);
   const [loadFailed, setLoadFailed] = useState(false);
   const requestSeqRef = useRef(0);
-  const didInitialScrollRef = useRef(false);
+  const listRef = useRef<HTMLDivElement>(null);
+  const didRestoreScrollRef = useRef(false);
+  const didScrollToSelectedRef = useRef(false);
 
   useEffect(() => {
     if (!dateKey) {
@@ -134,25 +158,51 @@ const DailyHistoryList: React.FC<{
     // 自动翻页取满当日全集（OR-COR-899887df/adc0d89a）：面板展示 total 只股票，
     // 就必须提供 total 个报告入口，不能停留在默认第一页
     const load = async () => {
-      const collected: DailyHistoryItem[] = [];
-      let totalExpected = 0;
-      let page = 1;
       try {
-        while (true) {
-          const response = await historyApi.getDaily(dateKey, {
-            signal: controller.signal,
-            page,
-            limit: DAILY_PAGE_SIZE,
-          });
-          if (!active || seq !== requestSeqRef.current) return;
-          totalExpected = response.total;
-          collected.push(...response.items);
-          if (response.items.length === 0 || collected.length >= totalExpected || page >= DAILY_MAX_PAGES) break;
-          page += 1;
+        // 有界重取（OR-COR-e9d99614）：后端按偏移量切页，翻页期间有新报告写入/删除
+        // 会让页边界移动。各页 total 不一致、或按记录去重后不足 total，都说明拼起来
+        // 的不是同一快照——从第 1 页重取，而不是把偏移过的页直接拼上去。
+        for (let attempt = 0; ; attempt += 1) {
+          const collectedById = new Map<number, DailyHistoryItem>();
+          let snapshotTotal: number | null = null;
+          let boundaryMoved = false;
+          let page = 1;
+          while (true) {
+            const response = await historyApi.getDaily(dateKey, {
+              signal: controller.signal,
+              page,
+              limit: DAILY_PAGE_SIZE,
+            });
+            if (!active || seq !== requestSeqRef.current) return;
+            if (snapshotTotal === null) {
+              snapshotTotal = response.total;
+            } else if (response.total !== snapshotTotal) {
+              boundaryMoved = true;
+              break;
+            }
+            // 按记录去重：页边界移动时后一页会重复前一页末尾的行
+            for (const item of response.items) {
+              if (!collectedById.has(item.id)) {
+                collectedById.set(item.id, item);
+              }
+            }
+            if (response.items.length === 0 || collectedById.size >= snapshotTotal || page >= DAILY_MAX_PAGES) {
+              break;
+            }
+            page += 1;
+          }
+          const collected = Array.from(collectedById.values());
+          const complete = !boundaryMoved && (
+            page >= DAILY_MAX_PAGES || collected.length >= (snapshotTotal ?? 0)
+          );
+          if (complete || attempt >= DAILY_MAX_RESYNC_ATTEMPTS) {
+            setItems(collected);
+            // 计数标签与实际展示的行数一致（去重后不足 total 时不虚报）
+            setTotal(collected.length);
+            setIsLoading(false);
+            return;
+          }
         }
-        setItems(collected);
-        setTotal(totalExpected);
-        setIsLoading(false);
       } catch {
         if (!active || seq !== requestSeqRef.current) return;
         setItems([]);
@@ -169,16 +219,40 @@ const DailyHistoryList: React.FC<{
     };
   }, [dateKey]);
 
-  // 重开抽屉/换行点击后，让当前报告所在行可见（OR-COR-278fd558 的滚动定位部分）
-  useEffect(() => {
-    if (didInitialScrollRef.current || selectedRecordId == null || items.length === 0) {
+  // 重开抽屉/换日期重挂载后，回到该日期上次滚动到的位置（OR-COR-278fd558）。手机上
+  // 点行会关闭并卸载抽屉，位置由不卸载的父级存储；绘制前恢复，避免先闪一下顶部。
+  useLayoutEffect(() => {
+    if (didRestoreScrollRef.current || items.length === 0) {
       return;
     }
-    const selectedRow = document.querySelector<HTMLElement>(
+    const container = listRef.current;
+    if (!container) {
+      return;
+    }
+    didRestoreScrollRef.current = true;
+    const rememberedScrollTop = scrollMemory.current[dateKey];
+    if (rememberedScrollTop !== undefined) {
+      container.scrollTop = rememberedScrollTop;
+    }
+  }, [items, dateKey, scrollMemory]);
+
+  // 让当前报告所在行可见（OR-COR-278fd558 的滚动定位部分）。行查找限定在本列表容器
+  // 内：手机上隐藏的桌面实例与新挂载的抽屉实例在 DOM 中并存且桌面在前，全局
+  // document.querySelector 会先命中桌面那份，抽屉自己的选中行反而没有滚动。
+  // block: 'nearest'——行已在恢复的位置里可见时不改动滚动位置。
+  useEffect(() => {
+    if (didScrollToSelectedRef.current || selectedRecordId == null || items.length === 0) {
+      return;
+    }
+    const container = listRef.current;
+    if (!container) {
+      return;
+    }
+    const selectedRow = container.querySelector<HTMLElement>(
       `[data-testid="daily-history-row-${selectedRecordId}"]`,
     );
     if (selectedRow && typeof selectedRow.scrollIntoView === 'function') {
-      didInitialScrollRef.current = true;
+      didScrollToSelectedRef.current = true;
       selectedRow.scrollIntoView({ block: 'nearest' });
     }
   }, [items, selectedRecordId]);
@@ -202,7 +276,14 @@ const DailyHistoryList: React.FC<{
   }
 
   return (
-    <div className={`min-h-0 space-y-1.5 overflow-y-auto ${className}`} data-testid="daily-history-list">
+    <div
+      ref={listRef}
+      data-testid="daily-history-list"
+      className={`min-h-0 space-y-1.5 overflow-y-auto ${className}`}
+      onScroll={(event) => {
+        scrollMemory.current[dateKey] = event.currentTarget.scrollTop;
+      }}
+    >
       <p className="text-[11px] text-muted-text">{t('common.itemsCount', { count: total })}</p>
       {items.map((item) => {
         const stockName = item.name || item.code;

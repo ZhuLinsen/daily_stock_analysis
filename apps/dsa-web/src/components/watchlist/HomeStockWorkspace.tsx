@@ -100,6 +100,8 @@ interface HomeStockWorkspaceProps {
   /** issue #1661 OR-COR-278fd558：日期状态寄存在 HomePage，抽屉卸载重开不回跳今天 */
   dailyHistoryDate?: string;
   onDailyHistoryDateChange?: (dateKey: string) => void;
+  /** issue #1661 OR-COR-278fd558：各日期滚动位置同样寄存在 HomePage，抽屉重开回到原位置 */
+  dailyHistoryScrollMemory?: { current: Record<string, number> };
   /** issue #1661 OR-COM-91cc3feb：最近一份大盘复盘入口（替代旧 MARKET 历史行） */
   marketReviewEntry?: { id: number; name: string; createdAt?: string } | null;
   className?: string;
@@ -409,6 +411,7 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
   onHistoryItemClick,
   dailyHistoryDate,
   onDailyHistoryDateChange,
+  dailyHistoryScrollMemory,
   marketReviewEntry = null,
   className = '',
 }) => {
@@ -515,6 +518,7 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
           onSelectRecord={onHistoryItemClick}
           dateKey={dailyHistoryDate}
           onDateKeyChange={onDailyHistoryDateChange}
+          scrollMemory={dailyHistoryScrollMemory}
           marketReviewEntry={marketReviewEntry}
           className="flex-1"
         />

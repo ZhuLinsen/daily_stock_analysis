@@ -174,6 +174,131 @@ describe('DailyHistoryPanel', () => {
     }
   });
 
+  it('scopes the selected-row lookup to its own list and restores the remembered scroll position (OR-COR-278fd558)', async () => {
+    // 手机上隐藏的桌面实例与抽屉实例在 DOM 中并存（桌面在前），共享同一份滚动位置存储
+    const scrolledTargets: Element[] = [];
+    Element.prototype.scrollIntoView = function scrollIntoView(this: Element) {
+      scrolledTargets.push(this);
+    };
+
+    try {
+      const scrollMemory = { current: { '2026-05-18': 320 } as Record<string, number> };
+      const { getAllByTestId } = render(
+        <>
+          <DailyHistoryPanel
+            dateKey="2026-05-18"
+            scrollMemory={scrollMemory}
+            selectedRecordId={12}
+            onSelectRecord={vi.fn()}
+          />
+          <DailyHistoryPanel
+            dateKey="2026-05-18"
+            scrollMemory={scrollMemory}
+            selectedRecordId={12}
+            onSelectRecord={vi.fn()}
+          />
+        </>,
+      );
+      const lists = await waitFor(() => getAllByTestId('daily-history-list'));
+      expect(lists).toHaveLength(2);
+
+      // 每个实例各自滚动自己容器内的选中行：全局查找会先命中排在前面的那一行
+      await waitFor(() => expect(scrolledTargets).toHaveLength(2));
+      expect(lists[0].contains(scrolledTargets[0])).toBe(true);
+      expect(lists[1].contains(scrolledTargets[1])).toBe(true);
+
+      // 该日期上次的滚动位置被恢复，而不是回到顶部
+      expect(lists[1].scrollTop).toBe(320);
+    } finally {
+      delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView;
+    }
+  });
+
+  it('remembers the scroll position per date when the list remounts (OR-COR-278fd558)', async () => {
+    render(<DailyHistoryPanel selectedRecordId={null} onSelectRecord={vi.fn()} />);
+
+    const dateInput = await screen.findByTestId('daily-history-date-input');
+    fireEvent.change(dateInput, { target: { value: '2026-05-18' } });
+    const list = await screen.findByTestId('daily-history-list');
+    list.scrollTop = 240;
+    fireEvent.scroll(list);
+
+    // 换到别的日期再换回：列表按日期重挂载（与手机抽屉关闭重开同一路径）
+    fireEvent.change(dateInput, { target: { value: '2026-05-19' } });
+    await waitFor(() => expect(screen.getByTestId('daily-history-list')).not.toBe(list));
+    fireEvent.change(dateInput, { target: { value: '2026-05-18' } });
+    await waitFor(() => expect(screen.getByTestId('daily-history-list').scrollTop).toBe(240));
+  });
+
+  it('dedupes by record and re-syncs when new reports shift the page boundary (OR-COR-e9d99614)', async () => {
+    // 当天已有 101 只股票（id 101 最新，排首位）
+    const existingRows = Array.from({ length: 101 }, (_, index) => ({
+      ...latestOfStockA,
+      id: 101 - index,
+      code: `6005${String(index).padStart(2, '0')}`,
+      name: `股票${101 - index}`,
+    }));
+    let newReports: unknown[] = [];
+    const requestedPages: number[] = [];
+    let releaseSecondRequest: () => void = () => {};
+    const secondRequestGate = new Promise<void>((resolve) => {
+      releaseSecondRequest = resolve;
+    });
+    getDaily.mockImplementation((_date: string, options: { page?: number } = {}) => {
+      const page = options.page ?? 1;
+      requestedPages.push(page);
+      const respond = () => {
+        // 后端口径：每次请求重新排序并按偏移量切页，新报告排到列表首位
+        const all = [...newReports, ...existingRows];
+        const offset = (page - 1) * 100;
+        return { total: all.length, page, limit: 100, items: all.slice(offset, offset + 100) };
+      };
+      // 第 1 页取回后、第 2 页返回前：批量任务又保存了第 102 只股票的报告
+      return requestedPages.length === 2 ? secondRequestGate.then(respond) : Promise.resolve(respond());
+    });
+
+    render(<DailyHistoryPanel selectedRecordId={null} onSelectRecord={vi.fn()} />);
+    await waitFor(() => expect(requestedPages).toEqual([1, 2]));
+    newReports = [{ ...latestOfStockA, id: 102, code: '000002', name: '当日新报告' }];
+    releaseSecondRequest();
+
+    // 新报告必须有入口；不得出现重复行
+    expect(await screen.findByTestId('daily-history-row-102')).toBeInTheDocument();
+    expect(await screen.findByTestId('daily-history-row-1')).toBeInTheDocument();
+    const rowIds = screen.getAllByTestId(/^daily-history-row-/).map((row) => row.getAttribute('data-testid'));
+    expect(rowIds).toHaveLength(102);
+    expect(new Set(rowIds).size).toBe(102);
+    // 页边界移动后从第 1 页重取，而不是把偏移过的第 2 页直接拼上去
+    expect(requestedPages).toEqual([1, 2, 1, 2]);
+    expect(screen.getByText('102只')).toBeInTheDocument();
+  });
+
+  it('never renders duplicate rows even when the page boundary keeps moving (OR-COR-e9d99614)', async () => {
+    const pageOne = Array.from({ length: 100 }, (_, index) => ({
+      ...latestOfStockA,
+      id: 101 - index,
+      code: `6005${String(index).padStart(2, '0')}`,
+      name: `股票${101 - index}`,
+    }));
+    // 第 2 页总是重复第 1 页末尾的一行并报出更大的 total：持续有新报告写入
+    getDaily.mockImplementation((_date: string, options: { page?: number } = {}) => {
+      if ((options.page ?? 1) === 1) {
+        return Promise.resolve({ total: 101, page: 1, limit: 100, items: pageOne });
+      }
+      return Promise.resolve({ total: 102, page: 2, limit: 100, items: [pageOne[99]] });
+    });
+
+    render(<DailyHistoryPanel selectedRecordId={null} onSelectRecord={vi.fn()} />);
+
+    await waitFor(() => expect(screen.getByTestId('daily-history-list')).toBeInTheDocument());
+    const rowIds = screen.getAllByTestId(/^daily-history-row-/).map((row) => row.getAttribute('data-testid'));
+    expect(rowIds).toHaveLength(100);
+    expect(new Set(rowIds).size).toBe(100);
+    // 有界重取后收尾，计数标签与实际展示的行数一致
+    expect(screen.getByText('100只')).toBeInTheDocument();
+    expect(getDaily.mock.calls.length).toBeLessThanOrEqual(6);
+  });
+
   it('discards stale date responses so old requests never overwrite newer results', async () => {
     const deferred: Array<(value: unknown) => void> = [];
     getDaily.mockImplementation(() => new Promise((resolve) => deferred.push(resolve)));
