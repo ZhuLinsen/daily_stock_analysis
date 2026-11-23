@@ -37,6 +37,34 @@ def test_allows_english_logs_and_dataframe_chinese_column_keys() -> None:
     assert violations == []
 
 
+def test_detects_adjacent_literals_and_log_message_forms() -> None:
+    source = (
+        'import logging\n'
+        'logger.warning("分析" "失败")\n'
+        'logger.log(logging.INFO, "日志失败")\n'
+        'logger.info(msg="消息失败")\n'
+        'logger.log(level=logging.INFO, msg="级别失败")\n'
+    )
+    violations = find_cjk_logs_in_source(source, Path("message_forms.py"))
+    assert [(v.line, v.method) for v in violations] == [
+        (2, "warning"),
+        (3, "log"),
+        (4, "info"),
+        (5, "log"),
+    ]
+
+
+def test_ignores_localized_dynamic_logging_parameters_and_extra_fields() -> None:
+    source = (
+        'localized = "用户报告正文"\n'
+        'logger.info("Report: %s", localized)\n'
+        'logger.info("Report", extra={"用户": "alice"})\n'
+        'logger.log(logging.INFO, "Report: %s", {"名称": "示例"})\n'
+    )
+    violations = find_cjk_logs_in_source(source, Path("dynamic_params.py"))
+    assert violations == []
+
+
 def test_cli_exit_code_on_clean_and_dirty_files(tmp_path: Path) -> None:
     clean_file = tmp_path / "clean_mod.py"
     clean_file.write_text('logger.info("Pipeline finished in %.2fs", 1.5)\n', encoding="utf-8")

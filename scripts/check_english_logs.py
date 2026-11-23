@@ -73,7 +73,7 @@ def _is_logger_call(node: ast.Call) -> bool:
 
 
 def _iter_log_string_constants(node: ast.AST) -> Iterator[ast.Constant]:
-    """Yield string Constants within log expressions while ignoring dict/column keys."""
+    """Yield string constants while skipping lookup keys in subscripts and ``get`` calls."""
     if isinstance(node, ast.Constant):
         if isinstance(node.value, str):
             yield node
@@ -102,6 +102,18 @@ def _iter_log_string_constants(node: ast.AST) -> Iterator[ast.Constant]:
         yield from _iter_log_string_constants(child)
 
 
+def _log_message_expressions(node: ast.Call) -> Iterator[ast.AST]:
+    """Yield only the message expression from a logging call."""
+    for keyword in node.keywords:
+        if keyword.arg == "msg":
+            yield keyword.value
+            return
+
+    message_index = 1 if node.func.attr == "log" else 0
+    if len(node.args) > message_index:
+        yield node.args[message_index]
+
+
 def find_cjk_logs_in_source(source: str, path: Path) -> List[LogViolation]:
     """Inspect Python source text and return logger calls with CJK string literals."""
     tree = ast.parse(source, filename=str(path))
@@ -112,9 +124,8 @@ def find_cjk_logs_in_source(source: str, path: Path) -> List[LogViolation]:
         if not isinstance(node, ast.Call) or not _is_logger_call(node):
             continue
 
-        exprs: List[ast.AST] = list(node.args) + [kw.value for kw in node.keywords]
         matched_snippets: List[str] = []
-        for expr in exprs:
+        for expr in _log_message_expressions(node):
             for const in _iter_log_string_constants(expr):
                 if isinstance(const.value, str) and CJK_RE.search(const.value):
                     matched_snippets.append(const.value.strip().replace("\n", "\\n"))
