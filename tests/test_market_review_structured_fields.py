@@ -12,7 +12,7 @@ import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from src.core.market_profile import CN_PROFILE, US_PROFILE
+from src.core.market_profile import CN_PROFILE, JP_PROFILE, US_PROFILE
 from src.core.market_strategy import get_market_strategy_blueprint
 from src.core.market_review import _render_market_review_payload_markdown
 from src.market_analyzer import MarketAnalyzer, MarketIndex, MarketOverview
@@ -419,6 +419,130 @@ class TestPayloadStructuredFields:
         assert payload["summary"]["market_status"] == "index-strong-stock-weak"
         # OR-COR-91e5bc73：仅有当日行情、无任何均线输入，模型回传的 ma_status 必须丢弃
         assert "ma_status" not in payload["indices"][0], payload["indices"][0]
+
+
+class TestIndexCommentMapping:
+    """OR-COR-f4725a90：Prompt 必须携带指数内部代码；消费端兼容行情符号别名与名称回退。
+
+    内部代码取自真实数据源（data_provider/yfinance_fetcher.py、efinance_fetcher.py、
+    us_index_mapping.py），不再在 fixture 里预填“恰好能匹配”的代码。
+    """
+
+    @staticmethod
+    def _jp_overview():
+        return MarketOverview(
+            date="2026-06-05",
+            indices=[
+                MarketIndex(code="N225", name="日经225", current=40000.0, change_pct=0.5),
+                MarketIndex(code="TOPX", name="东证指数", current=2800.0, change_pct=-0.2),
+            ],
+        )
+
+    @staticmethod
+    def _analyzer(region, profile, appendix, overview, language="zh"):
+        ma = _make_analyzer(region=region, profile=profile, report_text=_appendix_report(appendix))
+        ma.config.report_language = language
+        ma.get_market_overview = MagicMock(return_value=overview)
+        return ma
+
+    def test_zh_prompt_index_input_carries_internal_code(self):
+        ma = self._analyzer("jp", JP_PROFILE, None, self._jp_overview())
+
+        prompt = ma._build_review_prompt(self._jp_overview(), [])
+
+        # 修复前仅输出“- 日经225: 40000.00 (↑0.50%)”，模型无从得知内部代码 N225
+        assert "- 日经225 (N225): 40000.00 (↑0.50%)" in prompt, "主要指数输入未携带内部代码"
+        assert "- 东证指数 (TOPX): 2800.00 (↓0.20%)" in prompt
+        assert "原样" in prompt, "附录未要求模型原样回传内部代码"
+        assert '"name"' in prompt, "附录未要求回传指数名称（名称回退的前提）"
+
+    def test_en_prompt_index_input_carries_internal_code(self):
+        ma = self._analyzer("jp", JP_PROFILE, None, self._jp_overview(), language="en")
+
+        prompt = ma._build_review_prompt(self._jp_overview(), [])
+
+        assert "- 日经225 (N225): 40000.00 (↑0.50%)" in prompt, "index input lacks the internal code"
+        assert "verbatim" in prompt.lower(), "appendix does not ask for the code to be echoed verbatim"
+        assert '"name"' in prompt
+
+    def test_yahoo_caret_symbol_keeps_comment(self):
+        """模型按常见行情符号回传 ^N225 且省略 name 时，点评不得静默丢失。"""
+        comment = "日经站上四万点心理关口"
+        ma = self._analyzer(
+            "jp", JP_PROFILE, {"indices": [{"code": "^N225", "comment": comment}]}, self._jp_overview()
+        )
+
+        payload = ma._run_daily_review_parts().structured_payload
+
+        assert payload["indices"][0]["comment"] == comment, payload["indices"][0]
+        assert "comment" not in payload["indices"][1]
+
+    def test_quote_symbol_aliases_match_internal_codes(self):
+        overview = MarketOverview(
+            date="2026-06-05",
+            indices=[
+                MarketIndex(code="sh000001", name="上证指数", current=3372.4, change_pct=0.9),
+                MarketIndex(code="sz399001", name="深证成指", current=10200.0, change_pct=-0.3),
+                MarketIndex(code="SPX", name="标普500指数", current=5200.0, change_pct=0.6),
+                MarketIndex(code="HSCEI", name="国企指数", current=7000.0, change_pct=0.2),
+            ],
+        )
+        ma = _make_analyzer(report_text="复盘")
+        llm_structured = {
+            "indices": [
+                {"code": "000001.SH", "comment": "权重护盘"},
+                {"code": "SZ399001", "comment": "中小盘走弱"},
+                {"code": "^GSPC", "comment": "缩量创新高"},
+                {"code": "^HSCE", "comment": "随恒指回升"},
+            ]
+        }
+
+        payload = ma.build_market_review_payload(overview, [], "复盘报告", llm_structured=llm_structured)
+
+        comments = {idx["name"]: idx.get("comment") for idx in payload["indices"]}
+        assert comments == {
+            "上证指数": "权重护盘",
+            "深证成指": "中小盘走弱",
+            "标普500指数": "缩量创新高",
+            "国企指数": "随恒指回升",
+        }
+
+    def test_name_fallback_when_code_cannot_be_matched(self):
+        overview = MarketOverview(
+            date="2026-06-05",
+            indices=[
+                MarketIndex(code="SPX", name="标普500指数", current=5200.0, change_pct=0.6),
+                MarketIndex(code="IXIC", name="纳斯达克综合指数", current=16300.0, change_pct=0.8),
+            ],
+        )
+        ma = _make_analyzer(report_text="复盘")
+        llm_structured = {
+            "indices": [
+                {"code": "S&P 500", "name": "标普500", "comment": "缩量上涨"},
+                {"code": "NASDAQ_COMPOSITE", "name": "纳斯达克综合指数", "comment": "科技股领涨"},
+            ]
+        }
+
+        payload = ma.build_market_review_payload(overview, [], "复盘报告", llm_structured=llm_structured)
+
+        assert payload["indices"][0]["comment"] == "缩量上涨"  # 名称唯一包含：标普500 ⊂ 标普500指数
+        assert payload["indices"][1]["comment"] == "科技股领涨"  # 名称精确匹配
+
+    def test_ambiguous_name_fallback_attaches_nothing(self):
+        overview = MarketOverview(
+            date="2026-06-05",
+            indices=[
+                MarketIndex(code="sh000001", name="上证指数", current=3372.4, change_pct=0.9),
+                MarketIndex(code="sh000016", name="上证50", current=2700.0, change_pct=0.4),
+            ],
+        )
+        ma = _make_analyzer(report_text="复盘")
+
+        payload = ma.build_market_review_payload(
+            overview, [], "复盘报告", llm_structured={"indices": [{"name": "上证", "comment": "含糊"}]}
+        )
+
+        assert all("comment" not in idx for idx in payload["indices"]), payload["indices"]
 
 
 class TestDivergenceDiagnosisFallback:

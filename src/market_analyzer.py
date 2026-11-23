@@ -39,6 +39,7 @@ from src.schemas.market_light import MARKET_LIGHT_REGIONS, MarketLightSnapshot
 from src.services.run_diagnostics import record_llm_run, record_llm_run_started
 from src.services.intelligence_service import IntelligenceService
 from data_provider.base import DataFetcherManager
+from data_provider.us_index_mapping import get_us_index_yf_symbol
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +80,16 @@ _MARKET_REVIEW_FENCE_PATTERN = re.compile(
     flags=re.DOTALL | re.IGNORECASE,
 )
 
+# OR-COR-f4725a90：指数点评按内部代码挂载，但模型常按行情习惯回传 Yahoo 符号或带
+# 交易所前后缀的代码（^N225、000001.SH、SZ399001）。下面把它们归一成匹配键；
+# 美股别名（SPX / GSPC / DJIA …）直接复用 data_provider 的既有映射。
+_MARKET_REVIEW_INDEX_EXCHANGE_PREFIXES = frozenset({"sh", "sz", "bj"})
+_MARKET_REVIEW_INDEX_EXCHANGE_SUFFIXES = frozenset({"sh", "sz", "ss", "bj", "hk"})
+# Yahoo 符号与内部代码不一致、且无法由去前缀/后缀推导的别名（小写、已去掉 ^）。
+_MARKET_REVIEW_INDEX_SYMBOL_ALIASES = {
+    "hsce": "hscei",  # 恒生国企指数：内部 HSCEI，Yahoo ^HSCE
+}
+
 # catalysts[].direction 归一化映射（中英文均接受）。
 _MARKET_REVIEW_CATALYST_DIRECTIONS = {
     "bullish": "bullish",
@@ -102,6 +113,7 @@ _MARKET_REVIEW_APPENDIX_SPEC_ZH = """【结构化数据附录（系统解析用�
 在报告全部内容输出完毕后，最后追加一个 ```json 代码块（这是全文唯一允许出现的代码块），内容为如下结构的 JSON：
 - 无法判断的字段一律填 null，严禁编造（尤其是成交额等数值）
 - 若本市场不提供某类数据（如美股无涨跌家数），相关字段填 null
+- indices[].code 必须原样回传【主要指数】中每行括号内的指数代码（如 N225、SPX、sh000001），不要改写成 ^N225、000001.SH 等行情符号
 {
   "summary": {
     "temperature": <0-100 整数或 null，市场温度>,
@@ -110,7 +122,7 @@ _MARKET_REVIEW_APPENDIX_SPEC_ZH = """【结构化数据附录（系统解析用�
     "core_conclusion": "<一句话结论，点明普涨/普跌/权重护盘/成长杀跌/风险偏好回落等结构> 或 null"
   },
   "indices": [
-    {"code": "<指数代码>", "comment": "<一句话点评> 或 null"}
+    {"code": "<原样回传【主要指数】括号内的指数代码>", "name": "<指数名称，如 日经225>", "comment": "<一句话点评> 或 null"}
   ],
   "breadth": {"divergence_diagnosis": "<结合涨跌家数/涨跌停/成交额与指数结构的宽度与分化诊断> 或 null"},
   "style_rotation": {"signal": "<如 成长→防御> 或 null", "comment": "<风格切换说明> 或 null"},
@@ -130,6 +142,7 @@ _MARKET_REVIEW_APPENDIX_SPEC_EN = """[Structured Data Appendix (machine-readable
 After the report content, append ONE ```json fenced block (the only code block allowed in the whole output) with this exact shape:
 - Use null for any field you cannot determine from the provided data. Never fabricate values (especially turnover and other figures).
 - If a data category is unavailable for this market (e.g. no advancers/decliners stats), fill the related fields with null.
+- indices[].code must echo verbatim the code in parentheses after each index under "## Major Indices" (e.g. N225, SPX, sh000001); do not rewrite it as a quote symbol such as ^N225 or 000001.SH
 {
   "summary": {
     "temperature": <integer 0-100 or null, market temperature>,
@@ -138,7 +151,7 @@ After the report content, append ONE ```json fenced block (the only code block a
     "core_conclusion": "<one sentence naming the structure: broad rally / broad selloff / heavyweight support / growth selloff / risk-appetite pullback> or null"
   },
   "indices": [
-    {"code": "<index code>", "comment": "<one-line comment> or null"}
+    {"code": "<echo the code given in parentheses under Major Indices, verbatim>", "name": "<index name, e.g. Nikkei 225>", "comment": "<one-line comment> or null"}
   ],
   "breadth": {"divergence_diagnosis": "<breadth/divergence diagnosis from advancers, limit counts, turnover and index structure> or null"},
   "style_rotation": {"signal": "<e.g. growth -> defensives> or null", "comment": "<style rotation note> or null"},
@@ -1276,6 +1289,70 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             return None
         return text[:limit]
 
+    @classmethod
+    def _index_code_key(cls, value: Any) -> str:
+        """Normalize an index code (internal or a common quote symbol) into a matching key.
+
+        ^N225 / 000001.SH / SZ399001 / ^GSPC all reduce to the key of their internal
+        code (N225 / sh000001 / sz399001 / SPX). Unknown text is returned lowercased.
+        """
+        text = str(value or "").strip().lower()
+        if not text:
+            return ""
+        text = text.lstrip("^")  # Yahoo Finance 行情符号前缀
+        head, sep, tail = text.partition(".")
+        if sep and tail.isdigit() and head in _MARKET_REVIEW_INDEX_EXCHANGE_PREFIXES:
+            text = tail  # SH.000001 → 000001
+        elif sep and tail in _MARKET_REVIEW_INDEX_EXCHANGE_SUFFIXES:
+            text = head  # 000001.SH / HSTECH.HK → 000001 / hstech
+        if len(text) == 8 and text[:2] in _MARKET_REVIEW_INDEX_EXCHANGE_PREFIXES and text[2:].isdigit():
+            text = text[2:]  # SH000001 / sz399001 → 000001 / 399001
+        yf_symbol, _ = get_us_index_yf_symbol(text)
+        if yf_symbol:
+            return yf_symbol.lstrip("^").lower()  # SPX / GSPC / DJIA → gspc / gspc / dji
+        return _MARKET_REVIEW_INDEX_SYMBOL_ALIASES.get(text, text)
+
+    @classmethod
+    def _resolve_structured_index_target(
+        cls,
+        annotation: Dict[str, Any],
+        indices: List[Any],
+    ) -> Optional[Dict[str, Any]]:
+        """Find the payload index an LLM index annotation belongs to.
+
+        OR-COR-f4725a90：先按归一化代码匹配（兼容行情符号别名），再按名称回退
+        （精确 → 交叉字段 → 唯一包含）。无法唯一确定时返回 None，绝不猜测挂载。
+        """
+        rows = [idx for idx in indices if isinstance(idx, dict)]
+        by_code = {cls._index_code_key(idx.get("code")): idx for idx in rows}
+        by_name = {str(idx.get("name") or "").strip().lower(): idx for idx in rows}
+
+        code_key = cls._index_code_key(annotation.get("code"))
+        if code_key and code_key in by_code:
+            return by_code[code_key]
+        raw_code = str(annotation.get("code") or "").strip().lower()
+        name_key = str(annotation.get("name") or "").strip().lower()
+        if name_key and name_key in by_name:
+            return by_name[name_key]
+        # 模型偶尔把名称填进 code、或把代码填进 name：交叉再试一次。
+        if raw_code and raw_code in by_name:
+            return by_name[raw_code]
+        if name_key and cls._index_code_key(name_key) in by_code:
+            return by_code[cls._index_code_key(name_key)]
+        # 名称唯一包含才挂载（如“标普500”⊂“标普500指数”）；“上证”同时命中多个指数则放弃。
+        for name_candidate in (name_key, raw_code):
+            if not name_candidate:
+                continue
+            candidates = [
+                idx
+                for idx in rows
+                if (index_name := str(idx.get("name") or "").strip().lower())
+                and (name_candidate in index_name or index_name in name_candidate)
+            ]
+            if len(candidates) == 1:
+                return candidates[0]
+        return None
+
     def _apply_structured_market_review_fields(
         self,
         payload: Dict[str, Any],
@@ -1306,22 +1383,8 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
 
         annotations = structured.get("_index_annotations") or []
         if annotations and isinstance(payload.get("indices"), list):
-            by_code = {
-                str(idx.get("code") or "").strip().lower(): idx
-                for idx in payload["indices"]
-                if isinstance(idx, dict)
-            }
-            by_name = {
-                str(idx.get("name") or "").strip().lower(): idx
-                for idx in payload["indices"]
-                if isinstance(idx, dict)
-            }
             for annotation in annotations:
-                target = None
-                if annotation.get("code"):
-                    target = by_code.get(annotation["code"].strip().lower())
-                if target is None and annotation.get("name"):
-                    target = by_name.get(annotation["name"].strip().lower())
+                target = self._resolve_structured_index_target(annotation, payload["indices"])
                 if target is None:
                     continue
                 if annotation.get("comment"):
@@ -2174,10 +2237,11 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         shell_language_label = "Korean (한국어)" if self._get_output_language() == "ko" else "English"
 
         # 指数行情信息（简洁格式，不用emoji）
+        # OR-COR-f4725a90：括号内附内部代码，供模型在附录 indices[].code 中原样回传。
         indices_text = ""
         for idx in overview.indices:
             direction = "↑" if idx.change_pct > 0 else "↓" if idx.change_pct < 0 else "-"
-            indices_text += f"- {idx.name}: {idx.current:.2f} ({direction}{abs(idx.change_pct):.2f}%)\n"
+            indices_text += f"- {idx.name} ({idx.code}): {idx.current:.2f} ({direction}{abs(idx.change_pct):.2f}%)\n"
         
         # 板块信息
         top_sectors_text = self._format_ranking_summary(overview.top_sectors)

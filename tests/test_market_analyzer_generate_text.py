@@ -4612,7 +4612,8 @@ Index text.
 
         prompt = ma._build_review_prompt(overview, [])
         direction = "↑" if changes[-1] > 0 else "↓"
-        assert f"- Volatility: 100.00 ({direction}{abs(changes[-1]):.2f}%)" in prompt
+        # OR-COR-f4725a90：指数行情行在括号内附带内部代码（供附录原样回传），报价本身保持不变。
+        assert f"- Volatility ({vix_code}): 100.00 ({direction}{abs(changes[-1]):.2f}%)" in prompt
         payload = ma.build_market_review_payload(overview, [], injected)
         assert payload["market_light"] == snapshot
         assert payload["indices"] == original_quotes
