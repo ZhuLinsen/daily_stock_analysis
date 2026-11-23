@@ -590,6 +590,63 @@ class HistoryDailyApiTestCase(unittest.TestCase):
                     "新列表的动作/标签必须与 /history/stocks 同口径",
                 )
 
+    # ------------------------------------------------------------------
+    # OR-COR-afa444c6：聚合与按 ID 读代表报告之间的并发删除不得漏掉整只股票
+    # ------------------------------------------------------------------
+
+    def test_representative_deleted_between_reads_does_not_drop_the_stock(self) -> None:
+        """评审场景：某股当天先后有报告 A、B。按日查询已聚合出 B（当日最新），在按
+        主键读取代表报告之前，另一个请求通过现有按记录 ID 删除接口删除 B，A 仍在。
+        当天仍有 A、应有一个报告入口：这次请求不得漏掉整只股票（修复前 total=0），
+        结果须与事后重查一致——A、1 份、is_latest=True。"""
+        day_start, _day_end = HistoryService.shanghai_day_bounds_local(QUERY_DATE)
+        a_id = self._add_history("600519", day_start + timedelta(hours=1), name="贵州茅台")
+        b_id = self._add_history("600519", day_start + timedelta(hours=9), name="贵州茅台")
+
+        original_session_local = self.db._SessionLocal
+        interleaved = {"armed": True, "delete_response": None}
+
+        def _interleaved_session_local():
+            session = original_session_local()
+            if not interleaved["armed"]:
+                # 删除请求自己的会话：普通会话（即「第二个连接」）
+                return session
+            interleaved["armed"] = False
+            original_execute = session.execute
+            fired = {"done": False}
+
+            def _execute(statement, *args, **kwargs):
+                result = original_execute(statement, *args, **kwargs)
+                if not fired["done"]:
+                    # 聚合 SELECT 已返回（day_max_id=B），按主键读代表报告尚未发生
+                    fired["done"] = True
+                    interleaved["delete_response"] = self.client.delete(
+                        "/api/v1/history", json={"record_ids": [b_id]},
+                    )
+                return result
+
+            session.execute = _execute  # type: ignore[method-assign]
+            return session
+
+        with patch.object(self.db, "_SessionLocal", side_effect=_interleaved_session_local):
+            response = self._get_daily()
+
+        delete_response = interleaved["delete_response"]
+        self.assertIsNotNone(delete_response, "并发删除应在两条 SELECT 之间触发")
+        self.assertEqual(delete_response.status_code, 200)
+        self.assertEqual(delete_response.json()["deleted"], 1)
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["total"], 1, "当日仍有报告 A，不得漏掉整只股票")
+        self.assertEqual([item["id"] for item in payload["items"]], [a_id])
+        self.assertEqual(payload["items"][0]["analysis_count"], 1)
+        self.assertTrue(payload["items"][0]["is_latest"])
+        # 与事后重查结果逐字段一致
+        requery = self._get_daily()
+        self.assertEqual(requery.status_code, 200)
+        self.assertEqual(requery.json(), payload)
+
 
 if __name__ == "__main__":
     unittest.main()

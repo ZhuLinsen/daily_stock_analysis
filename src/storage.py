@@ -71,6 +71,9 @@ T = TypeVar("T")
 CURRENT_SCHEMA_VERSION = "2026-06-05-create-all-baseline"
 CHAT_STATE_SCHEMA_VERSION = "2026-10-06-chat-active-stock"
 INTELLIGENCE_ITEM_NULL_SCOPE_VALUE = "__dsa_null_scope__"
+# 按日历史快照：代表报告在聚合与点查之间被并发删除时，对该 raw code 重新聚合的
+# 最大次数（OR-COR-afa444c6）
+_DAILY_SNAPSHOT_REREAD_ATTEMPTS = 3
 
 # SQLAlchemy ORM 基类
 Base = declarative_base()
@@ -3480,6 +3483,11 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         两次独立查询可能读到不同快照：其间提交的新报告会产生「当日列表给旧记录
         + 时效标记按新记录」的撕裂组合）。排除谓词 code=MARKET 与
         report_type=market_review；当日行按 (created_at desc, id desc) 排序。
+
+        代表报告实体仍需按主键点查，与聚合不在同一个读快照：若某 raw code 的
+        当日最新一份在两条 SELECT 之间被并发删除，则对该 raw code 重新聚合（最多
+        ``_DAILY_SNAPSHOT_REREAD_ATTEMPTS`` 次），退回为当日次新一份，而不是把
+        整只股票从当日列表里漏掉（OR-COR-afa444c6）。
         """
         in_day = and_(
             AnalysisHistory.created_at >= day_start,
@@ -3487,34 +3495,68 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         )
         day_max_id_expr = case((in_day, AnalysisHistory.id), else_=None)
         day_count_expr = case((in_day, 1), else_=0)
-        with self.get_session() as session:
-            aggregated = session.execute(
-                select(
-                    AnalysisHistory.code,
-                    func.max(day_max_id_expr).label("day_max_id"),
-                    func.sum(day_count_expr).label("day_count"),
-                    func.max(AnalysisHistory.id).label("global_max_id"),
+        snapshot_query = (
+            select(
+                AnalysisHistory.code,
+                func.max(day_max_id_expr).label("day_max_id"),
+                func.sum(day_count_expr).label("day_count"),
+                func.max(AnalysisHistory.id).label("global_max_id"),
+            )
+            .where(
+                and_(
+                    AnalysisHistory.code != "MARKET",
+                    or_(
+                        AnalysisHistory.report_type.is_(None),
+                        AnalysisHistory.report_type != "market_review",
+                    ),
                 )
-                .where(
-                    and_(
-                        AnalysisHistory.code != "MARKET",
-                        or_(
-                            AnalysisHistory.report_type.is_(None),
-                            AnalysisHistory.report_type != "market_review",
-                        ),
-                    )
-                )
-                .group_by(AnalysisHistory.code)
-            ).all()
+            )
+            .group_by(AnalysisHistory.code)
+        )
 
-            day_max_ids = [int(row.day_max_id) for row in aggregated if row.day_max_id is not None]
-            day_rows: Dict[int, AnalysisHistory] = {}
-            if day_max_ids:
-                # 按主键点查当日最新行：只读取已提交数据，不引入快照差异
-                records = session.execute(
-                    select(AnalysisHistory).where(AnalysisHistory.id.in_(day_max_ids))
-                ).scalars().all()
-                day_rows = {int(record.id): record for record in records}
+        def _resolve_day_rows(
+            reader: Session, rows: List[Any]
+        ) -> Tuple[Dict[int, AnalysisHistory], List[str]]:
+            """按主键点查 ``rows`` 聚合出的当日代表行。
+
+            返回 ``({id: record}, 代表行已不存在的 raw code 列表)``。默认 SQLite 连接
+            的两次读取没有共同快照：聚合与点查之间，代表报告可能已被并发请求经
+            按记录 ID 删除接口删掉（OR-COR-afa444c6）。
+            """
+            wanted_ids = sorted({
+                int(row.day_max_id) for row in rows if row.day_max_id is not None
+            })
+            found: Dict[int, AnalysisHistory] = {}
+            if wanted_ids:
+                for record in reader.execute(
+                    select(AnalysisHistory).where(AnalysisHistory.id.in_(wanted_ids))
+                ).scalars().all():
+                    found[int(record.id)] = record
+            missing = sorted({
+                str(row.code)
+                for row in rows
+                if row.day_max_id is not None and int(row.day_max_id) not in found
+            })
+            return found, missing
+
+        with self.get_session() as session:
+            aggregated = session.execute(snapshot_query).all()
+            day_rows, missing_codes = _resolve_day_rows(session, aggregated)
+
+            # 代表行被并发删除时不得跳过整只股票（OR-COR-afa444c6）：当天可能仍有
+            # 更早的报告，应退回为该 raw code 的当日次新一份。对受影响的 raw code
+            # 重新聚合（代表行、当日份数、全局最新 id 一并取删除后的视图，与事后
+            # 重查一致）；有界重试，避免删除持续发生时无限循环。
+            rereads = 0
+            while missing_codes and rereads < _DAILY_SNAPSHOT_REREAD_ATTEMPTS:
+                rereads += 1
+                stale_codes = set(missing_codes)
+                reread_rows = session.execute(
+                    snapshot_query.where(AnalysisHistory.code.in_(missing_codes))
+                ).all()
+                aggregated = [row for row in aggregated if str(row.code) not in stale_codes]
+                aggregated.extend(reread_rows)
+                day_rows, missing_codes = _resolve_day_rows(session, aggregated)
 
             daily: List[Tuple[AnalysisHistory, int]] = []
             global_latest: Dict[str, int] = {}
