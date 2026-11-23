@@ -321,6 +321,26 @@ class EfinanceFetcher(BaseFetcher):
         )
         return category, message
 
+    @staticmethod
+    def _build_history_failure_log_message(
+        stock_code: str,
+        beg_date: str,
+        end_date: str,
+        exc: Exception,
+        elapsed: float,
+        category: str,
+        is_etf: bool = False,
+    ) -> str:
+        instrument_type = "ETF" if is_etf else "stock"
+        detail = str(exc).strip() or type(exc).__name__
+        return (
+            "Eastmoney historical K-line request failed: "
+            f"endpoint={EASTMONEY_HISTORY_ENDPOINT}, stock_code={stock_code}, "
+            f"market_type={instrument_type}, range={beg_date}~{end_date}, "
+            f"category={category}, error_type={type(exc).__name__}, "
+            f"elapsed={elapsed:.2f}s, detail={detail}"
+        )
+
     def _set_random_user_agent(self) -> None:
         """
         设置随机 User-Agent
@@ -476,10 +496,18 @@ class EfinanceFetcher(BaseFetcher):
             )
 
             if category == "rate_limit_or_anti_bot":
-                logger.warning(failure_message)
+                logger.warning(
+                    self._build_history_failure_log_message(
+                        stock_code, beg_date, end_date_fmt, e, api_elapsed, category
+                    )
+                )
                 raise RateLimitError(f"efinance 可能被限流: {failure_message}") from e
 
-            logger.warning(failure_message)
+            logger.warning(
+                self._build_history_failure_log_message(
+                    stock_code, beg_date, end_date_fmt, e, api_elapsed, category
+                )
+            )
             raise DataFetchError(f"efinance 获取数据失败: {failure_message}") from e
     
     def _fetch_etf_data(self, stock_code: str, start_date: str, end_date: str) -> pd.DataFrame:
@@ -570,10 +598,18 @@ class EfinanceFetcher(BaseFetcher):
             )
 
             if category == "rate_limit_or_anti_bot":
-                logger.warning(failure_message)
+                logger.warning(
+                    self._build_history_failure_log_message(
+                        stock_code, beg_date, end_date_fmt, e, api_elapsed, category, is_etf=True
+                    )
+                )
                 raise RateLimitError(f"efinance 可能被限流: {failure_message}") from e
 
-            logger.warning(failure_message)
+            logger.warning(
+                self._build_history_failure_log_message(
+                    stock_code, beg_date, end_date_fmt, e, api_elapsed, category, is_etf=True
+                )
+            )
             raise DataFetchError(f"efinance 获取 ETF 数据失败: {failure_message}") from e
     
     def _normalize_data(self, df: pd.DataFrame, stock_code: str) -> pd.DataFrame:

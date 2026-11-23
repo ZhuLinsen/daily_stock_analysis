@@ -101,11 +101,44 @@ class TestFetcherLogging(unittest.TestCase):
         manager = DataFetcherManager(fetchers=[_FailureFetcher()])
 
         with self.assertLogs("data_provider.base", level="INFO") as captured:
-            with self.assertRaises(DataFetchError):
+            with self.assertRaises(DataFetchError) as raised:
                 manager.get_daily_data("601006", start_date="2026-01-07", end_date="2026-03-08")
 
         log_text = "\n".join(captured.output)
         self.assertIn("ERROR:data_provider.base:[data source exhausted] 601006 fetch failed:", log_text)
+        self.assertNotIn("所有数据源获取 601006 失败", log_text)
+        self.assertIn("所有数据源获取 601006 失败", str(raised.exception))
+
+    def test_us_terminal_failure_keeps_localized_error_out_of_log(self):
+        fetcher = _FailureFetcher()
+        fetcher.name = "FinnhubFetcher"
+        manager = DataFetcherManager(fetchers=[fetcher])
+
+        with (
+            patch.object(DataFetcherManager, "_is_daily_source_available", return_value=True),
+            self.assertLogs("data_provider.base", level="INFO") as captured,
+            self.assertRaises(DataFetchError) as raised,
+        ):
+            manager.get_daily_data("AAPL", start_date="2026-05-01", end_date="2026-05-08")
+
+        log_text = "\n".join(captured.output)
+        self.assertNotIn("美股 AAPL 获取失败", log_text)
+        self.assertIn("美股 AAPL 获取失败", str(raised.exception))
+
+    def test_no_available_source_keeps_localized_error_out_of_log(self):
+        manager = DataFetcherManager(fetchers=[_SuccessFetcher()])
+
+        with (
+            patch.object(manager, "_get_fetchers_snapshot", return_value=[]),
+            self.assertLogs("data_provider.base", level="INFO") as captured,
+            self.assertRaises(DataFetchError) as raised,
+        ):
+            manager.get_daily_data("AAPL", start_date="2026-05-01", end_date="2026-05-08")
+
+        log_text = "\n".join(captured.output)
+        self.assertIn("no available data source", log_text)
+        self.assertNotIn("美股 AAPL 获取失败", log_text)
+        self.assertIn("美股 AAPL 获取失败", str(raised.exception))
 
     def test_manager_skips_builtin_fetchers_that_do_not_support_hk_daily(self):
         efinance = _RecordingFetcher("EfinanceFetcher", 0)
@@ -161,7 +194,7 @@ class TestFetcherLogging(unittest.TestCase):
                         self.assertEqual(source, "SuccessFetcher")
                         self.assertTrue(all(record.levelno < logging.ERROR for record in captured.records))
                         log_text = "\n".join(captured.output)
-                        self.assertIn("Eastmoney 历史K线接口失败:", log_text)
+                        self.assertIn("Eastmoney historical K-line request failed:", log_text)
                         self.assertIn("endpoint=push2his.eastmoney.com/api/qt/stock/kline/get", log_text)
                         self.assertIn("category=remote_disconnect", log_text)
                         self.assertIn(f"WARNING:data_provider.base:[EfinanceFetcher] {code} fetch failed:", log_text)

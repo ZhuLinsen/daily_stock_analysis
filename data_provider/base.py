@@ -2044,7 +2044,10 @@ class DataFetcherManager:
         if total_fetchers == 0:
             market_label = "美股指数" if is_us_index else "美股" if is_us else "港股" if is_hk else "台股" if is_tw else "A股"
             error_summary = f"{market_label} {stock_code} 获取失败:\n暂无可用数据源"
-            logger.error(f"[data source exhausted] {stock_code} fetch failed: {error_summary}")
+            logger.error(
+                "[data source exhausted] %s fetch failed: no available data source",
+                stock_code,
+            )
             raise DataFetchError(error_summary)
 
         # 美股（含美股指数）使用专用路由；港股走下方通用数据源循环
@@ -2154,8 +2157,10 @@ class DataFetcherManager:
             error_summary = f"{market_label} {stock_code} 获取失败:\n" + "\n".join(errors)
             elapsed = time.time() - request_start
             logger.error(
-                f"[data source exhausted] {stock_code} fetch failed: "
-                f"elapsed={elapsed:.2f}s\n{error_summary}"
+                "[data source exhausted] %s fetch failed: elapsed=%.2fs, error_count=%d",
+                stock_code,
+                elapsed,
+                len(errors),
             )
             raise DataFetchError(error_summary)
 
@@ -2246,8 +2251,10 @@ class DataFetcherManager:
         error_summary = f"所有数据源获取 {stock_code} 失败:\n" + "\n".join(errors)
         elapsed = time.time() - request_start
         logger.error(
-            f"[data source exhausted] {stock_code} fetch failed: "
-            f"elapsed={elapsed:.2f}s\n{error_summary}"
+            "[data source exhausted] %s fetch failed: elapsed=%.2fs, error_count=%d",
+            stock_code,
+            elapsed,
+            len(errors),
         )
         raise DataFetchError(error_summary)
     

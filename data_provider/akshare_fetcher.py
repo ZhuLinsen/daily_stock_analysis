@@ -328,8 +328,9 @@ def _build_realtime_failure_message(
     elapsed: float,
     error_type: str,
 ) -> str:
+    log_source_name = {"新浪": "Sina", "腾讯": "Tencent"}.get(source_name, source_name)
     return (
-        f"{source_name} 实时行情接口失败: endpoint={endpoint}, stock_code={stock_code}, "
+        f"{log_source_name} realtime quote request failed: endpoint={endpoint}, stock_code={stock_code}, "
         f"symbol={symbol}, category={category}, error_type={error_type}, "
         f"elapsed={elapsed:.2f}s, detail={detail}"
     )
