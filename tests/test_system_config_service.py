@@ -78,6 +78,25 @@ class SystemConfigServiceTestCase(unittest.TestCase):
                     self.assertEqual(self.manager.read_config_map()["ZULIP_TOPIC"], topic)
                     self.assertEqual(Config.get_instance().zulip_topic, topic)
 
+    @patch.object(SystemConfigService, "_reload_runtime_singletons")
+    def test_zulip_stream_save_and_import_round_trip(self, _reload) -> None:
+        from dotenv import dotenv_values
+
+        for stream in ("research #signals", 'research "signals"', r"research \signals #stocks", "plain"):
+            for operation in ("save", "import"):
+                with self.subTest(stream=stream, operation=operation), patch.dict(os.environ, {"ENV_FILE": str(self.env_path)}, clear=True):
+                    self._rewrite_env("STOCK_LIST=600519")
+                    version = self.manager.get_config_version()
+                    if operation == "save":
+                        result = self.service.update(version, [{"key": "ZULIP_STREAM", "value": stream}], reload_now=True)
+                    else:
+                        encoded = stream.replace("\\", "\\\\").replace('"', '\\"')
+                        result = self.service.import_env(config_version=version, content=f'ZULIP_STREAM="{encoded}"\n', reload_now=True)
+                    self.assertTrue(result["success"])
+                    self.assertEqual(dotenv_values(self.env_path)["ZULIP_STREAM"], stream)
+                    self.assertEqual(self.manager.read_config_map()["ZULIP_STREAM"], stream)
+                    self.assertEqual(Config.get_instance().zulip_stream, stream)
+
     def test_notification_address_change_reuses_saved_credentials(self) -> None:
         for prefix, credentials, target in (
             ("RAFT", {"RAFT_AGENT_KEY": "raft-key"}, {"RAFT_TARGET": "#stocks"}),

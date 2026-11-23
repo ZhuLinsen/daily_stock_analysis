@@ -256,9 +256,9 @@ class ConfigManager:
         for key, value in updates.items():
             line_value = value.replace("\n", "")
             line_value = escape_compose_sensitive_env_value(key, line_value)
-            if key == "ZULIP_TOPIC":
+            if key in ("ZULIP_TOPIC", "ZULIP_STREAM"):
                 # Preserve literal quotes, backslashes and whitespace before #
-                # when dotenv reads the saved topic again.
+                # when dotenv reads the saved channel or topic again.
                 line_value = '"' + line_value.replace("\\", "\\\\").replace('"', '\\"') + '"'
             if key in key_to_index:
                 entries[key_to_index[key]] = ConfigLineEntry.assignment(key, line_value)

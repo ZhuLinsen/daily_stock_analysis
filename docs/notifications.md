@@ -357,7 +357,7 @@ Secret 适合 token、password、webhook URL 等敏感项；Variable 适合 `WEC
 
 Zulip：配置 `ZULIP_URL`（组织的根地址）、`ZULIP_BOT_EMAIL`、`ZULIP_API_KEY`、`ZULIP_STREAM` 和 `ZULIP_TOPIC`，并将机器人加入目标频道。消息通过 [Zulip 发送消息 API](https://zulip.com/api/send-message) 发送到指定频道和主题。
 
-手动编辑或导入 `.env` 时，主题中空格后的 `#` 需放在引号内，例如 `ZULIP_TOPIC="daily #stocks"`，否则会被解析为注释。Web 保存时会自动处理引号。
+手动编辑或导入 `.env` 时，频道名或主题中空格后的 `#` 需放在引号内，例如 `ZULIP_STREAM="research #signals"` 和 `ZULIP_TOPIC="daily #stocks"`，否则会被解析为注释。Web 保存时会自动处理引号。
 
 发送前会通过 [注册事件队列 API](https://zulip.com/api/register-queue) 查询服务器返回的 `max_message_length` 和 `max_topic_length`，之后通过 [删除队列 API](https://zulip.com/api/delete-queue) 清理队列；无法获取有效上限、正文超长或主题超长时，该渠道报告失败且不发送，以避免服务端截断内容或主题。请缩短报告或主题后重试。
 
