@@ -1015,6 +1015,12 @@
 .text-purple {
   color: hsl(var(--color-purple));
 }
+.text-price-up {
+  color: var(--home-price-up);
+}
+.text-price-down {
+  color: var(--home-price-down);
+}
 .text-success {
   color: hsl(var(--color-success));
 }
@@ -2927,4 +2933,9 @@ textarea {
   .backtest-table-scroll-hint {
     text-align: left;
   }
+}
+
+.num {
+  font-variant-numeric: tabular-nums slashed-zero;
+  font-feature-settings: "tnum" 1, "zero" 1;
 }

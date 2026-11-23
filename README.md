@@ -32,7 +32,7 @@
 <details open>
 <summary><strong>💖 赞助商 (Sponsors)</strong></summary>
 <table>
-  <tr><td align="center"><a href="https://modelflare.dev/sign-up?utm_source=github&amp;utm_campaign=daily_stock_analysis"><img src="./docs/assets/modelflare_banner_zh.png" alt="Modelflare" width="720"></a><br>感谢 <strong>Modelflare</strong> 赞助本项目！由美国 Havenbyte LLC 运营，满血稳定不掺水，低成本接入 GPT、Claude、Gemini、Grok 及 40+ 图片/视频模型。指定 OpenAI 分组提供 <strong>65% / 75% / 85% 每日缓存命中率保障</strong>；单笔充值 <strong>US$20 解锁 GPT 0.015x</strong>，<strong>US$50 解锁 Claude 0.03x</strong>。<a href="https://modelflare.dev/sign-up?utm_source=github&amp;utm_campaign=daily_stock_analysis">专属链接注册</a></td></tr>
+  <tr><td align="center"><a href="https://modelflare.dev/sign-up?utm_source=github&amp;utm_campaign=daily_stock_analysis"><img src="./docs/assets/modelflare_banner_zh.png" alt="Modelflare" width="720"></a><br>感谢 <strong>Modelflare</strong> 赞助本项目！由美国 Havenbyte LLC 运营，满血稳定不掺水，低成本接入 GPT、Claude、Gemini、Grok 及 40+ 图片/视频模型，支持大陆正规商务合作。指定 OpenAI 分组提供 <strong>65% / 75% / 85% 每日缓存命中率保障</strong>；单笔充值 <strong>US$20 解锁 GPT 0.015x</strong>，<strong>US$50 解锁 Claude 0.03x</strong>。<a href="https://modelflare.dev/sign-up?utm_source=github&amp;utm_campaign=daily_stock_analysis">专属链接注册</a></td></tr>
   <tr><td align="center"><a href="https://console.x6pro.io/register?code=zJ2qSdns"><img src="./docs/assets/x6ai_banner.png" alt="x6.ai" width="720" height="187"></a><br>100+ 模型 $5 包月，Claude 1.9 折、GPT 0.9 折、DeepSeek 5.8 折，首充立减 20%。<a href="https://console.x6pro.io/register?code=zJ2qSdns">专属链接注册</a></td></tr>
   <tr><td align="center"><a href="https://serpapi.com/github-daily-stock-analysis" target="_blank"><img src="./docs/assets/serpapi_banner_zh.png" alt="轻松抓取搜索引擎上的实时金融新闻数据 - SerpApi" width="300" height="141" style="width: 300px; height: 141px; object-fit: contain;"></a></td></tr>
 </table>
@@ -68,7 +68,7 @@
 |------|------|
 | AI 模型 | [Modelflare](https://modelflare.dev/sign-up?utm_source=github&utm_campaign=daily_stock_analysis)、[x6.ai](https://console.x6pro.io/register?code=zJ2qSdns)、AIHubMix、Gemini、OpenAI 兼容、DeepSeek、通义千问、Claude、Ollama 本地模型等 |
 | 行情数据 | [TickPlus（推荐）](http://www.tickplus.org/register?reg=5433cf922395)、AkShare、Tushare、Pytdx、Baostock、YFinance、Longbridge |
-| 新闻搜索 | [SerpAPI](https://serpapi.com/github-daily-stock-analysis)、Anspire、Tavily、Bocha、Brave、MiniMax、SearXNG |
+| 新闻搜索 | [SerpAPI](https://serpapi.com/github-daily-stock-analysis)、Tavily、Bocha、Brave、MiniMax、SearXNG |
 | 社交舆情 | Stock Sentiment API（Reddit / X / Polymarket，仅美股，可选） |
 
 > 项目默认内置 AkShare、Baostock、YFinance 等免费行情源，可零配置运行；免费源受上游限流、接口变动和网络波动影响，稳定性不保证。长期定时、批量分析或更稳定行情建议配置 Tushare、Longbridge 等 token 型数据源，适用市场、Actions 映射和 fallback 规则见 [数据源配置](docs/full-guide.md#数据源配置)。
@@ -130,7 +130,6 @@
 | Secret 名称 | 说明 | 必填 |
 |------------|------|:----:|
 | `SERPAPI_API_KEYS` | [SerpAPI](https://serpapi.com/github-daily-stock-analysis)：搜索引擎结果补强，适合实时金融新闻 | **推荐** |
-| `ANSPIRE_API_KEYS` | Anspire 搜索 API Key，可与其模型网关共用 | 可选 |
 | `TAVILY_API_KEYS` | Tavily：通用新闻搜索 API | 可选 |
 | `BOCHA_API_KEYS` | 博查搜索：中文搜索优化，支持 AI 摘要 | 可选 |
 | `BRAVE_API_KEYS` | Brave Search：隐私优先，美股资讯补强 | 可选 |
@@ -192,6 +191,26 @@ python main.py --serve-only
 ```
 
 > Docker 部署、定时任务、云服务器访问请参考 [完整指南](docs/full-guide.md)；桌面客户端打包请参考 [桌面端打包说明](docs/desktop-package.md)。
+
+### 作为 Agent 插件安装
+
+本仓库提供 agent-agnostic 市场入口 [`.agents/plugins/marketplace.json`](.agents/plugins/marketplace.json)，插件目录为 [`plugin/`](plugin/)。`stock_analyzer` 技能**驱动已部署并配置好的 DSA 检出**（或正在运行的 DSA 服务），不自带 `src/` 运行时；插件安装缓存通常只有 `plugin/`。技能正文在 `plugin/skills/stock_analyzer/SKILL.md`，根目录 `SKILL.md` 为其普通文件副本（兼容 `core.symlinks=false` / OpenClaw 等根路径导入）。仓库维护用 skill（`analyze-issue` 等）不进入插件。
+
+**Codex：**
+
+```bash
+codex plugin marketplace add ZhuLinsen/daily_stock_analysis
+codex plugin add daily-stock-analysis@daily-stock-analysis
+```
+
+**Claude Code：**
+
+```bash
+/plugin marketplace add ZhuLinsen/daily_stock_analysis
+/plugin install daily-stock-analysis@daily-stock-analysis
+```
+
+本地 checkout：`codex plugin marketplace add /path/to/daily_stock_analysis`。使用技能前请先按 [完整指南](docs/full-guide.md) 部署并配置 DSA，或通过 `DSA_REPO_ROOT` / 询问用户定位已有检出后再调用分析示例（示例会 `chdir` 到检出根目录，以便与 Web 共用相对 `DATABASE_PATH` / 复盘锁）。对话内大盘复盘（`send_notification=False`）需要检出已支持该参数；仅有 v3.35.0 等旧检出时应先更新，避免 `TypeError` 或意外推送。HTTP 对接见 [OpenClaw 集成](docs/openclaw-skill-integration.md) / [Grok Bot 对接](docs/grok-bot-integration.md)（对话内个股须 `"notify": false`，大盘复盘须 `"send_notification": false`）。只读 MCP（`python -m src.mcp_server`，可选依赖 `mcp>=1.0.0,<2`）同样需在完整仓库 checkout 中按 [完整指南](docs/full-guide.md#只读-mcp-stdio-服务可选) 手动配置，不写入插件清单。
 
 ## 📱 推送效果
 

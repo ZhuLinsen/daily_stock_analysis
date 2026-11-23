@@ -1,0 +1,74 @@
+---
+title: "选择运行方式（快速开始）"
+description: "对比桌面客户端、GitHub Actions、Docker 与本地 Python 四种运行方式，5 分钟生成首份报告。"
+---
+
+import { Tabs, TabItem, Steps } from '@astrojs/starlight/components';
+
+DSA 支持 4 种主流运行方式。你可以根据是否需要图形界面、是否拥有云服务器、以及日常使用习惯选择其一。
+
+## 1. 四种运行方式对比
+
+| 运行方式 | 适合人群 | 部署成本 | 包含 WebUI / 问股 | 推荐程度 |
+| --- | --- | --- | --- | --- |
+| **桌面客户端** | 非技术用户、日常桌面看板 | 下载即用，无需 Python | 内置完整工作台 | 零门槛首选 |
+| **GitHub Actions** | 只希望每日定时收通知推送 | 零服务器、免费额度运行 | 仅通知 + Actions 日志 | 定时推送首选 |
+| **Docker Compose** | NAS / 云服务器 7×24 托管 | 一条命令拉起服务端 | 完整 WebUI + REST API | 自托管首选 |
+| **本地 Python CLI** | 开发者调试模型、数据源与回测 | Python 3.10+ 虚拟环境 | `--serve` 按需启动 | 二次开发首选 |
+
+## 2. 按场景 5 分钟跑通
+
+<Tabs>
+  <TabItem label="桌面客户端 (0 代码)">
+    <Steps>
+      1. 前往 [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) 下载对应系统的安装包（Windows `.exe` / macOS `.dmg`）。
+      2. 启动客户端，进入左侧 **设置** 页，填入至少一个 AI 模型 Key（如 Gemini、DeepSeek、OpenAI 兼容接口）以及 `STOCK_LIST`（例如 `600519,hk00700,AAPL`）。
+      3. 回到首页点击 **立即分析**，即可实时查看决策仪表盘、狙击点位与情绪评分。
+    </Steps>
+    详细图文说明见 [小白桌面客户端安装与配置](/docs/getting-started/beginner-client/)。
+  </TabItem>
+
+  <TabItem label="GitHub Actions (零服务器)">
+    <Steps>
+      1. 点击 [主仓库](https://github.com/ZhuLinsen/daily_stock_analysis) 右上角 **Fork** 到自己的账号。
+      2. 打开 Fork 仓库的 `Settings → Secrets and variables → Actions`，添加 `GEMINI_API_KEY`（或 `OPENAI_API_KEY`）、`STOCK_LIST` 和至少一个通知 Secret（如 `WECHAT_WEBHOOK_URL`）。
+      3. 在 **Actions** 标签页启用 Workflows，点击 `每日股票分析 → Run workflow` 完成首次验证。
+    </Steps>
+    完整参数与定时策略见 [GitHub Actions 零成本部署](/docs/deployment/github-actions/)。
+  </TabItem>
+
+  <TabItem label="Docker Compose">
+    ```bash
+    git clone https://github.com/ZhuLinsen/daily_stock_analysis.git
+    cd daily_stock_analysis
+    cp .env.example .env
+    # 编辑 .env：填写 STOCK_LIST 与 AI API Key
+    docker-compose -f ./docker/docker-compose.yml up -d server
+    ```
+    启动后访问 `http://127.0.0.1:8000` 即可打开 WebUI；更多生产参数见 [Docker 与服务器部署指南](/docs/deployment/docker/)。
+  </TabItem>
+
+  <TabItem label="本地 Python CLI">
+    ```bash
+    git clone https://github.com/ZhuLinsen/daily_stock_analysis.git
+    cd daily_stock_analysis
+    python -m venv .venv && source .venv/bin/activate
+    pip install -r requirements.txt
+    cp .env.example .env
+
+    # 关键：打开并编辑 .env，至少填写 STOCK_LIST 与 1 个 AI 模型 Key（如 GEMINI_API_KEY / DEEPSEEK_API_KEY）
+    # 离线自检环境、模型密钥与数据源就绪度
+    python main.py --doctor
+
+    # 立即分析指定股票并开启本地 Web 工作台
+    python main.py --stocks 600519,hk00700,AAPL --serve
+    ```
+    请先对照 [最小环境变量](/docs/getting-started/env-config/) 与 [LLM 大模型配置指南](/docs/configuration/llm-guide/) 填好模型密钥再触发分析；更多命令行参数见 [本地运行与诊断](/docs/deployment/local/)。
+  </TabItem>
+</Tabs>
+
+## 3. 下一步建议
+
+- 了解需要填哪些最核心配置：[最小环境变量](/docs/getting-started/env-config/)
+- 提升 A 股 / 港美股行情稳定性：[数据源稳定性与降级策略](/docs/configuration/data-sources/)
+- 接入更多大模型路由与本地 Ollama：[LLM 大模型配置指南](/docs/configuration/llm-guide/)

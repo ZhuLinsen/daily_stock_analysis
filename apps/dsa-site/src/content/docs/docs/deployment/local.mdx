@@ -1,0 +1,61 @@
+---
+title: "本地运行与离线诊断"
+description: "在本地或开发环境运行 DSA CLI、定时任务、WebUI 与 --doctor 诊断命令。"
+---
+
+适合开发者、需要本地调试模型与数据源、或者希望使用本地 `Ollama` 大模型的场景。
+
+## 环境安装
+
+要求 **Python 3.10+**（推荐 3.11 / 3.12）：
+
+```bash
+git clone https://github.com/ZhuLinsen/daily_stock_analysis.git
+cd daily_stock_analysis
+
+python -m venv .venv
+# Linux / macOS:
+source .venv/bin/activate
+# Windows PowerShell:
+# .\.venv\Scripts\Activate.ps1
+
+pip install -r requirements.txt
+cp .env.example .env
+# 编辑 .env：填写 STOCK_LIST 与至少一个 AI 模型 Key（详见「最小环境变量」/「LLM 大模型配置」）
+```
+
+首次运行分析前，请确保已按 [最小环境变量](/docs/getting-started/env-config/) 或 [LLM 大模型配置指南](/docs/configuration/llm-guide/) 填好可用的 AI Key（仅复制空白 `.env.example` 时 `--doctor` 可用于自检，实际分析会提示缺少可用模型）。
+
+## 常用 CLI 命令
+
+```bash
+# 1. 离线健康诊断（不发 LLM 请求，检查环境、依赖、密钥格式与数据源就绪度）
+python main.py --doctor
+
+# 2. 按 .env 中的 STOCK_LIST 运行一次完整分析与推送
+python main.py
+
+# 3. 仅分析指定股票（支持 A/H/US/JP/KR/TW 代码）
+python main.py --stocks 600519,hk00700,AAPL,2330.TW
+
+# 4. 调试模式 / 空跑仅看上下文与日志
+python main.py --debug
+python main.py --dry-run
+
+# 5. 单独生成大盘复盘
+python main.py --market-review
+
+# 6. 启动本地定时任务守护模式
+python main.py --schedule
+
+# 7. 启动 WebUI + API 服务（默认 http://127.0.0.1:8000）
+python main.py --serve-only
+```
+
+## 可选只读 MCP 服务
+
+DSA 提供了实验性的只读 stdio MCP Server（需可选安装 `mcp>=1.0.0,<2`），用于把行情、历史分析与研究上下文暴露给外部 AI Coding / Desktop Agent：
+
+```bash
+python -m src.mcp_server
+```

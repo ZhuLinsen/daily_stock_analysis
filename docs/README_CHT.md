@@ -69,7 +69,7 @@
 |------|------|
 | AI 模型 | [Modelflare](https://modelflare.dev/sign-up?utm_source=github&utm_campaign=daily_stock_analysis)、[x6.ai](https://console.x6pro.io/register?code=zJ2qSdns)、AIHubMix、Gemini、OpenAI 兼容、DeepSeek、通義千問、Claude、Ollama 本地模型等 |
 | 行情數據 | AkShare、Tushare、Pytdx、Baostock、YFinance、Longbridge |
-| 新聞搜尋 | [SerpAPI](https://serpapi.com/github-daily-stock-analysis)、Anspire、Tavily、Bocha、Brave、MiniMax、SearXNG |
+| 新聞搜尋 | [SerpAPI](https://serpapi.com/github-daily-stock-analysis)、Tavily、Bocha、Brave、MiniMax、SearXNG |
 | 社交輿情 | Stock Sentiment API（Reddit / X / Polymarket，僅美股，可選） |
 
 > 專案預設內建 AkShare、Baostock、YFinance 等免費行情源，可零配置執行；免費源受上游限流、介面變動和網路波動影響，穩定性不保證。長期定時、批量分析或更穩定行情建議配置 Tushare、Longbridge 等 token 型數據源，適用市場、Actions 映射和 fallback 規則見 [數據源配置](./full-guide.md#数据源配置)。
@@ -130,7 +130,6 @@
 | Secret 名稱 | 說明 | 必填 |
 |-------------|------|:----:|
 | `SERPAPI_API_KEYS` | [SerpAPI](https://serpapi.com/github-daily-stock-analysis)：搜尋引擎結果補強，適合即時金融新聞 | **推薦** |
-| `ANSPIRE_API_KEYS` | Anspire 搜尋 API Key，可與其模型網關共用 | 可選 |
 | `TAVILY_API_KEYS` | Tavily：通用新聞搜尋 API | 可選 |
 | `BOCHA_API_KEYS` | 博查搜尋：中文搜尋優化，支援 AI 摘要 | 可選 |
 | `BRAVE_API_KEYS` | Brave Search：隱私優先，美股資訊補強 | 可選 |

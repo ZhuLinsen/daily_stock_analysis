@@ -1,0 +1,19 @@
+---
+title: "OpenAPI Explorer (Static Snapshot)"
+description: "Browse and filter core endpoints and schemas from the curated static OpenAPI snapshot (docs/architecture/api_spec.json)."
+---
+
+import ApiExplorer from '../../../../../components/ApiExplorer.astro';
+
+This interactive viewer is synced automatically from the curated static snapshot `docs/architecture/api_spec.json` in the upstream repository.
+
+:::tip[Full Runtime OpenAPI Spec]
+`docs/architecture/api_spec.json` captures a curated set of core contracts rather than every FastAPI route. When running the backend (`python main.py --serve-only`), the complete runtime specification—including `GET/POST /api/v1/alerts/rules`, Portfolio, Screening, and Agent streaming endpoints—is served dynamically at:
+
+- `http://127.0.0.1:8000/openapi.json`
+- `http://127.0.0.1:8000/docs`
+
+See also the [Alert Center documentation](/en/docs/features/alerts/) for the documented alert rules contract.
+:::
+
+<ApiExplorer lang="en" />

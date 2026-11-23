@@ -32,6 +32,10 @@
 提示：优先级数字越小越优先，同优先级按初始化顺序排列
 """
 
+from src.utils.mini_racer_guard import ensure_mini_racer_thread_safety
+
+ensure_mini_racer_thread_safety()
+
 from .base import BaseFetcher, DataFetcherManager
 from .efinance_fetcher import EfinanceFetcher
 from .tencent_fetcher import TencentFetcher

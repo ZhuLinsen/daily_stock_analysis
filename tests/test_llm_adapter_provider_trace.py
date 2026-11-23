@@ -568,3 +568,72 @@ def test_parse_litellm_response_hmac_covers_tool_call_wire_messages(monkeypatch)
     assert first.usage["messages_hmac"]
     assert second.usage["messages_hmac"]
     assert first.usage["messages_hmac"] != second.usage["messages_hmac"]
+
+
+def test_thinking_extra_body_caps_minimax_reasoning_effort() -> None:
+    from src.agent.llm_adapter import (
+        apply_thinking_extra_body_to_model_list,
+        get_thinking_extra_body,
+        merge_thinking_extra_body,
+    )
+
+    assert get_thinking_extra_body("MiniMax-M3.1-Flash") == {"reasoning_effort": "low"}
+    assert get_thinking_extra_body("minimax-m3.1-flash") == {"reasoning_effort": "low"}
+    assert get_thinking_extra_body("MiniMax-M3") is None
+    assert get_thinking_extra_body("deepseek-reasoner") is None
+    assert get_thinking_extra_body("deepseek-chat") == {"thinking": {"type": "enabled"}}
+
+    # Preserves YAML deployment extra_body (e.g. OpenRouter provider routing & privacy)
+    # without mutating caller data, and honors explicit user overrides.
+    original_model_list = [
+        {
+            "model_name": "fast-minimax",
+            "litellm_params": {
+                "model": "openai/minimax/minimax-m3.1-flash",
+                "api_base": "https://openrouter.ai/api/v1",
+                "extra_body": {
+                    "provider": {
+                        "only": ["minimax"],
+                        "allow_fallbacks": False,
+                        "data_collection": "deny",
+                    }
+                },
+            },
+        },
+        {
+            "model_name": "explicit-extra-body",
+            "litellm_params": {
+                "model": "openai/minimax/minimax-m3.1-flash",
+                "extra_body": {
+                    "provider": {"only": ["minimax"]},
+                    "reasoning_effort": "high",
+                },
+            },
+        },
+        {
+            "model_name": "explicit-top-level",
+            "litellm_params": {
+                "model": "openai/minimax/minimax-m3.1-flash",
+                "reasoning_effort": "medium",
+                "extra_body": {"provider": {"only": ["minimax"]}},
+            },
+        },
+    ]
+    prepared = apply_thinking_extra_body_to_model_list(original_model_list)
+    assert "reasoning_effort" not in original_model_list[0]["litellm_params"]["extra_body"]
+    assert prepared[0]["litellm_params"]["extra_body"] == {
+        "provider": {
+            "only": ["minimax"],
+            "allow_fallbacks": False,
+            "data_collection": "deny",
+        },
+        "reasoning_effort": "low",
+    }
+    assert prepared[1]["litellm_params"]["extra_body"] == {
+        "provider": {"only": ["minimax"]},
+        "reasoning_effort": "high",
+    }
+    assert prepared[2]["litellm_params"]["extra_body"] == {
+        "provider": {"only": ["minimax"]},
+    }
+    assert merge_thinking_extra_body({"reasoning_effort": "medium"}, {"reasoning_effort": "low"}) is None

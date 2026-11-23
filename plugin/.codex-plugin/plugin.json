@@ -1,0 +1,34 @@
+{
+  "name": "daily-stock-analysis",
+  "version": "3.35.0",
+  "description": "AI-powered multi-market stock analysis: A-shares, HK, US, JP, KR, and TW. Ships the stock_analyzer skill for agent marketplaces.",
+  "author": {
+    "name": "ZhuLinsen",
+    "url": "https://github.com/ZhuLinsen"
+  },
+  "homepage": "https://github.com/ZhuLinsen/daily_stock_analysis",
+  "repository": "https://github.com/ZhuLinsen/daily_stock_analysis",
+  "license": "MIT",
+  "keywords": [
+    "stock-analysis",
+    "a-share",
+    "agent-skills",
+    "market-review",
+    "finance"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Daily Stock Analysis",
+    "shortDescription": "Analyze stocks and run market reviews with the DSA stock_analyzer skill.",
+    "longDescription": "Installs the user-facing stock_analyzer skill that drives an already deployed DSA checkout or running DSA service (marketplace caches only plugin/, not src/). Skill body: plugin/skills/stock_analyzer/SKILL.md; repo-root SKILL.md is a plain-file copy for OpenClaw and core.symlinks=false. Repo-maintenance skills under .agents/skills are not included. Optional read-only MCP (`python -m src.mcp_server`) remains a checkout-side setup per docs/full-guide.md.",
+    "category": "Productivity",
+    "developerName": "ZhuLinsen",
+    "websiteUrl": "https://github.com/ZhuLinsen/daily_stock_analysis",
+    "logo": "./.codex-plugin/logo.png",
+    "defaultPrompt": [
+      "分析贵州茅台（600519）并给出操作建议",
+      "帮我做一下今日大盘复盘",
+      "Analyze AAPL and summarize the decision dashboard"
+    ]
+  }
+}

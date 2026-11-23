@@ -118,6 +118,20 @@ P3 当时不持久化完整 pack，不新增 API/Web/Bot/Desktop 字段，不改
 
 结果后处理新增保守大盘环境护栏：当摘要或标签显示 `high_risk`、`market_cooling`、`conservative`、`low_position_cap`，且处于保守/高风险语境下时，模型给出 `buy` 决策（含“立即买入/追高/激进加仓”等买入类建议）会被软化为观望或小仓等待确认，并把高置信度降为中等。该护栏只修改当次 `AnalysisResult` 与 dashboard 中的低敏限制说明，不新增数据库表或 API 字段。回滚方式为撤销 #1381 相关服务、Prompt 注入和 guardrail 代码，既有大盘复盘历史记录保持兼容。
 
+## #1910 Cross-Asset Context（一期）
+
+#1910 在 `daily_market_context` 之外新增一个并列的跨资产上下文通道，回答“外围环境是否支持本次结论”。维护者边界：**跨资产信号只做风险偏好（risk_appetite）与置信度校准，不直接变成买卖规则**。配置开关 `CROSS_ASSET_CONTEXT_ENABLED` **默认关闭（opt-in）**；不配置时管线零行为变化——不抓数、不注入 prompt（`_load_cross_asset_context` 短路返回 None，有对照测试锁定“零行为差异”）。进阶调优 `CROSS_ASSET_CONTEXT_TIMEOUT_SECONDS`（单次组装总预算软上限，默认 8s）与 `CROSS_ASSET_CONTEXT_STALE_DAYS`（收盘数据 stale 判定天数，默认 2）为 env-only 配置。
+
+**契约（cross-asset-v1）：**`src/schemas/cross_asset_context.py` 定义 `CrossAssetContext`（pydantic v2）：`schema_version="cross-asset-v1"`、`market`（cn/hk/us/jp/kr/tw）、`trade_date`、`risk_appetite`（`risk_on|neutral|risk_off|unknown`）、六资产组 `indices/fx/rates/commodities/crypto/volatility`、`sector_links`、`impact_summary`、`risk_tags`、`data_quality`。每个资产项强制携带 `source/as_of/stale/error` 质量四元组，缺失/失败数据不得静默伪装成有效数据。`to_safe_dict()` 是唯一允许进入 prompt/快照的形态（白名单低敏：仅 value/change_pct + 四元组 + data_quality，不含 name 与原始 payload）。
+
+**一期范围（单 provider）：**数据读取器 `data_provider/cross_asset_fetcher.py` 仅走 yfinance——hk=`^HSI`/`HSTECH.HK`/`^HSCE`、us=`^GSPC`/`^IXIC`/`^DJI`、jp/kr/tw 各一指数、cn=富时A50（`CHA50CFD`，尽力而为，探测失败记 `not_supported`），全市场共享 `^VIX`（volatility）与美债10Y `^TNX`（rates，Yahoo Close 即百分数口径，不再缩放）。读取器独立于 `DataFetcherManager` 路由链，不污染既有熔断语义。`src/services/cross_asset_context_service.py` 按 (market, trade_date) 进程内缓存，`risk_appetite` 由确定性投票规则生成（有效票 <3 → unknown，净票 ≤-2 → risk_off，≥+2 → risk_on；阈值常量固化于单测），无 LLM 参与。**后续 PR 路线**：akshare A股指数批量、FX（组合 FX 缓存复用）、商品、加密资产 provider；sector_links（“这只股票为什么要看这些外部资产”含行业联动）；risk-off 置信度校准 guardrail；Agent/chat 链注入与切换清理；API meta 透传与 DecisionSignal 键位；Web 展示。
+
+**注入链路（一期=普通分析路径，与 daily_market_context 同构）：**`StockAnalysisPipeline` 在普通路径写 `enhanced_context` 的 `cross_asset_context`（safe dict）与 `cross_asset_context_summary`（渲染后 prompt 段落，仅当非空）；analyzer prompt 在大盘摘要段后拼接 `## 外围环境与跨资产`（en/ko 为 `## Cross-Asset Context`）。渲染器 `src/cross_asset_context_prompt.py` 对 UNTRUSTED 块内全部动态文本做哨兵转义，客户端可透传任意 dict 经 `resolve_stock_scope` 进入 chat context，因此渲染函数对任意输入安全：`value/change_pct` 非数值（含 bool、401 位大整数、inf/nan）跳过该项不抛错（溢出守卫），`risk_appetite/market/trade_date` 先白名单/日期校验再进前导行，控制字符折叠防伪造行结构，块内无有效内容整段返回空，限行预算只裁块体、END 哨兵恒存。开关门控只在 pipeline 写键侧——渲染侧必须对任意输入安全（chat 透传不经过开关）。
+
+**四级降级语义（全部 fail-open）：**1) 开关关 → 不抓数不注入；2) service 异常/超时 → `risk_appetite="unknown"` 最小上下文，渲染降级文案；3) 单组资产失败 → 该组 `data_quality.error` + `limitations` 登记，其余组照常；4) 单 ticker 失败 → 该项 `status="not_supported"`，不阻塞同组其他项。
+
+**限制：**risk_off 判定基于收盘/延迟数据（以 `as_of`/`stale` 显式标注）；免费源 A50 为尽力而为；一期单 provider 下 `cn`/`jp`/`kr`/`tw` 最多产出 2 票（单指数 + VIX），按 3 票阈值 `risk_appetite` 保持 `unknown`；`yfinance` 固定拉取近 5 日窗口，早于窗口的历史目标日期会降级为无数据；`CROSS_ASSET_CONTEXT_TIMEOUT_SECONDS` 是条目/组之间的协作式软上限（单次 yfinance 请求无硬超时），`timeout`/`stale` 调整在缓存未命中时生效；一期不含 risk-off 后验置信度校准（prompt 内约束行先行）、不含 Agent 链注入与 Web/API 展示。回滚方式为关闭 `CROSS_ASSET_CONTEXT_ENABLED`（全链路短路）或撤销本节相关提交。
+
 ## P4 历史记录、任务状态与 Web 可见性
 
 P4 把 P3 已构建的 `AnalysisContextPack` 投影为公共低敏 `analysis_context_pack_overview`。该 overview 由专用 renderer 生成，公共 API 不允许直接返回 `AnalysisContextPack.to_safe_dict()` 或完整 pack dump。renderer 只输出白名单字段：`pack_version`、`created_at`、`subject.code` / `stock_name` / `market`、数据块 `key` / `label` / `status` / `source` / `warnings` / `missing_reasons`、按 block status 计数的 `counts`、顶层 `data_quality.warnings` 和 `metadata.trigger_source` / `metadata.news_result_count`。P5 在同一 overview 上追加 `data_quality` 低敏对象，不重复顶层 `warnings`。
@@ -308,6 +322,7 @@ P0 只记录历史消费面。完整 pack 不应默认公开到历史详情或�
 | 持仓 | `src/services/portfolio_service.py`, `api/v1/schemas/portfolio.py` |
 | 回测 | `src/services/backtest_service.py`, `src/repositories/backtest_repo.py` |
 | 历史 | `src/services/history_service.py`, `api/v1/endpoints/history.py`, `api/v1/endpoints/analysis.py`, `api/v1/schemas/history.py` |
+| 跨资产上下文（一期） | `src/schemas/cross_asset_context.py`, `data_provider/cross_asset_fetcher.py`, `src/services/cross_asset_context_service.py`, `src/cross_asset_context_prompt.py` |
 | 通知 | `src/notification.py`, `docs/notifications.md` |
 
 ## 兼容与安全边界

@@ -1,0 +1,30 @@
+/*
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+
+/_astro/*
+  Cache-Control: public, max-age=31536000, immutable
+
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
+
+/docs-assets/*
+  Cache-Control: public, max-age=604800
+
+/openapi.json
+  Cache-Control: public, max-age=3600
+
+/robots.txt
+  Cache-Control: public, max-age=3600
+
+/sitemap-index.xml
+  Cache-Control: public, max-age=3600
+
+/
+  Cache-Control: public, max-age=300
+
+/en/*
+  Cache-Control: public, max-age=300
+
+/docs/*
+  Cache-Control: public, max-age=300

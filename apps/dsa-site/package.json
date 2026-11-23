@@ -1,0 +1,26 @@
+{
+  "name": "dsa-site",
+  "private": true,
+  "type": "module",
+  "version": "1.0.0",
+  "description": "Official homepage and documentation center for Daily Stock Analysis, built with Astro + Starlight.",
+  "engines": {
+    "node": ">=22.23.4"
+  },
+  "scripts": {
+    "predev": "node scripts/prepare-docs.mjs",
+    "dev": "astro dev",
+    "prebuild": "node scripts/prepare-docs.mjs",
+    "build": "astro build",
+    "preview": "astro preview",
+    "test": "node --test tests/*.test.mjs",
+    "deploy": "npx wrangler deploy"
+  },
+  "dependencies": {
+    "@astrojs/starlight": "^0.43.1",
+    "@astrojs/starlight-tailwind": "^5.0.0",
+    "@tailwindcss/vite": "^4.3.5",
+    "astro": "^7.4.13",
+    "tailwindcss": "^4.1.0"
+  }
+}

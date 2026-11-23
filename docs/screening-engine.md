@@ -8,6 +8,7 @@ DSA 将选股能力作为主项目的一部分维护。实现参考 [AlphaSift](
 - `src/services/screening/strategies/`：随 DSA 版本发布的策略 YAML。
 - `src/services/screening/pipeline.py`：筛选流程的直接入口。
 - `src/services/screening_service.py`：DSA 业务编排，直接调用 pipeline，负责配置、数据源上下文、响应归一化、缓存与错误映射。
+- `src/services/screening_funnel_service.py` 从历史运行提取候选，追加到自选或提交分析任务。
 - `src/storage.py`：使用 DSA 现有 SQLAlchemy/SQLite 基础设施持久化已完成的选股运行，不另建文件数据库。
 - `api/v1/endpoints/screening.py`：`/api/v1/screening` API。
 - `apps/dsa-web/src/api/screening.ts` 与 `StockScreeningPage.tsx`：Web 调用与展示。
@@ -54,9 +55,15 @@ SCREENING_EASTMONEY_JITTER_SEC=0.3
 | `/api/v1/screening/screen/tasks/{task_id}` | GET | 查询任务进度、错误或最终结果 |
 | `/api/v1/screening/history` | GET | 按策略、市场查询最近完成的选股运行摘要 |
 | `/api/v1/screening/history/{run_id}` | GET | 读取一条持久化的完整选股结果 |
+| `/api/v1/screening/runs/{run_id}/promote-watchlist` | POST | 将排名靠前的候选追加到自选，`top_n` 默认 10，上限 30 |
+| `/api/v1/screening/runs/{run_id}/analyze-top` | POST | 为排名靠前的候选提交异步分析任务，`top_n` 默认 5，上限 10 |
 | `/api/v1/screening/source-history` | GET | 汇总历史运行中的快照源命中、错误和降级次数 |
 
 后台任务使用 `report_type=screening_screen`，Web 会保存活动任务 ID，并在页面恢复时继续轮询。任务状态会分别提示全市场快照、候选上下文、LLM 重排、最终评分和新闻事件增强等阶段；完成后的结果同时写入 DSA 数据库，因此服务重启后仍可按 `run_id` 查询。新运行的同步/后台响应及历史详情保留 `strategy_version`、`strategy_category` 和 `effective_factor_weights`，记录执行时的策略版本、类别和实际归一化因子权重；旧记录不回填，也不依据升级后的策略文件改写历史。
+
+两个候选入口都要求开启 `SCREENING_ENABLED`，关闭时返回 HTTP 403。`run_id` 对应的历史记录缺失时返回 HTTP 404。晋升响应中的 `added` 列出本次新增代码，`already_present` 列出已有代码。晋升保留已登记指数的身份，美股类别股以 `BRK.B` 形式写入自选，`BAC-PL` 等带两字母后缀的 Yahoo 代码保留连字符。首页可直接批量分析含旧格式 `BRK-B` 的自选。Web 和桌面端的自选操作按资产身份区分同码指数和个股，包括使用旧 `.SS` 后缀的上证指数。共用配置文件的 API worker 通过相邻的锁文件串行校验和写入，配置文件所在目录需可写。晋升或首页编辑遇到版本冲突会重新读取自选，最多尝试 4 次，持续冲突时返回 HTTP 409。
+
+两个入口都可在 JSON 请求体中指定 `top_n`。`analyze-top` 还接受 `report_type`，默认 `detailed`，也可选择 `simple`、`full` 或 `brief`。接口返回 HTTP 200 时仍需检查逐股结果。用 `submitted` 中的 `task_id` 轮询 `GET /api/v1/analysis/status/{task_id}`。`duplicates` 列出已有活动任务的候选，`failed` 列出提交失败的候选和错误。`failed` 非空时 `ok` 为 `false`，已提交任务继续运行。
 
 ## 单股条件检查（提供快照）
 
@@ -208,6 +215,7 @@ AlphaSift 是参考来源，不是自动同步源。更新时应：
 ## 回滚
 
 - 业务回滚：设置 `SCREENING_ENABLED=false` 并重启；普通个股分析、报告、通知和问股不受影响。
+- 晋升写入的 `STOCK_LIST` 会继续供定时分析和自选告警使用。要撤销一次晋升，可在基础设置的 `STOCK_LIST` 中移除该次响应 `added` 里的代码，保留原有自选和之后的编辑。
 - 代码回滚：revert 引入选股引擎的提交并重建后端、Docker 与桌面产物。
 - 数据回滚：如需保留选股缓存和运行历史，先备份 `data/screening/` 与 DSA 数据库；代码回滚不会主动删除 `screening_runs` 用户数据。
 
