@@ -1617,11 +1617,26 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                     if is_en
                     else f"上涨家数占比仅 {up_ratio:.0%}，市场宽度收缩"
                 )
-            else:
+            elif avg_change is not None:
+                # 只有真正做过指数对比，才允许给出“宽度与指数匹配”的结论。
                 parts.append(
                     f"{up_ratio:.0%} of stocks advanced, breadth matches the index move"
                     if is_en
                     else f"上涨家数占比 {up_ratio:.0%}，宽度与指数表现基本匹配"
+                )
+            else:
+                parts.append(
+                    f"{up_ratio:.0%} of stocks advanced, advancers and decliners are roughly balanced"
+                    if is_en
+                    else f"上涨家数占比 {up_ratio:.0%}，涨跌家数大致均衡"
+                )
+            if avg_change is None:
+                # OR-COR-c81484a4：指数行情全部缺失时没有做过指数对比，任何“宽度与指数匹配”
+                # 的结论都无依据；明确说明仅基于涨跌家数统计、缺少指数对比。
+                parts.append(
+                    "index quotes unavailable, based on advancers/decliners only with no index comparison"
+                    if is_en
+                    else "指数行情缺失，仅基于涨跌家数统计、未与指数表现对比"
                 )
         if limit_total:
             parts.append(

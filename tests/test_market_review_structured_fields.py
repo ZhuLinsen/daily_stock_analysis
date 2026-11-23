@@ -594,6 +594,57 @@ class TestDivergenceDiagnosisFallback:
         assert "背离" not in diagnosis
         assert "涨停" in diagnosis
 
+    def test_missing_index_quotes_never_claims_breadth_matches_index(self):
+        """OR-COR-c81484a4：指数行情全部缺失时，兜底不得声称“宽度与指数表现基本匹配”。"""
+        ma = _make_analyzer(report_text="复盘")
+        overview = _cn_overview(indices=[], up_count=2500, down_count=2500, flat_count=0)
+
+        payload = ma.build_market_review_payload(overview, [], "复盘报告")
+
+        diagnosis = payload["breadth"]["divergence_diagnosis"]
+        assert isinstance(diagnosis, str) and diagnosis
+        assert "匹配" not in diagnosis, diagnosis
+        assert "指数行情缺失" in diagnosis, diagnosis
+        assert "仅基于涨跌家数统计" in diagnosis, diagnosis
+
+    def test_missing_index_quotes_flag_every_pure_breadth_conclusion(self):
+        """指数缺失时，扩散/收缩结论同样必须标明仅基于涨跌家数、缺少指数对比。"""
+        ma = _make_analyzer(report_text="复盘")
+
+        for up_count, down_count in ((3500, 1500), (1500, 3500)):
+            overview = _cn_overview(indices=[], up_count=up_count, down_count=down_count, flat_count=0)
+
+            diagnosis = ma.build_market_review_payload(overview, [], "复盘报告")["breadth"]["divergence_diagnosis"]
+
+            assert "指数行情缺失" in diagnosis, diagnosis
+            assert "匹配" not in diagnosis, diagnosis
+
+    def test_missing_index_quotes_diagnosis_in_english(self):
+        ma = _make_analyzer(report_text="复盘")
+        ma.config.report_language = "en"
+        overview = _cn_overview(indices=[], up_count=2500, down_count=2500, flat_count=0)
+
+        diagnosis = ma.build_market_review_payload(overview, [], "review")["breadth"]["divergence_diagnosis"]
+
+        assert isinstance(diagnosis, str) and diagnosis
+        assert "matches the index move" not in diagnosis, diagnosis
+        assert "index quotes unavailable" in diagnosis, diagnosis
+
+    def test_balanced_breadth_with_index_quotes_still_reports_match(self):
+        """指数行情可用时既有结论保持不变：只有真正做过指数对比才允许说“基本匹配”。"""
+        ma = _make_analyzer(report_text="复盘")
+        overview = _cn_overview(
+            indices=[MarketIndex(code="000001", name="上证指数", current=3372.4, change_pct=0.1)],
+            up_count=2500,
+            down_count=2500,
+            flat_count=0,
+        )
+
+        diagnosis = ma.build_market_review_payload(overview, [], "复盘报告")["breadth"]["divergence_diagnosis"]
+
+        assert "基本匹配" in diagnosis, diagnosis
+        assert "指数行情缺失" not in diagnosis, diagnosis
+
 
 class TestBackwardCompatibility:
     def test_render_ignores_new_fields_zero_diff(self):
