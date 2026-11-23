@@ -473,6 +473,68 @@ class HistoryDailyApiTestCase(unittest.TestCase):
         self.assertIsNotNone(item["action"])
         self.assertIsNotNone(item["action_label"])
 
+    # ------------------------------------------------------------------
+    # OR-COR-22ed4583：同一港股的裸码与带市场标记代码必须归组为一行
+    # ------------------------------------------------------------------
+
+    def test_hk_bare_and_market_marked_codes_merge_to_single_row(self) -> None:
+        """评审场景：腾讯控股同日分别以 00700、HK00700、00700.HK 保存报告，次日再以
+        HK00700 保存一份，回看原日期 → 一行、3 份、is_latest=False（已被次日取代）。
+        修复前拆成 (00700.HK, 2, false) 与 (00700, 1, true)：标的总数与时效性均错。"""
+        day_start, _day_end = HistoryService.shanghai_day_bounds_local(QUERY_DATE)
+        next_day_start, _ = HistoryService.shanghai_day_bounds_local(QUERY_DATE + timedelta(days=1))
+        self._add_history("00700", day_start + timedelta(hours=1), name="腾讯控股")
+        self._add_history("HK00700", day_start + timedelta(hours=2), name="腾讯控股")
+        day_latest_id = self._add_history("00700.HK", day_start + timedelta(hours=3), name="腾讯控股")
+        self._add_history("HK00700", next_day_start + timedelta(hours=1), name="腾讯控股")
+
+        response = self._get_daily()
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["total"], 1, f"港股三种写法应归组为一行，实际 {payload['items']}")
+        self.assertEqual(len(payload["items"]), 1)
+        item = payload["items"][0]
+        # 行取当日 id 最大的一份（00700.HK 那条），展示码沿用该记录自身
+        self.assertEqual(item["id"], day_latest_id)
+        self.assertEqual(item["analysis_count"], 3)
+        self.assertFalse(item["is_latest"], "次日已有 HK00700 新报告，当日行不得标「最新分析」")
+
+    def test_hk_bare_code_latest_when_no_newer_analysis(self) -> None:
+        """同日 00700 / HK00700 各一份、此后无更新 → 一行 2 份、is_latest=True
+        （归组后时效标记以整组全局最大 id 判定，不得因拆键让裸码行单独失真）。"""
+        day_start, _day_end = HistoryService.shanghai_day_bounds_local(QUERY_DATE)
+        latest_id = self._add_history("00700", day_start + timedelta(hours=1), name="腾讯控股")
+        self._add_history("HK00700", day_start + timedelta(hours=2), name="腾讯控股")
+
+        response = self._get_daily()
+        self.assertEqual(response.status_code, 200)
+        items = response.json()["items"]
+        self.assertEqual(len(items), 1)
+        self.assertNotEqual(items[0]["id"], latest_id)
+        self.assertEqual(items[0]["analysis_count"], 2)
+        self.assertTrue(items[0]["is_latest"])
+
+    def test_daily_group_key_regression_guard(self) -> None:
+        """归组键回归守卫：港股三种写法收敛为同一 key；首轮已关闭的语义保持不变——
+        注册指数按 parser canonical 且绝不与同号裸码股票折叠、旧日韩裸码按展示码
+        解析合并、A 股前后缀写法合并。不得把全部股票改成 parser canonical
+        （裸 005930 会被 parser 判成 sz005930，与 005930.KS 重新拆开）。"""
+        key = HistoryService._daily_group_key
+        display = HistoryService._display_stock_code
+
+        # OR-COR-22ed4583：港股裸码 / 前缀 / 后缀同 key
+        hk_keys = {key(code, display(code)) for code in ("00700", "HK00700", "00700.HK", "hk00700")}
+        self.assertEqual(len(hk_keys), 1, f"港股三种写法归组键应唯一，实际 {hk_keys}")
+
+        # OR-COR-a911f1cb：指数与同号裸码股票仍分离
+        self.assertNotEqual(key("sz399001", display("sz399001")), key("399001", display("399001")))
+        self.assertEqual(key("SH000016", display("SH000016")), key("000016.SH", display("000016.SH")))
+
+        # OR-COR-c9984f4e：A 股前后缀写法合并（展示码归一化）
+        self.assertEqual(key("002460", display("002460")), key("002460.SZ", display("002460.SZ")))
+        # 不同港股仍是不同标的
+        self.assertNotEqual(key("00700", display("00700")), key("09988", display("09988")))
+
 
 if __name__ == "__main__":
     unittest.main()

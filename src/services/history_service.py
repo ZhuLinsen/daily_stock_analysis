@@ -421,6 +421,9 @@ class HistoryService:
 
     _SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
 
+    # parser 的港股股票 canonical（``hk00700``，OR-COR-22ed4583）
+    _HK_STOCK_CANONICAL_RE = re.compile(r"^hk\d{5}$")
+
     @staticmethod
     def shanghai_day_bounds_local(query_date: date) -> Tuple[datetime, datetime]:
         """北京日历日 ``[00:00, +1d)`` 折算为服务器本地 naive 半开区间。
@@ -443,6 +446,14 @@ class HistoryService:
         股票，OR-COR-a911f1cb）；股票沿用展示代码归一化——旧日韩裸码 ``005930``
         经股票索引解析为 ``005930.KS`` 后与现行写法合并、``002460``/``002460.SZ``
         合并（OR-COR-c9984f4e）。parser 失败时回退既有展示归一化。
+
+        例外（OR-COR-22ed4583）：港股股票同样取 parser canonical。展示码归一化
+        只会给带市场标记的写法补 ``HK`` 前缀，裸码 ``00700`` 原样保留，于是同一只
+        腾讯被拆成 ``00700`` 与 ``HK00700`` 两行、各自判「最新分析」。parser 对
+        ``00700`` / ``HK00700`` / ``00700.HK`` 一律给出 ``hk00700``。这一收敛仅限
+        港股：parser 对其余股票的 canonical 不能直接当归组键——裸 ``005930`` 会被
+        判成深市 ``sz005930``（与 ``005930.KS`` 重新拆开）、``USAPPL`` 被截成
+        ``APPL``，所以其它股票仍走展示码归一化。
         """
         from data_provider.base import normalize_stock_code
         from src.services.stock_list_parser import ParseStatus, parse_analysis_target
@@ -453,12 +464,15 @@ class HistoryService:
                 target = parse_analysis_target(code)
             except Exception:
                 target = None
-            if (
-                target is not None
-                and target.asset_type == ParseStatus.INDEX
-                and target.canonical_id
-            ):
-                return target.canonical_id
+            if target is not None and target.canonical_id:
+                if target.asset_type == ParseStatus.INDEX:
+                    return target.canonical_id
+                canonical = str(target.canonical_id).lower()
+                if (
+                    target.asset_type == ParseStatus.STOCK
+                    and HistoryService._HK_STOCK_CANONICAL_RE.match(canonical)
+                ):
+                    return canonical
         return normalize_stock_code(display_code or "")
 
     def get_daily_history(
