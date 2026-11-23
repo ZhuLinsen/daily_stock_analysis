@@ -34,6 +34,8 @@ jobs:
       release_tag: ${{ steps.release_ref.outputs.release_tag }}
       version: ${{ steps.release_ref.outputs.version }}
       revision: ${{ steps.release_ref.outputs.revision }}
+      ghcr_repo: ${{ steps.release_ref.outputs.ghcr_repo }}
+      dockerhub_repo: ${{ steps.release_ref.outputs.dockerhub_repo }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -63,6 +65,12 @@ jobs:
           echo "release_tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
           echo "version=${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
           echo "revision=$(git rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
+          echo "ghcr_repo=$(printf '%s/%s' "${GHCR_REGISTRY}" "${GHCR_IMAGE_NAME}" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+          if [[ "${HAS_DOCKERHUB_USERNAME}" == "true" ]]; then
+            echo "dockerhub_repo=$(printf '%s/%s' "${DOCKERHUB_REGISTRY}" "${DOCKERHUB_IMAGE_NAME}" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+          else
+            echo "dockerhub_repo=" >> "$GITHUB_OUTPUT"
+          fi
 
       - uses: actions/setup-python@v6
         with:
@@ -184,7 +192,7 @@ jobs:
           context: .
           file: docker/Dockerfile
           platforms: ${{ matrix.platform }}
-          outputs: type=image,name=${{ env.GHCR_REGISTRY }}/${{ env.GHCR_IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+          outputs: type=image,name=${{ needs.pre-release-gate.outputs.ghcr_repo }},push-by-digest=true,name-canonical=true,push=true
           build-args: |
             DSA_WEB_VERSION=${{ needs.pre-release-gate.outputs.version }}
             DSA_WEB_REVISION=${{ needs.pre-release-gate.outputs.revision }}
@@ -200,7 +208,7 @@ jobs:
           context: .
           file: docker/Dockerfile
           platforms: ${{ matrix.platform }}
-          outputs: type=image,name=${{ env.DOCKERHUB_REGISTRY }}/${{ env.DOCKERHUB_IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+          outputs: type=image,name=${{ needs.pre-release-gate.outputs.dockerhub_repo }},push-by-digest=true,name-canonical=true,push=true
           build-args: |
             DSA_WEB_VERSION=${{ needs.pre-release-gate.outputs.version }}
             DSA_WEB_REVISION=${{ needs.pre-release-gate.outputs.revision }}
@@ -258,7 +266,7 @@ jobs:
         id: meta-ghcr
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.GHCR_REGISTRY }}/${{ env.GHCR_IMAGE_NAME }}
+          images: ${{ needs.pre-release-gate.outputs.ghcr_repo }}
           tags: |
             type=raw,value=latest
             type=raw,value=${{ needs.pre-release-gate.outputs.release_tag }}
@@ -270,14 +278,15 @@ jobs:
           set -euo pipefail
           AMD64_DIGEST="$(tr -d '[:space:]' < /tmp/digests/ghcr-amd64.txt)"
           ARM64_DIGEST="$(tr -d '[:space:]' < /tmp/digests/ghcr-arm64.txt)"
+          REPO="${{ needs.pre-release-gate.outputs.ghcr_repo }}"
           TAG_ARGS=()
           while IFS= read -r tag; do
             [[ -n "$tag" ]] && TAG_ARGS+=(-t "$tag")
           done <<< "${{ steps.meta-ghcr.outputs.tags }}"
           docker buildx imagetools create "${TAG_ARGS[@]}" \
-            "${{ env.GHCR_REGISTRY }}/${{ env.GHCR_IMAGE_NAME }}@${AMD64_DIGEST}" \
-            "${{ env.GHCR_REGISTRY }}/${{ env.GHCR_IMAGE_NAME }}@${ARM64_DIGEST}"
-          MANIFEST_DIGEST="$(docker buildx imagetools inspect "${{ env.GHCR_REGISTRY }}/${{ env.GHCR_IMAGE_NAME }}:${{ needs.pre-release-gate.outputs.release_tag }}" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+            "${REPO}@${AMD64_DIGEST}" \
+            "${REPO}@${ARM64_DIGEST}"
+          MANIFEST_DIGEST="$(docker buildx imagetools inspect "${REPO}:${{ needs.pre-release-gate.outputs.release_tag }}" --format '{{json .Manifest.Digest}}' | tr -d '"')"
           echo "digest=${MANIFEST_DIGEST}" >> "$GITHUB_OUTPUT"
 
       - name: Merge and push Docker Hub manifest
@@ -286,7 +295,7 @@ jobs:
           set -euo pipefail
           AMD64_DIGEST="$(tr -d '[:space:]' < /tmp/digests/dockerhub-amd64.txt)"
           ARM64_DIGEST="$(tr -d '[:space:]' < /tmp/digests/dockerhub-arm64.txt)"
-          REPO="${{ env.DOCKERHUB_REGISTRY }}/${{ env.DOCKERHUB_IMAGE_NAME }}"
+          REPO="${{ needs.pre-release-gate.outputs.dockerhub_repo }}"
           docker buildx imagetools create \
             -t "${REPO}:latest" \
             -t "${REPO}:${{ needs.pre-release-gate.outputs.release_tag }}" \
@@ -297,7 +306,7 @@ jobs:
       - name: Attest GHCR build provenance
         uses: actions/attest-build-provenance@v2
         with:
-          subject-name: ${{ env.GHCR_REGISTRY }}/${{ env.GHCR_IMAGE_NAME }}
+          subject-name: ${{ needs.pre-release-gate.outputs.ghcr_repo }}
           subject-digest: ${{ steps.merge_ghcr.outputs.digest }}
           push-to-registry: true
 
@@ -305,9 +314,9 @@ jobs:
         run: |
           echo "### Docker release published" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "- GHCR: \`${{ env.GHCR_REGISTRY }}/${{ env.GHCR_IMAGE_NAME }}:${{ needs.pre-release-gate.outputs.release_tag }}\` (\`${{ steps.merge_ghcr.outputs.digest }}\`)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- GHCR: \`${{ needs.pre-release-gate.outputs.ghcr_repo }}:${{ needs.pre-release-gate.outputs.release_tag }}\` (\`${{ steps.merge_ghcr.outputs.digest }}\`)" >> "$GITHUB_STEP_SUMMARY"
           if [[ "${{ env.HAS_DOCKERHUB_TOKEN }}" == "true" && "${{ env.HAS_DOCKERHUB_USERNAME }}" == "true" ]]; then
-            echo "- Docker Hub: \`${{ env.DOCKERHUB_REGISTRY }}/${{ env.DOCKERHUB_IMAGE_NAME }}:${{ needs.pre-release-gate.outputs.release_tag }}\`" >> "$GITHUB_STEP_SUMMARY"
+            echo "- Docker Hub: \`${{ needs.pre-release-gate.outputs.dockerhub_repo }}:${{ needs.pre-release-gate.outputs.release_tag }}\`" >> "$GITHUB_STEP_SUMMARY"
           else
             echo "- Docker Hub: skipped (missing \`DOCKERHUB_TOKEN\` / \`DOCKERHUB_USERNAME\` secret)" >> "$GITHUB_STEP_SUMMARY"
           fi

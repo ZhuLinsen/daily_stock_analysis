@@ -318,3 +318,14 @@ def test_release_workflow_unifies_atomic_publish_and_native_arm64() -> None:
         "desktop-windows",
         "desktop-macos",
     }
+    pre_outputs = jobs["pre-release-gate"]["outputs"]
+    assert "ghcr_repo" in pre_outputs
+    assert "dockerhub_repo" in pre_outputs
+    pre_text = yaml.dump(jobs["pre-release-gate"], sort_keys=False)
+    assert "tr '[:upper:]' '[:lower:]'" in pre_text
+    build_text = yaml.dump(jobs["docker-build"], sort_keys=False)
+    merge_text = yaml.dump(jobs["docker-merge-manifest"], sort_keys=False)
+    assert "needs.pre-release-gate.outputs.ghcr_repo" in build_text
+    assert "needs.pre-release-gate.outputs.ghcr_repo" in merge_text
+    assert "${{ env.GHCR_REGISTRY }}/${{ env.GHCR_IMAGE_NAME }}" not in build_text
+    assert "${{ env.GHCR_REGISTRY }}/${{ env.GHCR_IMAGE_NAME }}" not in merge_text
