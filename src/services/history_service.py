@@ -553,11 +553,18 @@ class HistoryService:
                 getattr(record, "operation_advice", None),
                 self._raw_result_fallback_value(raw_result, "operation_advice"),
             )
+            # 明确动作与语言同个股栏一样从 raw_result 顶层 + summary/dashboard 容器
+            # 提取（OR-COM-cb90db57）：旧记录的 action=avoid 可能只存于嵌套字段，
+            # 只读顶层会退化成按评分推断的「买入」。
             action_fields = self._decision_action_fields_for_record(
                 record,
                 raw_result,
                 sentiment_score=score,
                 operation_advice=operation_advice,
+                explicit_action=self._raw_result_fallback_value(raw_result, "action"),
+                report_language=normalize_report_language(
+                    self._raw_result_fallback_value(raw_result, "report_language")
+                ),
             )
             items.append(
                 {
@@ -1039,22 +1046,32 @@ class HistoryService:
         *,
         sentiment_score: Any = None,
         operation_advice: Any = None,
+        explicit_action: Any = None,
+        report_language: Any = None,
     ) -> Dict[str, Any]:
         """Compute display action fields; overrides take precedence when not None.
 
         ``sentiment_score``/``operation_advice`` 由调用方显式补齐（如列表服务把
         raw_result 回退值并入，OR-COM-cb90db57）后传入，保证动作与展示口径一致；
         缺省时保持既有行为（raw_result → record 列）。
+
+        ``explicit_action``/``report_language`` 同理（OR-COM-cb90db57）：按日列表像
+        /history/stocks 个股栏一样，从 raw_result 顶层与 summary/dashboard 容器提取
+        这两个字段后传入；缺省时只读顶层，其余调用方行为不变。
         """
         raw = raw_result if isinstance(raw_result, dict) else {}
         advice = operation_advice or raw.get("operation_advice") or getattr(record, "operation_advice", None)
         score = sentiment_score if sentiment_score is not None else getattr(record, "sentiment_score", None)
         return display_action_fields(
             operation_advice=advice,
-            explicit_action=raw.get("action"),
+            explicit_action=explicit_action if explicit_action is not None else raw.get("action"),
             action_label=raw.get("action_label"),
             report_type=getattr(record, "report_type", None),
-            report_language=normalize_report_language(raw.get("report_language")),
+            report_language=(
+                report_language
+                if report_language is not None
+                else normalize_report_language(raw.get("report_language"))
+            ),
             sentiment_score=score,
             guardrail_reason=extract_decision_guardrail_reason(raw),
         )

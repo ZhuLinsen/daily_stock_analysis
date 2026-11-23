@@ -535,6 +535,61 @@ class HistoryDailyApiTestCase(unittest.TestCase):
         # 不同港股仍是不同标的
         self.assertNotEqual(key("00700", display("00700")), key("09988", display("09988")))
 
+    # ------------------------------------------------------------------
+    # OR-COM-cb90db57：只存于 raw_result 嵌套字段的明确动作与语言
+    # ------------------------------------------------------------------
+
+    def test_nested_only_action_and_report_language_match_stock_bar(self) -> None:
+        """评审场景：旧记录摘要列为空，raw_result 的 summary / dashboard 保存 78 分、
+        Hold、action=avoid 与 report_language=en，顶层没有动作字段。原个股栏从这两个
+        容器读取（显示回避），新列表必须走同一条提取路径：avoid / Avoid，不得因顶层
+        缺失退化为「买入」。顶层有值时仍以顶层为准（与个股栏查找顺序一致）。"""
+        day_start, _day_end = HistoryService.shanghai_day_bounds_local(QUERY_DATE)
+        legacy_payload = {
+            "sentiment_score": 78, "operation_advice": "Hold",
+            "action": "avoid", "report_language": "en",
+        }
+        record_ids = {
+            "summary": self._add_history(
+                "600519", day_start + timedelta(hours=1), name="贵州茅台",
+                sentiment_score=None, operation_advice=None,
+                raw_result=json.dumps({"summary": dict(legacy_payload)}),
+            ),
+            "dashboard": self._add_history(
+                "600518", day_start + timedelta(hours=2), name="康美药业",
+                sentiment_score=None, operation_advice=None,
+                raw_result=json.dumps({"dashboard": dict(legacy_payload)}),
+            ),
+            # 顶层明确动作优先于嵌套字段
+            "top_level_wins": self._add_history(
+                "600517", day_start + timedelta(hours=3), name="国网英大",
+                sentiment_score=None, operation_advice=None,
+                raw_result=json.dumps({
+                    "action": "hold",
+                    "summary": dict(legacy_payload),
+                }),
+            ),
+        }
+
+        daily_response = self._get_daily()
+        self.assertEqual(daily_response.status_code, 200)
+        daily_items = {item["id"]: item for item in daily_response.json()["items"]}
+        bar_response = self.client.get("/api/v1/history/stocks")
+        self.assertEqual(bar_response.status_code, 200)
+        bar_items = {item["id"]: item for item in bar_response.json()["items"]}
+
+        for label, record_id in record_ids.items():
+            with self.subTest(container=label):
+                bar_action = (bar_items[record_id]["action"], bar_items[record_id]["action_label"])
+                if label != "top_level_wins":
+                    # 前置：原个股栏确实从嵌套容器读到了明确动作
+                    self.assertEqual(bar_action, ("avoid", "Avoid"))
+                self.assertEqual(
+                    (daily_items[record_id]["action"], daily_items[record_id]["action_label"]),
+                    bar_action,
+                    "新列表的动作/标签必须与 /history/stocks 同口径",
+                )
+
 
 if __name__ == "__main__":
     unittest.main()
