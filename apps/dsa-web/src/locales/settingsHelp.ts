@@ -15,6 +15,14 @@ export interface SettingsHelpContent {
 type SettingsHelpMap = Record<string, SettingsHelpContent>;
 
 const settingsHelpZhCN: SettingsHelpMap = {
+  'settings.notification.ZULIP_URL': { title: 'Zulip 服务地址', summary: 'Zulip 组织的服务根地址。' },
+  'settings.notification.ZULIP_BOT_EMAIL': { title: 'Zulip 机器人邮箱', summary: '用于认证的 Zulip 机器人邮箱。' },
+  'settings.notification.ZULIP_API_KEY': { title: 'Zulip API 密钥', summary: '用于认证的 Zulip 机器人 API 密钥。' },
+  'settings.notification.ZULIP_STREAM': { title: 'Zulip 频道', summary: '机器人已加入的目标频道名称。' },
+  'settings.notification.ZULIP_TOPIC': { title: 'Zulip 主题', summary: '接收通知的主题。' },
+  'settings.notification.RAFT_URL': { title: 'Raft 服务地址', summary: 'Raft API 服务根地址。' },
+  'settings.notification.RAFT_AGENT_KEY': { title: 'Raft Agent 密钥', summary: '具备 send 权限的 Agent 密钥。' },
+  'settings.notification.RAFT_TARGET': { title: 'Raft 目标频道', summary: 'Agent 已加入的目标频道，例如 #stocks。' },
   'settings.base.STOCK_LIST': {
     title: '自选股列表',
     summary: '配置需要分析的股票代码列表，是手动分析、定时任务和通知报告的基础输入。',
@@ -1360,6 +1368,14 @@ const settingsHelpZhCN: SettingsHelpMap = {
 };
 
 const settingsHelpEnUS: SettingsHelpMap = {
+  'settings.notification.ZULIP_URL': { title: 'Zulip server URL', summary: 'Base URL of the Zulip organization.' },
+  'settings.notification.ZULIP_BOT_EMAIL': { title: 'Zulip bot email', summary: 'Email address of the Zulip bot used for authentication.' },
+  'settings.notification.ZULIP_API_KEY': { title: 'Zulip API key', summary: 'API key of the Zulip bot used for authentication.' },
+  'settings.notification.ZULIP_STREAM': { title: 'Zulip channel', summary: 'Name of the target channel that the bot has joined.' },
+  'settings.notification.ZULIP_TOPIC': { title: 'Zulip topic', summary: 'Topic that receives the notifications.' },
+  'settings.notification.RAFT_URL': { title: 'Raft server URL', summary: 'Base URL of the Raft API server.' },
+  'settings.notification.RAFT_AGENT_KEY': { title: 'Raft agent key', summary: 'Agent key with send permission.' },
+  'settings.notification.RAFT_TARGET': { title: 'Raft target', summary: 'Target channel joined by the agent, such as #stocks.' },
   'settings.base.STOCK_LIST': {
     title: 'Watchlist',
     summary: 'Defines the stock codes used by analysis jobs and notification reports.',

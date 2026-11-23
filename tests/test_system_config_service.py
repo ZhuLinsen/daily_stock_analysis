@@ -57,6 +57,77 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.manager = ConfigManager(env_path=self.env_path)
         self.service = SystemConfigService(manager=self.manager)
 
+    @patch.object(SystemConfigService, "_reload_runtime_singletons")
+    def test_zulip_topic_save_and_import_round_trip(self, _reload) -> None:
+        from dotenv import dotenv_values
+
+        for topic in ("daily #stocks", "#stocks", '"quoted"', "'quoted'",
+                      'daily "quoted" #stocks', "daily 'quoted' #stocks",
+                      r"daily \path #stocks", "plain"):
+            for operation in ("save", "import"):
+                with self.subTest(topic=topic, operation=operation), patch.dict(os.environ, {"ENV_FILE": str(self.env_path)}, clear=True):
+                    self._rewrite_env("STOCK_LIST=600519")
+                    version = self.manager.get_config_version()
+                    if operation == "save":
+                        result = self.service.update(version, [{"key": "ZULIP_TOPIC", "value": topic}], reload_now=True)
+                    else:
+                        encoded = topic.replace("\\", "\\\\").replace('"', '\\"')
+                        result = self.service.import_env(config_version=version, content=f'ZULIP_TOPIC="{encoded}"\n', reload_now=True)
+                    self.assertTrue(result["success"])
+                    self.assertEqual(dotenv_values(self.env_path)["ZULIP_TOPIC"], topic)
+                    self.assertEqual(self.manager.read_config_map()["ZULIP_TOPIC"], topic)
+                    self.assertEqual(Config.get_instance().zulip_topic, topic)
+
+    def test_notification_address_change_reuses_saved_credentials(self) -> None:
+        for prefix, credentials, target in (
+            ("RAFT", {"RAFT_AGENT_KEY": "raft-key"}, {"RAFT_TARGET": "#stocks"}),
+            ("ZULIP", {"ZULIP_BOT_EMAIL": "bot@example.org", "ZULIP_API_KEY": "zulip-key"},
+             {"ZULIP_STREAM": "stocks", "ZULIP_TOPIC": "daily"}),
+        ):
+            with self.subTest(prefix=prefix), patch.dict(os.environ, {}, clear=True):
+                key = prefix + "_URL"
+                self._rewrite_env(f"{key}=https://old.example", *(f"{k}={v}" for k, v in {**credentials, **target}.items()))
+                items = [{"key": key, "value": "https://new.example"}]
+                with patch.object(self.service, "_dispatch_notification_test", return_value={"success": True}) as dispatch:
+                    self.assertTrue(self.service.test_notification_channel(channel=prefix.lower(), items=items)["success"])
+                effective = dispatch.call_args.kwargs["effective_map"]
+                self.assertEqual(effective[key], "https://new.example")
+                for credential, value in credentials.items():
+                    self.assertEqual(effective[credential], value)
+                self.service.update(self.manager.get_config_version(), items, reload_now=False)
+                saved = self.manager.read_config_map()
+                self.assertEqual(saved[key], "https://new.example")
+                for credential, value in credentials.items():
+                    self.assertEqual(saved[credential], value)
+
+    def test_invalid_notification_addresses_rejected_by_save_and_import(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            for key in ("ZULIP_URL", "RAFT_URL"):
+                for invalid_url in ("missing-scheme.example", "https://*.example.com", "https://bad host.example",
+                                    "https://example.com?", "https://example.com#"):
+                    with self.subTest(key=key, url=invalid_url):
+                        items = [{"key": key, "value": invalid_url}]
+                        self.assertFalse(self.service.validate(items)["valid"])
+                        with self.assertRaises(ConfigValidationError):
+                            self.service.update(self.manager.get_config_version(), items, reload_now=False)
+                        with self.assertRaises(ConfigValidationError):
+                            self.service.import_env(config_version=self.manager.get_config_version(),
+                                                    content=f"{key}={invalid_url}\n", reload_now=False)
+                        self.assertNotIn(key, self.manager.read_config_map())
+
+    def test_notification_test_uses_one_saved_snapshot(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            self._rewrite_env("RAFT_URL=https://old.example", "RAFT_AGENT_KEY=old-secret", "RAFT_TARGET=#stocks")
+            original = self.manager.read_config_map()
+            changed = {**original, "RAFT_URL": "https://new.example", "RAFT_AGENT_KEY": "new-secret"}
+            with patch.object(self.manager, "read_config_map", side_effect=[original, changed]) as read:
+                with patch.object(self.service, "_dispatch_notification_test", return_value={"success": True}) as dispatch:
+                    self.service.test_notification_channel(channel="raft", items=[])
+            self.assertEqual(read.call_count, 1)
+            effective = dispatch.call_args.kwargs["effective_map"]
+            self.assertEqual((effective["RAFT_URL"], effective["RAFT_AGENT_KEY"]),
+                             ("https://old.example", "old-secret"))
+
     # The regular primary model resolves cleanly; only AGENT_LITELLM_MODEL sits
     # on a Hermes-only route. Fixtures built from this therefore fail for exactly
     # one reason, so an assertion about the Agent check cannot be satisfied by an

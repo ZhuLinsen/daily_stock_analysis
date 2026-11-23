@@ -287,6 +287,8 @@ export type NotificationTestChannel =
   | 'email'
   | 'pushover'
   | 'ntfy'
+  | 'zulip'
+  | 'raft'
   | 'gotify'
   | 'pushplus'
   | 'serverchan3'

@@ -128,6 +128,10 @@ CHANNEL_SPECS: Tuple[NotificationChannelSpec, ...] = (
         advanced_keys=("NTFY_TOKEN", "WEBHOOK_VERIFY_SSL"),
         note="NTFY_URL must include the topic path, e.g. https://ntfy.sh/my-topic.",
     ),
+    NotificationChannelSpec(channel=NotificationChannel.ZULIP.value, display_name="Zulip", kind="configured",
+                            minimal_keys=("ZULIP_URL", "ZULIP_BOT_EMAIL", "ZULIP_API_KEY", "ZULIP_STREAM", "ZULIP_TOPIC")),
+    NotificationChannelSpec(channel=NotificationChannel.RAFT.value, display_name="Raft", kind="configured",
+                            minimal_keys=("RAFT_URL", "RAFT_AGENT_KEY", "RAFT_TARGET")),
     NotificationChannelSpec(
         channel=NotificationChannel.GOTIFY.value,
         display_name=ChannelDetector.get_channel_name(NotificationChannel.GOTIFY),
@@ -251,6 +255,8 @@ P6_CHANNEL_ACTIONS_ENV_KEYS: Tuple[str, ...] = (
     "NTFY_TOKEN",
     "GOTIFY_URL",
     "GOTIFY_TOKEN",
+    "ZULIP_URL", "ZULIP_BOT_EMAIL", "ZULIP_API_KEY", "ZULIP_STREAM", "ZULIP_TOPIC",
+    "RAFT_URL", "RAFT_AGENT_KEY", "RAFT_TARGET",
 )
 
 
@@ -338,6 +344,24 @@ def run_notification_diagnostics(config: Config) -> NotificationDiagnosticResult
                 "0 个通知渠道已配置；如需发送通知，请至少配置一个渠道的 minimal key。",
             )
         )
+
+    from src.notification_sender.im_sender import valid_im_url
+
+    for prefix, fields in (
+        ("zulip", ("url", "bot_email", "api_key", "stream", "topic")),
+        ("raft", ("url", "agent_key", "target")),
+    ):
+        if any(_has(config, f"{prefix}_{field}") for field in fields):
+            for field in fields:
+                attr = f"{prefix}_{field}"
+                if not _has(config, attr):
+                    errors.append(_issue("error", "partial_channel_config",
+                                         f"{prefix} 配置不完整，缺少 {attr.upper()}。", key=attr.upper()))
+            url = getattr(config, f"{prefix}_url", None)
+            if url and not valid_im_url(url):
+                errors.append(_issue("error", "invalid_channel_url",
+                                     f"{prefix.upper()}_URL 必须是有效的 HTTP(S) 服务地址。",
+                                     key=f"{prefix.upper()}_URL"))
 
     if _has(config, "ntfy_url"):
         ntfy_server_url, ntfy_topic = resolve_ntfy_endpoint(getattr(config, "ntfy_url", None))

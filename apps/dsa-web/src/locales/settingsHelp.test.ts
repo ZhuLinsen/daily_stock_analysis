@@ -11,6 +11,18 @@ const flattenHelp = (help: ReturnType<typeof getSettingsHelpContent>) => [
   ...(help?.notes ?? []),
 ].filter(Boolean).join(' ');
 
+describe('Zulip and Raft settings help', () => {
+  it('provides channel-specific English descriptions for each field', () => {
+    for (const key of ['ZULIP_URL', 'ZULIP_BOT_EMAIL', 'ZULIP_API_KEY', 'ZULIP_STREAM', 'ZULIP_TOPIC',
+      'RAFT_URL', 'RAFT_AGENT_KEY', 'RAFT_TARGET']) {
+      const help = getSettingsHelpContent(`settings.notification.${key}`, undefined, 'en');
+      expect(help?.summary).toBeTruthy();
+      expect(help?.title).toContain(key.startsWith('ZULIP') ? 'Zulip' : 'Raft');
+      expect(help?.summary).not.toContain('Discord');
+    }
+  });
+});
+
 describe('SearXNG settings help', () => {
   it('describes public SearXNG discovery as opt-in in Chinese', () => {
     const description = getFieldDescriptionZh('SEARXNG_PUBLIC_INSTANCES_ENABLED');

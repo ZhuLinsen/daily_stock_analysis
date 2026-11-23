@@ -76,6 +76,8 @@ from src.notification_sender import (
     EmailSender,
     FeishuSender,
     GotifySender,
+    RaftSender,
+    ZulipSender,
     NtfySender,
     PushoverSender,
     PushplusSender,
@@ -191,6 +193,8 @@ class NotificationChannel(Enum):
     EMAIL = "email"        # 邮件
     PUSHOVER = "pushover"  # Pushover（手机/桌面推送）
     NTFY = "ntfy"          # ntfy
+    RAFT = "raft"
+    ZULIP = "zulip"
     GOTIFY = "gotify"      # Gotify
     PUSHPLUS = "pushplus"  # PushPlus（国内推送服务）
     SERVERCHAN3 = "serverchan3"  # Server酱3（手机APP推送服务）
@@ -243,6 +247,8 @@ class ChannelDetector:
             NotificationChannel.PUSHOVER: "Pushover",
             NotificationChannel.NTFY: "ntfy",
             NotificationChannel.GOTIFY: "Gotify",
+            NotificationChannel.RAFT: "Raft",
+            NotificationChannel.ZULIP: "Zulip",
             NotificationChannel.PUSHPLUS: "PushPlus",
             NotificationChannel.SERVERCHAN3: "Server酱3",
             NotificationChannel.CUSTOM: "自定义Webhook",
@@ -262,6 +268,8 @@ class NotificationService(
     EmailSender,
     FeishuSender,
     GotifySender,
+    RaftSender,
+    ZulipSender,
     NtfySender,
     PushoverSender,
     PushplusSender,
@@ -319,6 +327,8 @@ class NotificationService(
         EmailSender.__init__(self, config)
         FeishuSender.__init__(self, config)
         GotifySender.__init__(self, config)
+        RaftSender.__init__(self, config)
+        ZulipSender.__init__(self, config)
         NtfySender.__init__(self, config)
         PushoverSender.__init__(self, config)
         PushplusSender.__init__(self, config)
@@ -529,6 +539,11 @@ class NotificationService(
         if ntfy_server_url and ntfy_topic:
             channels.append(NotificationChannel.NTFY)
 
+        from src.notification_sender.im_sender import configured
+        if configured(config, 'zulip', ('bot_email', 'api_key', 'stream', 'topic')):
+            channels.append(NotificationChannel.ZULIP)
+        if configured(config, 'raft', ('agent_key', 'target')):
+            channels.append(NotificationChannel.RAFT)
         gotify_endpoint = resolve_gotify_message_endpoint(getattr(config, "gotify_url", None))
         if gotify_endpoint and (getattr(config, "gotify_token", None) or "").strip():
             channels.append(NotificationChannel.GOTIFY)
@@ -2697,6 +2712,10 @@ class NotificationService(
             return self.send_to_pushover(content)
         if channel == NotificationChannel.NTFY:
             return self.send_to_ntfy(sanitized_content)
+        if channel == NotificationChannel.ZULIP:
+            return self.send_to_zulip(sanitized_content)
+        if channel == NotificationChannel.RAFT:
+            return self.send_to_raft(sanitized_content)
         if channel == NotificationChannel.GOTIFY:
             return self.send_to_gotify(sanitized_content)
         if channel == NotificationChannel.PUSHPLUS:
@@ -2839,7 +2858,7 @@ class NotificationService(
         channels_needing_image = {
             ch for ch in target_channels
             if ch.value in self._markdown_to_image_channels
-            and ch not in {NotificationChannel.NTFY, NotificationChannel.GOTIFY}
+            and ch not in {NotificationChannel.NTFY, NotificationChannel.GOTIFY, NotificationChannel.ZULIP, NotificationChannel.RAFT}
         }
         if channels_needing_image:
             from src.md2img import markdown_to_image

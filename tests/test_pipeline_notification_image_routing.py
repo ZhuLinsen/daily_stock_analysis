@@ -248,6 +248,8 @@ class _FakeRoutedNotifier:
         self.send_to_email = MagicMock(return_value=True)
         self.send_to_ntfy = MagicMock(return_value=True)
         self.send_to_gotify = MagicMock(return_value=True)
+        self.send_to_zulip = MagicMock(return_value=True)
+        self.send_to_raft = MagicMock(return_value=True)
 
     @staticmethod
     def _generate_dashboard_report(results):
@@ -349,6 +351,17 @@ class TestPipelineReportRouteFiltering(unittest.TestCase):
         pipeline.notifier.send_to_gotify.assert_called_once_with("report:000001")
         pipeline.notifier._send_email_with_inline_image.assert_not_called()
         pipeline.notifier._send_telegram_photo.assert_not_called()
+
+    def test_im_routes_send_aggregate_text(self):
+        for channel in (NotificationChannel.ZULIP, NotificationChannel.RAFT):
+            with self.subTest(channel=channel):
+                pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
+                pipeline.notifier = _FakeRoutedNotifier([channel], image_channels={channel.value})
+                pipeline.config = SimpleNamespace(stock_email_groups=[])
+                with patch("src.md2img.markdown_to_image") as convert:
+                    pipeline._send_notifications([SimpleNamespace(code="000001")], ReportType.SIMPLE)
+                convert.assert_not_called()
+                getattr(pipeline.notifier, f"send_to_{channel.value}").assert_called_once_with("report:000001")
 
     def test_noise_suppression_happens_before_markdown_to_image(self):
         pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)

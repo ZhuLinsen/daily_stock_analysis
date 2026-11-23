@@ -21,6 +21,8 @@ function getChannelOptions(language: 'zh' | 'en'): Array<{ value: NotificationTe
     { value: 'email', label: language === 'en' ? 'Email' : '邮件' },
     { value: 'pushover', label: 'Pushover' },
     { value: 'ntfy', label: 'ntfy' },
+    { value: 'zulip', label: 'Zulip' },
+    { value: 'raft', label: 'Raft' },
     { value: 'gotify', label: 'Gotify' },
     { value: 'pushplus', label: 'PushPlus' },
     { value: 'serverchan3', label: 'ServerChan3' },

@@ -380,6 +380,14 @@ jobs:
           NTFY_TOKEN: ${{ secrets.NTFY_TOKEN }}
 
           # 方式五扩展：Gotify
+          ZULIP_URL: ${{ secrets.ZULIP_URL }}
+          ZULIP_BOT_EMAIL: ${{ secrets.ZULIP_BOT_EMAIL }}
+          ZULIP_API_KEY: ${{ secrets.ZULIP_API_KEY }}
+          ZULIP_STREAM: ${{ secrets.ZULIP_STREAM }}
+          ZULIP_TOPIC: ${{ secrets.ZULIP_TOPIC }}
+          RAFT_URL: ${{ secrets.RAFT_URL }}
+          RAFT_AGENT_KEY: ${{ secrets.RAFT_AGENT_KEY }}
+          RAFT_TARGET: ${{ secrets.RAFT_TARGET }}
           GOTIFY_URL: ${{ secrets.GOTIFY_URL }}
           GOTIFY_TOKEN: ${{ secrets.GOTIFY_TOKEN }}
           
@@ -546,6 +554,8 @@ jobs:
           echo "【通知渠道】"
           echo "  PushPlus: $([ -n "$PUSHPLUS_TOKEN" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
           echo "  ntfy: $([ -n "$NTFY_URL" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
+          echo "  Zulip: $([ -n "$ZULIP_URL" ] && [ -n "$ZULIP_BOT_EMAIL" ] && [ -n "$ZULIP_API_KEY" ] && [ -n "$ZULIP_STREAM" ] && [ -n "$ZULIP_TOPIC" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
+          echo "  Raft: $([ -n "$RAFT_URL" ] && [ -n "$RAFT_AGENT_KEY" ] && [ -n "$RAFT_TARGET" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
           echo "  Gotify: $([ -n "$GOTIFY_URL" ] && [ -n "$GOTIFY_TOKEN" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
           echo "  企业微信: $([ -n "$WECHAT_WEBHOOK_URL" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
           echo "  钉钉: $( [ -n "$DINGTALK_WEBHOOK_URL" ] && echo '✅ 已配置' || echo '⚪ 未配置' )"

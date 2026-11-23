@@ -4372,7 +4372,7 @@ class StockAnalysisPipeline:
                 channels_needing_image = {
                     ch for ch in channels
                     if ch.value in self.notifier._markdown_to_image_channels
-                    and ch not in {NotificationChannel.NTFY, NotificationChannel.GOTIFY}
+                    and ch not in {NotificationChannel.NTFY, NotificationChannel.GOTIFY, NotificationChannel.ZULIP, NotificationChannel.RAFT}
                 }
                 non_wechat_channels_needing_image = {
                     ch for ch in channels_needing_image if ch != NotificationChannel.WECHAT
@@ -4663,6 +4663,14 @@ class StockAnalysisPipeline:
                             channel_success,
                             channel_error,
                         )
+                    elif channel in (NotificationChannel.ZULIP, NotificationChannel.RAFT):
+                        sender = (self.notifier.send_to_zulip if channel == NotificationChannel.ZULIP
+                                  else self.notifier.send_to_raft)
+                        channel_success, channel_error = _send_channel_safely(
+                            channel.value, lambda: sender(report),
+                        )
+                        non_wechat_success = channel_success or non_wechat_success
+                        _record_channel_result(channel.value, channel_success, channel_error)
                     elif channel == NotificationChannel.GOTIFY:
                         channel_success, channel_error = _send_channel_safely(
                             channel.value,

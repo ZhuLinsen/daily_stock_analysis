@@ -1220,6 +1220,14 @@ class Config:
     ntfy_token: Optional[str] = None
 
     # Gotify 配置（server base URL；sender 会拼接 /message）
+    zulip_url: Optional[str] = None
+    zulip_bot_email: Optional[str] = None
+    zulip_api_key: Optional[str] = None
+    zulip_stream: Optional[str] = None
+    zulip_topic: Optional[str] = None
+    raft_url: Optional[str] = None
+    raft_agent_key: Optional[str] = None
+    raft_target: Optional[str] = None
     gotify_url: Optional[str] = None
     gotify_token: Optional[str] = None
     
@@ -2222,6 +2230,14 @@ class Config:
             pushover_api_token=os.getenv('PUSHOVER_API_TOKEN'),
             ntfy_url=os.getenv('NTFY_URL'),
             ntfy_token=os.getenv('NTFY_TOKEN'),
+            zulip_url=os.getenv('ZULIP_URL'),
+            zulip_bot_email=os.getenv('ZULIP_BOT_EMAIL'),
+            zulip_api_key=os.getenv('ZULIP_API_KEY'),
+            zulip_stream=os.getenv('ZULIP_STREAM'),
+            zulip_topic=os.getenv('ZULIP_TOPIC'),
+            raft_url=os.getenv('RAFT_URL'),
+            raft_agent_key=os.getenv('RAFT_AGENT_KEY'),
+            raft_target=os.getenv('RAFT_TARGET'),
             gotify_url=os.getenv('GOTIFY_URL'),
             gotify_token=os.getenv('GOTIFY_TOKEN'),
             pushplus_token=os.getenv('PUSHPLUS_TOKEN'),
@@ -3719,6 +3735,7 @@ class Config:
             ))
 
         # --- Notification channels ---
+        from src.notification_sender.im_sender import configured
         has_notification = bool(
             self.wechat_webhook_url
             or self.dingtalk_webhook_url
@@ -3737,6 +3754,8 @@ class Config:
                 and (self.gotify_token or "").strip()
                 and _has_gotify_base_url(self.gotify_url)
             )
+            or configured(self, "zulip", ("bot_email", "api_key", "stream", "topic"))
+            or configured(self, "raft", ("agent_key", "target"))
             or self.pushplus_token
             or self.serverchan3_sendkey
             or self.custom_webhook_urls

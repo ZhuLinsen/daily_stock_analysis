@@ -19,6 +19,8 @@ NotificationTestChannel = Literal[
     "pushover",
     "ntfy",
     "gotify",
+    "zulip",
+    "raft",
     "pushplus",
     "serverchan3",
     "custom",

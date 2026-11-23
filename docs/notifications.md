@@ -14,6 +14,8 @@
 | Pushover | 静态配置 | `PUSHOVER_USER_KEY`, `PUSHOVER_API_TOKEN` | - | 两个 key 必须同时存在 |
 | ntfy | 静态配置 | `NTFY_URL` | `NTFY_TOKEN`, `WEBHOOK_VERIFY_SSL` | `NTFY_URL` 必须包含 topic path，例如 `https://ntfy.sh/my-topic` |
 | Gotify | 静态配置 | `GOTIFY_URL`, `GOTIFY_TOKEN` | `WEBHOOK_VERIFY_SSL` | `GOTIFY_URL` 是 server base URL，不包含 `/message`；token 通过 `X-Gotify-Key` Header 发送 |
+| Zulip | 静态配置 | `ZULIP_URL`, `ZULIP_BOT_EMAIL`, `ZULIP_API_KEY`, `ZULIP_STREAM`, `ZULIP_TOPIC` | `WEBHOOK_VERIFY_SSL` | 发送频道主题文本消息 |
+| Raft | 静态配置 | `RAFT_URL`, `RAFT_AGENT_KEY`, `RAFT_TARGET` | `WEBHOOK_VERIFY_SSL` | 发送 Agent 频道文本消息 |
 | PushPlus | 静态配置 | `PUSHPLUS_TOKEN` | `PUSHPLUS_TOPIC` | `PUSHPLUS_TOPIC` 仅在 token 存在时生效 |
 | Server酱3 | 静态配置 | `SERVERCHAN3_SENDKEY` | - | 手机 App 推送 |
 | 自定义 Webhook | 静态配置 | `CUSTOM_WEBHOOK_URLS` | `CUSTOM_WEBHOOK_BEARER_TOKEN`, `CUSTOM_WEBHOOK_BODY_TEMPLATE`, `WEBHOOK_VERIFY_SSL` | 支持多个 URL，逗号分隔 |
@@ -80,6 +82,14 @@ Telegram 文本消息遇到 HTTP 429 时，优先按 [Bot API 的 `parameters.re
 | `PUSHOVER_API_TOKEN` | minimal | pushover | Secret | - |
 | `NTFY_URL` | minimal | ntfy | Secret | - |
 | `NTFY_TOKEN` | advanced | ntfy | Secret | - |
+| `ZULIP_URL` | minimal | zulip | Secret | - |
+| `ZULIP_BOT_EMAIL` | minimal | zulip | Secret | - |
+| `ZULIP_API_KEY` | minimal | zulip | Secret | - |
+| `ZULIP_STREAM` | minimal | zulip | Secret | - |
+| `ZULIP_TOPIC` | minimal | zulip | Secret | - |
+| `RAFT_URL` | minimal | raft | Secret | - |
+| `RAFT_AGENT_KEY` | minimal | raft | Secret | - |
+| `RAFT_TARGET` | minimal | raft | Secret | - |
 | `GOTIFY_URL` | minimal | gotify | Secret | - |
 | `GOTIFY_TOKEN` | minimal | gotify | Secret | - |
 | `PUSHPLUS_TOKEN` | minimal | pushplus | Secret | - |
@@ -143,7 +153,9 @@ python main.py --check-notify
 
 Web 设置页的“通知渠道”分类提供单渠道测试入口。测试会使用当前页面草稿值合成临时配置，发送一条真实测试通知，但不会保存 `.env`，也不会修改运行时全局配置。
 
-- 测试范围：14 个静态通知渠道，不包含 `UNKNOWN` 和运行时上下文渠道。
+Zulip 和 Raft 可直接设置服务地址；更改地址后会继续使用已配置的渠道凭据。
+
+- 测试范围：16 个静态通知渠道，不包含 `UNKNOWN` 和运行时上下文渠道。
 - 普通渠道：返回单次发送结果、耗时和通用错误码。
 - 自定义 Webhook：按 URL 顺序返回 attempts，展示每个 URL 的成功/失败、HTTP 状态、耗时和错误码；多个 URL 部分成功时，顶层 message 会标出成功数 / 总数。
 - 返回结果会脱敏 token、secret、password、Bearer、完整 webhook query 和疑似 path token。
@@ -231,7 +243,7 @@ P3 新增三类通知路由配置：
 | `alert` | `NOTIFICATION_ALERT_CHANNELS` | EventMonitor 触发通知 |
 | `system_error` | `NOTIFICATION_SYSTEM_ERROR_CHANNELS` | 预留能力；当前不新增自动系统错误生产者 |
 
-配置值为逗号分隔渠道枚举：`wechat,dingtalk,feishu,telegram,email,pushover,ntfy,gotify,pushplus,serverchan3,custom,discord,slack,astrbot`。
+配置值为逗号分隔渠道枚举：`wechat,dingtalk,feishu,telegram,email,pushover,ntfy,gotify,zulip,raft,pushplus,serverchan3,custom,discord,slack,astrbot`。
 
 - 留空或未配置：保持旧行为，发送到所有已配置静态渠道。
 - 非空：只发送到路由列表与已配置渠道的交集；交集为空时不会 fallback 到全渠道。
@@ -332,9 +344,25 @@ Secret 适合 token、password、webhook URL 等敏感项；Variable 适合 `WEC
 
 桌面端可通过配置导出 / 导入恢复 `.env`。回滚某个通知渠道时，清空该渠道 minimal key 并保存即可；advanced key 留存不会单独启用渠道，但建议同步清理以减少后续排障噪音。
 
+停用 Zulip 或 Raft 时，可清空服务地址及该渠道凭据并保存；环境变量中注入的配置也须同步移除。
+
 ## 回滚方式
 
 - 本地 / Docker：恢复旧 `.env`，或删除对应渠道 minimal key 后重启进程。
 - GitHub Actions：清空或删除对应 Secret / Variable；未映射的 key 不会进入 workflow 运行进程。
 - Desktop：使用配置备份导入旧 `.env`，或在设置页清空对应渠道配置并保存。
 - 版本回退：P6/P7 新增的 `NTFY_*`、`GOTIFY_*`、路由和降噪 key 在旧版本中会被忽略；若要避免误导，应同时从 `.env` 或 Actions 配置中移除。
+
+## Zulip 与 Raft 单向通知
+
+Zulip：配置 `ZULIP_URL`（组织的根地址）、`ZULIP_BOT_EMAIL`、`ZULIP_API_KEY`、`ZULIP_STREAM` 和 `ZULIP_TOPIC`，并将机器人加入目标频道。消息通过 [Zulip 发送消息 API](https://zulip.com/api/send-message) 发送到指定频道和主题。
+
+手动编辑或导入 `.env` 时，主题中空格后的 `#` 需放在引号内，例如 `ZULIP_TOPIC="daily #stocks"`，否则会被解析为注释。Web 保存时会自动处理引号。
+
+发送前会通过 [注册事件队列 API](https://zulip.com/api/register-queue) 查询服务器返回的 `max_message_length` 和 `max_topic_length`，之后通过 [删除队列 API](https://zulip.com/api/delete-queue) 清理队列；无法获取有效上限、正文超长或主题超长时，该渠道报告失败且不发送，以避免服务端截断内容或主题。请缩短报告或主题后重试。
+
+Raft：配置 `RAFT_URL`（例如 `https://api.raft.build`）、`RAFT_AGENT_KEY` 和 `RAFT_TARGET`（例如 `#stocks`）。密钥需具备 send 权限，Agent 需加入频道。应用机器人须先经服务器管理员授权并签发密钥，第三方生产可用性请参阅 [Raft 文档](https://docs.raft.build/zh-cn/developers/raft-apps/bot/)及 [Agent API 文档](https://docs.raft.build/developers/sdk/api-client/)。
+
+Raft 明确返回挂起（`held`）时，系统使用相同幂等键并设置 `continueAnyway=true` 最多续发一次；若续发未送达，则该渠道报告失败。
+
+两个渠道均发送 Markdown 文本，支持通知路由、Web 测试以及 GitHub Actions Secrets。它们不接收机器人命令；发送失败不会阻断其他渠道。请勿把凭据提交到仓库。

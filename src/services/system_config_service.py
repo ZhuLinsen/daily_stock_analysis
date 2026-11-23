@@ -263,6 +263,8 @@ class SystemConfigService:
         "pushover",
         "ntfy",
         "gotify",
+        "zulip",
+        "raft",
         "pushplus",
         "serverchan3",
         "custom",
@@ -297,6 +299,14 @@ class SystemConfigService:
         "PUSHOVER_API_TOKEN": ("pushover_api_token", "string"),
         "NTFY_URL": ("ntfy_url", "string"),
         "NTFY_TOKEN": ("ntfy_token", "string"),
+        "ZULIP_URL": ("zulip_url", "string"),
+        "ZULIP_BOT_EMAIL": ("zulip_bot_email", "string"),
+        "ZULIP_API_KEY": ("zulip_api_key", "string"),
+        "ZULIP_STREAM": ("zulip_stream", "string"),
+        "ZULIP_TOPIC": ("zulip_topic", "string"),
+        "RAFT_URL": ("raft_url", "string"),
+        "RAFT_AGENT_KEY": ("raft_agent_key", "string"),
+        "RAFT_TARGET": ("raft_target", "string"),
         "GOTIFY_URL": ("gotify_url", "string"),
         "GOTIFY_TOKEN": ("gotify_token", "string"),
         "PUSHPLUS_TOKEN": ("pushplus_token", "string"),
@@ -326,6 +336,8 @@ class SystemConfigService:
         "pushover": (("PUSHOVER_USER_KEY", "PUSHOVER_API_TOKEN"),),
         "ntfy": (("NTFY_URL",),),
         "gotify": (("GOTIFY_URL", "GOTIFY_TOKEN"),),
+        "zulip": (("ZULIP_URL", "ZULIP_BOT_EMAIL", "ZULIP_API_KEY", "ZULIP_STREAM", "ZULIP_TOPIC"),),
+        "raft": (("RAFT_URL", "RAFT_AGENT_KEY", "RAFT_TARGET"),),
         "pushplus": (("PUSHPLUS_TOKEN",),),
         "serverchan3": (("SERVERCHAN3_SENDKEY",),),
         "custom": (("CUSTOM_WEBHOOK_URLS",),),
@@ -342,6 +354,8 @@ class SystemConfigService:
         "pushover": ("PUSHOVER_USER_KEY",),
         "ntfy": ("NTFY_URL",),
         "gotify": ("GOTIFY_URL",),
+        "zulip": ("ZULIP_URL",),
+        "raft": ("RAFT_URL",),
         "pushplus": ("PUSHPLUS_TOPIC",),
         "serverchan3": ("SERVERCHAN3_SENDKEY",),
         "custom": ("CUSTOM_WEBHOOK_URLS",),
@@ -601,10 +615,13 @@ class SystemConfigService:
         if normalized_channel not in self._NOTIFICATION_TEST_CHANNELS:
             raise ValueError(f"Unsupported notification channel: {channel}")
 
-        effective_map = self._build_notification_test_effective_map(
-            items=items,
-            mask_token=mask_token,
-        )
+        with self._manager.locked():
+            saved_snapshot = self._manager.read_config_map()
+            environment_snapshot = dict(os.environ)
+            effective_map = self._build_notification_test_effective_map(
+                items=items, mask_token=mask_token,
+                saved_config=saved_snapshot, environment=environment_snapshot,
+            )
         missing = self._get_missing_notification_test_keys(normalized_channel, effective_map)
         if missing:
             return self._build_notification_test_result(
@@ -2739,6 +2756,13 @@ class SystemConfigService:
         if not value.strip() and not is_required:
             return issues
 
+        if key in ("ZULIP_URL", "RAFT_URL"):
+            from src.notification_sender.im_sender import valid_im_url
+            if not valid_im_url(value):
+                return [{"key": key, "code": "invalid_channel_url",
+                         "message": "Must be a valid HTTP(S) service URL",
+                         "severity": "error"}]
+
         if ("\n" in value or "\r" in value) and data_type != "json":
             issues.append(
                 {
@@ -3086,16 +3110,18 @@ class SystemConfigService:
         *,
         items: Sequence[Dict[str, str]],
         mask_token: str,
+        saved_config: Optional[Dict[str, str]] = None,
+        environment: Optional[Dict[str, str]] = None,
     ) -> Dict[str, str]:
         """Merge saved/runtime config with unsaved notification test items."""
         allowed_keys = set(self._NOTIFICATION_TEST_KEY_MAP)
         effective = {
             key: value
-            for key, value in self._build_display_config_map(self._manager.read_config_map()).items()
+            for key, value in self._build_display_config_map(saved_config if saved_config is not None else self._manager.read_config_map()).items()
             if key in allowed_keys
         }
 
-        for raw_key, raw_value in os.environ.items():
+        for raw_key, raw_value in (environment if environment is not None else os.environ).items():
             key = str(raw_key).upper()
             if key in allowed_keys:
                 effective[key] = "" if raw_value is None else str(raw_value)
@@ -3142,6 +3168,11 @@ class SystemConfigService:
         channel: str,
         effective_map: Dict[str, str],
     ) -> Optional[str]:
+        if channel in ("zulip", "raft"):
+            from src.notification_sender.im_sender import valid_im_url
+            value = effective_map.get(channel.upper() + "_URL", "")
+            if value and not valid_im_url(value):
+                return f"{channel.upper()}_URL 必须是有效的 HTTP(S) 服务地址。"
         if channel == "ntfy":
             ntfy_url = (effective_map.get("NTFY_URL") or "").strip()
             if not ntfy_url:
@@ -3203,6 +3234,8 @@ class SystemConfigService:
             EmailSender,
             FeishuSender,
             GotifySender,
+            RaftSender,
+            ZulipSender,
             NtfySender,
             PushoverSender,
             PushplusSender,
@@ -3250,6 +3283,8 @@ class SystemConfigService:
             "email": lambda: EmailSender(config).send_to_email(content, subject=title, timeout_seconds=timeout_seconds),
             "pushover": lambda: PushoverSender(config).send_to_pushover(content, title=title, timeout_seconds=timeout_seconds),
             "ntfy": lambda: NtfySender(config).send_to_ntfy(content, title=title, timeout_seconds=timeout_seconds),
+            "zulip": lambda: ZulipSender(config).send_to_zulip(titled_content, timeout_seconds=timeout_seconds),
+            "raft": lambda: RaftSender(config).send_to_raft(titled_content, timeout_seconds=timeout_seconds),
             "gotify": lambda: GotifySender(config).send_to_gotify(content, title=title, timeout_seconds=timeout_seconds),
             "pushplus": lambda: PushplusSender(config).send_to_pushplus(content, title=title, timeout_seconds=timeout_seconds),
             "serverchan3": lambda: Serverchan3Sender(config).send_to_serverchan3(content, title=title, timeout_seconds=timeout_seconds),
@@ -3459,6 +3494,8 @@ class SystemConfigService:
             "PUSHOVER_",
             "NTFY_",
             "GOTIFY_",
+            "ZULIP_",
+            "RAFT_",
             "PUSHPLUS_",
             "SERVERCHAN",
             "CUSTOM_WEBHOOK",
@@ -3562,6 +3599,14 @@ class SystemConfigService:
     def _has_valid_ntfy_endpoint(effective_map: Dict[str, str]) -> bool:
         ntfy_server_url, ntfy_topic = resolve_ntfy_endpoint(effective_map.get("NTFY_URL"))
         return bool(ntfy_server_url and ntfy_topic)
+
+    @staticmethod
+    def _valid_im_notification_config(effective_map: Dict[str, str], channel: str, fields: tuple) -> bool:
+        from src.notification_sender.im_sender import valid_im_url
+        prefix = channel.upper() + "_"
+        return valid_im_url(effective_map.get(prefix + "URL")) and all(
+            (effective_map.get(prefix + field) or "").strip() for field in fields
+        )
 
     @staticmethod
     def _has_valid_gotify_config(effective_map: Dict[str, str]) -> bool:
@@ -4041,6 +4086,8 @@ class SystemConfigService:
                 ),
             )
             or self._has_valid_ntfy_endpoint(effective_map)
+            or (self._valid_im_notification_config(effective_map, "zulip", ("BOT_EMAIL", "API_KEY", "STREAM", "TOPIC")))
+            or (self._valid_im_notification_config(effective_map, "raft", ("AGENT_KEY", "TARGET")))
             or self._has_valid_gotify_config(effective_map)
         )
         if configured:

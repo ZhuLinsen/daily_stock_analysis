@@ -132,6 +132,8 @@ CHANNEL_PROFILES: Dict[str, ChannelProfile] = {
         default_mode="plain_fallback",
         supports_link=True,
     ),
+    "zulip": ChannelProfile(channel="zulip", markdown="markdown", default_mode="full_report"),
+    "raft": ChannelProfile(channel="raft", markdown="markdown", default_mode="full_report"),
     "gotify": ChannelProfile(
         channel="gotify",
         markdown="markdown",
