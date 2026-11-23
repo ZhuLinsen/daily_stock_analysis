@@ -3,12 +3,13 @@
 
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
+import threading
 import time
 from types import SimpleNamespace
 
@@ -78,6 +79,66 @@ def _backend(tmp_path: Path, source: str, **config_overrides) -> LocalCliGenerat
         display_name="Mock CLI",
     )
     return LocalCliGenerationBackend(_config(**config_overrides), preset=preset)
+
+
+def test_stock_timeout_during_popen_cleans_up_process_before_finishing(tmp_path, monkeypatch) -> None:
+    from src.core.pipeline import _DaemonThreadStockExecutor
+    from src.core.stock_execution_context import get_current_stock_cancellation
+
+    backend = _backend(tmp_path, "import time; time.sleep(30)")
+    analyzer = GeminiAnalyzer.__new__(GeminiAnalyzer)
+    monkeypatch.setattr(analyzer, "get_generation_backend_config_error", lambda: None)
+    monkeypatch.setattr(analyzer, "_resolve_generation_backend_config", lambda: ("codex_cli", "litellm"))
+    requested_backends = []
+
+    def get_backend(backend_id):
+        requested_backends.append(backend_id)
+        return backend
+
+    monkeypatch.setattr(analyzer, "_get_generation_backend", get_backend)
+    launched = threading.Event()
+    release_popen = threading.Event()
+    original_popen = subprocess.Popen
+    processes, tokens, errors = [], [], []
+
+    def delayed_popen(*args, **kwargs):
+        process = original_popen(*args, **kwargs)
+        processes.append(process)
+        tokens.append(get_current_stock_cancellation())
+        launched.set()
+        release_popen.wait(timeout=5)
+        return process
+
+    def generate(_code):
+        try:
+            analyzer._call_litellm("prompt", {})
+        except GenerationError as exc:
+            errors.append(exc)
+
+    monkeypatch.setattr(subprocess, "Popen", delayed_popen)
+    executor = _DaemonThreadStockExecutor(timeout_seconds=1)
+    try:
+        future = executor.submit(generate, "AAPL")
+        assert launched.wait(timeout=2)
+        assert tokens[0]._event.wait(timeout=2)
+        with pytest.raises(FutureTimeoutError):
+            future.result(timeout=0.2)
+        release_popen.set()
+        assert future.result(timeout=8) is None
+        assert processes[0].poll() is not None
+    finally:
+        release_popen.set()
+        executor.shutdown(cancel_futures=True)
+        for process in processes:
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=5)
+
+    assert requested_backends == ["codex_cli"]
+    assert len(errors) == 1
+    assert errors[0].details["reason"] == "stock_analysis_cancelled"
+    assert not errors[0].fallbackable
+    assert not errors[0].retryable
 
 
 def test_success_uses_stdin_temp_cwd_and_usage_unavailable(tmp_path: Path) -> None:

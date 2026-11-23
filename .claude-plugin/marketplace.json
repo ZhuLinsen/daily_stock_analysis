@@ -1,0 +1,15 @@
+{
+  "name": "daily-stock-analysis",
+  "owner": {
+    "name": "ZhuLinsen",
+    "url": "https://github.com/ZhuLinsen"
+  },
+  "description": "Daily Stock Analysis agent plugin: stock_analyzer skill for multi-market stock analysis.",
+  "plugins": [
+    {
+      "name": "daily-stock-analysis",
+      "source": "./plugin",
+      "description": "Analyze A-share/HK/US/JP/KR/TW stocks and run market reviews via the stock_analyzer skill."
+    }
+  ]
+}

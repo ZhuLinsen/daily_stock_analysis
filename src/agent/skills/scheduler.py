@@ -6,12 +6,14 @@ Concurrent scheduler for specialist strategy-skill agents.
 from __future__ import annotations
 
 import logging
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import as_completed
 from contextvars import copy_context
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
 from src.agent.protocols import AgentContext, AgentOpinion, StageResult, StageStatus
+from src.core.stock_execution_context import stock_child_thread_pool
+
 logger = logging.getLogger(__name__)
 
 RunStageCallable = Callable[[Any, AgentContext, Optional[Callable], Optional[float]], StageResult]
@@ -52,7 +54,7 @@ class AgentSkillScheduler:
         opinions_by_index: Dict[int, List[AgentOpinion]] = {}
         invalid_by_index: Dict[int, Dict[str, Any]] = {}
         worker_count = min(self.max_concurrency, len(selected_agents))
-        executor = ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="agent-skill")
+        executor = stock_child_thread_pool(worker_count, "agent-skill")
         futures = {
             executor.submit(
                 copy_context().run,

@@ -1809,7 +1809,8 @@ def test_real_daily_history_read_keeps_guard_identity(db, monkeypatch, token, ch
     if expected_price is None:
         # A registry mutation after the common boundary cannot reclassify this
         # call. A missing index cache uses the frozen index provider target.
-        assert result[2] is True
+        assert result[2] is False
+        assert payload["error"] == "No historical data available for sh000001"
         assert external_calls[0][1]["analysis_target"].canonical_id == "sh000001"
     else:
         assert result[2] is True

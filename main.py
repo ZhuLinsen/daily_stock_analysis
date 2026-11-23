@@ -296,7 +296,7 @@ def _reload_env_file_values_preserving_overrides() -> None:
     _RUNTIME_ENV_FILE_KEYS = managed_keys
 
 
-def parse_arguments() -> argparse.Namespace:
+def parse_arguments(argv: Optional[List[str]] = None) -> argparse.Namespace:
     """解析命令行参数"""
     parser = argparse.ArgumentParser(
         description='A股自选股智能分析系统',
@@ -353,6 +353,18 @@ def parse_arguments() -> argparse.Namespace:
         '--check-notify',
         action='store_true',
         help='只读检查通知渠道配置，不发送通知'
+    )
+
+    parser.add_argument(
+        '--doctor',
+        action='store_true',
+        help='运行配置、模型、存储与通知全链路只读脱敏自检'
+    )
+
+    parser.add_argument(
+        '--json',
+        action='store_true',
+        help='以 JSON 格式输出诊断结果（配合 --doctor 使用）'
     )
 
     parser.add_argument(
@@ -476,7 +488,7 @@ def parse_arguments() -> argparse.Namespace:
         help='运行 ETF 轮动：输出最新调仓信号与规则回测报告（不调用 LLM，配置见 ETF_ROTATION_*）'
     )
 
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def _startup_config_warnings(config: Config, args: argparse.Namespace) -> List[str]:
@@ -1582,6 +1594,21 @@ def start_bot_stream_clients(config: Config) -> None:
         except Exception as exc:
             logger.error(f"[Main] Failed to start Feishu Stream client: {exc}")
 
+    # 启动企微智能机器人长连接客户端（Issue #755 Phase 1）
+    if getattr(config, 'wecom_aibot_enabled', False):
+        try:
+            from bot.platforms import start_wecom_aibot_background, WECOM_AIBOT_SDK_AVAILABLE
+            if WECOM_AIBOT_SDK_AVAILABLE:
+                if start_wecom_aibot_background():
+                    logger.info("[Main] WeCom AI Bot client started in background.")
+                else:
+                    logger.warning("[Main] WeCom AI Bot client failed to start.")
+            else:
+                logger.warning("[Main] WeCom AI Bot enabled but SDK is missing.")
+                logger.warning("[Main] Run: pip install wecom-aibot-python-sdk")
+        except Exception as exc:
+            logger.error(f"[Main] Failed to start WeCom AI Bot client: {exc}")
+
 
 def _resolve_scheduled_stock_codes(stock_codes: Optional[List[str]]) -> Optional[List[str]]:
     """Scheduled runs should always read the latest persisted watchlist."""
@@ -1696,33 +1723,119 @@ def _build_schedule_times_provider(default_schedule_time: str):
     return _provider
 
 
-def main() -> int:
+def main(argv: Optional[List[str]] = None) -> int:
     """
     主入口函数
 
     Returns:
         退出码（0 表示成功）
     """
-    # 解析命令行参数
-    args = parse_arguments()
+    # 解析命令行参数（兼容零参测试 mock `main.parse_arguments`）
+    args = parse_arguments() if argv is None else parse_arguments(argv)
+    if getattr(args, "json", False) and not getattr(args, "doctor", False):
+        print("ERROR: --json 必须与 --doctor 配合使用", file=sys.stderr)
+        return 2
+    doctor_mode = bool(getattr(args, "doctor", False))
+    doctor_json_mode = bool(doctor_mode and getattr(args, "json", False))
+    if doctor_mode:
+        # Ensure any cold-start LiteLLM import stays strictly offline.
+        os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
+    if doctor_mode:
+        ignored_flags = [
+            flag for attr, flag in (
+                ("serve", "--serve"),
+                ("serve_only", "--serve-only"),
+                ("webui_only", "--webui-only"),
+                ("stocks", "--stocks"),
+                ("schedule", "--schedule"),
+                ("market_review", "--market-review"),
+                ("etf_rotation", "--etf-rotation"),
+            )
+            if getattr(args, attr, False)
+        ]
+        if ignored_flags:
+            print(
+                f"NOTICE: --doctor runs standalone diagnostics and ignores {', '.join(ignored_flags)}.",
+                file=sys.stderr,
+            )
 
     # 在配置加载前先初始化 bootstrap 日志，确保早期失败也能落盘
-    try:
-        _setup_bootstrap_logging(debug=args.debug)
-    except Exception as exc:
-        logging.basicConfig(
-            level=logging.DEBUG if getattr(args, "debug", False) else logging.INFO,
-            format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-            stream=sys.stderr,
-        )
-        logger.warning("Bootstrap 日志初始化失败，已回退到 stderr: %s", exc)
+    if not doctor_mode:
+        try:
+            _setup_bootstrap_logging(debug=args.debug)
+        except Exception as exc:
+            logging.basicConfig(
+                level=logging.DEBUG if getattr(args, "debug", False) else logging.INFO,
+                format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+                stream=sys.stderr,
+            )
+            logger.warning("Bootstrap 日志初始化失败，已回退到 stderr: %s", exc)
 
     # 加载配置（在 bootstrap logging 之后执行，确保异常有日志）
     try:
-        config = get_config()
+        if doctor_mode:
+            # Config construction and validation contain useful operational
+            # warnings, but doctor output must be the only observable output
+            # and must never create a log file or leak a raw URL/token.
+            previous_logging_disable = logging.root.manager.disable
+            logging.disable(logging.CRITICAL)
+            try:
+                config = get_config()
+            finally:
+                logging.disable(previous_logging_disable)
+        else:
+            config = get_config()
     except Exception as exc:
+        if doctor_mode:
+            from src.llm.local_cli_backend import redact_diagnostic_text
+
+            redacted_err = redact_diagnostic_text(str(exc))
+            if doctor_json_mode:
+                print(
+                    json.dumps(
+                        {"status": "error", "error": redacted_err},
+                        ensure_ascii=False,
+                    )
+                )
+            else:
+                print(f"DSA Doctor Diagnostic Status: ERROR\n加载配置失败: {redacted_err}")
+            return 1
         logger.exception("加载配置失败: %s", exc)
         return 1
+
+    if doctor_mode:
+        from src.services.doctor_service import (
+            format_doctor_report,
+            run_doctor_diagnostics,
+        )
+
+        try:
+            previous_logging_disable = logging.root.manager.disable
+            logging.disable(logging.CRITICAL)
+            try:
+                report = run_doctor_diagnostics(config)
+            finally:
+                logging.disable(previous_logging_disable)
+        except Exception as exc:
+            from src.llm.local_cli_backend import redact_diagnostic_text
+
+            redacted_err = redact_diagnostic_text(str(exc))
+            if doctor_json_mode:
+                print(
+                    json.dumps(
+                        {"status": "error", "error": redacted_err},
+                        ensure_ascii=False,
+                    )
+                )
+            else:
+                print(f"DSA Doctor Diagnostic Status: ERROR\n诊断执行失败: {redacted_err}")
+            return 1
+
+        if doctor_json_mode:
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+        else:
+            print(format_doctor_report(report))
+        return 0 if report.get("status") != "error" else 1
 
     # 配置日志（输出到控制台和文件）
     try:

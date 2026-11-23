@@ -52,7 +52,7 @@ Grok Bot Skill 正文见 [`docs/examples/grok_bot/SKILL.md`](examples/grok_bot/S
 
 ## Skill：大盘复盘
 
-`POST {DSA_BASE_URL}/api/v1/analysis/market-review` 固定返回 202 接受体 + `task_id`，不是复盘正文。请求体可传 `send_notification`、`region`。
+`POST {DSA_BASE_URL}/api/v1/analysis/market-review` 固定返回 202 接受体 + `task_id`，不是复盘正文。请求体可传 `send_notification`、`region`。对话内只想在聊天中查看复盘时须显式传 `"send_notification": false`（API 默认 `true`；该接口不读个股分析的 `notify` 字段）。
 
 轮询 `GET /api/v1/analysis/status/{task_id}` 直到 `status: completed`，从 `TaskStatus` 顶层读 `market_review_report` 或 `market_review_payload`（不在 `result.report`）。
 
