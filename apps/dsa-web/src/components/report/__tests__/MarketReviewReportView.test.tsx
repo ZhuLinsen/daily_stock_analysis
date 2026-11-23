@@ -404,6 +404,31 @@ describe('MarketReviewReportView enhanced structured fields (issue #1584)', () =
     expect(screen.queryByText('5↑ 10↓ 20↑')).not.toBeInTheDocument();
   });
 
+  it('lays catalysts and the next-day plan side by side and spans a lone panel full width', () => {
+    const both = render(
+      <MarketReviewReportView
+        payload={enhancedPayload}
+        content="# 大盘复盘"
+        reportLanguage="zh"
+      />,
+    );
+
+    expect(both.container.querySelector('.md\\:col-span-2')).toBeNull();
+    both.unmount();
+
+    const planOnly = render(
+      <MarketReviewReportView
+        payload={{ ...enhancedPayload, catalysts: undefined }}
+        content="# 大盘复盘"
+        reportLanguage="zh"
+      />,
+    );
+
+    expect(planOnly.getByText('明日计划')).toBeInTheDocument();
+    expect(planOnly.queryByText('消息催化')).not.toBeInTheDocument();
+    expect(planOnly.container.querySelectorAll('.md\\:col-span-2')).toHaveLength(1);
+  });
+
   it('keeps legacy rendering untouched when enhanced fields are absent', () => {
     render(
       <MarketReviewReportView

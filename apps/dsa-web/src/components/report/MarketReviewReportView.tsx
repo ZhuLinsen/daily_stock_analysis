@@ -679,7 +679,7 @@ export const MarketReviewReportView: React.FC<MarketReviewReportViewProps> = ({
             </span>
             <h3 className="text-base font-semibold text-foreground">{marketReviewText.structuredMarketData}</h3>
           </div>
-          <div className="space-y-5">
+          <div className="space-y-4">
             {structuredMarketData.map((marketData) => (
               <div key={marketData.id} className="space-y-3">
                 {showStructuredMarketTitles ? (
@@ -708,9 +708,9 @@ export const MarketReviewReportView: React.FC<MarketReviewReportViewProps> = ({
                   return (
                     <div className="grid grid-cols-2 gap-2 text-sm md:grid-cols-4">
                       {summaryChips.map((chip) => (
-                        <div key={chip.label} className="rounded-lg border border-subtle p-3">
+                        <div key={chip.label} className="rounded-lg border border-subtle px-3 py-2.5">
                           <p className="label-uppercase">{chip.label}</p>
-                          <p className="mt-1 break-words font-semibold text-foreground">{chip.value}</p>
+                          <p className="mt-0.5 break-words font-semibold leading-5 text-foreground">{chip.value}</p>
                         </div>
                       ))}
                     </div>
@@ -718,28 +718,28 @@ export const MarketReviewReportView: React.FC<MarketReviewReportViewProps> = ({
                 })()}
                 {marketData.breadth ? (
                   <div className="grid grid-cols-2 gap-2 text-sm md:grid-cols-4">
-                    <div className="rounded-lg border border-subtle p-3">
+                    <div className="rounded-lg border border-subtle px-3 py-2.5">
                       <p className="label-uppercase">{marketReviewText.advancers}</p>
-                      <p className="mt-1 font-semibold text-foreground">
+                      <p className="mt-0.5 font-semibold leading-5 text-foreground">
                         {formatMarketCount(marketData.breadth.upCount)}
                       </p>
                     </div>
-                    <div className="rounded-lg border border-subtle p-3">
+                    <div className="rounded-lg border border-subtle px-3 py-2.5">
                       <p className="label-uppercase">{marketReviewText.decliners}</p>
-                      <p className="mt-1 font-semibold text-foreground">
+                      <p className="mt-0.5 font-semibold leading-5 text-foreground">
                         {formatMarketCount(marketData.breadth.downCount)}
                       </p>
                     </div>
-                    <div className="rounded-lg border border-subtle p-3">
+                    <div className="rounded-lg border border-subtle px-3 py-2.5">
                       <p className="label-uppercase">{marketReviewText.limitUpDown}</p>
-                      <p className="mt-1 font-semibold text-foreground">
+                      <p className="mt-0.5 font-semibold leading-5 text-foreground">
                         {formatMarketCount(marketData.breadth.limitUpCount)} /{' '}
                         {formatMarketCount(marketData.breadth.limitDownCount)}
                       </p>
                     </div>
-                    <div className="rounded-lg border border-subtle p-3">
+                    <div className="rounded-lg border border-subtle px-3 py-2.5">
                       <p className="label-uppercase">{marketReviewText.turnover}</p>
-                      <p className="mt-1 font-semibold text-foreground">
+                      <p className="mt-0.5 font-semibold leading-5 text-foreground">
                         {formatMarketAmount(marketData.breadth.totalAmount, marketData.breadth.turnoverUnit)}
                       </p>
                     </div>
@@ -748,7 +748,7 @@ export const MarketReviewReportView: React.FC<MarketReviewReportViewProps> = ({
                   <p className="text-sm text-secondary-text">{marketReviewText.noBreadthData}</p>
                 )}
                 {marketData.breadth?.divergenceDiagnosis ? (
-                  <p className="rounded-lg border border-subtle bg-primary/5 p-3 text-sm leading-6 text-secondary-text">
+                  <p className="rounded-lg border border-subtle bg-primary/5 px-3 py-2.5 text-sm leading-5 text-secondary-text">
                     <span className="font-semibold text-foreground">{marketReviewText.divergenceDiagnosis}</span>
                     {': '}
                     <span>{marketData.breadth.divergenceDiagnosis}</span>
@@ -763,24 +763,24 @@ export const MarketReviewReportView: React.FC<MarketReviewReportViewProps> = ({
                       <table className="min-w-full text-sm">
                         <thead className="text-left text-xs uppercase text-muted-text">
                           <tr>
-                            <th className="px-2 py-2">{marketReviewText.index}</th>
-                            <th className="px-2 py-2">{marketReviewText.last}</th>
-                            <th className="px-2 py-2">{marketReviewText.change}</th>
-                            <th className="px-2 py-2">{marketReviewText.highLow}</th>
+                            <th className="px-2 py-1.5">{marketReviewText.index}</th>
+                            <th className="px-2 py-1.5">{marketReviewText.last}</th>
+                            <th className="px-2 py-1.5">{marketReviewText.change}</th>
+                            <th className="px-2 py-1.5">{marketReviewText.highLow}</th>
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-subtle">
                           {marketData.indices.map((index) => (
                             <tr key={index.code || index.name}>
-                              <td className="px-2 py-2">
+                              <td className="px-2 py-1.5">
                                 <div className="font-medium text-foreground">{index.name}</div>
                                 {index.comment ? (
                                   <div className="mt-0.5 text-xs text-muted-text">{index.comment}</div>
                                 ) : null}
                               </td>
-                              <td className="px-2 py-2 text-secondary-text">{formatMarketNumber(index.current)}</td>
-                              <td className="px-2 py-2 text-secondary-text">{formatMarketPercent(index.changePct)}</td>
-                              <td className="px-2 py-2 text-secondary-text">{formatMarketHighLow(index.high, index.low)}</td>
+                              <td className="px-2 py-1.5 text-secondary-text">{formatMarketNumber(index.current)}</td>
+                              <td className="px-2 py-1.5 text-secondary-text">{formatMarketPercent(index.changePct)}</td>
+                              <td className="px-2 py-1.5 text-secondary-text">{formatMarketHighLow(index.high, index.low)}</td>
                             </tr>
                           ))}
                         </tbody>
@@ -850,118 +850,121 @@ export const MarketReviewReportView: React.FC<MarketReviewReportViewProps> = ({
                     </div>
                   );
                 })()}
+                {/* 叙述型板块：轮动/跨市场为通栏细条；催化与明日计划（两个高面板）并排，信息架构不变。 */}
                 {(() => {
-                  // Issue #1584: optional style rotation, catalysts, next-day plan and cross-market note.
+                  // Issue #1584: optional style rotation (slim bar, full width).
                   const rotation = marketData.styleRotation;
                   const rotationSignal = rotation?.signal || null;
                   const rotationComment = rotation?.comment || null;
-                  if (rotationSignal || rotationComment) {
-                    return (
-                      <div className="rounded-lg border border-subtle p-3 text-sm">
-                        <p className="label-uppercase">{marketReviewText.styleRotation}</p>
-                        <p className="mt-1 break-words text-foreground">
-                          {rotationSignal ? <span className="font-semibold">{rotationSignal}</span> : null}
-                          {rotationSignal && rotationComment ? <span className="text-muted-text"> · </span> : null}
-                          {rotationComment ? <span className="text-secondary-text">{rotationComment}</span> : null}
-                        </p>
-                      </div>
-                    );
-                  }
-                  return null;
-                })()}
-                {(() => {
-                  const catalysts = (marketData.catalysts || []).filter((item) => item?.title);
-                  if (catalysts.length === 0) {
+                  if (!rotationSignal && !rotationComment) {
                     return null;
                   }
                   return (
-                    <div className="rounded-lg border border-subtle p-3">
-                      <p className="label-uppercase">{marketReviewText.catalysts}</p>
-                      <div className="mt-2 space-y-2">
-                        {catalysts.slice(0, 8).map((catalyst, index) => {
-                          const directionText = formatCatalystDirection(catalyst.direction, marketReviewText);
-                          const directionTone = catalyst.direction === 'bullish'
-                            ? 'text-success'
-                            : catalyst.direction === 'bearish'
-                              ? 'text-danger'
-                              : 'text-secondary-text';
-                          const catalystMeta = [catalyst.scope, catalyst.persistence].filter(Boolean).join(' · ');
-                          return (
-                            <div
-                              key={`${catalyst.title}-${index}`}
-                              className="flex items-start justify-between gap-3 text-sm"
-                            >
-                              <div className="min-w-0">
-                                <span className="font-medium text-foreground">{catalyst.title}</span>
-                                {catalystMeta ? (
-                                  <span className="ml-2 text-xs text-muted-text">{catalystMeta}</span>
-                                ) : null}
-                              </div>
-                              <div className="flex shrink-0 items-center gap-1.5 text-xs">
-                                {directionText ? (
-                                  <span className={`font-medium ${directionTone}`}>{directionText}</span>
-                                ) : null}
-                                {catalyst.digested === true ? (
-                                  <span className="rounded bg-primary/10 px-1.5 py-0.5 text-secondary-text">
-                                    {marketReviewText.digestedLabel}
-                                  </span>
-                                ) : null}
-                                {catalyst.digested === false ? (
-                                  <span className="rounded bg-primary/10 px-1.5 py-0.5 text-muted-text">
-                                    {marketReviewText.notDigestedLabel}
-                                  </span>
-                                ) : null}
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </div>
+                    <p className="break-words rounded-lg border border-subtle px-3 py-2.5 text-sm leading-5">
+                      <span className="font-semibold text-foreground">{marketReviewText.styleRotation}</span>
+                      {': '}
+                      {rotationSignal ? <span className="font-semibold text-foreground">{rotationSignal}</span> : null}
+                      {rotationSignal && rotationComment ? <span className="text-muted-text"> · </span> : null}
+                      {rotationComment ? <span className="text-secondary-text">{rotationComment}</span> : null}
+                    </p>
                   );
                 })()}
                 {(() => {
+                  // Catalysts and the next-day plan are the two tall panels: side by side when both exist,
+                  // full width when only one of them does.
+                  const catalysts = (marketData.catalysts || []).filter((item) => item?.title);
                   const plan = marketData.nextDayPlan;
-                  if (!plan) {
+                  const watchlist = (plan?.watchlist || []).filter((item) => item);
+                  const hasCatalysts = catalysts.length > 0;
+                  const hasPlan = watchlist.length > 0 || Boolean(plan?.positionAdvice || plan?.invalidation || plan?.notes);
+                  if (!hasCatalysts && !hasPlan) {
                     return null;
                   }
-                  const watchlist = (plan.watchlist || []).filter((item) => item);
-                  const hasPlan = watchlist.length > 0 || plan.positionAdvice || plan.invalidation || plan.notes;
-                  if (!hasPlan) {
-                    return null;
-                  }
+                  const panelClassName = [
+                    'rounded-lg border border-subtle p-3',
+                    hasCatalysts && hasPlan ? '' : 'md:col-span-2',
+                  ].filter(Boolean).join(' ');
                   return (
-                    <div className="rounded-lg border border-subtle p-3 text-sm">
-                      <p className="label-uppercase">{marketReviewText.nextDayPlan}</p>
-                      <div className="mt-2 space-y-1.5">
-                        {watchlist.map((item, index) => (
-                          <div key={`${item}-${index}`} className="flex items-start gap-2 text-secondary-text">
-                            <span className="text-primary">·</span>
-                            <span className="min-w-0 break-words">{item}</span>
+                    <div className="grid grid-cols-1 items-start gap-3 md:grid-cols-2">
+                      {hasCatalysts ? (
+                        <div className={panelClassName}>
+                          <p className="label-uppercase">{marketReviewText.catalysts}</p>
+                          <div className="mt-1.5 space-y-1.5">
+                            {catalysts.slice(0, 8).map((catalyst, index) => {
+                              const directionText = formatCatalystDirection(catalyst.direction, marketReviewText);
+                              const directionTone = catalyst.direction === 'bullish'
+                                ? 'text-success'
+                                : catalyst.direction === 'bearish'
+                                  ? 'text-danger'
+                                  : 'text-secondary-text';
+                              const catalystMeta = [catalyst.scope, catalyst.persistence].filter(Boolean).join(' · ');
+                              return (
+                                <div
+                                  key={`${catalyst.title}-${index}`}
+                                  className="flex items-start justify-between gap-3 text-sm"
+                                >
+                                  <div className="min-w-0">
+                                    <span className="font-medium text-foreground">{catalyst.title}</span>
+                                    {catalystMeta ? (
+                                      <span className="ml-2 text-xs text-muted-text">{catalystMeta}</span>
+                                    ) : null}
+                                  </div>
+                                  <div className="flex shrink-0 items-center gap-1.5 text-xs">
+                                    {directionText ? (
+                                      <span className={`font-medium ${directionTone}`}>{directionText}</span>
+                                    ) : null}
+                                    {catalyst.digested === true ? (
+                                      <span className="rounded bg-primary/10 px-1.5 py-0.5 text-secondary-text">
+                                        {marketReviewText.digestedLabel}
+                                      </span>
+                                    ) : null}
+                                    {catalyst.digested === false ? (
+                                      <span className="rounded bg-primary/10 px-1.5 py-0.5 text-muted-text">
+                                        {marketReviewText.notDigestedLabel}
+                                      </span>
+                                    ) : null}
+                                  </div>
+                                </div>
+                              );
+                            })}
                           </div>
-                        ))}
-                        {plan.positionAdvice ? (
-                          <p className="break-words text-secondary-text">{plan.positionAdvice}</p>
-                        ) : null}
-                        {plan.invalidation ? (
-                          <p className="break-words text-xs text-muted-text">
-                            <span>{marketReviewText.invalidation}</span>
-                            <span>{': '}</span>
-                            <span>{plan.invalidation}</span>
-                          </p>
-                        ) : null}
-                        {plan.notes ? (
-                          <p className="break-words text-xs text-muted-text">
-                            <span>{marketReviewText.notes}</span>
-                            <span>{': '}</span>
-                            <span>{plan.notes}</span>
-                          </p>
-                        ) : null}
-                      </div>
+                        </div>
+                      ) : null}
+                      {hasPlan && plan ? (
+                        <div className={`${panelClassName} text-sm`}>
+                          <p className="label-uppercase">{marketReviewText.nextDayPlan}</p>
+                          <div className="mt-1.5 space-y-1">
+                            {watchlist.map((item, index) => (
+                              <div key={`${item}-${index}`} className="flex items-start gap-2 text-secondary-text">
+                                <span className="text-primary">·</span>
+                                <span className="min-w-0 break-words">{item}</span>
+                              </div>
+                            ))}
+                            {plan.positionAdvice ? (
+                              <p className="break-words text-secondary-text">{plan.positionAdvice}</p>
+                            ) : null}
+                            {plan.invalidation ? (
+                              <p className="break-words text-xs text-muted-text">
+                                <span>{marketReviewText.invalidation}</span>
+                                <span>{': '}</span>
+                                <span>{plan.invalidation}</span>
+                              </p>
+                            ) : null}
+                            {plan.notes ? (
+                              <p className="break-words text-xs text-muted-text">
+                                <span>{marketReviewText.notes}</span>
+                                <span>{': '}</span>
+                                <span>{plan.notes}</span>
+                              </p>
+                            ) : null}
+                          </div>
+                        </div>
+                      ) : null}
                     </div>
                   );
                 })()}
                 {marketData.crossMarketNote ? (
-                  <p className="rounded-lg border border-subtle p-3 text-sm leading-6 text-secondary-text">
+                  <p className="break-words rounded-lg border border-subtle px-3 py-2.5 text-sm leading-5 text-secondary-text">
                     <span className="font-semibold text-foreground">{marketReviewText.crossMarketNote}</span>
                     {': '}
                     <span>{marketData.crossMarketNote}</span>
