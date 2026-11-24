@@ -14,11 +14,13 @@ BaostockFetcher - 备用数据源 2 (Priority 3)
 3. 失败后指数退避重试
 """
 
+import inspect
 import logging
 import re
+from concurrent.futures import CancelledError
 from contextlib import contextmanager
-from datetime import datetime
-from typing import Optional, Generator
+from threading import RLock
+from typing import Dict, Generator, Optional
 
 import pandas as pd
 from tenacity import (
@@ -37,9 +39,114 @@ from .base import (
     normalize_stock_code,
     _is_hk_market,
 )
+from src.core.stock_execution_context import (
+    get_current_stock_cancellation,
+    raise_if_stock_cancelled,
+)
 import os
 
 logger = logging.getLogger(__name__)
+
+# baostock uses process-global socket/login state, so sessions must be serialized.
+BAOSTOCK_SESSION_LOCK = RLock()
+_BAOSTOCK_SESSION_LOCK = BAOSTOCK_SESSION_LOCK
+
+
+@contextmanager
+def _acquire_baostock_lock() -> Generator[None, None, None]:
+    """Acquire the shared process-wide Baostock lock with cancellation checks."""
+    if get_current_stock_cancellation() is None:
+        with BAOSTOCK_SESSION_LOCK:
+            yield
+        return
+
+    raise_if_stock_cancelled()
+    while not BAOSTOCK_SESSION_LOCK.acquire(timeout=0.05):
+        raise_if_stock_cancelled()
+    try:
+        raise_if_stock_cancelled()
+        yield
+    finally:
+        BAOSTOCK_SESSION_LOCK.release()
+
+
+_BAOSTOCK_RESULT_SKIPS_NON_FULL_PAGE: Dict[type, bool] = {}
+
+
+def _baostock_next_full_page_size(rs: object) -> Optional[int]:
+    """Return full page size when ResultData.next() skips short final pages (baostock >=0.9.4)."""
+    rs_type = type(rs)
+    skips_short_page = _BAOSTOCK_RESULT_SKIPS_NON_FULL_PAGE.get(rs_type)
+    if skips_short_page is None:
+        next_fn = getattr(rs_type, "next", None)
+        if next_fn is None:
+            skips_short_page = False
+        else:
+            try:
+                skips_short_page = "BAOSTOCK_PER_PAGE_COUNT" in inspect.getsource(next_fn)
+            except (OSError, TypeError):
+                skips_short_page = False
+        _BAOSTOCK_RESULT_SKIPS_NON_FULL_PAGE[rs_type] = skips_short_page
+
+    if not skips_short_page:
+        return None
+    try:
+        import baostock.common.contants as bs_cons
+
+        page_size = int(getattr(bs_cons, "BAOSTOCK_PER_PAGE_COUNT", 0) or 0)
+        return page_size if page_size > 0 else None
+    except Exception:
+        return None
+
+
+def check_baostock_pagination_complete(
+    rs: object,
+    *,
+    transient_exc_type: type[Exception] = ConnectionError,
+    fatal_exc_type: type[Exception] = DataFetchError,
+) -> None:
+    """Verify a Baostock ResultData cursor terminated cleanly rather than mid-pagination."""
+    error_code = str(getattr(rs, "error_code", "0") or "").strip()
+    error_msg = str(getattr(rs, "error_msg", "") or "").strip()
+    if error_code != "0":
+        msg = f"Baostock pagination failed ({error_code}): {error_msg}"
+        if _is_transient_network_error(error_code, error_msg):
+            raise transient_exc_type(msg)
+        raise fatal_exc_type(msg)
+
+    raw_data = getattr(rs, "data", None)
+    cur_row_num = getattr(rs, "cur_row_num", None)
+    if (
+        isinstance(raw_data, list)
+        and isinstance(cur_row_num, int)
+        and len(raw_data) > 0
+        and cur_row_num >= len(raw_data)
+    ):
+        full_page_size = _baostock_next_full_page_size(rs)
+        if full_page_size is None or len(raw_data) == full_page_size:
+            raise transient_exc_type(
+                "Baostock pagination interrupted: subsequent page returned no response"
+            )
+
+
+def _is_transient_network_error(error_code: object, error_msg: object) -> bool:
+    """Return True when Baostock reports a transient network/socket failure."""
+    code = str(error_code or "").strip()
+    msg = str(error_msg or "").strip()
+    msg_lower = msg.lower()
+    return code == "10002007" or any(
+        token in msg or token in msg_lower
+        for token in (
+            "网络",
+            "接收",
+            "超时",
+            "timeout",
+            "connection",
+            "socket",
+            "broken pipe",
+            "reset by peer",
+        )
+    )
 
 
 def _is_us_code(stock_code: str) -> bool:
@@ -78,6 +185,8 @@ class BaostockFetcher(BaseFetcher):
     def __init__(self):
         """初始化 BaostockFetcher"""
         self._bs_module = None
+        self._stock_name_cache: Dict[str, str] = {}
+        self._cache_lock = RLock()
     
     def _get_baostock(self):
         """
@@ -96,38 +205,45 @@ class BaostockFetcher(BaseFetcher):
         Baostock 连接上下文管理器
         
         确保：
-        1. 进入上下文时自动登录
-        2. 退出上下文时自动登出
-        3. 异常时也能正确登出
+        1. 进入上下文时自动登录（通过模块级锁串行化全局会话）
+        2. 退出上下文时自动登出（仅在登录成功时登出）
+        3. 异常时也能正确登出并释放锁
         
         使用示例：
             with self._baostock_session():
                 # 在这里执行数据查询
         """
         bs = self._get_baostock()
-        login_result = None
-        
-        try:
-            # 登录 Baostock
-            login_result = bs.login()
-            
-            if login_result.error_code != '0':
-                raise DataFetchError(f"Baostock 登录失败: {login_result.error_msg}")
-            
-            logger.debug("Baostock login succeeded")
-            
-            yield bs
-            
-        finally:
-            # 确保登出，防止连接泄露
+        with _acquire_baostock_lock():
+            logged_in = False
             try:
-                logout_result = bs.logout()
-                if logout_result.error_code == '0':
-                    logger.debug("Baostock logout succeeded")
-                else:
-                    logger.warning(f"Baostock logout abnormal: {logout_result.error_msg}")
-            except Exception as e:
-                logger.warning(f"Error during Baostock logout: {e}")
+                raise_if_stock_cancelled()
+                # 登录 Baostock
+                login_result = bs.login()
+                
+                if login_result.error_code != '0':
+                    msg = f"Baostock 登录失败: {login_result.error_msg}"
+                    if _is_transient_network_error(login_result.error_code, login_result.error_msg):
+                        raise ConnectionError(msg)
+                    raise DataFetchError(msg)
+                
+                logged_in = True
+                raise_if_stock_cancelled()
+                logger.debug("Baostock login succeeded")
+                
+                yield bs
+                
+            finally:
+                # 确保登出，防止连接泄露；未登录成功时不调用 logout
+                if logged_in:
+                    try:
+                        logout_result = bs.logout()
+                        if logout_result.error_code == '0':
+                            logger.debug("Baostock logout succeeded")
+                        else:
+                            logger.warning(f"Baostock logout abnormal: {logout_result.error_msg}")
+                    except Exception as e:
+                        logger.warning(f"Error during Baostock logout: {e}")
     
     def _convert_stock_code(self, stock_code: str) -> str:
         """
@@ -172,8 +288,8 @@ class BaostockFetcher(BaseFetcher):
             if code.startswith(('15', '16', '18')):
                 return f"sz.{code}"
 
-        # 根据代码前缀判断市场
-        if code.startswith(('600', '601', '603', '605', '688')):
+        # 根据代码前缀判断市场（60/68 沪市含科创板 688/689；00/30 深市）
+        if code.startswith(('60', '68')):
             return f"sh.{code}"
         elif code.startswith(('000', '001', '002', '003', '300', '301')):
             return f"sz.{code}"
@@ -233,13 +349,25 @@ class BaostockFetcher(BaseFetcher):
                 )
                 
                 if rs.error_code != '0':
-                    raise DataFetchError(f"Baostock 查询失败: {rs.error_msg}")
+                    msg = f"Baostock 查询失败: {rs.error_msg}"
+                    if _is_transient_network_error(rs.error_code, rs.error_msg):
+                        raise ConnectionError(msg)
+                    raise DataFetchError(msg)
                 
                 # 转换为 DataFrame
                 data_list = []
-                while rs.next():
+                while True:
+                    raise_if_stock_cancelled()
+                    if not rs.next():
+                        break
                     data_list.append(rs.get_row_data())
-                
+
+                check_baostock_pagination_complete(
+                    rs,
+                    transient_exc_type=ConnectionError,
+                    fatal_exc_type=DataFetchError,
+                )
+
                 if not data_list:
                     raise DataFetchError(f"Baostock 未查询到 {stock_code} 的数据")
                 
@@ -247,9 +375,9 @@ class BaostockFetcher(BaseFetcher):
                 
                 return df
                 
+            except (DataFetchError, ConnectionError, TimeoutError, CancelledError):
+                raise
             except Exception as e:
-                if isinstance(e, DataFetchError):
-                    raise
                 raise DataFetchError(f"Baostock 获取数据失败: {e}") from e
     
     def _normalize_data(self, df: pd.DataFrame, stock_code: str) -> pd.DataFrame:
@@ -270,6 +398,14 @@ class BaostockFetcher(BaseFetcher):
         }
         
         df = df.rename(columns=column_mapping)
+
+        if 'date' in df.columns:
+            df = df[df['date'].notna()].copy()
+            date_str = df['date'].astype(str).str.strip()
+            valid_dates = date_str != ''
+            df = df[valid_dates].copy()
+            df['date'] = date_str[valid_dates]
+            df = df.sort_values('date', ascending=True).reset_index(drop=True)
         
         # 数值类型转换（Baostock 返回的都是字符串）
         numeric_cols = ['open', 'high', 'low', 'close', 'volume', 'amount', 'pct_chg']
@@ -299,36 +435,52 @@ class BaostockFetcher(BaseFetcher):
         Returns:
             股票名称，失败返回 None
         """
-        # 检查缓存
-        if hasattr(self, '_stock_name_cache') and stock_code in self._stock_name_cache:
-            return self._stock_name_cache[stock_code]
-        
-        # 初始化缓存
-        if not hasattr(self, '_stock_name_cache'):
-            self._stock_name_cache = {}
-        
+        if _is_us_code(stock_code) or _is_hk_market(stock_code) or is_bse_code(stock_code):
+            return None
+
         try:
             bs_code = self._convert_stock_code(stock_code)
-            
+        except DataFetchError:
+            return None
+
+        # 检查缓存（使用带交易所前缀的 bs_code 键，避免 000001 上证指数与深市平安银行混淆）
+        with self._cache_lock:
+            if bs_code in self._stock_name_cache:
+                return self._stock_name_cache[bs_code]
+        
+        try:
             with self._baostock_session() as bs:
                 # 查询股票基本信息
                 rs = bs.query_stock_basic(code=bs_code)
                 
                 if rs.error_code == '0':
                     data_list = []
-                    while rs.next():
+                    while True:
+                        raise_if_stock_cancelled()
+                        if not rs.next():
+                            break
                         data_list.append(rs.get_row_data())
-                    
+
+                    check_baostock_pagination_complete(
+                        rs,
+                        transient_exc_type=ConnectionError,
+                        fatal_exc_type=DataFetchError,
+                    )
+
                     if data_list:
                         # Baostock 返回的字段：code, code_name, ipoDate, outDate, type, status
                         fields = rs.fields
                         name_idx = fields.index('code_name') if 'code_name' in fields else None
                         if name_idx is not None and len(data_list[0]) > name_idx:
-                            name = data_list[0][name_idx]
-                            self._stock_name_cache[stock_code] = name
-                            logger.debug(f"Baostock fetched stock name: {stock_code} -> {name}")
-                            return name
+                            name = str(data_list[0][name_idx] or '').strip()
+                            if name:
+                                with self._cache_lock:
+                                    self._stock_name_cache[bs_code] = name
+                                logger.debug(f"Baostock fetched stock name: {bs_code} -> {name}")
+                                return name
                 
+        except CancelledError:
+            raise
         except Exception as e:
             logger.warning(f"Baostock failed to fetch stock name for {stock_code}: {e}")
         
@@ -350,25 +502,47 @@ class BaostockFetcher(BaseFetcher):
                 
                 if rs.error_code == '0':
                     data_list = []
-                    while rs.next():
+                    while True:
+                        raise_if_stock_cancelled()
+                        if not rs.next():
+                            break
                         data_list.append(rs.get_row_data())
-                    
+
+                    check_baostock_pagination_complete(
+                        rs,
+                        transient_exc_type=ConnectionError,
+                        fatal_exc_type=DataFetchError,
+                    )
+
                     if data_list:
                         df = pd.DataFrame(data_list, columns=rs.fields)
+                        if 'code' not in df.columns or 'code_name' not in df.columns:
+                            return None
                         
-                        # 转换代码格式（去除 sh. 或 sz. 前缀）
-                        df['code'] = df['code'].apply(lambda x: x.split('.')[1] if '.' in x else x)
+                        # Preserve exchange-qualified codes (e.g. sh.000001 vs sz.000001) for cache keys
+                        raw_bs_codes = df['code'].fillna('').astype(str).str.strip().str.lower()
+                        df['code'] = raw_bs_codes.apply(
+                            lambda x: x.split('.', 1)[1].strip() if '.' in x else x
+                        )
                         df = df.rename(columns={'code_name': 'name'})
+                        df['name'] = df['name'].fillna('').astype(str).str.strip()
+                        valid_mask = (df['code'] != '') & (df['name'] != '')
+                        df = df[valid_mask].reset_index(drop=True)
+                        valid_bs_codes = raw_bs_codes[valid_mask].tolist()
+                        if df.empty:
+                            return None
                         
-                        # 更新缓存
-                        if not hasattr(self, '_stock_name_cache'):
-                            self._stock_name_cache = {}
-                        for _, row in df.iterrows():
-                            self._stock_name_cache[row['code']] = row['name']
+                        # 更新缓存（使用带交易所前缀的 Baostock 代码）
+                        with self._cache_lock:
+                            for raw_bs_code, name_val in zip(valid_bs_codes, df['name']):
+                                if raw_bs_code:
+                                    self._stock_name_cache[raw_bs_code] = name_val
                         
                         logger.info(f"Baostock fetched stock list successfully: {len(df)} records")
                         return df[['code', 'name']]
                 
+        except CancelledError:
+            raise
         except Exception as e:
             logger.warning(f"Baostock failed to fetch stock list: {e}")
         

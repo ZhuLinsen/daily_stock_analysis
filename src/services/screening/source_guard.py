@@ -13,6 +13,14 @@ from typing import Any, Callable, TypeVar
 T = TypeVar("T")
 
 
+_CALL_CANCEL_LOCAL = threading.local()
+
+
+def get_current_source_call_cancel_event() -> threading.Event | None:
+    """Return the active worker cancellation event set on ``SourceCallTimeout``."""
+    return getattr(_CALL_CANCEL_LOCAL, "cancel_event", None)
+
+
 class SourceCallTimeout(TimeoutError):
     """Raised when a source wrapper exceeds the screening caller-side timeout."""
 
@@ -53,17 +61,23 @@ def call_with_timeout(
         return func(*args, **kwargs)
 
     result_queue: Queue[tuple[bool, object]] = Queue(maxsize=1)
+    cancel_event = threading.Event()
 
     def run() -> None:
+        previous_event = getattr(_CALL_CANCEL_LOCAL, "cancel_event", None)
+        _CALL_CANCEL_LOCAL.cancel_event = cancel_event
         try:
             result_queue.put((True, func(*args, **kwargs)))
         except BaseException as exc:  # noqa: BLE001 - propagate worker failures to caller.
             result_queue.put((False, exc))
+        finally:
+            _CALL_CANCEL_LOCAL.cancel_event = previous_event
 
     worker = threading.Thread(target=run, name=f"screening-source:{label}", daemon=True)
     worker.start()
     worker.join(float(timeout_sec))
     if worker.is_alive():
+        cancel_event.set()
         raise SourceCallTimeout(f"{label} timed out after {float(timeout_sec):g}s")
 
     ok, payload = result_queue.get_nowait()
