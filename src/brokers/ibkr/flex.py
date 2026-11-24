@@ -199,7 +199,7 @@ def _raise_or_wait(
         raise IbkrPortfolioError(f"IBKR Flex 错误 {code}: {message}")
     if attempt + 1 >= max_attempts:
         raise IbkrPortfolioError(f"IBKR Flex 错误 {code} 重试 {max_attempts} 次后仍未恢复: {message}")
-    logger.info("IBKR Flex 暂不可用（%s: %s），稍后重试", code, message)
+    logger.info("IBKR Flex temporarily unavailable (%s: %s), retrying shortly", code, message)
     if code == _THROTTLED_ERROR_CODE:
         sleep(_THROTTLED_DELAY_SECONDS)
     elif not already_waited:

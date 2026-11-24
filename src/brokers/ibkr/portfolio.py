@@ -188,6 +188,6 @@ def load_ibkr_stock_codes() -> List[str]:
     _validate_statement_freshness(statement)
     codes, skipped = parse_open_position_codes(statement)
     if skipped:
-        logger.info("跳过 %d 个暂不支持市场的 IBKR 持仓: %s", len(skipped), ", ".join(skipped))
-    logger.info("已从 IBKR Flex 加载 %d 只正股: %s", len(codes), ", ".join(codes))
+        logger.info("Skipped %d IBKR position(s) on unsupported markets: %s", len(skipped), ", ".join(skipped))
+    logger.info("Loaded %d IBKR Flex position(s): %s", len(codes), ", ".join(codes))
     return codes

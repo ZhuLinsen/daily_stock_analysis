@@ -253,7 +253,7 @@ def sync_ibkr_portfolio(
 
     summary["errors"] = summary["errors"][:20]  # type: ignore[assignment]
     logger.info(
-        "IBKR 同步完成: account=%s dry_run=%s trades=%s(inserted)/%s(dup)/%s(skip) "
+        "IBKR sync finished: account=%s dry_run=%s trades=%s(inserted)/%s(dup)/%s(skip) "
         "cash=%s(inserted)/%s(dup)/%s(skip) ca_skip=%s errors=%s",
         resolved_account_id,
         dry_run,

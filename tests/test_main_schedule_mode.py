@@ -1448,7 +1448,8 @@ class MainScheduleModeTestCase(unittest.TestCase):
         run_with_lock.assert_called_once_with(config, args, None, None)
         start_bots.assert_called_once_with(config)
         exception_log.assert_any_call(
-            "Futu portfolio import failed, Web/API server continues running: %s",
+            "%s portfolio import failed, Web/API server continues running: %s",
+            "Futu",
             error,
         )
 

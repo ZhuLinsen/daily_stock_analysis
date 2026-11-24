@@ -78,7 +78,7 @@ class MainPortfolioTest(unittest.TestCase):
         ), self.assertLogs(main.logger, level="INFO") as captured:
             self.assertTrue(main.run_full_analysis(config, args))
 
-        self.assertIn("无符合条件的 IBKR 持仓", "\n".join(captured.output))
+        self.assertIn("No eligible IBKR positions in live account", "\n".join(captured.output))
 
     def test_analysis_lock_propagates_requested_portfolio_failures(self):
         config = SimpleNamespace()
