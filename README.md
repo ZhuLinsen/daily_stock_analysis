@@ -29,6 +29,9 @@
 
 </div>
 
+> [!TIP]
+> 🔎 **不知道选哪只股？** 开源选股 [AlphaSift](https://github.com/ZhuLinsen/alphasift) 每日选股+策略跟踪 → [**免安装在线看今日选股**](https://alphasift.zhulinsen.tech/?lang=zh&utm_source=dsa_readme)
+
 <details open>
 <summary><strong>💖 赞助商 (Sponsors)</strong></summary>
 <table>
@@ -45,9 +48,6 @@
   <a href="docs/assets/readme_workspace_tour_20260510.gif"><img src="docs/assets/readme_workspace_preview.gif" alt="DSA Web 工作台演示" width="640"></a><br>
   <sub>点击动图查看完整演示</sub>
 </p>
-
-> [!TIP]
-> 🚀 **作者配套开源项目**：[AlphaSift · 智能选股](https://github.com/ZhuLinsen/alphasift) ｜ [AlphaEvo · 策略回测与进化](https://github.com/ZhuLinsen/alphaevo)
 
 ## ✨ 功能特性
 

@@ -31,6 +31,9 @@
 
 </div>
 
+> [!TIP]
+> 🔎 **不知道選哪檔股？** 開源選股 [AlphaSift](https://github.com/ZhuLinsen/alphasift) 每日選股+策略追蹤 → [**免安裝線上看今日選股**](https://alphasift.zhulinsen.tech/?lang=zh&utm_source=dsa_readme)
+
 <details open>
 <summary><strong>💖 贊助商 (Sponsors)</strong></summary>
 <table>
@@ -46,9 +49,6 @@
   <a href="assets/readme_workspace_tour_20260510.gif"><img src="assets/readme_workspace_preview.gif" alt="DSA Web 工作台演示" width="640"></a><br>
   <sub>點擊動圖查看完整演示</sub>
 </p>
-
-> [!TIP]
-> 🚀 **作者配套開源專案**：[AlphaSift · 智能選股](https://github.com/ZhuLinsen/alphasift) ｜ [AlphaEvo · 策略回測與進化](https://github.com/ZhuLinsen/alphaevo)
 
 ## ✨ 功能特性
 

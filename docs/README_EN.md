@@ -31,6 +31,9 @@ English | [简体中文](../README.md) | [繁體中文](README_CHT.md)
 
 </div>
 
+> [!TIP]
+> 🔎 **Need stock ideas?** Open-source [AlphaSift](https://github.com/ZhuLinsen/alphasift): daily picks + strategy tracking → [**Today's picks (no install)**](https://alphasift.zhulinsen.tech/?lang=en&utm_source=dsa_readme)
+
 <details open>
 <summary><strong>💖 Sponsors</strong></summary>
 <table>
@@ -46,9 +49,6 @@ English | [简体中文](../README.md) | [繁體中文](README_CHT.md)
   <a href="assets/readme_workspace_tour_20260510.gif"><img src="assets/readme_workspace_preview.gif" alt="DSA Web workspace demo" width="640"></a><br>
   <sub>Click the GIF to view the full demo</sub>
 </p>
-
-> [!TIP]
-> 🚀 **Ecosystem Projects**: [AlphaSift · Smart screening](https://github.com/ZhuLinsen/alphasift) | [AlphaEvo · Strategy backtesting & evolution](https://github.com/ZhuLinsen/alphaevo)
 
 ## ✨ Key Features
 
