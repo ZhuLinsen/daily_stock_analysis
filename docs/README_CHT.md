@@ -164,6 +164,8 @@
 
 ### 方式二：[客戶端配置教程](https://www.bilibili.com/video/BV11FEb66Eyr/) / 本地運行 / Docker 部署
 
+Windows 原始碼安裝建議使用較短的專案路徑（例如 `C:\dsa`）。若遇到相依套件路徑過長的錯誤，請參閱 [安裝疑難排解](./FAQ.md#windows-依赖安装路径过长)。
+
 ```bash
 # 克隆項目
 git clone https://github.com/ZhuLinsen/daily_stock_analysis.git && cd daily_stock_analysis
