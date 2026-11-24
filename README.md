@@ -47,9 +47,7 @@
 </p>
 
 > [!TIP]
-> 🚀 **每天收盘不知道分析哪只股？搭配同源上游选股引擎 [AlphaSift](https://github.com/ZhuLinsen/alphasift) 使用**
-> - **全市场初筛 + 公告排雷**：每日收盘扫描 A股/美/港/日/韩/台/印 7 大市场 `5,000+` 标的（零 API Key 即可跑 12 套 YAML 策略；可选接大模型，遇未消除重大利空代码级硬封顶 `<= 35` 分），直接筛出高共识候选喂给 `daily_stock_analysis` 做深度研报（支持 `DSA_API_URL` 与 `alphasift mcp` 联动）。
-> - **公开 `T+N` 实时战绩看板**：👉 [**alphasift.zhulinsen.tech**](https://alphasift.zhulinsen.tech/?lang=zh&utm_source=dsa_readme)（每日公开跟踪 `T+5 / T+10 / T+20` 净超额，含一字涨停不可成交扣除与纯规则 vs AI 同日对照）；因子演化研究见 [AlphaEvo](https://github.com/ZhuLinsen/alphaevo)。
+> 🔎 **不知道该分析哪只股票？** 配套开源选股引擎 [**AlphaSift**](https://github.com/ZhuLinsen/alphasift) 每日盘后扫描 7 大市场筛出候选，并公开跟踪 T+N 表现 → [**免安装在线看今日选股**](https://alphasift.zhulinsen.tech/?lang=zh&utm_source=dsa_readme)
 
 ## ✨ 功能特性
 

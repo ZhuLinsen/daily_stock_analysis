@@ -48,7 +48,7 @@ English | [简体中文](../README.md) | [繁體中文](README_CHT.md)
 </p>
 
 > [!TIP]
-> 🚀 **Ecosystem Projects**: [AlphaSift · Smart screening](https://github.com/ZhuLinsen/alphasift) | [AlphaEvo · Strategy backtesting & evolution](https://github.com/ZhuLinsen/alphaevo)
+> 🔎 **Not sure which stocks to analyze?** [**AlphaSift**](https://github.com/ZhuLinsen/alphasift), the companion open-source screener, scans 7 markets after each close and publicly tracks how its picks perform (T+N) → [**See today's picks online, no install**](https://alphasift.zhulinsen.tech/?lang=en&utm_source=dsa_readme)
 
 ## ✨ Key Features
 

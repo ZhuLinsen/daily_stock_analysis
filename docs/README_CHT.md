@@ -48,7 +48,7 @@
 </p>
 
 > [!TIP]
-> 🚀 **作者配套開源專案**：[AlphaSift · 智能選股](https://github.com/ZhuLinsen/alphasift) ｜ [AlphaEvo · 策略回測與進化](https://github.com/ZhuLinsen/alphaevo)
+> 🔎 **不知道該分析哪檔股票？** 配套開源選股引擎 [**AlphaSift**](https://github.com/ZhuLinsen/alphasift) 每日盤後掃描 7 大市場篩出候選，並公開追蹤 T+N 表現 → [**免安裝線上看今日選股**](https://alphasift.zhulinsen.tech/?lang=zh&utm_source=dsa_readme)
 
 ## ✨ 功能特性
 
