@@ -2451,4 +2451,936 @@ describe('PortfolioPage FX refresh', () => {
     await waitFor(() => expect(screen.queryByText('Main (#1)')).not.toBeInTheDocument());
     expect(screen.getByRole('option', { name: 'Alt (#2)' })).toBeInTheDocument();
   });
+
+  it('ignores stale getSnapshot responses when switching accounts', async () => {
+    const account1Snapshot = deferredPromise<ReturnType<typeof makeSnapshot>>();
+
+    getAccounts.mockResolvedValue(makeAccounts([{ id: 1, name: 'Main' }, { id: 2, name: 'Alt' }]));
+    getSnapshot.mockImplementation(async ({ accountId }: { accountId?: number } = {}) => {
+      if (accountId === 1) {
+        return account1Snapshot.promise;
+      }
+      if (accountId === 2) {
+        return makeSnapshot({
+          accountId: 2,
+          fxStale: false,
+          positions: [makePosition({ symbol: 'FRESH_ACC2', market: 'us' })],
+        });
+      }
+      return makeSnapshot({ accountId: 1, accountCount: 2, fxStale: false });
+    });
+
+    render(<PortfolioPage />);
+    await waitForInitialLoad();
+
+    const accountSelect = screen.getAllByRole('combobox')[0];
+    fireEvent.change(accountSelect, { target: { value: '1' } });
+    await waitFor(() => expect(getSnapshot).toHaveBeenCalledWith({
+      accountId: 1,
+      costMethod: 'fifo',
+      includeRealtime: false,
+    }));
+
+    fireEvent.change(accountSelect, { target: { value: '2' } });
+    expect(await screen.findByText('FRESH_ACC2')).toBeInTheDocument();
+
+    await act(async () => {
+      account1Snapshot.resolve(makeSnapshot({
+        accountId: 1,
+        fxStale: false,
+        positions: [makePosition({ symbol: 'STALE_ACC1', market: 'cn' })],
+      }));
+      await account1Snapshot.promise;
+    });
+
+    expect(screen.getByText('FRESH_ACC2')).toBeInTheDocument();
+    expect(screen.queryByText('STALE_ACC1')).not.toBeInTheDocument();
+  });
+
+  it('ignores stale listTrades responses when switching event tabs', async () => {
+    const pendingTrades = deferredPromise<{
+      items: Array<Record<string, unknown>>;
+      total: number;
+      page: number;
+      pageSize: number;
+    }>();
+
+    render(<PortfolioPage />);
+    await waitForInitialLoad();
+
+    listTrades.mockReturnValueOnce(pendingTrades.promise);
+    listCashLedger.mockResolvedValueOnce({
+      items: [
+        {
+          id: 88,
+          accountId: 1,
+          eventDate: '2026-06-18',
+          direction: 'in',
+          amount: 5000,
+          currency: 'CNY',
+          note: null,
+          createdAt: '2026-06-18T00:00:00Z',
+        },
+      ],
+      total: 45,
+      page: 1,
+      pageSize: 20,
+    });
+
+    fireEvent.change(screen.getByDisplayValue('全部买卖方向'), { target: { value: 'buy' } });
+    await waitFor(() => expect(listTrades).toHaveBeenCalledTimes(2));
+
+    fireEvent.change(screen.getByDisplayValue('交易流水'), { target: { value: 'cash' } });
+    expect(await screen.findByText(/2026-06-18 流入 5000 CNY/)).toBeInTheDocument();
+    expect(screen.getByText('第 1 / 3 页')).toBeInTheDocument();
+
+    await act(async () => {
+      pendingTrades.resolve({
+        items: [
+          {
+            id: 99,
+            accountId: 1,
+            symbol: 'STALE_TRADE',
+            tradeDate: '2026-05-01',
+            side: 'buy',
+            quantity: 10,
+            price: 100,
+            fee: 0,
+            tax: 0,
+            tradeUid: null,
+            note: null,
+            createdAt: '2026-05-01T00:00:00Z',
+          },
+        ],
+        total: 100,
+        page: 1,
+        pageSize: 20,
+      });
+      await pendingTrades.promise;
+    });
+
+    expect(screen.getByText(/2026-06-18 流入 5000 CNY/)).toBeInTheDocument();
+    expect(screen.getByText('第 1 / 3 页')).toBeInTheDocument();
+    expect(screen.queryByText('第 1 / 5 页')).not.toBeInTheDocument();
+  });
+
+  it('does not re-fetch brokers or accounts when changing broker selection', async () => {
+    listImportBrokers.mockResolvedValue({
+      brokers: [
+        { broker: 'huatai', aliases: [], displayName: '华泰' },
+        { broker: 'citic', aliases: [], displayName: '中信' },
+      ],
+    });
+
+    render(<PortfolioPage />);
+    await waitForInitialLoad();
+    await screen.findByRole('option', { name: 'citic（中信）' });
+
+    const initialBrokersCalls = listImportBrokers.mock.calls.length;
+    const initialAccountsCalls = getAccounts.mock.calls.length;
+
+    const brokerSelect = screen.getByDisplayValue('huatai（华泰）') as HTMLSelectElement;
+    fireEvent.change(brokerSelect, { target: { value: 'citic' } });
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(brokerSelect.value).toBe('citic');
+    expect(listImportBrokers).toHaveBeenCalledTimes(initialBrokersCalls);
+    expect(getAccounts).toHaveBeenCalledTimes(initialAccountsCalls);
+  });
+
+  it('guards double-submit on trade creation and ignores post-unmount settlements', async () => {
+    const pendingTrade = deferredPromise<{ id: number }>();
+    const pendingRefreshTrades = deferredPromise<{
+      items: never[];
+      total: number;
+      page: number;
+      pageSize: number;
+    }>();
+
+    createTrade.mockReturnValueOnce(pendingTrade.promise);
+
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const { unmount } = render(<PortfolioPage />);
+      await waitForInitialLoad();
+
+      const accountSelect = screen.getAllByRole('combobox')[0];
+      fireEvent.change(accountSelect, { target: { value: '1' } });
+      await waitFor(() => expect(screen.getByRole('button', { name: '提交交易' })).toBeEnabled());
+
+      fireEvent.change(screen.getByPlaceholderText('股票代码（例如 600519）'), { target: { value: '600519' } });
+      fireEvent.change(screen.getByPlaceholderText('数量（必填）'), { target: { value: '100' } });
+      fireEvent.change(screen.getByPlaceholderText('成交价（必填）'), { target: { value: '1800' } });
+
+      const submitTradeButton = screen.getByRole('button', { name: '提交交易' });
+      fireEvent.click(submitTradeButton);
+      fireEvent.click(submitTradeButton);
+
+      expect(createTrade).toHaveBeenCalledTimes(1);
+      expect(submitTradeButton).toBeDisabled();
+
+      listTrades.mockReturnValueOnce(pendingRefreshTrades.promise);
+      fireEvent.click(screen.getByRole('button', { name: '刷新流水' }));
+
+      unmount();
+
+      await act(async () => {
+        pendingTrade.resolve({ id: 1 });
+        pendingRefreshTrades.resolve({ items: [], total: 0, page: 1, pageSize: 20 });
+        await Promise.resolve();
+      });
+
+      expect(consoleErrorSpy).not.toHaveBeenCalled();
+    } finally {
+      consoleErrorSpy.mockRestore();
+    }
+  });
+
+  it('clears loading state and ignores older FX reload when concurrent trade refresh wins', async () => {
+    const pendingFxRefresh = deferredPromise<{
+      asOf: string;
+      accountCount: number;
+      pairCount: number;
+      updatedCount: number;
+      staleCount: number;
+      errorCount: number;
+    }>();
+    const pendingFxSnapshot = deferredPromise<ReturnType<typeof makeSnapshot>>();
+    const pendingPostTradeSnapshot = deferredPromise<ReturnType<typeof makeSnapshot>>();
+
+    refreshFx.mockImplementationOnce(() => pendingFxRefresh.promise);
+
+    render(<PortfolioPage />);
+    await waitForInitialLoad();
+
+    const accountSelect = screen.getAllByRole('combobox')[0];
+    fireEvent.change(accountSelect, { target: { value: '1' } });
+    await waitFor(() => expect(getSnapshot).toHaveBeenLastCalledWith({ accountId: 1, costMethod: 'fifo', includeRealtime: false }));
+
+    const refreshDataBtn = screen.getByRole('button', { name: '刷新数据' });
+    const refreshFxBtn = screen.getByRole('button', { name: '刷新汇率' });
+
+    // Start FX refresh first; it resolves into reloadSnapshotAndRiskForScope later
+    fireEvent.click(refreshFxBtn);
+    expect(await screen.findByRole('button', { name: '刷新中...' })).toBeDisabled();
+
+    await act(async () => {
+      pendingFxRefresh.resolve({
+        asOf: '2026-03-19',
+        accountCount: 1,
+        pairCount: 1,
+        updatedCount: 1,
+        staleCount: 0,
+        errorCount: 0,
+      });
+      getSnapshot.mockReturnValueOnce(pendingFxSnapshot.promise);
+      await pendingFxRefresh.promise;
+    });
+
+    // Next, submit a trade while FX reload's getSnapshot is still pending
+    getSnapshot.mockReturnValueOnce(pendingPostTradeSnapshot.promise);
+    fireEvent.change(screen.getByPlaceholderText('股票代码（例如 600519）'), { target: { value: '600519' } });
+    fireEvent.change(screen.getByPlaceholderText('数量（必填）'), { target: { value: '100' } });
+    fireEvent.change(screen.getByPlaceholderText('成交价（必填）'), { target: { value: '1800' } });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: '提交交易' }));
+      await Promise.resolve();
+    });
+
+    // Resolve the newer post-trade snapshot first
+    await act(async () => {
+      pendingPostTradeSnapshot.resolve(makeSnapshot({
+        accountId: 1,
+        fxStale: false,
+        positions: [makePosition({ symbol: 'NEW_TRADE_WIN', market: 'cn' })],
+      }));
+      await pendingPostTradeSnapshot.promise;
+    });
+
+    expect(await screen.findByText('NEW_TRADE_WIN')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '刷新数据' })).toBeInTheDocument();
+
+    // Resolving the older FX-triggered snapshot later must NOT overwrite NEW_TRADE_WIN
+    await act(async () => {
+      pendingFxSnapshot.resolve(makeSnapshot({
+        accountId: 1,
+        fxStale: false,
+        positions: [makePosition({ symbol: 'OLD_FX_STALE', market: 'cn' })],
+      }));
+      await pendingFxSnapshot.promise;
+    });
+
+    await waitFor(() => expect(refreshDataBtn).toBeEnabled());
+    expect(screen.getByText('NEW_TRADE_WIN')).toBeInTheDocument();
+    expect(screen.queryByText('OLD_FX_STALE')).not.toBeInTheDocument();
+
+    // Case 2: trade refresh starts before FX enters reloadSnapshotAndRiskForScope (isLoading wedge guard)
+    const pendingRefresh2 = deferredPromise<{
+      asOf: string;
+      accountCount: number;
+      pairCount: number;
+      updatedCount: number;
+      staleCount: number;
+      errorCount: number;
+    }>();
+    const pendingTradeRefreshSnapshot2 = deferredPromise<ReturnType<typeof makeSnapshot>>();
+    const pendingFxSnapshot2 = deferredPromise<ReturnType<typeof makeSnapshot>>();
+
+    refreshFx.mockImplementationOnce(() => pendingRefresh2.promise);
+    fireEvent.click(screen.getByRole('button', { name: '刷新汇率' }));
+    expect(await screen.findByRole('button', { name: '刷新中...' })).toBeDisabled();
+
+    getSnapshot.mockReturnValueOnce(pendingTradeRefreshSnapshot2.promise);
+    fireEvent.change(screen.getByPlaceholderText('股票代码（例如 600519）'), { target: { value: '000001' } });
+    fireEvent.change(screen.getByPlaceholderText('数量（必填）'), { target: { value: '100' } });
+    fireEvent.change(screen.getByPlaceholderText('成交价（必填）'), { target: { value: '12' } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: '提交交易' }));
+      await Promise.resolve();
+    });
+
+    // Now FX resolves and enters reloadSnapshotAndRiskForScope (bumping snapshotRequestRef)
+    getSnapshot.mockReturnValueOnce(pendingFxSnapshot2.promise);
+    await act(async () => {
+      pendingRefresh2.resolve({
+        asOf: '2026-03-19',
+        accountCount: 1,
+        pairCount: 1,
+        updatedCount: 1,
+        staleCount: 0,
+        errorCount: 0,
+      });
+      await pendingRefresh2.promise;
+    });
+
+    // Even when the earlier loadSnapshotAndRisk resolves AFTER reloadSnapshotAndRiskForScope bumped snapshotRequestRef,
+    // isLoading must clear cleanly via snapshotLoadingRequestRef (no permanent loading wedge).
+    await act(async () => {
+      pendingTradeRefreshSnapshot2.resolve(makeSnapshot({
+        accountId: 1,
+        fxStale: false,
+        positions: [makePosition({ symbol: 'TRADE_SNAPSHOT_2', market: 'cn' })],
+      }));
+      await pendingTradeRefreshSnapshot2.promise;
+    });
+    expect(screen.getByRole('button', { name: '刷新数据' })).toBeInTheDocument();
+
+    await act(async () => {
+      pendingFxSnapshot2.resolve(makeSnapshot({
+        accountId: 1,
+        fxStale: false,
+        positions: [makePosition({ symbol: 'FX_WIN_2', market: 'cn' })],
+      }));
+      await pendingFxSnapshot2.promise;
+    });
+    expect(await screen.findByText('FX_WIN_2')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole('button', { name: '刷新数据' })).toBeEnabled());
+  });
+
+  it('tracks position analysis loading independently per row for concurrent clicks (OR-COR-c207696f)', async () => {
+    const deferredCn = deferredPromise<{
+      taskId: string;
+      traceId: string;
+      status: string;
+      message: string;
+      analysisPhase: string;
+    }>();
+    const deferredHk = deferredPromise<{
+      taskId: string;
+      traceId: string;
+      status: string;
+      message: string;
+      analysisPhase: string;
+    }>();
+
+    getSnapshot.mockResolvedValue(makeSnapshot({
+      accountId: 1,
+      fxStale: false,
+      positions: [
+        makePosition({ symbol: '600519', market: 'cn' }),
+        makePosition({ symbol: 'HK00700', market: 'hk', currency: 'HKD' }),
+      ],
+    }));
+    analyzePosition.mockImplementation(async (symbol: string) => (
+      symbol === '600519' ? deferredCn.promise : deferredHk.promise
+    ));
+
+    render(<PortfolioPage />);
+    await waitForInitialLoad();
+
+    const rowCn = screen.getByText('600519').closest('tr') as HTMLTableRowElement;
+    const rowHk = screen.getByText('HK00700').closest('tr') as HTMLTableRowElement;
+    expect(rowCn).not.toBeNull();
+    expect(rowHk).not.toBeNull();
+
+    fireEvent.click(within(rowCn).getByRole('button', { name: '分析' }));
+    await waitFor(() => expect(within(rowCn).getByRole('button', { name: '提交中' })).toBeDisabled());
+    expect(within(rowHk).getByRole('button', { name: '分析' })).toBeEnabled();
+
+    fireEvent.click(within(rowHk).getByRole('button', { name: '分析' }));
+    await waitFor(() => expect(analyzePosition).toHaveBeenCalledTimes(2));
+    expect(within(rowCn).getByRole('button', { name: '提交中' })).toBeDisabled();
+    expect(within(rowHk).getByRole('button', { name: '提交中' })).toBeDisabled();
+
+    await act(async () => {
+      deferredCn.resolve({
+        taskId: 'task-cn-1',
+        traceId: 'task-cn-1',
+        status: 'pending',
+        message: 'queued',
+        analysisPhase: 'auto',
+      });
+      await deferredCn.promise;
+    });
+
+    await waitFor(() => expect(within(rowCn).getByRole('button', { name: '分析' })).toBeEnabled());
+    expect(within(rowHk).getByRole('button', { name: '提交中' })).toBeDisabled();
+
+    await act(async () => {
+      deferredHk.resolve({
+        taskId: 'task-hk-1',
+        traceId: 'task-hk-1',
+        status: 'pending',
+        message: 'queued',
+        analysisPhase: 'auto',
+      });
+      await deferredHk.promise;
+    });
+
+    await waitFor(() => expect(within(rowHk).getByRole('button', { name: '分析' })).toBeEnabled());
+  });
+
+  it('keeps newly created account selected across a subsequent failed manual refresh (OR-COR-0f657839)', async () => {
+    const deferredCreateAccounts = deferredPromise<ReturnType<typeof makeAccounts>>();
+    const deferredManualAccounts = deferredPromise<ReturnType<typeof makeAccounts>>();
+
+    getAccounts
+      .mockResolvedValueOnce(makeAccounts([{ id: 1, name: 'Main' }]))
+      .mockReturnValueOnce(deferredCreateAccounts.promise)
+      .mockReturnValueOnce(deferredManualAccounts.promise);
+    createAccount.mockResolvedValueOnce({
+      id: 3,
+      name: 'Growth',
+      broker: 'Demo',
+      market: 'cn',
+      baseCurrency: 'CNY',
+      isActive: true,
+      ownerId: null,
+      createdAt: '2026-03-19T00:00:00Z',
+      updatedAt: '2026-03-19T00:00:00Z',
+    });
+
+    render(<PortfolioPage />);
+    await waitForInitialLoad();
+
+    fireEvent.click(screen.getByRole('button', { name: '新建账户' }));
+    fireEvent.change(screen.getByPlaceholderText('账户名称（必填）'), { target: { value: 'Growth' } });
+    fireEvent.click(screen.getByRole('button', { name: '创建账户' }));
+
+    await waitFor(() => expect(createAccount).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(getAccounts).toHaveBeenCalledTimes(2));
+
+    const accountSelect = screen.getAllByRole('combobox')[0];
+    expect(accountSelect).toHaveValue('3');
+
+    fireEvent.click(screen.getByRole('button', { name: '刷新数据' }));
+    await waitFor(() => expect(getAccounts).toHaveBeenCalledTimes(3));
+
+    await act(async () => {
+      deferredCreateAccounts.resolve(makeAccounts([{ id: 1, name: 'Main' }, { id: 3, name: 'Growth' }]));
+      await deferredCreateAccounts.promise;
+    });
+
+    await act(async () => {
+      deferredManualAccounts.reject(new Error('accounts down'));
+      await deferredManualAccounts.promise.catch(() => undefined);
+    });
+
+    expect(await screen.findByText(/accounts down/)).toBeInTheDocument();
+    expect(accountSelect).toHaveValue('3');
+    expect(screen.getByRole('option', { name: 'Growth (#3)' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '提交交易' })).toBeEnabled();
+  });
+
+  it('ignores slow trade completion from account A after switching to account B (OR-COR-009e8868)', async () => {
+    const pendingTrade = deferredPromise<{ id: number }>();
+
+    getAccounts.mockResolvedValue(makeAccounts([
+      { id: 1, name: 'AccA' },
+      { id: 2, name: 'AccB' },
+    ]));
+    getSnapshot.mockImplementation(async ({ accountId }: { accountId?: number } = {}) => {
+      if (accountId === 1) {
+        return makeSnapshot({
+          accountId: 1,
+          fxStale: false,
+          positions: [makePosition({ symbol: 'POS_A', market: 'cn' })],
+        });
+      }
+      if (accountId === 2) {
+        return makeSnapshot({
+          accountId: 2,
+          fxStale: false,
+          positions: [makePosition({ symbol: 'POS_B', market: 'us' })],
+        });
+      }
+      return makeSnapshot({ accountId: 1, accountCount: 2, fxStale: false });
+    });
+    listTrades.mockImplementation(async ({ accountId }: { accountId?: number } = {}) => {
+      if (accountId === 1) {
+        return {
+          items: [{ id: 11, accountId: 1, symbol: 'TRADE_A', tradeDate: '2026-06-18', side: 'buy', quantity: 10, price: 100, fee: 0, tax: 0, currency: 'CNY', note: null, createdAt: '2026-06-18T00:00:00Z' }],
+          total: 1,
+          page: 1,
+          pageSize: 20,
+        };
+      }
+      if (accountId === 2) {
+        return {
+          items: [{ id: 22, accountId: 2, symbol: 'TRADE_B', tradeDate: '2026-06-18', side: 'buy', quantity: 5, price: 200, fee: 0, tax: 0, currency: 'USD', note: null, createdAt: '2026-06-18T00:00:00Z' }],
+          total: 1,
+          page: 1,
+          pageSize: 20,
+        };
+      }
+      return { items: [], total: 0, page: 1, pageSize: 20 };
+    });
+    createTrade.mockReturnValueOnce(pendingTrade.promise);
+
+    render(<PortfolioPage />);
+    await waitForInitialLoad();
+
+    const accountSelect = screen.getAllByRole('combobox')[0];
+    fireEvent.change(accountSelect, { target: { value: '1' } });
+    expect(await screen.findByText('POS_A')).toBeInTheDocument();
+    expect(await screen.findByText(/TRADE_A/)).toBeInTheDocument();
+
+    fireEvent.change(screen.getByPlaceholderText('股票代码（例如 600519）'), { target: { value: '600519' } });
+    fireEvent.change(screen.getByPlaceholderText('数量（必填）'), { target: { value: '10' } });
+    fireEvent.change(screen.getByPlaceholderText('成交价（必填）'), { target: { value: '150' } });
+    fireEvent.click(screen.getByRole('button', { name: '提交交易' }));
+    await waitFor(() => expect(createTrade).toHaveBeenCalledTimes(1));
+
+    fireEvent.change(accountSelect, { target: { value: '2' } });
+    expect(await screen.findByText('POS_B')).toBeInTheDocument();
+    expect(await screen.findByText(/TRADE_B/)).toBeInTheDocument();
+
+    const snapshotCallsBeforeResolve = getSnapshot.mock.calls.length;
+    const tradeListCallsBeforeResolve = listTrades.mock.calls.length;
+
+    await act(async () => {
+      pendingTrade.resolve({ id: 99 });
+      await pendingTrade.promise;
+    });
+
+    expect(screen.getByText('POS_B')).toBeInTheDocument();
+    expect(screen.getByText(/TRADE_B/)).toBeInTheDocument();
+    expect(screen.queryByText('POS_A')).not.toBeInTheDocument();
+    expect(screen.queryByText(/TRADE_A/)).not.toBeInTheDocument();
+    expect(getSnapshot).toHaveBeenCalledTimes(snapshotCallsBeforeResolve);
+    expect(listTrades).toHaveBeenCalledTimes(tradeListCallsBeforeResolve);
+  });
+
+  it('clears prior account rows immediately on scope switch and preserves account B load over late failed refresh (OR-COR-6b827fdb)', async () => {
+    const failedManualSnapA = deferredPromise<ReturnType<typeof makeSnapshot>>();
+    const pendingTradesB = deferredPromise<{
+      items: Array<Record<string, unknown>>;
+      total: number;
+      page: number;
+      pageSize: number;
+    }>();
+    let acc1SnapCalls = 0;
+
+    getAccounts.mockResolvedValue(makeAccounts([
+      { id: 1, name: 'AccA' },
+      { id: 2, name: 'AccB' },
+    ]));
+    getSnapshot.mockImplementation(async ({ accountId }: { accountId?: number } = {}) => {
+      if (accountId === 1) {
+        acc1SnapCalls += 1;
+        if (acc1SnapCalls >= 2) {
+          return failedManualSnapA.promise;
+        }
+        return makeSnapshot({
+          accountId: 1,
+          fxStale: false,
+          positions: [makePosition({ symbol: 'POS_ACC_A', market: 'cn' })],
+        });
+      }
+      if (accountId === 2) {
+        return makeSnapshot({
+          accountId: 2,
+          fxStale: false,
+          positions: [makePosition({ symbol: 'POS_ACC_B', market: 'us' })],
+        });
+      }
+      return makeSnapshot({ accountId: 1, accountCount: 2, fxStale: false });
+    });
+    listTrades.mockImplementation(async ({ accountId }: { accountId?: number } = {}) => {
+      if (accountId === 1) {
+        return {
+          items: [{ id: 11, accountId: 1, symbol: 'TRADE_ACC_A', tradeDate: '2026-06-18', side: 'buy', quantity: 10, price: 100, fee: 0, tax: 0, currency: 'CNY', note: null, createdAt: '2026-06-18T00:00:00Z' }],
+          total: 1,
+          page: 1,
+          pageSize: 20,
+        };
+      }
+      if (accountId === 2) {
+        return pendingTradesB.promise;
+      }
+      return { items: [], total: 0, page: 1, pageSize: 20 };
+    });
+
+    render(<PortfolioPage />);
+    await waitForInitialLoad();
+
+    const accountSelect = screen.getAllByRole('combobox')[0];
+    fireEvent.change(accountSelect, { target: { value: '1' } });
+    expect(await screen.findByText('POS_ACC_A')).toBeInTheDocument();
+    expect(await screen.findByText(/TRADE_ACC_A/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '刷新数据' }));
+    await waitFor(() => expect(acc1SnapCalls).toBe(2));
+
+    fireEvent.change(accountSelect, { target: { value: '2' } });
+    expect(screen.queryByText(/TRADE_ACC_A/)).not.toBeInTheDocument();
+    expect(await screen.findByText('POS_ACC_B')).toBeInTheDocument();
+
+    await act(async () => {
+      pendingTradesB.resolve({
+        items: [{ id: 22, accountId: 2, symbol: 'TRADE_ACC_B', tradeDate: '2026-06-18', side: 'buy', quantity: 5, price: 200, fee: 0, tax: 0, currency: 'USD', note: null, createdAt: '2026-06-18T00:00:00Z' }],
+        total: 1,
+        page: 1,
+        pageSize: 20,
+      });
+      await pendingTradesB.promise;
+    });
+    expect(await screen.findByText(/TRADE_ACC_B/)).toBeInTheDocument();
+
+    await act(async () => {
+      failedManualSnapA.reject(new Error('late A refresh failure'));
+      await failedManualSnapA.promise.catch(() => undefined);
+    });
+
+    expect(screen.getByText('POS_ACC_B')).toBeInTheDocument();
+    expect(screen.getByText(/TRADE_ACC_B/)).toBeInTheDocument();
+    expect(screen.queryByText(/late A refresh failure/)).not.toBeInTheDocument();
+  });
+
+  it('preserves disabled FX feedback when concurrent same-account trade snapshot completes first (OR-COR-c78895d9)', async () => {
+    const pendingFxReload = deferredPromise<ReturnType<typeof makeSnapshot>>();
+    let acc1SnapCalls = 0;
+
+    getSnapshot.mockImplementation(async ({ accountId }: { accountId?: number } = {}) => {
+      if (accountId === 1) {
+        acc1SnapCalls += 1;
+        if (acc1SnapCalls === 2) {
+          return pendingFxReload.promise;
+        }
+        if (acc1SnapCalls >= 3) {
+          return makeSnapshot({
+            accountId: 1,
+            fxStale: false,
+            positions: [makePosition({ symbol: 'TRADE_WINNER', market: 'cn' })],
+          });
+        }
+        return makeSnapshot({
+          accountId: 1,
+          fxStale: true,
+          positions: [makePosition({ symbol: 'INIT_POS', market: 'cn' })],
+        });
+      }
+      return makeSnapshot({ accountId: 1, fxStale: true });
+    });
+    refreshFx.mockResolvedValueOnce({
+      asOf: '2026-03-19',
+      accountCount: 1,
+      refreshEnabled: false,
+      disabledReason: 'portfolio_fx_update_disabled',
+      pairCount: 0,
+      updatedCount: 0,
+      staleCount: 0,
+      errorCount: 0,
+    });
+
+    render(<PortfolioPage />);
+    await waitForInitialLoad();
+
+    const accountSelect = screen.getAllByRole('combobox')[0];
+    fireEvent.change(accountSelect, { target: { value: '1' } });
+    expect(await screen.findByText('INIT_POS')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '刷新汇率' }));
+    await waitFor(() => expect(acc1SnapCalls).toBe(2));
+
+    fireEvent.change(screen.getByPlaceholderText('股票代码（例如 600519）'), { target: { value: '600519' } });
+    fireEvent.change(screen.getByPlaceholderText('数量（必填）'), { target: { value: '10' } });
+    fireEvent.change(screen.getByPlaceholderText('成交价（必填）'), { target: { value: '150' } });
+    fireEvent.click(screen.getByRole('button', { name: '提交交易' }));
+
+    expect(await screen.findByText('TRADE_WINNER')).toBeInTheDocument();
+
+    await act(async () => {
+      pendingFxReload.resolve(makeSnapshot({
+        accountId: 1,
+        fxStale: true,
+        positions: [makePosition({ symbol: 'STALE_FX_SNAP', market: 'cn' })],
+      }));
+      await pendingFxReload.promise;
+    });
+
+    expect(await screen.findByText('汇率在线刷新已被禁用。')).toBeInTheDocument();
+    expect(screen.getByText('TRADE_WINNER')).toBeInTheDocument();
+    expect(screen.queryByText('STALE_FX_SNAP')).not.toBeInTheDocument();
+  });
+
+  it('ignores stale page 2 ledger responses after returning to page 1 fails (OR-COR-3c284948)', async () => {
+    const pendingPage2 = deferredPromise<{
+      items: Array<Record<string, unknown>>;
+      total: number;
+      page: number;
+      pageSize: number;
+    }>();
+
+    getAccounts.mockResolvedValue(makeAccounts([{ id: 1, name: 'Main' }]));
+    listTrades.mockResolvedValue({
+      items: [
+        {
+          id: 101,
+          accountId: 1,
+          symbol: 'P1_RECORD',
+          tradeDate: '2026-06-17',
+          side: 'buy',
+          quantity: 10,
+          price: 100,
+          fee: 0,
+          tax: 0,
+          tradeUid: null,
+          currency: 'CNY',
+          note: null,
+          createdAt: '2026-06-17T00:00:00Z',
+        },
+      ],
+      total: 25,
+      page: 1,
+      pageSize: 20,
+    });
+
+    render(<PortfolioPage />);
+    await waitForInitialLoad();
+
+    const accountSelect = screen.getAllByRole('combobox')[0];
+    fireEvent.change(accountSelect, { target: { value: '1' } });
+    expect(await screen.findByText(/P1_RECORD/)).toBeInTheDocument();
+    expect(screen.getByText('第 1 / 2 页')).toBeInTheDocument();
+
+    listTrades.mockReturnValueOnce(pendingPage2.promise);
+    fireEvent.click(screen.getByRole('button', { name: '下一页' }));
+    await waitFor(() => {
+      expect(listTrades).toHaveBeenLastCalledWith(expect.objectContaining({
+        accountId: 1,
+        page: 2,
+      }));
+    });
+    expect(screen.getByText('第 2 / 2 页')).toBeInTheDocument();
+
+    listTrades.mockRejectedValueOnce(new Error('Page 1 failed'));
+    fireEvent.click(screen.getByRole('button', { name: '上一页' }));
+    expect(await screen.findByText('Page 1 failed')).toBeInTheDocument();
+    expect(screen.getByText('第 1 / 2 页')).toBeInTheDocument();
+
+    await act(async () => {
+      pendingPage2.resolve({
+        items: [
+          {
+            id: 202,
+            accountId: 1,
+            symbol: 'STALE_PAGE2',
+            tradeDate: '2026-06-16',
+            side: 'sell',
+            quantity: 5,
+            price: 120,
+            fee: 0,
+            tax: 0,
+            tradeUid: null,
+            currency: 'CNY',
+            note: null,
+            createdAt: '2026-06-16T00:00:00Z',
+          },
+        ],
+        total: 25,
+        page: 2,
+        pageSize: 20,
+      });
+      await pendingPage2.promise;
+    });
+
+    expect(screen.getByText('第 1 / 2 页')).toBeInTheDocument();
+    expect(screen.queryByText(/STALE_PAGE2/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '删除' })).not.toBeInTheDocument();
+  });
+
+  it('scopes submit locks and draft clearing to the submitting account (OR-COR-415c24bc)', async () => {
+    const pendingTradeA = deferredPromise<{ id: number }>();
+    const pendingCorpA = deferredPromise<{ id: number }>();
+
+    getAccounts.mockResolvedValue(makeAccounts([{ id: 1, name: 'Main' }, { id: 2, name: 'Alt' }]));
+    createTrade.mockImplementation(async ({ accountId }: { accountId: number }) => {
+      if (accountId === 1) return pendingTradeA.promise;
+      return { id: 2 };
+    });
+    createCorporateAction.mockImplementation(async ({ accountId }: { accountId: number }) => {
+      if (accountId === 1) return pendingCorpA.promise;
+      return { id: 4 };
+    });
+
+    render(<PortfolioPage />);
+    await waitForInitialLoad();
+
+    const accountSelect = screen.getAllByRole('combobox')[0];
+    fireEvent.change(accountSelect, { target: { value: '1' } });
+    await waitFor(() => expect(getSnapshot).toHaveBeenLastCalledWith({ accountId: 1, costMethod: 'fifo', includeRealtime: false }));
+
+    const tradeSymbolInput = screen.getByPlaceholderText('股票代码（例如 600519）') as HTMLInputElement;
+    fireEvent.change(tradeSymbolInput, { target: { value: '600519' } });
+    fireEvent.change(screen.getByPlaceholderText('数量（必填）'), { target: { value: '10' } });
+    fireEvent.change(screen.getByPlaceholderText('成交价（必填）'), { target: { value: '150' } });
+    fireEvent.click(screen.getByRole('button', { name: '提交交易' }));
+
+    await waitFor(() => expect(createTrade).toHaveBeenCalledWith(expect.objectContaining({
+      accountId: 1,
+      symbol: '600519',
+    })));
+    expect(screen.getByRole('button', { name: '提交交易' })).toBeDisabled();
+
+    fireEvent.change(accountSelect, { target: { value: '2' } });
+    expect(screen.getByRole('button', { name: '提交交易' })).not.toBeDisabled();
+    fireEvent.change(tradeSymbolInput, { target: { value: '000001' } });
+
+    await act(async () => {
+      pendingTradeA.resolve({ id: 1 });
+      await pendingTradeA.promise;
+    });
+
+    expect(tradeSymbolInput.value).toBe('000001');
+    fireEvent.click(screen.getByRole('button', { name: '提交交易' }));
+    await waitFor(() => expect(createTrade).toHaveBeenCalledWith(expect.objectContaining({
+      accountId: 2,
+      symbol: '000001',
+    })));
+    await waitFor(() => expect(tradeSymbolInput.value).toBe(''));
+
+    // Same account isolation holds for corporate actions.
+    fireEvent.change(accountSelect, { target: { value: '1' } });
+    await waitFor(() => expect(getSnapshot).toHaveBeenLastCalledWith({ accountId: 1, costMethod: 'fifo', includeRealtime: false }));
+
+    const corpSymbolInput = screen.getByPlaceholderText('股票代码') as HTMLInputElement;
+    fireEvent.change(corpSymbolInput, { target: { value: '600519' } });
+    fireEvent.change(screen.getByPlaceholderText('每股分红'), { target: { value: '1.5' } });
+    fireEvent.click(screen.getByRole('button', { name: '提交企业行为' }));
+
+    await waitFor(() => expect(createCorporateAction).toHaveBeenCalledWith(expect.objectContaining({
+      accountId: 1,
+      symbol: '600519',
+    })));
+    expect(screen.getByRole('button', { name: '提交企业行为' })).toBeDisabled();
+
+    fireEvent.change(accountSelect, { target: { value: '2' } });
+    expect(screen.getByRole('button', { name: '提交企业行为' })).not.toBeDisabled();
+    fireEvent.change(corpSymbolInput, { target: { value: '000001' } });
+
+    await act(async () => {
+      pendingCorpA.resolve({ id: 3 });
+      await pendingCorpA.promise;
+    });
+
+    expect(corpSymbolInput.value).toBe('000001');
+    fireEvent.click(screen.getByRole('button', { name: '提交企业行为' }));
+    await waitFor(() => expect(createCorporateAction).toHaveBeenCalledWith(expect.objectContaining({
+      accountId: 2,
+      symbol: '000001',
+    })));
+    await waitFor(() => expect(corpSymbolInput.value).toBe(''));
+  });
+
+  it('clears prior account risk on switch and commits B initial risk even if a newer snapshot lands first (OR-COR-1f94e076)', async () => {
+    const pendingRiskBFirst = deferredPromise<ReturnType<typeof makeRisk>>();
+    const pendingRiskBAfterTrade = deferredPromise<ReturnType<typeof makeRisk>>();
+    let bSnapCalls = 0;
+    let bRiskCalls = 0;
+
+    getAccounts.mockResolvedValue(makeAccounts([{ id: 1, name: 'Main' }, { id: 2, name: 'Alt' }]));
+    getSnapshot.mockImplementation(async ({ accountId }: { accountId?: number } = {}) => {
+      if (accountId === 1) {
+        return makeSnapshot({
+          accountId: 1,
+          fxStale: false,
+          positions: [makePosition({ symbol: 'POS_ACC_A', market: 'cn' })],
+        });
+      }
+      if (accountId === 2) {
+        bSnapCalls += 1;
+        return makeSnapshot({
+          accountId: 2,
+          fxStale: false,
+          positions: [makePosition({ symbol: bSnapCalls === 1 ? 'POS_B_INIT' : 'POS_B_TRADE', market: 'us' })],
+        });
+      }
+      return makeSnapshot({ accountId: 1, accountCount: 2, fxStale: false });
+    });
+    getRisk.mockImplementation(async ({ accountId }: { accountId?: number } = {}) => {
+      if (accountId === 1) {
+        return makeRisk({
+          accountId: 1,
+          drawdown: { seriesPoints: 5, maxDrawdownPct: 18.5, currentDrawdownPct: 7.2, alert: true, fxStale: false },
+          stopLoss: { nearAlert: true, triggeredCount: 1, nearCount: 2, items: [] },
+        });
+      }
+      if (accountId === 2) {
+        bRiskCalls += 1;
+        if (bRiskCalls === 1) return pendingRiskBFirst.promise;
+        return pendingRiskBAfterTrade.promise;
+      }
+      return makeRisk({ accountId: null });
+    });
+
+    render(<PortfolioPage />);
+    await waitForInitialLoad();
+
+    const accountSelect = screen.getAllByRole('combobox')[0];
+    fireEvent.change(accountSelect, { target: { value: '1' } });
+    expect(await screen.findByText('POS_ACC_A')).toBeInTheDocument();
+    expect(await screen.findAllByText(/最大回撤: 18\.50%/)).toHaveLength(2);
+
+    fireEvent.change(accountSelect, { target: { value: '2' } });
+    expect(screen.queryAllByText(/18\.50%/)).toHaveLength(0);
+    expect(await screen.findByText('POS_B_INIT')).toBeInTheDocument();
+    expect(screen.queryAllByText(/18\.50%/)).toHaveLength(0);
+    await waitFor(() => expect(bRiskCalls).toBe(1));
+
+    // Submit a trade on account B so post-trade snapshot commits while post-trade risk stays pending.
+    fireEvent.change(screen.getByPlaceholderText('股票代码（例如 600519）'), { target: { value: 'AAPL' } });
+    fireEvent.change(screen.getByPlaceholderText('数量（必填）'), { target: { value: '5' } });
+    fireEvent.change(screen.getByPlaceholderText('成交价（必填）'), { target: { value: '200' } });
+    fireEvent.click(screen.getByRole('button', { name: '提交交易' }));
+
+    expect(await screen.findByText('POS_B_TRADE')).toBeInTheDocument();
+    await waitFor(() => expect(bRiskCalls).toBe(2));
+
+    await act(async () => {
+      pendingRiskBFirst.resolve(makeRisk({
+        accountId: 2,
+        drawdown: { seriesPoints: 5, maxDrawdownPct: 4.25, currentDrawdownPct: 1.1, alert: false, fxStale: false },
+        stopLoss: { nearAlert: false, triggeredCount: 0, nearCount: 1, items: [] },
+      }));
+      await pendingRiskBFirst.promise;
+    });
+
+    expect(await screen.findAllByText(/最大回撤: 4\.25%/)).toHaveLength(2);
+    expect(screen.queryAllByText(/18\.50%/)).toHaveLength(0);
+  });
 });
