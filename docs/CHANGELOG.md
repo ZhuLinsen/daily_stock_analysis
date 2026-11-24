@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [改进] CI 瘦身：PR 仅改文档或 `tests/fixtures/**` 时以 `docs-contract-tests` 替代三分片后端全量测试；`docker-build` 保留运行时输入触发并排除前端测试与 Markdown 改动；前端仅改单元测试文件时 `web-gate` 跳过构建与 Playwright（非 PR 事件触发 `web-gate` 时仍执行完整构建与 Playwright，`docker-build` 与文档契约后端全量在非 PR 事件下保持兜底）。
+
 - [新功能] 新增 DSA 内部因子契约（`FactorDefinition`/`FactorSnapshot`/`CandidatePoolRun`/`CandidateFactorScore`，契约版本 1.0）：将选股 `factor_scores` 映射为带字段版本、来源、数据质量与降级原因的内部结构（#1902 P0）；仅新增 schema 与纯映射函数，不改变现有选股、API、回测与 DecisionSignal 行为。`ScreenResult.created_at` 改为带本地偏移的 ISO 字符串（按部署进程本地时钟换算为 UTC），`pick_to_factor_snapshot` 的显式 `computed_at` 同样归一化；内置引擎来源守卫的作用域已修正，原创的 `factor_mapping.py` 不再被误判为 AlphaSift 派生文件。
 - [改进] 优化 CI 与发布流水线：`ci.yml` 新增 `push: main` 与 `merge_group` 触发、顶层只读权限与统一 `ci-gate` 汇总门禁，解除 `ai-governance` 对域内检查的串行阻塞；后端引入 `uv` 加速依赖安装，Web CI 补跑 `npm test` (Vitest) 并缓存 Playwright 浏览器，新增 `desktop-tests` 执行桌面端单元测试；将 `create-release.yml`、`docker-publish.yml`、`desktop-release.yml` 收敛为单入口原子发布流 `release.yml`（原生 `ubuntu-24.04-arm` + `ubuntu-24.04` 双架构合并 manifest 与构建溯源），并同步 `scripts/ci_gate.sh` 与契约测试。
 - [修复] Agent 的 `analyze_pattern` 按形态出现前的趋势命名长影线 K 线。取形态出现前的收盘价，以 MA5 与 MA10 的高低判断方向（`StockTrendAnalyzer` 比较的同一组均线），并要求形态前最后一个收盘价也越过 MA5（下跌时低于 MA5，上涨时高于 MA5）：下跌时命名为锤子线/倒锤子，上涨时命名为上吊线/流星线；趋势不明确（包括 MA5 与 MA10 相等、形态前最后一个收盘价等于 MA5）或形态前不足 10 个收盘价时不给出这四个名称。`type` 取值保持不变（锤子线/上吊线为 `reversal_signal`，流星线为 `bearish_signal`），仅倒锤子由 `bearish_signal` 改为 `reversal_signal`；上吊线与倒锤子的说明文字随之调整，锤子线与流星线的条目内容不变。原先按单日涨跌和 K 线颜色命名，与趋势无关。其余形态的识别不变。

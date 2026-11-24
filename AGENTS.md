@@ -74,7 +74,8 @@ python scripts/check_ai_assets.py
 | `🔎 Change Detection` | `.github/workflows/ci.yml` | 路径变更检测 | 是 |
 | `ai-governance` | `.github/workflows/ci.yml` | `python scripts/check_ai_assets.py` | 是 |
 | `backend-tests (1/3)`..`(3/3)` | `.github/workflows/ci.yml` | 语法、flake8、确定性检查与 3 分片离线 pytest | 是（触发时） |
-| `backend-gate` | `.github/workflows/ci.yml` | 汇总前置与后端测试门禁 | 是 |
+| `docs-contract-tests` | `.github/workflows/ci.yml` | PR 仅改文档/fixture 契约资产时运行引用 docs/fixtures 的测试文件（替代三分片后端全量） | 是（触发时） |
+| `backend-gate` | `.github/workflows/ci.yml` | 汇总前置、后端分片与文档契约测试门禁 | 是 |
 | `docker-build` | `.github/workflows/ci.yml` | Docker 构建与关键模块导入 smoke | 是（触发时） |
 | `web-gate` | `.github/workflows/ci.yml` | `npm run lint` + `npm test` (Vitest) + `npm run build` + Playwright smoke（含浏览器缓存） | 是（触发时） |
 | `desktop-tests` | `.github/workflows/ci.yml` | `apps/dsa-desktop` 单元测试（`npm test`） | 是（触发时） |
