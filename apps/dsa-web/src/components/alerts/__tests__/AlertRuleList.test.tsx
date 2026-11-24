@@ -282,4 +282,129 @@ describe('AlertRuleList', () => {
 
     expect(screen.getByText('暂无告警规则')).toBeInTheDocument();
   });
+
+  it('supports independent busy states via busyRules map', () => {
+    renderList({ busyRules: { 1: 'test', 2: 'toggle' } });
+
+    expect(screen.getByRole('button', { name: '测试中' })).toHaveAttribute('aria-busy', 'true');
+    expect(screen.getByRole('button', { name: '停用中' })).toHaveAttribute('aria-busy', 'true');
+    const remainingTestButtons = screen.getAllByRole('button', { name: '测试' });
+    expect(remainingTestButtons).toHaveLength(2);
+    expect(remainingTestButtons[0]).toBeDisabled();
+    expect(remainingTestButtons[1]).toBeEnabled();
+  });
+
+  it('closes delete confirmation dialog automatically when the pending rule leaves rules', async () => {
+    const { rerender } = render(
+      <AlertRuleList
+        rules={rules}
+        total={40}
+        page={1}
+        pageSize={20}
+        enabledFilter="all"
+        alertTypeFilter="all"
+        onEnabledFilterChange={onEnabledFilterChange}
+        onAlertTypeFilterChange={onAlertTypeFilterChange}
+        onPageChange={onPageChange}
+        onToggleEnabled={onToggleEnabled}
+        onDelete={onDelete}
+        onTest={onTest}
+      />,
+    );
+
+    fireEvent.click(screen.getByLabelText('删除 茅台价格突破'));
+    expect(await screen.findByRole('heading', { name: '删除告警规则' })).toBeInTheDocument();
+
+    rerender(
+      <AlertRuleList
+        rules={rules.slice(1)}
+        total={39}
+        page={1}
+        pageSize={20}
+        enabledFilter="all"
+        alertTypeFilter="all"
+        onEnabledFilterChange={onEnabledFilterChange}
+        onAlertTypeFilterChange={onAlertTypeFilterChange}
+        onPageChange={onPageChange}
+        onToggleEnabled={onToggleEnabled}
+        onDelete={onDelete}
+        onTest={onTest}
+      />,
+    );
+
+    expect(screen.queryByRole('heading', { name: '删除告警规则' })).not.toBeInTheDocument();
+    expect(onDelete).not.toHaveBeenCalled();
+
+    rerender(
+      <AlertRuleList
+        rules={rules}
+        total={40}
+        page={1}
+        pageSize={20}
+        enabledFilter="all"
+        alertTypeFilter="all"
+        onEnabledFilterChange={onEnabledFilterChange}
+        onAlertTypeFilterChange={onAlertTypeFilterChange}
+        onPageChange={onPageChange}
+        onToggleEnabled={onToggleEnabled}
+        onDelete={onDelete}
+        onTest={onTest}
+      />,
+    );
+
+    expect(screen.queryByRole('heading', { name: '删除告警规则' })).not.toBeInTheDocument();
+    expect(onDelete).not.toHaveBeenCalled();
+  });
+
+  it('closes delete confirmation dialog when the same rule ID is reused by a different rule', async () => {
+    const { rerender } = render(
+      <AlertRuleList
+        rules={rules}
+        total={40}
+        page={1}
+        pageSize={20}
+        enabledFilter="all"
+        alertTypeFilter="all"
+        onEnabledFilterChange={onEnabledFilterChange}
+        onAlertTypeFilterChange={onAlertTypeFilterChange}
+        onPageChange={onPageChange}
+        onToggleEnabled={onToggleEnabled}
+        onDelete={onDelete}
+        onTest={onTest}
+      />,
+    );
+
+    fireEvent.click(screen.getByLabelText('删除 茅台价格突破'));
+    expect(await screen.findByRole('heading', { name: '删除告警规则' })).toBeInTheDocument();
+
+    const reusedIdRules: AlertRuleItem[] = [
+      {
+        ...rules[0],
+        name: '新创建的替代规则',
+        target: 'AAPL',
+        createdAt: '2026-05-19T10:00:00',
+      },
+      ...rules.slice(1),
+    ];
+
+    rerender(
+      <AlertRuleList
+        rules={reusedIdRules}
+        total={40}
+        page={1}
+        pageSize={20}
+        enabledFilter="all"
+        alertTypeFilter="all"
+        onEnabledFilterChange={onEnabledFilterChange}
+        onAlertTypeFilterChange={onAlertTypeFilterChange}
+        onPageChange={onPageChange}
+        onToggleEnabled={onToggleEnabled}
+        onDelete={onDelete}
+        onTest={onTest}
+      />,
+    );
+
+    expect(screen.queryByRole('heading', { name: '删除告警规则' })).not.toBeInTheDocument();
+    expect(onDelete).not.toHaveBeenCalled();
+  });
 });

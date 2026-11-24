@@ -3,11 +3,11 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { BellRing } from 'lucide-react';
 import { alertsApi } from '../api/alerts';
 import type { ParsedApiError } from '../api/error';
-import { getParsedApiError } from '../api/error';
+import { createParsedApiError, getParsedApiError } from '../api/error';
 import { AlertRuleForm } from '../components/alerts/AlertRuleForm';
 import {
   AlertRuleList,
-  type AlertRuleBusyState,
+  type AlertRuleBusyAction,
   type AlertRuleEnabledFilter,
   type AlertTypeFilter,
 } from '../components/alerts/AlertRuleList';
@@ -41,6 +41,35 @@ function testVariant(result: AlertRuleTestResponse): 'success' | 'warning' | 'da
   return result.triggered ? 'success' : 'warning';
 }
 
+function buildTestFailureAlert(rule: AlertRuleItem, result: AlertRuleTestResponse): ParsedApiError | null {
+  const failedTargets = (result.targetResults ?? []).filter(
+    (item) => item.status === 'evaluation_error' || item.recordStatus === 'failed',
+  );
+  if (result.status !== 'evaluation_error' && failedTargets.length === 0) {
+    return null;
+  }
+
+  if (result.status === 'evaluation_error') {
+    return createParsedApiError({
+      title: `规则「${rule.name}」测试失败`,
+      message: result.message || '规则测试评估失败',
+      rawMessage: result.message || undefined,
+      category: 'unknown',
+    });
+  }
+
+  const failedDetails = failedTargets
+    .map((item) => `${item.displayTarget ?? item.target}: ${item.message || item.status}`)
+    .join('；');
+  const combinedMessage = [result.message, failedDetails].filter(Boolean).join('；');
+  return createParsedApiError({
+    title: `规则「${rule.name}」部分标的测试失败`,
+    message: combinedMessage || failedDetails || '部分标的测试评估失败',
+    rawMessage: combinedMessage || undefined,
+    category: 'unknown',
+  });
+}
+
 function renderTestResultMessage(result: AlertRuleTestResponse): React.ReactNode {
   const targetResults = result.targetResults ?? [];
   return (
@@ -61,8 +90,8 @@ function renderTestResultMessage(result: AlertRuleTestResponse): React.ReactNode
       ) : null}
       {targetResults.length > 1 ? (
         <div className="grid gap-1 text-xs">
-          {targetResults.slice(0, 20).map((item) => (
-            <div key={`${item.target}-${item.status}`} className="flex flex-wrap justify-between gap-2">
+          {targetResults.slice(0, 20).map((item, index) => (
+            <div key={`${item.target}-${item.status}-${index}`} className="flex flex-wrap justify-between gap-2">
               <span>{item.displayTarget ?? item.target}</span>
               <span>
                 {item.status}
@@ -125,14 +154,53 @@ const AlertsPage: React.FC = () => {
   const [createLoading, setCreateLoading] = useState(false);
   const [createError, setCreateError] = useState<ParsedApiError | null>(null);
   const [createSuccess, setCreateSuccess] = useState<string | null>(null);
-  const [busyRule, setBusyRule] = useState<AlertRuleBusyState | null>(null);
-  const [testResult, setTestResult] = useState<AlertRuleTestResponse | null>(null);
+  const [busyRules, setBusyRules] = useState<Record<number, AlertRuleBusyAction>>({});
+  const [testResult, setTestResult] = useState<{ ruleId: number; response: AlertRuleTestResponse } | null>(null);
+  const [testErrors, setTestErrors] = useState<Record<number, ParsedApiError>>({});
+  const mountedRef = useRef(true);
   const rulesRequestIdRef = useRef(0);
+  const triggersRequestIdRef = useRef(0);
+  const notificationsRequestIdRef = useRef(0);
+  const testRequestIdRef = useRef(0);
+  const activeTestRuleIdRef = useRef<number | null>(null);
+  const ruleTestEpochRef = useRef<Record<number, number>>({});
+  const createInFlightRef = useRef(false);
+  const busyRuleIdsRef = useRef<Set<number>>(new Set());
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      rulesRequestIdRef.current += 1;
+      triggersRequestIdRef.current += 1;
+      notificationsRequestIdRef.current += 1;
+      testRequestIdRef.current += 1;
+      activeTestRuleIdRef.current = null;
+      ruleTestEpochRef.current = {};
+      busyRuleIdsRef.current = new Set();
+    };
+  }, []);
+
+  const setRuleBusy = useCallback((ruleId: number, action: AlertRuleBusyAction) => {
+    busyRuleIdsRef.current.add(ruleId);
+    setBusyRules((previous) => ({ ...previous, [ruleId]: action }));
+  }, []);
+
+  const clearRuleBusy = useCallback((ruleId: number) => {
+    busyRuleIdsRef.current.delete(ruleId);
+    if (!mountedRef.current) return;
+    setBusyRules((previous) => {
+      if (!(ruleId in previous)) return previous;
+      const next = { ...previous };
+      delete next[ruleId];
+      return next;
+    });
+  }, []);
 
   const loadRules = useCallback(async () => {
     const requestId = rulesRequestIdRef.current + 1;
     rulesRequestIdRef.current = requestId;
-    const isLatestRequest = () => rulesRequestIdRef.current === requestId;
+    const isLatestRequest = () => mountedRef.current && rulesRequestIdRef.current === requestId;
     const requestedPage = rulesPage;
     const baseQuery = {
       enabled: enabledFilterToQuery(enabledFilter),
@@ -167,28 +235,42 @@ const AlertsPage: React.FC = () => {
   }, [alertTypeFilter, enabledFilter, rulesPage]);
 
   const loadTriggers = useCallback(async () => {
+    const requestId = triggersRequestIdRef.current + 1;
+    triggersRequestIdRef.current = requestId;
+    const isLatestRequest = () => mountedRef.current && triggersRequestIdRef.current === requestId;
     setTriggersLoading(true);
     try {
       const response = await alertsApi.listTriggers({ page: 1, pageSize: PAGE_SIZE });
+      if (!isLatestRequest()) return;
       setTriggers(response.items);
       setTriggersError(null);
     } catch (error) {
+      if (!isLatestRequest()) return;
       setTriggersError(getParsedApiError(error));
     } finally {
-      setTriggersLoading(false);
+      if (isLatestRequest()) {
+        setTriggersLoading(false);
+      }
     }
   }, []);
 
   const loadNotifications = useCallback(async () => {
+    const requestId = notificationsRequestIdRef.current + 1;
+    notificationsRequestIdRef.current = requestId;
+    const isLatestRequest = () => mountedRef.current && notificationsRequestIdRef.current === requestId;
     setNotificationsLoading(true);
     try {
       const response = await alertsApi.listNotifications({ page: 1, pageSize: PAGE_SIZE });
+      if (!isLatestRequest()) return;
       setNotifications(response.items);
       setNotificationsError(null);
     } catch (error) {
+      if (!isLatestRequest()) return;
       setNotificationsError(getParsedApiError(error));
     } finally {
-      setNotificationsLoading(false);
+      if (isLatestRequest()) {
+        setNotificationsLoading(false);
+      }
     }
   }, []);
 
@@ -203,61 +285,119 @@ const AlertsPage: React.FC = () => {
   }, [loadNotifications, loadTriggers, rulesLoaded]);
 
   const handleCreateRule = async (payload: AlertRuleCreateRequest) => {
+    if (createInFlightRef.current) return false;
+    createInFlightRef.current = true;
     setCreateLoading(true);
     setCreateError(null);
     setCreateSuccess(null);
     try {
       const created = await alertsApi.createRule(payload);
+      if (!mountedRef.current) return false;
       setCreateSuccess(`已创建告警规则「${created.name}」`);
       setRulesPage(1);
       setRulesRefreshKey((value) => value + 1);
       return true;
     } catch (error) {
+      if (!mountedRef.current) return false;
       setCreateError(getParsedApiError(error));
       return false;
     } finally {
-      setCreateLoading(false);
+      createInFlightRef.current = false;
+      if (mountedRef.current) {
+        setCreateLoading(false);
+      }
     }
   };
 
   const handleToggleEnabled = async (rule: AlertRuleItem) => {
-    setBusyRule({ id: rule.id, action: 'toggle' });
+    if (busyRuleIdsRef.current.has(rule.id)) return;
+    setRuleBusy(rule.id, 'toggle');
     try {
       if (rule.enabled) {
         await alertsApi.disableRule(rule.id);
       } else {
         await alertsApi.enableRule(rule.id);
       }
+      if (!mountedRef.current) return;
       setRulesRefreshKey((value) => value + 1);
     } catch (error) {
+      if (!mountedRef.current) return;
       setRulesError(getParsedApiError(error));
     } finally {
-      setBusyRule(null);
+      clearRuleBusy(rule.id);
     }
   };
 
   const handleDeleteRule = async (rule: AlertRuleItem) => {
-    setBusyRule({ id: rule.id, action: 'delete' });
+    if (busyRuleIdsRef.current.has(rule.id)) return;
+    setRuleBusy(rule.id, 'delete');
     try {
       await alertsApi.deleteRule(rule.id);
+      if (!mountedRef.current) return;
+      ruleTestEpochRef.current[rule.id] = (ruleTestEpochRef.current[rule.id] ?? 0) + 1;
+      if (activeTestRuleIdRef.current === rule.id) {
+        testRequestIdRef.current += 1;
+        activeTestRuleIdRef.current = null;
+      }
+      setTestResult((current) => (current?.ruleId === rule.id ? null : current));
+      setTestErrors((previous) => {
+        if (!(rule.id in previous)) return previous;
+        const next = { ...previous };
+        delete next[rule.id];
+        return next;
+      });
       setRulesRefreshKey((value) => value + 1);
     } catch (error) {
+      if (!mountedRef.current) return;
       setRulesError(getParsedApiError(error));
     } finally {
-      setBusyRule(null);
+      clearRuleBusy(rule.id);
     }
   };
 
   const handleTestRule = async (rule: AlertRuleItem) => {
-    setBusyRule({ id: rule.id, action: 'test' });
+    if (busyRuleIdsRef.current.has(rule.id)) return;
+    const requestId = testRequestIdRef.current + 1;
+    testRequestIdRef.current = requestId;
+    const ruleEpoch = (ruleTestEpochRef.current[rule.id] ?? 0) + 1;
+    ruleTestEpochRef.current[rule.id] = ruleEpoch;
+    activeTestRuleIdRef.current = rule.id;
+    setRuleBusy(rule.id, 'test');
     setTestResult(null);
+    setTestErrors((previous) => {
+      if (!(rule.id in previous)) return previous;
+      const next = { ...previous };
+      delete next[rule.id];
+      return next;
+    });
     try {
       const result = await alertsApi.testRule(rule.id);
-      setTestResult(result);
+      if (!mountedRef.current || ruleTestEpochRef.current[rule.id] !== ruleEpoch) {
+        return;
+      }
+      if (testRequestIdRef.current !== requestId) {
+        const failureAlert = buildTestFailureAlert(rule, result);
+        if (failureAlert) {
+          setTestErrors((previous) => ({
+            ...previous,
+            [rule.id]: failureAlert,
+          }));
+        }
+        return;
+      }
+      setTestResult({ ruleId: rule.id, response: result });
     } catch (error) {
-      setRulesError(getParsedApiError(error));
+      if (!mountedRef.current || ruleTestEpochRef.current[rule.id] !== ruleEpoch) return;
+      const parsedError = getParsedApiError(error);
+      setTestErrors((previous) => ({
+        ...previous,
+        [rule.id]: parsedError,
+      }));
     } finally {
-      setBusyRule(null);
+      if (testRequestIdRef.current === requestId) {
+        activeTestRuleIdRef.current = null;
+      }
+      clearRuleBusy(rule.id);
     }
   };
 
@@ -283,6 +423,23 @@ const AlertsPage: React.FC = () => {
         />
       ) : null}
       {rulesError ? <ApiErrorAlert error={rulesError} onDismiss={() => setRulesError(null)} /> : null}
+      {Object.entries(testErrors).map(([ruleIdStr, error]) => {
+        const targetRuleId = Number(ruleIdStr);
+        return (
+          <ApiErrorAlert
+            key={`test-error-${ruleIdStr}`}
+            error={error}
+            onDismiss={() => {
+              setTestErrors((previous) => {
+                if (!(targetRuleId in previous)) return previous;
+                const next = { ...previous };
+                delete next[targetRuleId];
+                return next;
+              });
+            }}
+          />
+        );
+      })}
       {!rulesError && ruleSources && ruleSources.legacyConfigured > 0 ? (
         <InlineAlert
           title="存在环境变量告警规则"
@@ -315,13 +472,13 @@ const AlertsPage: React.FC = () => {
             onToggleEnabled={(rule) => void handleToggleEnabled(rule)}
             onDelete={(rule) => void handleDeleteRule(rule)}
             onTest={(rule) => void handleTestRule(rule)}
-            busyRule={busyRule}
+            busyRules={busyRules}
           />
           {testResult ? (
             <InlineAlert
               title="测试结果"
-              variant={testVariant(testResult)}
-              message={renderTestResultMessage(testResult)}
+              variant={testVariant(testResult.response)}
+              message={renderTestResultMessage(testResult.response)}
             />
           ) : null}
         </div>

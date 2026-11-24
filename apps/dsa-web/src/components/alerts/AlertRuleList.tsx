@@ -105,7 +105,17 @@ interface AlertRuleListProps {
   onDelete: (rule: AlertRuleItem) => void;
   onTest: (rule: AlertRuleItem) => void;
   busyRule?: AlertRuleBusyState | null;
+  busyRules?: Record<number, AlertRuleBusyAction>;
 }
+
+const isSamePendingRule = (candidate: AlertRuleItem, target: AlertRuleItem): boolean => (
+  candidate.id === target.id
+  && candidate.name === target.name
+  && candidate.alertType === target.alertType
+  && candidate.targetScope === target.targetScope
+  && candidate.target === target.target
+  && (candidate.createdAt ?? null) === (target.createdAt ?? null)
+);
 
 export const AlertRuleList: React.FC<AlertRuleListProps> = ({
   rules,
@@ -123,14 +133,28 @@ export const AlertRuleList: React.FC<AlertRuleListProps> = ({
   onDelete,
   onTest,
   busyRule = null,
+  busyRules,
 }) => {
   const { language } = useUiLanguage();
   const text = ALERT_LIST_TEXT[language];
   const [pendingDelete, setPendingDelete] = useState<AlertRuleItem | null>(null);
+  const [prevRules, setPrevRules] = useState(rules);
+  if (prevRules !== rules) {
+    setPrevRules(rules);
+    if (pendingDelete && !rules.some((item) => isSamePendingRule(item, pendingDelete))) {
+      setPendingDelete(null);
+    }
+  }
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
-  const isRuleBusy = (rule: AlertRuleItem) => busyRule?.id === rule.id;
+  const activePendingDelete = pendingDelete
+    ? rules.find((item) => isSamePendingRule(item, pendingDelete)) ?? null
+    : null;
+  const getRuleBusyAction = (rule: AlertRuleItem): AlertRuleBusyAction | undefined => (
+    busyRules?.[rule.id] ?? (busyRule?.id === rule.id ? busyRule.action : undefined)
+  );
+  const isRuleBusy = (rule: AlertRuleItem) => getRuleBusyAction(rule) !== undefined;
   const isRuleActionBusy = (rule: AlertRuleItem, action: AlertRuleBusyAction) => (
-    busyRule?.id === rule.id && busyRule.action === action
+    getRuleBusyAction(rule) === action
   );
 
   return (
@@ -265,15 +289,15 @@ export const AlertRuleList: React.FC<AlertRuleListProps> = ({
       />
 
       <ConfirmDialog
-        isOpen={pendingDelete != null}
+        isOpen={activePendingDelete != null}
         title={text.deleteTitle}
-        message={pendingDelete ? formatUiText(text.deleteMessage, { name: pendingDelete.name }) : ''}
+        message={activePendingDelete ? formatUiText(text.deleteMessage, { name: activePendingDelete.name }) : ''}
         confirmText={text.delete}
         cancelText={text.cancel}
         isDanger
         onConfirm={() => {
-          if (pendingDelete) {
-            onDelete(pendingDelete);
+          if (activePendingDelete && !isRuleBusy(activePendingDelete)) {
+            onDelete(activePendingDelete);
           }
           setPendingDelete(null);
         }}
