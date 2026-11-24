@@ -1,5 +1,5 @@
 import type React from 'react';
-import { useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ParsedApiError } from '../../api/error';
 import { isParsedApiError } from '../../api/error';
 import { useAuth } from '../../hooks';
@@ -18,9 +18,29 @@ export const ChangePasswordCard: React.FC = () => {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | ParsedApiError | null>(null);
   const [success, setSuccess] = useState(false);
+  const mountedRef = useRef(true);
+  const submittingRef = useRef(false);
+  const successTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearSuccessTimer = useCallback(() => {
+    if (successTimerRef.current !== null) {
+      clearTimeout(successTimerRef.current);
+      successTimerRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      clearSuccessTimer();
+    };
+  }, [clearSuccessTimer]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSubmitting || submittingRef.current) return;
+    clearSuccessTimer();
     setError(null);
     setSuccess(false);
 
@@ -41,20 +61,31 @@ export const ChangePasswordCard: React.FC = () => {
       return;
     }
 
+    submittingRef.current = true;
     setIsSubmitting(true);
     try {
       const result = await changePassword(currentPassword, newPassword, newPasswordConfirm);
+      if (!mountedRef.current) return;
       if (result.success) {
         setSuccess(true);
         setCurrentPassword('');
         setNewPassword('');
         setNewPasswordConfirm('');
-        setTimeout(() => setSuccess(false), 4000);
+        clearSuccessTimer();
+        successTimerRef.current = setTimeout(() => {
+          successTimerRef.current = null;
+          if (mountedRef.current) {
+            setSuccess(false);
+          }
+        }, 4000);
       } else {
         setError(result.error ?? t('settings.changePasswordFailure'));
       }
     } finally {
-      setIsSubmitting(false);
+      submittingRef.current = false;
+      if (mountedRef.current) {
+        setIsSubmitting(false);
+      }
     }
   };
 
