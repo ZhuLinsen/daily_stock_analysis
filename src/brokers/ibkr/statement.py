@@ -45,9 +45,8 @@ NOTE_MARKER = "ibkr_flex"
 # IBKR lets the Flex template choose the date format; both compact and
 # hyphenated forms appear in real reports.
 _DATE_PATTERN = re.compile(r"^(\d{8}|\d{4}-\d{2}-\d{2})")
-# Same-day executions are only orderable by time, so the time part is parsed too:
-# ``HHMMSS``, optionally ``HH:MM:SS``.
-_TIME_PATTERN = re.compile(r"^(\d{6}|\d{2}:\d{2}:\d{2})$")
+# Same-day executions are only orderable by time, so the time part is parsed too.
+# The separator is template-configurable (see _parse_flex_time).
 
 
 @dataclass(frozen=True)
@@ -115,19 +114,18 @@ def _parse_flex_date(raw: Optional[str]) -> Optional[date]:
 def _parse_flex_time(raw: Optional[str]) -> Optional[time]:
     """Parse IBKR's execution timestamp into a time of day.
 
-    Accepts the ``yyyymmdd;HHMMSS`` form, the hyphens variant and a bare
-    ``HHMMSS``/``HH:MM:SS`` value (``tradeTime`` instead of ``dateTime``).
+    IBKR lets the template configure Date Format, Time Format and the Date/Time
+    separator, so the value may be ``20260102;093000``, ``20260102,09:30:00``,
+    ``20260102 093000``, ``20260102093000``, or the time alone. Only digits are
+    used: the last six are ``HHMMSS``. A value without a time is rejected rather
+    than guessed, since it cannot order same-day executions.
     """
-    text = (raw or "").strip()
-    if not text:
+    digits = re.sub(r"\D", "", str(raw or ""))
+    if len(digits) < 6:
         return None
-    if ";" in text:
-        text = text.split(";", 1)[1].strip()
-    if not _TIME_PATTERN.match(text):
-        return None
-    digits = text.replace(":", "")
+    clock = digits[-6:]
     try:
-        return time(int(digits[0:2]), int(digits[2:4]), int(digits[4:6]))
+        return time(int(clock[0:2]), int(clock[2:4]), int(clock[4:6]))
     except ValueError:
         return None
 
@@ -305,16 +303,30 @@ def _parse_trade(row: ET.Element) -> Tuple[Optional[TradeRecord], Optional[str]]
     )
 
 
+def _require_cash_date(row: ET.Element) -> str:
+    """Return the cash event date, failing when the template omits both fields.
+
+    A date is what the ledger needs; a template that includes neither
+    ``dateTime`` nor ``reportDate`` is a configuration problem, not a set of bad
+    rows, so it must not let the whole ledger import look successful while every
+    deposit is silently skipped.
+    """
+    for attribute in ("dateTime", "reportDate"):
+        value = row.get(attribute)
+        if value is not None and str(value).strip():
+            return str(value)
+    raise IbkrPortfolioError(
+        "IBKR CashTransactions 缺少 Date/Time（或 Report Date）字段，请在 Flex Query 中勾选 Date/Time 或 Report Date"
+    )
+
+
 def _parse_cash(row: ET.Element) -> Tuple[Optional[CashRecord], Optional[str]]:
     """Return ``(record, skip_reason)``; exactly one is non-None."""
     cash_type = _require_flex_field(row, "type", "CashTransactions").strip()
     if cash_type not in _CASH_TYPES_IMPORTED:
         return None, cash_type
 
-    raw_date = row.get("dateTime")
-    if raw_date is None or not str(raw_date).strip():
-        raw_date = row.get("reportDate")
-    event_date = _parse_flex_date(raw_date)
+    event_date = _parse_flex_date(_require_cash_date(row))
     if event_date is None:
         return None, f"{cash_type}:bad date"
     source_uid = _require_flex_field(row, "transactionID", "CashTransactions").strip()

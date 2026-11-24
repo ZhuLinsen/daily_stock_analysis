@@ -362,7 +362,7 @@ class IbkrLedgerContractMatrixTest(unittest.TestCase):
         "assetCategory", "accountId", "symbol", "listingExchange", "currency",
         "tradeDate", "dateTime", "tradeID", "openCloseIndicator", "quantity", "tradePrice",
     )
-    CASH_REQUIRED = ("type", "accountId", "currency", "transactionID", "amount")
+    CASH_REQUIRED = ("type", "accountId", "currency", "transactionID", "amount", "dateTime")
 
     def _trade(self, **overrides) -> str:
         attrs = {
@@ -520,3 +520,74 @@ class IbkrExecutionTimeTest(unittest.TestCase):
         self.assertEqual(len(result.trades), 1)
         self.assertEqual(result.trades[0].trade_date, date(2025, 5, 8))
         self.assertEqual(result.trades[0].trade_time, time(20, 26, 0))
+
+
+class IbkrFlexFormatVariantsTest(unittest.TestCase):
+    """Template-configurable formats must not silently skip the whole import."""
+
+    def _trade(self, **overrides) -> str:
+        attrs = {
+            "assetCategory": "STK", "levelOfDetail": "EXECUTION",
+            "accountId": "U0000000", "symbol": "AAPL", "listingExchange": "NASDAQ",
+            "currency": "USD", "buySell": "BUY", "quantity": "10",
+            "tradePrice": "100", "tradeDate": "20260102",
+            "dateTime": "20260102;093000", "tradeID": "T1", "openCloseIndicator": "O",
+        }
+        attrs.update(overrides)
+        for key in [k for k, v in attrs.items() if v is None]:
+            del attrs[key]
+        return "<Trade " + " ".join(f'{k}="{v}"' for k, v in attrs.items()) + " />"
+
+    def _parse(self, trades=(), cash=()):
+        return s.parse_statement(_statement(
+            "<Trades>" + "".join(trades) + "</Trades>"
+            "<CashTransactions>" + "".join(cash) + "</CashTransactions>"
+        ))
+
+    # IBKR Flex lets the template choose the Date/Time Separator.
+    def test_separator_variants_are_parsed(self) -> None:
+        for value, expected in (
+            ("20260102;093000", time(9, 30)),
+            ("20260102,093000", time(9, 30)),
+            ("20260102 093000", time(9, 30)),
+            ("20260102093000", time(9, 30)),
+            ("2026-01-02;09:30:00", time(9, 30)),
+            ("2026-01-02,09:30:00", time(9, 30)),
+            ("2026-01-02 09:30:00", time(9, 30)),
+            ("09:30:00", time(9, 30)),
+            ("093000", time(9, 30)),
+        ):
+            with self.subTest(value=value):
+                result = self._parse(trades=[self._trade(dateTime=value)])
+                self.assertEqual(len(result.trades), 1, value)
+                self.assertEqual(result.trades[0].trade_time, expected)
+
+    def test_date_only_value_is_not_mistaken_for_a_time(self) -> None:
+        # 8 digits cannot be read as a clock; skip the row instead of inventing one.
+        result = self._parse(trades=[self._trade(dateTime="20260102")])
+
+        self.assertEqual(result.trades, [])
+        self.assertTrue(any("bad time" in reason for reason in result.skipped_trades))
+
+    def test_cash_without_any_date_field_is_a_template_error(self) -> None:
+        row = ('<CashTransaction type="Deposits/Withdrawals" accountId="U0000000" '
+               'currency="EUR" amount="1000" transactionID="C1" />')
+        for variant in (row, row.replace("transactionID", 'reportDate="" transactionID')):
+            with self.subTest(variant=variant[-40:]):
+                with self.assertRaisesRegex(IbkrPortfolioError, "CashTransactions"):
+                    self._parse(cash=[variant])
+
+    def test_cash_report_date_is_accepted_instead_of_datetime(self) -> None:
+        row = ('<CashTransaction type="Deposits/Withdrawals" accountId="U0000000" '
+               'currency="EUR" amount="1000" transactionID="C1" reportDate="20260105" />')
+        result = self._parse(cash=[row])
+
+        self.assertEqual([c.event_date for c in result.cash_events], [date(2026, 1, 5)])
+
+    def test_cash_bad_date_stays_a_row_skip(self) -> None:
+        row = ('<CashTransaction type="Deposits/Withdrawals" accountId="U0000000" '
+               'currency="EUR" amount="1000" transactionID="C1" dateTime="garbage" />')
+        result = self._parse(cash=[row])
+
+        self.assertEqual(result.cash_events, [])
+        self.assertTrue(any("bad date" in reason for reason in result.skipped_cash))
