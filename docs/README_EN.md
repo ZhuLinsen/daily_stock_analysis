@@ -164,6 +164,8 @@ By default, the workflow runs every weekday at 18:00 Beijing time and skips non-
 
 ### Option 2: Local / Docker Deployment
 
+For a Windows source install, use a short project path such as `C:\dsa`. See [installation troubleshooting](./FAQ_EN.md#windows-dependency-installation-fails-on-long-paths) if pip reports a path-length error.
+
 ```bash
 # Clone the project
 git clone https://github.com/ZhuLinsen/daily_stock_analysis.git && cd daily_stock_analysis
