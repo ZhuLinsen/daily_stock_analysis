@@ -113,6 +113,7 @@ def test_heavy_ci_jobs_are_path_filtered_and_backend_tests_are_sharded() -> None
         "!apps/dsa-web/**",
         "!apps/dsa-site/**",
         "!docs/**",
+        "!tests/fixtures/**",
         "!**/*.md",
         "!LICENSE",
     ]
@@ -305,16 +306,25 @@ def test_backend_filter_covers_mixed_changes_and_shared_web_assets() -> None:
     assert outputs(["docs/architecture/api_spec.json"])[1] is True
     assert outputs(["docs/alerts.md"])[1] is True
     assert outputs(["tests/fixtures/notification_reports/aggregate_report.md"])[1] is True
+    assert outputs(["tests/fixtures/agent_trajectory/sample.json"]) == (
+        False,
+        True,
+        False,
+        False,
+        False,
+        False,
+    )
     assert outputs(["THIRD_PARTY_NOTICES.md"])[1] is True
     assert outputs(["docs/CONTRIBUTING.md"]) == (False, False, False, False, False, False)
     assert outputs(["README.md"]) == (False, False, False, False, False, False)
     assert outputs(["LICENSE"]) == (False, False, False, False, False, False)
     assert outputs(["apps/dsa-web/README.md"]) == (False, False, False, False, False, False)
     assert outputs(["apps/dsa-desktop/README.md"]) == (False, False, False, False, False, False)
-    assert outputs(["src/config.py"]) == (True, False, False, False, False, False)
+    assert outputs(["src/config.py"]) == (True, False, True, False, False, False)
+    assert outputs(["src/services/screening/pipeline.py"]) == (True, False, True, False, False, False)
     assert outputs(["requirements.txt"]) == (True, False, True, False, False, True)
     assert outputs(["docker/Dockerfile"]) == (True, False, True, False, False, False)
-    assert outputs(["apps/dsa-web/src/App.tsx"]) == (False, False, False, True, True, False)
+    assert outputs(["apps/dsa-web/src/App.tsx"]) == (False, False, True, True, True, False)
     assert outputs(["apps/dsa-web/package-lock.json"]) == (False, False, True, True, True, False)
     assert outputs(["apps/dsa-web/src/pages/__tests__/PortfolioPage.test.tsx"]) == (
         False,
@@ -332,10 +342,18 @@ def test_backend_filter_covers_mixed_changes_and_shared_web_assets() -> None:
         False,
         False,
     )
+    assert outputs(["apps/dsa-web/e2e/fixtures/x6ai-settings.spec.ts"]) == (
+        False,
+        False,
+        False,
+        True,
+        True,
+        False,
+    )
     assert outputs(["apps/dsa-web/src/App.tsx", "docs/CHANGELOG.md"]) == (
         False,
         True,
-        False,
+        True,
         True,
         True,
         False,
@@ -343,7 +361,7 @@ def test_backend_filter_covers_mixed_changes_and_shared_web_assets() -> None:
     assert outputs(["apps/dsa-web/src/App.tsx", "src/config.py"]) == (
         True,
         False,
-        False,
+        True,
         True,
         True,
         False,

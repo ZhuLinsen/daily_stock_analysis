@@ -46,10 +46,15 @@ jobs:
               - '{apps/dsa-web/public/**,apps/dsa-web/src/components/settings/llmProviderTemplates.ts,apps/dsa-web/src/locales/settingsHelp.ts}'
               - '!**/*.md'
             docker:
-              # Python/web source is already covered by backend-tests/web-gate;
-              # image-level regressions are re-checked on every push to main / merge_group.
-              - '{docker/**,requirements.txt,.dockerignore,apps/dsa-web/package.json,apps/dsa-web/package-lock.json,.github/workflows/ci.yml}'
+              # Keep runtime inputs covered for Dockerfile build/import smoke, while skipping
+              # frontend test-only and Markdown-only changes on PRs.
+              - '{*.py,api/**,bot/**,data_provider/**,src/**,strategies/**,apps/dsa-web/**,docker/**,requirements.txt,.dockerignore,.github/workflows/ci.yml}'
               - '!**/*.md'
+              - '!apps/dsa-web/src/**/__tests__/**'
+              - '!apps/dsa-web/**/*.test.ts'
+              - '!apps/dsa-web/**/*.test.tsx'
+              - '!apps/dsa-web/tests/**'
+              - '!apps/dsa-web/e2e/**'
             futu_packaging:
               - '{requirements.txt,main.py,src/brokers/futu/**,scripts/build-backend.ps1,scripts/build-backend-macos.sh,scripts/macos-signature-audit.sh,scripts/build-all.ps1,scripts/build-all-macos.sh,apps/dsa-desktop/**,.github/workflows/ci.yml,.github/workflows/release.yml}'
               - '!**/*.md'
@@ -64,6 +69,7 @@ jobs:
               - '!apps/dsa-web/**'
               - '!apps/dsa-site/**'
               - '!docs/**'
+              - '!tests/fixtures/**'
               - '!**/*.md'
               - '!LICENSE'
       - name: 🧭 Filter frontend code paths
