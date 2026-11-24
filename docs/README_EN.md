@@ -48,7 +48,7 @@ English | [简体中文](../README.md) | [繁體中文](README_CHT.md)
 </p>
 
 > [!TIP]
-> 🔎 **Not sure which stocks to analyze?** [**AlphaSift**](https://github.com/ZhuLinsen/alphasift), the companion open-source screener, scans 7 markets after each close and publicly tracks how its picks perform (T+N) → [**See today's picks online, no install**](https://alphasift.zhulinsen.tech/?lang=en&utm_source=dsa_readme)
+> 🔎 **Need stock ideas?** Open-source [AlphaSift](https://github.com/ZhuLinsen/alphasift): daily picks + strategy tracking → [**Today's picks (no install)**](https://alphasift.zhulinsen.tech/?lang=en&utm_source=dsa_readme)
 
 ## ✨ Key Features
 

@@ -47,7 +47,7 @@
 </p>
 
 > [!TIP]
-> 🔎 **不知道该分析哪只股票？** 配套开源选股引擎 [**AlphaSift**](https://github.com/ZhuLinsen/alphasift) 每日盘后扫描 7 大市场筛出候选，并公开跟踪 T+N 表现 → [**免安装在线看今日选股**](https://alphasift.zhulinsen.tech/?lang=zh&utm_source=dsa_readme)
+> 🔎 **不知道选哪只股？** 开源选股 [AlphaSift](https://github.com/ZhuLinsen/alphasift) 每日选股+策略跟踪 → [**免安装在线看今日选股**](https://alphasift.zhulinsen.tech/?lang=zh&utm_source=dsa_readme)
 
 ## ✨ 功能特性
 

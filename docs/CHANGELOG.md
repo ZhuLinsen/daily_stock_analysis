@@ -30,7 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [新功能] 飞书 Webhook 和 App Bot 交互卡片显示报告标题、信号配色及独立风险警报面板，可通过 `FEISHU_CARD_WEB_URL` 或 `DSA_WEB_URL` 添加 Web 工作台按钮。两种发送模式均按完整请求体字节数分页。
 - [新功能] `AGENT_DEBATE_ENABLED` 默认关闭。多 Agent 出现方向分歧或高确信买入时，将带来源引用的多空简报传给决策 Agent，并在决策前运行或复用风险审查。必审未完成或启用的风控规则否决买入时，报告和问股回复暂缓买入。
 - [修复] 选股、告警与个股分析报告统一使用同一 Wilder RSI（`src/utils/rsi.py`，基于 `fin-primitives`，以前 period 个涨跌幅的简单均值起算，与 TA-Lib 一致）：选股不再使用简单滚动均值，告警与报告不再以首行零涨跌幅起算 ewm，短历史下三处的超买/超卖判断不再出现分歧。预热期与无波动时仍为中性值 50；RSI 告警不再用预热占位值判断穿越，最少历史改为 period+2 根。
-- [文档] 将 AlphaSift 项目入口前移至 README 产品预览之后、功能特性之前，以 `[!TIP]` 一句话场景提示展示并附在线看板直链，同步简体、英文与繁体版本。
+- [文档] 将 AlphaSift 与 AlphaEvo 的项目入口前移至 README 产品预览之后、功能特性之前，以 `[!TIP]` 提示框展示，同步简体、英文与繁体版本。
 
 - [修复] 修复 Telegram 报告包含 11 个及以上 Markdown 链接时，后续来源被替换为较早链接的问题。
 - [修复] 盘中回测与 Skill 观点评估从当日收盘起算，避免计入分析时已发生的日内涨跌；回测排除相对评估入场价失效的止盈止损方案的模拟收益及命中率，方向评估继续保留。
