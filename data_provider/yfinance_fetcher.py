@@ -39,7 +39,7 @@ from src.services.market_symbol_utils import get_suffix_market, is_suffix_market
 
 # 可选导入本地股票映射补丁，若缺失则使用空字典兜底
 try:
-    from src.data.stock_mapping import STOCK_NAME_MAP, is_meaningful_stock_name
+    from src.data.stock_mapping import STOCK_NAME_MAP, is_meaningful_stock_name, lookup_static_stock_name
 except (ImportError, ModuleNotFoundError):
     STOCK_NAME_MAP = {}
 
@@ -49,6 +49,15 @@ except (ImportError, ModuleNotFoundError):
             return False
         n = str(name).strip()
         return bool(n and n.upper() != str(stock_code).strip().upper())
+
+    def lookup_static_stock_name(
+        stock_code: str,
+        stock_name_map: Optional[Dict[str, str]] = None,
+    ) -> Optional[str]:
+        """Minimal fallback static lookup when src.data.stock_mapping is absent."""
+        mapping = STOCK_NAME_MAP if stock_name_map is None else stock_name_map
+        name = mapping.get(stock_code)
+        return str(name).strip() if is_meaningful_stock_name(name, stock_code) else None
 
 import os
 
@@ -660,7 +669,7 @@ class YfinanceFetcher(BaseFetcher):
 
             quote = UnifiedRealtimeQuote(
                 code=symbol,
-                name=STOCK_NAME_MAP.get(symbol, ''),
+                name=lookup_static_stock_name(symbol, STOCK_NAME_MAP) or '',
                 source=RealtimeSource.STOOQ,
                 price=price,
                 change_pct=round(change_pct, 2) if change_pct is not None else None,
@@ -922,14 +931,31 @@ class YfinanceFetcher(BaseFetcher):
                 amplitude = ((high - low) / prev_close) * 100
 
             try:
-                info_name = ticker_info.get('shortName', '') or ticker_info.get('longName', '') or ''
-                name = (
-                    info_name
-                    if is_meaningful_stock_name(info_name, symbol)
-                    else STOCK_NAME_MAP.get(quote_code, '')
+                candidates = [
+                    ticker_info.get('shortName', ''),
+                    ticker_info.get('longName', ''),
+                ]
+                name = next(
+                    (
+                        str(candidate).strip()
+                        for candidate in candidates
+                        if is_meaningful_stock_name(candidate, symbol)
+                        and is_meaningful_stock_name(candidate, stock_code)
+                    ),
+                    '',
                 )
+                if not name:
+                    name = (
+                        lookup_static_stock_name(quote_code, STOCK_NAME_MAP)
+                        or lookup_static_stock_name(stock_code, STOCK_NAME_MAP)
+                        or ''
+                    )
             except Exception:
-                name = STOCK_NAME_MAP.get(quote_code, '')
+                name = (
+                    lookup_static_stock_name(quote_code, STOCK_NAME_MAP)
+                    or lookup_static_stock_name(stock_code, STOCK_NAME_MAP)
+                    or ''
+                )
 
             # 复用上方已获取的 ticker_info，无额外请求
             pe_ratio = _safe_float(ticker_info.get('trailingPE'))
@@ -986,6 +1012,70 @@ class YfinanceFetcher(BaseFetcher):
                 return self._get_us_stock_quote_from_stooq(stock_code)
             logger.warning(f"[Yfinance] Failed to fetch {stock_code} realtime quote: {e}")
             return None
+
+    def get_stock_name(self, stock_code: str, *, allow_network: bool = True) -> Optional[str]:
+        """Resolve display name for supported US, HK, and JP/KR/TW symbols via Yahoo Finance."""
+        cache_key = (stock_code or "").strip().upper()
+        if not cache_key:
+            return None
+
+        if not hasattr(self, "_stock_name_cache") or self._stock_name_cache is None:
+            self._stock_name_cache = {}
+        if cache_key in self._stock_name_cache:
+            return self._stock_name_cache[cache_key]
+
+        yf_symbol, index_name = get_us_index_yf_symbol(cache_key)
+        if yf_symbol:
+            if is_meaningful_stock_name(index_name, cache_key):
+                resolved = str(index_name).strip()
+                self._stock_name_cache[cache_key] = resolved
+                return resolved
+            return None
+
+        lookup_code = cache_key
+        # Exclude single-letter '.A' here so class-A shares like 'BRK.A' map to 'BRK-A' rather than 'BRK'.
+        for suffix in (".NASDAQ", ".NYSE", ".AMEX", ".ARCA", ".US", ".N", ".O"):
+            if cache_key.endswith(suffix):
+                candidate_base = cache_key[: -len(suffix)]
+                if self._is_us_stock(candidate_base):
+                    lookup_code = candidate_base
+                break
+
+        if not (
+            self._is_us_stock(lookup_code)
+            or _is_hk_market(lookup_code)
+            or self._is_jp_kr_suffix_stock(lookup_code)
+            or self._is_tw_suffix_stock(lookup_code)
+        ):
+            return None
+
+        from data_provider.base import is_stock_name_prefetch_active
+        from src.core.stock_execution_context import is_current_stock_cancelled
+
+        if not allow_network or is_stock_name_prefetch_active() or is_current_stock_cancelled():
+            return None
+
+        try:
+            import yfinance as yf
+
+            symbol = self._convert_stock_code(lookup_code)
+            ticker_info = yf.Ticker(symbol).info or {}
+            if not isinstance(ticker_info, dict):
+                return None
+
+            for field in ("shortName", "longName"):
+                candidate = ticker_info.get(field)
+                if (
+                    is_meaningful_stock_name(candidate, cache_key)
+                    and is_meaningful_stock_name(candidate, symbol)
+                ):
+                    resolved = str(candidate).strip()
+                    self._stock_name_cache[cache_key] = resolved
+                    return resolved
+        except Exception as e:
+            logger.debug(f"[Yfinance] Failed to fetch stock name for {stock_code}: {e}")
+
+        return None
 
 
 if __name__ == "__main__":

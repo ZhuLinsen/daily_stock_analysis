@@ -83,7 +83,7 @@ from src.llm.provider_cache import (
 )
 from src.llm.response_content import strip_leading_think_wrapper
 from src.storage import persist_llm_usage
-from src.data.stock_mapping import STOCK_NAME_MAP
+from src.data.stock_mapping import STOCK_NAME_MAP, lookup_static_stock_name
 from src.report_language import (
     get_signal_level,
     get_no_data_text,
@@ -1958,8 +1958,9 @@ def get_stock_name_multi_source(
             return context['realtime']['name']
 
     # 2. 从静态映射表获取
-    if stock_code in STOCK_NAME_MAP:
-        return STOCK_NAME_MAP[stock_code]
+    static_name = lookup_static_stock_name(stock_code, STOCK_NAME_MAP)
+    if static_name:
+        return static_name
 
     # 3. 从数据源获取
     if data_manager is None:
@@ -4357,7 +4358,7 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                 resolved_name = context['realtime']['name']
             else:
                 # 最后从映射表获取
-                resolved_name = STOCK_NAME_MAP.get(code)
+                resolved_name = lookup_static_stock_name(code, STOCK_NAME_MAP)
         name = resolved_name or f'股票{code}'
         log_name = resolved_name or code
 
@@ -4666,7 +4667,7 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
         # 优先使用上下文中的股票名称（从 realtime_quote 获取）
         stock_name = context.get('stock_name', name)
         if not stock_name or stock_name == f'股票{code}':
-            stock_name = STOCK_NAME_MAP.get(code, f'股票{code}')
+            stock_name = lookup_static_stock_name(code, STOCK_NAME_MAP) or f'股票{code}'
             
         if english and stock_name == f'股票{code}':
             stock_name = f'Stock {code}'
