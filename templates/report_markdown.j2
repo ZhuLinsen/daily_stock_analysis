@@ -75,8 +75,8 @@
 {% if pos_advice %}
 | {{ labels.position_status_label }} | {{ labels.action_advice_label }} |
 |---------|---------|
-| 🆕 **{{ labels.no_position_label }}** | {{ pos_advice.get('no_position', e.localized_operation_advice) }} |
-| 💼 **{{ labels.has_position_label }}** | {{ pos_advice.get('has_position', labels.continue_holding) }} |
+| 🆕 **{{ labels.no_position_label }}** | {{ md_cell(pos_advice.get('no_position', e.localized_operation_advice)) }} |
+| 💼 **{{ labels.has_position_label }}** | {{ md_cell(pos_advice.get('has_position', labels.continue_holding)) }} |
 {% endif %}
 
 {{ market_snapshot(result) }}
@@ -93,13 +93,13 @@
 {% if price_data %}
 | {{ labels.price_metrics_label }} | {{ labels.current_price_label }} |
 |---------|------|
-| {{ labels.current_price_label }} | {{ price_data.get('current_price', 'N/A') }} |
-| {{ labels.ma5_label }} | {{ price_data.get('ma5', 'N/A') }} |
-| {{ labels.ma10_label }} | {{ price_data.get('ma10', 'N/A') }} |
-| {{ labels.ma20_label }} | {{ price_data.get('ma20', 'N/A') }} |
-| {{ labels.bias_ma5_label }} | {{ price_data.get('bias_ma5', 'N/A') }}% {{ price_data.get('bias_status', 'N/A') }} |
-| {{ labels.support_level_label }} | {{ price_data.get('support_level', 'N/A') }} |
-| {{ labels.resistance_level_label }} | {{ price_data.get('resistance_level', 'N/A') }} |
+| {{ labels.current_price_label }} | {{ md_cell(price_data.get('current_price')) }} |
+| {{ labels.ma5_label }} | {{ md_cell(price_data.get('ma5')) }} |
+| {{ labels.ma10_label }} | {{ md_cell(price_data.get('ma10')) }} |
+| {{ labels.ma20_label }} | {{ md_cell(price_data.get('ma20')) }} |
+| {{ labels.bias_ma5_label }} | {{ md_cell(price_data.get('bias_ma5')) }}% {{ md_cell(price_data.get('bias_status')) }} |
+| {{ labels.support_level_label }} | {{ md_cell(price_data.get('support_level')) }} |
+| {{ labels.resistance_level_label }} | {{ md_cell(price_data.get('resistance_level')) }} |
 {% endif %}
 
 {% set vol_data = data_persp.get('volume_analysis', {}) %}
@@ -129,7 +129,7 @@
 
 | {{ labels.action_window_label }} | {{ labels.immediate_action_label }} | {{ labels.next_check_time_label }} |
 |---------|---------|---------|
-| {{ phase_decision.get('action_window') or 'N/A' }} | {{ phase_decision.get('immediate_action') or 'N/A' }} | {{ phase_decision.get('next_check_time') or 'N/A' }} |
+| {{ md_cell(phase_decision.get('action_window')) }} | {{ md_cell(phase_decision.get('immediate_action')) }} | {{ md_cell(phase_decision.get('next_check_time')) }} |
 
 {% if phase_decision.get('watch_conditions') %}
 **{{ labels.watch_conditions_label }}**:
@@ -239,7 +239,7 @@
 | {{ labels.time_label }} | {{ labels.score_label }} | {{ labels.advice_label }} | {{ labels.trend_label }} |
 |------|------|------|------|
 {% for h in hist %}
-| {{ h.created_at[:16] if h.created_at else 'N/A' }} | {{ h.sentiment_score or 'N/A' }} | {{ h.action_label or localize_action_label(h.action, report_language) or localize_operation_advice(h.operation_advice or 'N/A', report_language) }} | {{ localize_trend_prediction(h.trend_prediction or 'N/A', report_language) }} |
+| {{ md_cell(h.created_at[:16] if h.created_at else None) }} | {{ md_cell(h.sentiment_score) }} | {{ md_cell(h.action_label or localize_action_label(h.action, report_language) or localize_operation_advice(h.operation_advice or 'N/A', report_language)) }} | {{ md_cell(localize_trend_prediction(h.trend_prediction or 'N/A', report_language)) }} |
 {% endfor %}
 {% endif %}
 

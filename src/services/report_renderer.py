@@ -10,6 +10,7 @@ Any expensive data preparation should be injected by the caller via extra_contex
 """
 
 import logging
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -49,6 +50,14 @@ from src.utils.data_processing import (
 
 logger = logging.getLogger(__name__)
 
+_VALID_PLATFORM_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
+_UNESCAPED_PIPE_RE = re.compile(r"(?<!\\)((?:\\\\)*)\|")
+
+
+def _escape_unescaped_pipes(text: str) -> str:
+    """Escape unescaped GFM table pipes without double-escaping existing \\| sequences."""
+    return _UNESCAPED_PIPE_RE.sub(r"\1\\|", text)
+
 
 def _escape_md(text: str) -> str:
     """Escape markdown special chars (*ST etc)."""
@@ -57,13 +66,31 @@ def _escape_md(text: str) -> str:
     return text.replace("*", "\\*").replace("_", "\\_")
 
 
+def _single_line(val: Any, default: str = "") -> str:
+    """Collapse multi-line text into a single trimmed line while preserving numeric 0."""
+    if val is None:
+        return default
+    if isinstance(val, (int, float)) and not isinstance(val, bool):
+        return str(val)
+    text = " ".join(str(val).splitlines()).strip()
+    return text if text else default
+
+
+def _md_cell(val: Any, default: str = "N/A") -> str:
+    """Sanitize a value for safe single-line GFM Markdown table cells."""
+    text = _single_line(val, "")
+    if not text:
+        text = _single_line(default, "N/A")
+    return _escape_unescaped_pipes(text)
+
+
 def _clean_sniper_value(val: Any) -> str:
-    """Format sniper point value for display (strip label prefixes)."""
+    """Format sniper point value for display (strip label prefixes and sanitize cells)."""
     if val is None:
         return "N/A"
-    if isinstance(val, (int, float)):
+    if isinstance(val, (int, float)) and not isinstance(val, bool):
         return str(val)
-    s = str(val).strip() if val else ""
+    s = _single_line(val, "")
     if not s or s == "N/A":
         return s or "N/A"
     prefixes = [
@@ -73,8 +100,9 @@ def _clean_sniper_value(val: Any) -> str:
     ]
     for prefix in prefixes:
         if s.startswith(prefix):
-            return s[len(prefix):]
-    return s
+            s = s[len(prefix):].strip()
+            break
+    return _escape_unescaped_pipes(s or "N/A")
 
 
 def _resolve_templates_dir() -> Path:
@@ -120,6 +148,10 @@ def render(
 
     if report_date is None:
         report_date = datetime.now().strftime("%Y-%m-%d")
+
+    if not isinstance(platform, str) or not _VALID_PLATFORM_RE.fullmatch(platform):
+        logger.debug("Invalid report template platform: %r", platform)
+        return None
 
     templates_dir = _resolve_templates_dir()
     template_name = f"report_{platform}.j2"
@@ -227,6 +259,8 @@ def render(
         "show_llm_model": show_llm_model,
         "market_status_line": market_status_line(),
         "escape_md": _escape_md,
+        "single_line": _single_line,
+        "md_cell": _md_cell,
         "clean_sniper": _clean_sniper_value,
         "failed_checks": failed_checks,
         "phase_pack_excerpt": phase_pack_excerpt,
