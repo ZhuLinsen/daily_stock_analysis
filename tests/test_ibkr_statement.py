@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import unittest
-from datetime import date
+from datetime import date, time
 
 from src.brokers.ibkr import statement as s
 from src.brokers.ibkr.flex import IbkrPortfolioError
@@ -20,6 +20,7 @@ def _trade(**overrides) -> str:
         "ibCommission": "-1",
         "taxes": "0",
         "tradeDate": "20260102",
+        "dateTime": "20260102;093000",
         "tradeID": "12345",
         "accountId": "U0000000",
         "openCloseIndicator": "O",
@@ -359,7 +360,7 @@ class IbkrLedgerContractMatrixTest(unittest.TestCase):
 
     TRADE_REQUIRED = (
         "assetCategory", "accountId", "symbol", "listingExchange", "currency",
-        "tradeDate", "tradeID", "openCloseIndicator", "quantity", "tradePrice",
+        "tradeDate", "dateTime", "tradeID", "openCloseIndicator", "quantity", "tradePrice",
     )
     CASH_REQUIRED = ("type", "accountId", "currency", "transactionID", "amount")
 
@@ -369,7 +370,7 @@ class IbkrLedgerContractMatrixTest(unittest.TestCase):
             "accountId": "U0000000", "symbol": "AAPL", "listingExchange": "NASDAQ",
             "currency": "USD", "buySell": "BUY", "quantity": "10",
             "tradePrice": "100", "tradeDate": "20260102", "tradeID": "T1",
-            "openCloseIndicator": "O",
+            "dateTime": "20260102;093000", "openCloseIndicator": "O",
         }
         attrs.update(overrides)
         return "<Trade " + " ".join(f'{k}="{v}"' for k, v in attrs.items()) + " />"
@@ -397,7 +398,8 @@ class IbkrLedgerContractMatrixTest(unittest.TestCase):
                 attrs = {"assetCategory": "STK", "levelOfDetail": "EXECUTION",
                          "accountId": "U", "symbol": "AAPL", "listingExchange": "NASDAQ",
                          "currency": "USD", "quantity": "10", "tradePrice": "100",
-                         "tradeDate": "20260102", "tradeID": "T", "openCloseIndicator": "O"}
+                         "tradeDate": "20260102", "tradeID": "T",
+                         "dateTime": "20260102;093000", "openCloseIndicator": "O"}
                 attrs.pop(field)
                 row = "<Trade " + " ".join(f'{k}="{v}"' for k, v in attrs.items()) + " />"
                 with self.assertRaises(IbkrPortfolioError, msg=field):
@@ -441,6 +443,7 @@ class IbkrLedgerContractMatrixTest(unittest.TestCase):
             "unknown exchange": {"listingExchange": "BM"},
             "zero quantity": {"quantity": "0"},
             "garbage date": {"tradeDate": "garbage"},
+            "garbage time": {"dateTime": "20260102;notatime"},
             "non-numeric price": {"tradePrice": "abc"},
         }
         for name, overrides in cases.items():
@@ -455,3 +458,65 @@ class IbkrLedgerContractMatrixTest(unittest.TestCase):
         result = self._parse(trades=[self._trade(assetCategory="OPT")])
         self.assertEqual(result.trades, [])
         self.assertEqual(result.skipped_trades, [])
+
+
+class IbkrExecutionTimeTest(unittest.TestCase):
+    """Execution time is required and parsed: same-day order depends on it."""
+
+    def _row(self, **overrides) -> str:
+        attrs = {
+            "assetCategory": "STK", "levelOfDetail": "EXECUTION",
+            "accountId": "U0000000", "symbol": "AAPL", "listingExchange": "NASDAQ",
+            "currency": "USD", "buySell": "BUY", "quantity": "10",
+            "tradePrice": "100", "tradeDate": "20260102",
+            "dateTime": "20260102;093000", "tradeID": "T1", "openCloseIndicator": "O",
+        }
+        attrs.update(overrides)
+        for key in [k for k, v in attrs.items() if v is None]:
+            del attrs[key]
+        return "<Trade " + " ".join(f'{k}="{v}"' for k, v in attrs.items()) + " />"
+
+    def _parse(self, row: str):
+        return s.parse_statement(
+            _statement(f"<Trades>{row}</Trades><CashTransactions></CashTransactions>")
+        )
+
+    def test_datetime_supplies_the_time_of_day(self) -> None:
+        result = self._parse(self._row(dateTime="20260102;153045"))
+
+        self.assertEqual(len(result.trades), 1)
+        self.assertEqual(result.trades[0].trade_time, time(15, 30, 45))
+
+    def test_colon_and_hyphen_datetime_form_is_accepted(self) -> None:
+        result = self._parse(self._row(tradeDate="2026-01-02", dateTime="2026-01-02;09:30:00"))
+
+        self.assertEqual(result.trades[0].trade_time, time(9, 30, 0))
+
+    def test_tradetime_is_accepted_when_datetime_is_absent(self) -> None:
+        result = self._parse(self._row(dateTime=None, tradeTime="161500"))
+
+        self.assertEqual(len(result.trades), 1)
+        self.assertEqual(result.trades[0].trade_time, time(16, 15, 0))
+
+    def test_missing_time_is_a_template_error(self) -> None:
+        with self.assertRaisesRegex(IbkrPortfolioError, "Date/Time"):
+            self._parse(self._row(dateTime=None))
+
+    def test_empty_time_is_a_template_error(self) -> None:
+        with self.assertRaisesRegex(IbkrPortfolioError, "Date/Time"):
+            self._parse(self._row(dateTime="   "))
+
+    def test_unparseable_time_is_a_row_skip(self) -> None:
+        result = self._parse(self._row(dateTime="20260102;notatime"))
+
+        self.assertEqual(result.trades, [])
+        self.assertTrue(any("bad time" in reason for reason in result.skipped_trades))
+
+    def test_datetime_date_may_differ_from_trade_date(self) -> None:
+        # Real IBKR row: an FX execution after midnight local time keeps the
+        # previous date in dateTime. The time of day is still what orders it.
+        result = self._parse(self._row(tradeDate="20250508", dateTime="20250507;202600"))
+
+        self.assertEqual(len(result.trades), 1)
+        self.assertEqual(result.trades[0].trade_date, date(2025, 5, 8))
+        self.assertEqual(result.trades[0].trade_time, time(20, 26, 0))

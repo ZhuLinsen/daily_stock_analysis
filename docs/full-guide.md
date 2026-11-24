@@ -875,10 +875,10 @@ python -m src.brokers.ibkr.sync
 
 | 分区 | 必须勾选的字段 |
 |---|---|
-| Trades | `Asset Class`、`Symbol`、`Listing Exchange`、`Currency`、`Quantity`、`Trade Price`、`Trade Date`、`Trade ID`、`Open/Close Indicator`、`Account ID` |
+| Trades | `Asset Class`、`Symbol`、`Listing Exchange`、`Currency`、`Quantity`、`Trade Price`、`Trade Date`、`Date/Time`、`Trade ID`、`Open/Close Indicator`、`Account ID` |
 | CashTransactions | `Type`、`Account ID`、`Currency`、`Amount`、`Transaction ID`、`Date/Time`（或 `Report Date`） |
 
-上述字段缺失或为空都会直接报错，避免把配置错误的查询当成「没有成交/没有现金流水」。日期格式支持 `yyyymmdd` 与 `yyyy-MM-dd`，含 `;HHMMSS` 时间后缀也可。`Description` 为可选字段。同步是幂等的：成交按 IBKR `tradeID` 去重，存取款按现金流水的 `source_uid`（IBKR `transactionID`）去重，且 `(account_id, source_uid)` 上有部分唯一索引，并发同步也不会重复入账。导入范围仅限股票成交（按 `buySell` 方向）与 Deposits/Withdrawals；货币兑换（FX）、分红、预扣税、费用、公司行为（拆合股）以及不支持交易所（如 BM / SBF / LSE / IBIS）的持仓会记录日志后跳过。本地账本为多头模型，无法表示空头：标记为平仓（IBKR `openCloseIndicator=C`）的买入成交（即空头平仓）与标记为开仓（`=O`）的卖出成交（即空头开仓）会逐笔跳过，避免把空头误记成多头；同一标的后续带正确标记的开多仍会正常导入。只有卖出因可卖数量不足而失败时才会阻断该标的的本轮后续成交。跳过数量在同步摘要的 `trades_skipped_unbalanced` 中给出。现金流水与部分唯一索引由启动时的自动迁移补齐，历史数据不受影响。同步结果会以 JSON 输出导入 / 去重 / 跳过 / 错误计数。
+上述字段缺失或为空都会直接报错，避免把配置错误的查询当成「没有成交/没有现金流水」。日期格式支持 `yyyymmdd` 与 `yyyy-MM-dd`，含 `;HHMMSS` 时间后缀也可。`Date/Time`（`dateTime`，或仅映射时间的 `tradeTime`）为**必填**：同一交易日的成交按成交时刻排序入账，不会退化为按 `tradeID` 排序（`tradeID` 不是时间序列，先卖后买会被判为超卖并阻断该标的）。该字段缺失即报错，时间值无法解析则按单行跳过。`Description` 为可选字段。同步是幂等的：成交按 IBKR `tradeID` 去重，存取款按现金流水的 `source_uid`（IBKR `transactionID`）去重，且 `(account_id, source_uid)` 上有部分唯一索引，并发同步也不会重复入账。导入范围仅限股票成交（按 `buySell` 方向）与 Deposits/Withdrawals；货币兑换（FX）、分红、预扣税、费用、公司行为（拆合股）以及不支持交易所（如 BM / SBF / LSE / IBIS）的持仓会记录日志后跳过。本地账本为多头模型，无法表示空头：标记为平仓（IBKR `openCloseIndicator=C`）的买入成交（即空头平仓）与标记为开仓（`=O`）的卖出成交（即空头开仓）会逐笔跳过，避免把空头误记成多头；同一标的后续带正确标记的开多仍会正常导入。只有卖出因可卖数量不足而失败时才会阻断该标的的本轮后续成交。跳过数量在同步摘要的 `trades_skipped_unbalanced` 中给出。现金流水与部分唯一索引由启动时的自动迁移补齐，历史数据不受影响。同步结果会以 JSON 输出导入 / 去重 / 跳过 / 错误计数。
 
 ### Futu 真实持仓作为分析列表
 

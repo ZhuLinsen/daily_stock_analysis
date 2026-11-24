@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import unittest
-from datetime import date
+from datetime import date, time
 from unittest.mock import MagicMock, patch
 
 from src.brokers.ibkr import sync
@@ -10,7 +10,7 @@ from src.services.portfolio_service import PortfolioConflictError, PortfolioOver
 
 
 def _trade(symbol, side, trade_id, trade_date="20260102", exchange="NASDAQ", currency="USD",
-           open_close=None, account="U0000000"):
+           open_close=None, account="U0000000", trade_time="093000"):
     qty = "10" if side == "BUY" else "-5"
     # Default mirrors a long-only ledger: buys open, sells close.
     if open_close is None:
@@ -19,7 +19,8 @@ def _trade(symbol, side, trade_id, trade_date="20260102", exchange="NASDAQ", cur
         '<Trade assetCategory="STK" levelOfDetail="EXECUTION" '
         f'symbol="{symbol}" listingExchange="{exchange}" currency="{currency}" '
         f'buySell="{side}" quantity="{qty}" tradePrice="230.5" '
-        f'ibCommission="-1" taxes="0" tradeDate="{trade_date}" tradeID="{trade_id}" '
+        f'ibCommission="-1" taxes="0" tradeDate="{trade_date}" '
+        f'dateTime="{trade_date};{trade_time}" tradeID="{trade_id}" '
         f'accountId="{account}" openCloseIndicator="{open_close}" />'
     )
 
@@ -283,3 +284,90 @@ class IbkrSyncShortOpenThenLongTest(unittest.TestCase):
         self.assertEqual(service.record_trade.call_count, 1)
         self.assertEqual(summary["trades_inserted"], 1)
         self.assertEqual(summary["trades_skipped_unbalanced"], 1)
+
+
+class IbkrSameDayOrderingTest(unittest.TestCase):
+    """Same-day executions commit in time order, not trade-id order (PR #2565 review)."""
+
+    def setUp(self) -> None:
+        self.env = patch.dict(
+            "os.environ",
+            {"IBKR_FLEX_TOKEN": "tok", "IBKR_FLEX_STATEMENT_QUERY_ID": "1712897"},
+            clear=False,
+        )
+        self.env.start()
+
+    def tearDown(self) -> None:
+        self.env.stop()
+
+    def _service(self):
+        service = MagicMock()
+        service.list_accounts.return_value = [{"id": 1, "broker": "IBKR"}]
+        service.record_trade.return_value = {"id": 1}
+        service.record_cash_ledger.return_value = {"id": 1}
+        return service
+
+    def _sync(self, service, *trades):
+        with patch.object(sync, "PortfolioService", return_value=service), patch.object(
+            sync, "download_flex_statement", side_effect=[_statement(*trades), _statement()]
+        ):
+            return sync.sync_ibkr_portfolio()
+
+    def test_intraday_buy_then_sell_with_reversed_trade_ids(self) -> None:
+        # The reported blocker: a 09:30 buy and a 15:30 sell whose trade ids run
+        # backwards. Sorting by id would commit the sell first, report an
+        # oversell and skip the real buy.
+        service = self._service()
+        summary = self._sync(
+            service,
+            _trade("AAPL", "BUY", "900", trade_time="093000"),
+            _trade("AAPL", "SELL", "100", trade_time="153000"),
+        )
+
+        sides = [c.kwargs["side"] for c in service.record_trade.call_args_list]
+        self.assertEqual(sides, ["buy", "sell"])
+        self.assertEqual(summary["errors"], [])
+        self.assertEqual(summary["trades_skipped_unbalanced"], 0)
+        self.assertEqual(summary["trades_inserted"], 2)
+
+    def test_non_numeric_trade_ids_still_order_by_time(self) -> None:
+        service = self._service()
+        self._sync(
+            service,
+            _trade("MSFT", "SELL", "exec-b", trade_time="100000"),
+            _trade("MSFT", "BUY", "exec-a", trade_time="093000"),
+        )
+
+        self.assertEqual(
+            [c.kwargs["side"] for c in service.record_trade.call_args_list], ["buy", "sell"]
+        )
+
+    def test_trade_id_breaks_ties_at_the_same_second(self) -> None:
+        service = self._service()
+        self._sync(
+            service,
+            _trade("AAPL", "SELL", "200", trade_time="093000"),
+            _trade("AAPL", "BUY", "100", trade_time="093000"),
+        )
+
+        self.assertEqual(
+            [c.kwargs["side"] for c in service.record_trade.call_args_list], ["buy", "sell"]
+        )
+
+    def test_sort_key_uses_date_then_time_then_id(self) -> None:
+        from src.brokers.ibkr.statement import TradeRecord
+
+        def record(day, clock, uid):
+            return TradeRecord(
+                symbol="AAPL", market="us", currency="USD", trade_date=day, trade_time=clock,
+                side="buy", quantity=1.0, price=1.0, fee=0.0, tax=0.0, trade_uid=uid,
+            )
+
+        early = record(date(2026, 1, 2), time(9, 30), "900")
+        late = record(date(2026, 1, 2), time(15, 30), "100")
+        next_day = record(date(2026, 1, 3), time(9, 0), "1")
+
+        self.assertEqual(
+            sorted([late, next_day, early], key=sync._trade_sort_key),
+            [early, late, next_day],
+        )

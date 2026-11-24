@@ -14,7 +14,7 @@ import math
 import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, time
 from typing import Iterable, List, Optional, Tuple
 
 from data_provider.us_index_mapping import is_us_stock_code
@@ -45,6 +45,9 @@ NOTE_MARKER = "ibkr_flex"
 # IBKR lets the Flex template choose the date format; both compact and
 # hyphenated forms appear in real reports.
 _DATE_PATTERN = re.compile(r"^(\d{8}|\d{4}-\d{2}-\d{2})")
+# Same-day executions are only orderable by time, so the time part is parsed too:
+# ``HHMMSS``, optionally ``HH:MM:SS``.
+_TIME_PATTERN = re.compile(r"^(\d{6}|\d{2}:\d{2}:\d{2})$")
 
 
 @dataclass(frozen=True)
@@ -53,6 +56,11 @@ class TradeRecord:
     market: str
     currency: str
     trade_date: date
+    # Execution time of day. Required because trades are committed in
+    # chronological order: without it an intraday buy and sell that share a date
+    # would be ordered by ``trade_uid``, which is not a time sequence, and a sell
+    # processed first fails as an oversell and blocks the symbol for the run.
+    trade_time: time
     side: str
     quantity: float
     price: float
@@ -102,6 +110,45 @@ def _parse_flex_date(raw: Optional[str]) -> Optional[date]:
         return date(int(text[0:4]), int(text[4:6]), int(text[6:8]))
     except ValueError:
         return None
+
+
+def _parse_flex_time(raw: Optional[str]) -> Optional[time]:
+    """Parse IBKR's execution timestamp into a time of day.
+
+    Accepts the ``yyyymmdd;HHMMSS`` form, the hyphens variant and a bare
+    ``HHMMSS``/``HH:MM:SS`` value (``tradeTime`` instead of ``dateTime``).
+    """
+    text = (raw or "").strip()
+    if not text:
+        return None
+    if ";" in text:
+        text = text.split(";", 1)[1].strip()
+    if not _TIME_PATTERN.match(text):
+        return None
+    digits = text.replace(":", "")
+    try:
+        return time(int(digits[0:2]), int(digits[2:4]), int(digits[4:6]))
+    except ValueError:
+        return None
+
+
+def _require_execution_time(row: ET.Element) -> Optional[time]:
+    """Return the execution time, failing when the template omits it.
+
+    ``dateTime`` carries date and time; ``tradeTime`` is accepted as the
+    alternative when the template maps only the time. One of them is required:
+    same-day ordering is what keeps a real buy-then-sell from being committed as
+    a sell-then-buy.
+    """
+    raw = row.get("dateTime")
+    if raw is None or not str(raw).strip():
+        raw = row.get("tradeTime")
+    if raw is None or not str(raw).strip():
+        raise IbkrPortfolioError(
+            "IBKR Trades 缺少 Date/Time 字段（dateTime 或 tradeTime），请在 Flex Query 中勾选 Date/Time；"
+            "同一交易日的成交顺序依赖该时间"
+        )
+    return _parse_flex_time(raw)
 
 
 def _canonical_symbol(symbol: str, market: str) -> Optional[str]:
@@ -198,6 +245,10 @@ def _parse_trade(row: ET.Element) -> Tuple[Optional[TradeRecord], Optional[str]]
     if trade_date is None:
         return None, f"{symbol}:bad date"
 
+    trade_time = _require_execution_time(row)
+    if trade_time is None:
+        return None, f"{symbol}:bad time"
+
     trade_uid = _require_flex_field(row, "tradeID", "Trades").strip()
     currency = _require_flex_field(row, "currency", "Trades").strip().upper()
 
@@ -241,6 +292,7 @@ def _parse_trade(row: ET.Element) -> Tuple[Optional[TradeRecord], Optional[str]]
             market=market,
             currency=currency,
             trade_date=trade_date,
+            trade_time=trade_time,
             side=side,
             quantity=quantity,
             price=price,

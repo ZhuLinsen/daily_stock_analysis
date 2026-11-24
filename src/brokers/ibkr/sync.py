@@ -14,7 +14,7 @@ import argparse
 import json
 import logging
 import os
-from datetime import date, timedelta
+from datetime import date, time, timedelta
 from typing import Dict, List, Optional, Set, Tuple
 
 from src.brokers.ibkr.flex import IbkrPortfolioError, download_flex_statement
@@ -125,9 +125,16 @@ def _download_and_parse(
     return merged
 
 
-def _trade_sort_key(record: TradeRecord) -> Tuple[date, int]:
+def _trade_sort_key(record: TradeRecord) -> Tuple[date, time, int]:
+    """Order trades by execution time, with the trade id only as a tie-break.
+
+    ``trade_uid`` is not a time sequence (it is a numeric id that IBKR may emit
+    in any order within a day), so using it as the primary key let a sell be
+    committed before the buy it closes, which the ledger reports as an oversell
+    and then excludes for the rest of the run.
+    """
     uid_int = int(record.trade_uid) if record.trade_uid.isdigit() else 0
-    return (record.trade_date, uid_int)
+    return (record.trade_date, record.trade_time, uid_int)
 
 
 def sync_ibkr_portfolio(
