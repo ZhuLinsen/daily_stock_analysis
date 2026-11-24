@@ -1796,9 +1796,10 @@ describe('PortfolioPage FX refresh', () => {
   });
 
   it('refreshes FX for a single selected account and only reloads snapshot/risk', async () => {
+    const selectedSnapshot = deferredPromise<ReturnType<typeof makeSnapshot>>();
     getSnapshot
       .mockResolvedValueOnce(makeSnapshot({ fxStale: true }))
-      .mockResolvedValueOnce(makeSnapshot({ accountId: 1, fxStale: true }))
+      .mockReturnValueOnce(selectedSnapshot.promise)
       .mockResolvedValueOnce(makeSnapshot({ accountId: 1, fxStale: false }));
 
     render(<PortfolioPage />);
@@ -1812,11 +1813,22 @@ describe('PortfolioPage FX refresh', () => {
       expect(getSnapshot).toHaveBeenLastCalledWith({ accountId: 1, costMethod: 'fifo', includeRealtime: false });
     });
 
+    const refreshButton = screen.getByRole('button', { name: '刷新汇率' });
+    // Request dispatch is not completion: keep the account load pending and
+    // verify that refreshing is blocked until the actual UI is ready.
+    expect(refreshButton).toBeDisabled();
+    fireEvent.click(refreshButton);
+    expect(refreshFx).not.toHaveBeenCalled();
+    await act(async () => {
+      selectedSnapshot.resolve(makeSnapshot({ accountId: 1, fxStale: true }));
+    });
+    await waitFor(() => expect(refreshButton).toBeEnabled());
+
     const snapshotCallsBeforeRefresh = getSnapshot.mock.calls.length;
     const riskCallsBeforeRefresh = getRisk.mock.calls.length;
     const tradeCallsBeforeRefresh = listTrades.mock.calls.length;
 
-    fireEvent.click(screen.getByRole('button', { name: '刷新汇率' }));
+    fireEvent.click(refreshButton);
 
     await waitFor(() => expect(refreshFx).toHaveBeenCalledWith({ accountId: 1 }));
     expect(await screen.findByText('汇率已刷新，共更新 1 对。')).toBeInTheDocument();

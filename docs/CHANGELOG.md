@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-- [修复] 桌面更新入口复用统一 Tooltip，保留键盘聚焦与悬停提示；修复 DecisionSignal 重评估测试的固定日期漂移，并等待首轮选股轮询完成后再测试恢复，隔离一次性 mock 队列，避免慢速 CI 的级联失败。
+- [修复] 桌面更新入口复用统一 Tooltip，保留键盘聚焦与悬停提示；修复 DecisionSignal 重评估测试的固定日期漂移，并等待首轮选股轮询完成后再测试恢复，隔离一次性 mock 队列，避免慢速 CI 的级联失败；持仓汇率测试显式覆盖账户加载期间禁用按钮及加载完成后刷新。
 
 - [新功能] 新增原生澳股 `au`：显式 `.AX` 代码使用 Yahoo 数据、XASX/悉尼日历和澳洲提示语，保留报价/财报币种及 ETF 类型，拒绝跨市场 fallback 与污染缓存；支持 AU 指数复盘，详见 `docs/asx_support.md`。
 
