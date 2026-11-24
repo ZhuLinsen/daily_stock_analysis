@@ -222,7 +222,7 @@ journalctl -u stock-analyzer -f
 | `SCHEDULE_TIME` | `18:00` | Daily execution time |
 | `MARKET_REVIEW_ENABLED` | `true` | Enable market review |
 | `SERPAPI_API_KEYS` | - | SerpAPI realtime financial news search (recommended) |
-| `AIHUBMIX_KEY` | - | AIHubMix API key (optional; existing keys remain supported) |
+| `AIHUBMIX_KEY` | - | AIHubMix API key (optional) |
 | `ANSPIRE_API_KEYS` | - | [Anspire](https://open.anspire.cn/dsa?share_code=QFBC0FYC) API key (optional; shared by LLM and search; availability depends on account permissions) |
 | `TAVILY_API_KEYS` | - | Tavily news search (optional) |
 | `MINIMAX_API_KEYS` | - | MiniMax search (optional) |
@@ -396,7 +396,7 @@ Add these Secrets:
 | `ANTHROPIC_API_KEY` | Anthropic API Key | Optional |
 | `GEMINI_API_KEY` | Gemini AI API Key | Optional |
 | `OPENAI_API_KEY` | OpenAI-compatible API Key | Optional |
-| `AIHUBMIX_KEY` | AIHubMix API key (optional; existing keys remain supported) | Optional |
+| `AIHUBMIX_KEY` | AIHubMix API key | Optional |
 | `WECHAT_WEBHOOK_URL` | WeChat Work Bot Webhook | Optional* |
 | `FEISHU_WEBHOOK_URL` | Feishu Bot Webhook | Optional* |
 | `TELEGRAM_BOT_TOKEN` | Telegram Bot Token | Optional* |

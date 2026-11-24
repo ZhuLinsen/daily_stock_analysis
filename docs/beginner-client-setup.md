@@ -9,7 +9,7 @@
 1. Windows 或 macOS 电脑。
 2. 一个模型服务密钥（Key），可按需选择服务商：
    - [Modelflare](https://modelflare.dev/sign-up?utm_source=github&utm_campaign=daily_stock_analysis) / [x6.ai](https://console.x6pro.io/register?code=zJ2qSdns)：聚合平台，适合在一个平台切换多种全球主流模型。
-   - 也支持 DeepSeek、Gemini、OpenAI、Anthropic 等官方服务；已有 AIHubMix / Anspire Key 的用户仍可继续使用，配置方法见下文可选方案。
+   - 也支持 DeepSeek、Gemini、OpenAI、Anthropic、AIHubMix、Anspire Open 等模型服务，按需选择即可。
 3. 想分析的股票代码，例如 `600519,hk00700,AAPL`。
 
 ## 1. 下载客户端
@@ -57,10 +57,10 @@ macOS 用户升级前建议先在客户端设置里导出一次配置备份。
 4. 模型名选择控制台里已开通的模型（或点「获取模型」选择）；不确定就先选控制台推荐模型。
 5. 点击保存；看到保存成功后，再点击测试连接。
 
-### 可选方案：已有 AIHubMix / Anspire Open Key（继续兼容使用）
+### 可选方案：AIHubMix / Anspire Open
 
-1. 已有 [AIHubMix](https://inferera.com/?aff=CfMq) Key：在快速添加渠道里选择 `AIHubmix（聚合平台）`，粘贴 API Key 并选择账号已开通的模型，保存后点击测试连接。
-2. 已有 [Anspire Open](https://open.anspire.cn/dsa?share_code=QFBC0FYC) Key：在快速添加渠道里选择 `Anspire Open`，粘贴 API Key 并选择账号已开通的模型，保存后点击测试连接。
+1. [AIHubMix](https://inferera.com/?aff=CfMq)：在快速添加渠道里选择 `AIHubmix（聚合平台）`，粘贴 API Key 并选择账号已开通的模型，保存后点击测试连接。
+2. [Anspire Open](https://open.anspire.cn/dsa?share_code=QFBC0FYC)：在快速添加渠道里选择 `Anspire Open`，粘贴 API Key 并选择账号已开通的模型，保存后点击测试连接。
 
 看到测试成功，就继续下一步。
 
@@ -93,7 +93,7 @@ macOS 用户升级前建议先在客户端设置里导出一次配置备份。
 按你的模型服务选择：
 
 1. 常规模型服务：建议再申请 [SerpAPI](https://serpapi.com/github-daily-stock-analysis) 或 [Tavily](https://tavily.com/) 的 Key，填到 `SerpAPI API Keys` 或 `Tavily API Keys`，保存成功后即可。
-2. 已有 Anspire Key：可选填入 `Anspire API Keys`，作为搜索兜底使用。
+2. 如使用 Anspire：也可填入 `Anspire API Keys` 作为搜索源之一。
 
 想先试用也可以跳过新闻源，客户端仍然能生成基础分析。
 

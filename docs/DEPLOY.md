@@ -234,7 +234,7 @@ journalctl -u stock-analyzer -f
 | `SCHEDULE_TIME` | `18:00` | 每日执行时间 |
 | `MARKET_REVIEW_ENABLED` | `true` | 是否启用大盘复盘 |
 | `SERPAPI_API_KEYS` | - | SerpAPI 实时金融新闻搜索（推荐） |
-| `AIHUBMIX_KEY` | - | AIHubMix API Key（可选，已有 Key 可继续使用） |
+| `AIHUBMIX_KEY` | - | AIHubMix API Key（可选） |
 | `ANSPIRE_API_KEYS` | - | [Anspire](https://open.anspire.cn/dsa?share_code=QFBC0FYC) API Key（可选，模型与搜索共用；可用性以账号权限为准） |
 | `TAVILY_API_KEYS` | - | Tavily 新闻搜索（可选） |
 | `MINIMAX_API_KEYS` | - | MiniMax 搜索（可选） |
@@ -438,7 +438,7 @@ git push -u origin main
 | `ANTHROPIC_API_KEY` | Anthropic API Key | 可选 |
 | `GEMINI_API_KEY` | Gemini AI API Key | 可选 |
 | `OPENAI_API_KEY` | OpenAI 兼容 API Key | 可选 |
-| `AIHUBMIX_KEY` | AIHubMix API Key（可选，兼容已有配置） | 可选 |
+| `AIHUBMIX_KEY` | AIHubMix API Key | 可选 |
 | `WECHAT_WEBHOOK_URL` | 企业微信机器人 Webhook | 可选* |
 | `FEISHU_WEBHOOK_URL` | 飞书机器人 Webhook | 可选* |
 | `TELEGRAM_BOT_TOKEN` | Telegram Bot Token | 可选* |
