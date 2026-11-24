@@ -884,18 +884,39 @@ const initialSample = stageSamples[0];
               {isEn ? 'Watchlist tracking, decision dashboards, market reviews, and Agent Q&A.' : '自选股跟踪、决策仪表盘、大盘复盘与 Agent 多策略问股。'}
             </p>
           </div>
-          <a
-            href="https://github.com/ZhuLinsen/alphasift"
-            target="_blank"
-            rel="noopener noreferrer"
-            class="ob-card ob-card-hover p-5 no-underline block"
-          >
-            <div class="text-xs font-semibold mono-num" style="color: var(--ob-muted);">ECOSYSTEM · {isEn ? 'STOCK DISCOVERY' : '全市场选股'}</div>
-            <h3 class="text-base font-bold mt-1.5 mb-0" style="color: var(--ob-ink);">AlphaSift ↗</h3>
-            <p class="text-xs mt-1.5 mb-0 leading-relaxed" style="color: var(--ob-muted);">
-              {isEn ? 'Multi-factor full-market screening and auditable YAML stock discovery.' : '多因子全市场扫描与可审计 YAML 策略，筛选高胜率候选股票池。'}
-            </p>
-          </a>
+          <div class="ob-card ob-card-hover p-5 flex flex-col justify-between gap-3">
+            <div>
+              <div class="text-xs font-semibold mono-num" style="color: var(--ob-muted);">ECOSYSTEM · {isEn ? 'STOCK DISCOVERY' : '全市场选股'}</div>
+              <h3 class="text-base font-bold mt-1.5 mb-0" style="color: var(--ob-ink);">AlphaSift</h3>
+              <p class="text-xs mt-1.5 mb-0 leading-relaxed" style="color: var(--ob-muted);">
+                {isEn
+                  ? 'Automated multi-market daily stock screening with auditable YAML strategies and public T+N paper-tracked performance.'
+                  : '自动化多市场每日选股、可审计 YAML 策略与公开 T+N 纸面跟踪（A 股可选公告排雷与 AI 复核）。'}
+              </p>
+            </div>
+            <div class="flex flex-wrap items-center gap-3 pt-1 text-xs font-semibold">
+              <a
+                href={isEn
+                  ? 'https://alphasift.zhulinsen.tech/?lang=en&utm_source=dsa_site'
+                  : 'https://alphasift.zhulinsen.tech/?lang=zh&utm_source=dsa_site'}
+                target="_blank"
+                rel="noopener noreferrer"
+                class="no-underline hover:underline"
+                style="color: var(--ob-accent);"
+              >
+                {isEn ? 'Daily Picks ↗' : '在线今日榜单 ↗'}
+              </a>
+              <a
+                href="https://github.com/ZhuLinsen/alphasift"
+                target="_blank"
+                rel="noopener noreferrer"
+                class="no-underline hover:underline"
+                style="color: var(--ob-muted);"
+              >
+                GitHub ↗
+              </a>
+            </div>
+          </div>
           <a
             href="https://github.com/ZhuLinsen/alphaevo"
             target="_blank"

@@ -147,4 +147,39 @@ describe('SidebarNav', () => {
     fireEvent.click(screen.getByRole('button', { name: '确认退出' }));
     expect(mockLogout).toHaveBeenCalled();
   });
+
+  it('renders the external AlphaSift companion link outside main nav with safe attributes', () => {
+    const { rerender } = render(
+      <MemoryRouter initialEntries={['/']}>
+        <SidebarNav />
+      </MemoryRouter>,
+    );
+
+    const nav = screen.getByRole('navigation', { name: '主导航' });
+    const alphaSiftLink = screen.getByRole('link', { name: '访问 AlphaSift 每日选股与策略跟踪榜单（新窗口打开）' });
+
+    expect(nav).not.toContainElement(alphaSiftLink);
+    expect(alphaSiftLink).toHaveAttribute('href', 'https://alphasift.zhulinsen.tech/?utm_source=dsa_web_sidebar');
+    expect(alphaSiftLink).toHaveAttribute('target', '_blank');
+    expect(alphaSiftLink).toHaveAttribute('rel', 'noopener noreferrer');
+    expect(screen.getByText('AlphaSift 选股')).toBeInTheDocument();
+
+    rerender(
+      <MemoryRouter initialEntries={['/']}>
+        <SidebarNav variant="rail" />
+      </MemoryRouter>,
+    );
+    expect(screen.getByText('AlphaSift')).toBeInTheDocument();
+
+    rerender(
+      <MemoryRouter initialEntries={['/']}>
+        <SidebarNav collapsed />
+      </MemoryRouter>,
+    );
+
+    expect(screen.queryByText('AlphaSift 选股')).not.toBeInTheDocument();
+    expect(
+      screen.getByRole('link', { name: '访问 AlphaSift 每日选股与策略跟踪榜单（新窗口打开）' }),
+    ).toBeInTheDocument();
+  });
 });

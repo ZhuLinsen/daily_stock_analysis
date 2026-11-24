@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Activity, BarChart3, Bell, BriefcaseBusiness, Database, Gauge, Home, LogOut, MessageSquareQuote, Search, Settings2 } from 'lucide-react';
+import { Activity, BarChart3, Bell, BriefcaseBusiness, Compass, Database, Gauge, Home, LogOut, MessageSquareQuote, Search, Settings2 } from 'lucide-react';
 import { NavLink, useLocation } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import { useAgentChatStore } from '../../stores/agentChatStore';
@@ -8,6 +8,7 @@ import type { UiTextKey } from '../../i18n/uiText';
 import { cn } from '../../utils/cn';
 import { ConfirmDialog } from '../common/ConfirmDialog';
 import { StatusDot } from '../common/StatusDot';
+import { Tooltip } from '../common/Tooltip';
 import { UiLanguageToggle } from '../i18n/UiLanguageToggle';
 import { ThemeToggle } from '../theme/ThemeToggle';
 
@@ -184,6 +185,21 @@ export const SidebarNav: React.FC<SidebarNavProps> = ({ collapsed = false, onNav
           iconClassName={itemIconClass}
           labelClassName={itemLabelClass}
         />
+        <Tooltip content={t('layout.ecosystem.alphaSiftTooltip')} className="w-full" side="top">
+          <a
+            href="https://alphasift.zhulinsen.tech/?utm_source=dsa_web_sidebar"
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={onNavigate}
+            aria-label={t('layout.ecosystem.alphaSiftAria')}
+            className={cn(itemInteractiveClass, 'shrink-0')}
+          >
+            <Compass className={itemIconClass} aria-hidden="true" />
+            {!collapsed ? (
+              <span className={itemLabelClass}>{isRail ? 'AlphaSift' : t('layout.ecosystem.alphaSift')}</span>
+            ) : null}
+          </a>
+        </Tooltip>
       </div>
 
       {authEnabled ? (
