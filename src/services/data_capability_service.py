@@ -33,7 +33,7 @@ class _ProviderDefinition:
             for markets in self.dataset_markets.values()
             for market in markets
         }
-        preferred_order = ("cn", "hk", "us", "jp", "kr", "tw")
+        preferred_order = ("cn", "hk", "us", "jp", "kr", "tw", "au")
         return tuple(market for market in preferred_order if market in supported)
 
 
@@ -77,11 +77,11 @@ _PROVIDER_DEFINITIONS: Sequence[_ProviderDefinition] = (
         label="YFinance",
         fetcher_name="YfinanceFetcher",
         dataset_markets={
-            "quote.realtime": ("hk", "us", "jp", "kr", "tw"),
-            "kline.daily": ("cn", "hk", "us", "jp", "kr", "tw"),
+            "quote.realtime": ("hk", "us", "jp", "kr", "tw", "au"),
+            "kline.daily": ("cn", "hk", "us", "jp", "kr", "tw", "au"),
             "index.daily": ("cn", "us"),
-            "market.overview": ("cn", "hk", "us", "jp", "kr", "tw"),
-            "financial.snapshot": ("hk", "us", "jp", "kr", "tw"),
+            "market.overview": ("cn", "hk", "us", "jp", "kr", "tw", "au"),
+            "financial.snapshot": ("hk", "us", "jp", "kr", "tw", "au"),
         },
         builtin=True,
     ),
@@ -215,7 +215,7 @@ _MARKET_OVERVIEW_PROVIDER_MARKETS = {
     "efinance": {"cn"},
     "akshare": {"cn"},
     "tushare": {"cn"},
-    "yfinance": {"cn", "hk", "us", "jp", "kr", "tw"},
+    "yfinance": {"cn", "hk", "us", "jp", "kr", "tw", "au"},
 }
 
 
@@ -549,7 +549,8 @@ class DataCapabilityService:
                     "us.index": {"providers": ["yfinance"], "warnings": []},
                     "jp": {"providers": ["yfinance"], "warnings": []},
                     "kr": {"providers": ["yfinance"], "warnings": []},
-                    "tw": {"providers": ["yfinance"], "warnings": []},
+                    "au": {"providers": ["yfinance"], "warnings": []},
+            "tw": {"providers": ["yfinance"], "warnings": []},
                 },
                 provider_map=provider_map,
                 status_resolvers={
@@ -640,7 +641,7 @@ class DataCapabilityService:
             },
             **{
                 market: generic_market_priority(market)
-                for market in ("jp", "kr", "tw")
+                for market in ("jp", "kr", "tw", "au")
             },
         }
 
@@ -657,7 +658,7 @@ class DataCapabilityService:
                 market=market,
                 warnings=warnings,
             )
-            for market in ("cn", "hk", "us", "jp", "kr", "tw")
+            for market in ("cn", "hk", "us", "jp", "kr", "tw", "au")
         }
 
     def _daily_status_resolvers(
@@ -676,7 +677,7 @@ class DataCapabilityService:
                 provider_map=provider_map,
                 fetcher_map=fetcher_map,
             )
-            for market in ("cn", "hk", "us", "jp", "kr", "tw")
+            for market in ("cn", "hk", "us", "jp", "kr", "tw", "au")
         }
 
     def _index_daily_status_resolver(
@@ -789,6 +790,7 @@ class DataCapabilityService:
             "us": {"providers": ["yfinance"], "warnings": []},
             "jp": {"providers": ["yfinance"], "warnings": []},
             "kr": {"providers": ["yfinance"], "warnings": []},
+            "au": {"providers": ["yfinance"], "warnings": []},
             "tw": {"providers": ["yfinance"], "warnings": []},
         }
 

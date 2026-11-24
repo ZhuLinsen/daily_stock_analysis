@@ -6,5 +6,7 @@ export const MARKET_REVIEW_REGION_ORDER: readonly MarketReviewRegion[] = ['cn', 
 
 export function serializeMarketReviewRegions(regions: readonly MarketReviewRegion[]): string {
   const ordered = MARKET_REVIEW_REGION_ORDER.filter((region) => regions.includes(region));
-  return ordered.length === MARKET_REVIEW_REGION_ORDER.length ? 'both' : ordered.join(',');
+  // Preserve the displayed selection: backend `both` can include markets that
+  // this UI does not expose yet (currently AU).
+  return ordered.join(',');
 }

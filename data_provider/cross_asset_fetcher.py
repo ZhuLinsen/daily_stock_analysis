@@ -35,7 +35,7 @@ from src.schemas.cross_asset_context import CROSS_ASSET_GROUPS, CrossAssetItem
 
 logger = logging.getLogger(__name__)
 
-SUPPORTED_MARKETS = frozenset({"cn", "hk", "us", "jp", "kr", "tw"})
+SUPPORTED_MARKETS = frozenset({"cn", "hk", "us", "jp", "kr", "tw", "au"})
 
 # Stale thresholds in natural days, per contract (W1-plan):
 # - index/rates closing data: market trading day + 1 natural day
@@ -64,6 +64,7 @@ _YF_INDEX_SYMBOLS: Dict[str, Dict[str, Tuple[str, str]]] = {
     "jp": {"N225": ("^N225", "日经225")},
     "kr": {"KS11": ("^KS11", "KOSPI")},
     "tw": {"TWII": ("^TWII", "台湾加权指数")},
+    "au": {"AXJO": ("^AXJO", "S&P/ASX 200"), "AORD": ("^AORD", "All Ordinaries")},
 }
 
 # A-share indices need the akshare CN batch (deferred to a later PR); phase 1

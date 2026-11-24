@@ -58,6 +58,7 @@ _MARKET_LABELS = {
     "jp": "日股",
     "kr": "韩股",
     "tw": "台股",
+    "au": "澳股",
 }
 _VALID_MARKETS = frozenset(_MARKET_LABELS)
 

@@ -5,7 +5,7 @@
 ===================================
 
 职责：
-1. 按市场（A股/港股/美股/日股/韩股/台股）判断当日是否为交易日
+1. 按市场（A股/港股/美股/日股/韩股/台股/澳股）判断当日是否为交易日
 2. 按市场时区取“今日”日期，避免服务器 UTC 导致日期错误
 3. 支持 per-stock 过滤：只分析当日开市市场的股票
 4. 提供 regular-session 市场阶段推断基线，不改变现有分析入口行为
@@ -38,7 +38,10 @@ except ImportError:
     )
 
 # Market -> exchange code (exchange-calendars)
-MARKET_EXCHANGE = {"cn": "XSHG", "hk": "XHKG", "us": "XNYS", "jp": "XTKS", "kr": "XKRX", "tw": "XTAI"}
+MARKET_EXCHANGE = {
+    "cn": "XSHG", "hk": "XHKG", "us": "XNYS", "jp": "XTKS",
+    "kr": "XKRX", "tw": "XTAI", "au": "XASX",
+}
 
 # Market -> IANA timezone for "today"
 MARKET_TIMEZONE = {
@@ -48,6 +51,7 @@ MARKET_TIMEZONE = {
     "jp": "Asia/Tokyo",
     "kr": "Asia/Seoul",
     "tw": "Asia/Taipei",
+    "au": "Australia/Sydney",
 }
 
 # P0 market phase baseline (Issue #1386). This is an intentionally small
@@ -64,7 +68,18 @@ _CLOSING_AUCTION_WINDOW_MINUTES = {
     "jp": 5,
     "kr": 10,
     "tw": 5,
+    # XASX describes regular trading, not the later ASX closing auction.
+    # Do not invent a pre-close auction window from another market's rules.
+    "au": 0,
 }
+
+# ASX's published cash-market CSPA ends at 16:11 Sydney time. XASX currently
+# closes its normal session at 16:00, so that timestamp alone cannot establish
+# an auction-inclusive daily bar. Use a conservative not-before floor, also on
+# early-close days (whose auction details XASX does not expose). This is NOT a
+# guarantee of provider bar finality: post-close trading/reporting can continue.
+# Source: https://www.asx.com.au/markets/market-resources/trading-hours-calendar/cash-market-trading-hours
+_AU_DAILY_BAR_NOT_BEFORE = (16, 11)
 _SUPPORTED_ANALYSIS_PHASES = {
     "auto",
     "premarket",
@@ -127,11 +142,16 @@ def get_market_for_stock(code: str) -> Optional[str]:
     Infer market region for a stock code.
 
     Returns:
-        'cn' | 'hk' | 'us' | 'jp' | 'kr' | 'tw' | None (None = unrecognized, fail-open: treat as open)
+        'cn' | 'hk' | 'us' | 'jp' | 'kr' | 'tw' | 'au' | None (unrecognized, fail-open)
     """
     if not code or not isinstance(code, str):
         return None
     code = (code or "").strip().upper()
+
+    # Explicit suffix identity precedes broad US/HK symbol heuristics.
+    suffix_market = get_suffix_market(code)
+    if suffix_market:
+        return suffix_market
 
     from data_provider import is_us_stock_code, is_us_index_code, is_hk_stock_code
 
@@ -139,9 +159,6 @@ def get_market_for_stock(code: str) -> Optional[str]:
         return "us"
     if is_hk_stock_code(code):
         return "hk"
-    suffix_market = get_suffix_market(code)
-    if suffix_market:
-        return suffix_market
     # A-share: 6-digit numeric
     if code.isdigit() and len(code) == 6:
         return "cn"
@@ -155,7 +172,7 @@ def is_market_open(market: str, check_date: date) -> bool:
     Fail-open: returns True if exchange-calendars unavailable or date out of range.
 
     Args:
-        market: 'cn' | 'hk' | 'us'
+        market: 'cn' | 'hk' | 'us' | 'jp' | 'kr' | 'tw' | 'au'
         check_date: Date to check
 
     Returns:
@@ -246,6 +263,8 @@ def get_effective_trading_date(
     - Non-trading day / holiday: previous trading session
     - Trading day before market close: previous completed trading session
     - Trading day after market close: current trading session
+    - AU: not before 16:11 Sydney, including early-close days; this is a
+      conservative reuse threshold, not proof of provider daily-bar finality
     - Calendar lookup failure: fail-open to market-local natural date
     """
     market_now = get_market_now(market, current_time=current_time)
@@ -274,6 +293,13 @@ def get_effective_trading_date(
             close_local = session_close.astimezone(ZoneInfo(tz_name))
         else:
             close_local = session_close.replace(tzinfo=ZoneInfo(tz_name))
+
+        if market == "au":
+            hour, minute = _AU_DAILY_BAR_NOT_BEFORE
+            auction_floor = market_now.replace(
+                hour=hour, minute=minute, second=0, microsecond=0
+            )
+            close_local = max(close_local, auction_floor)
 
         if market_now >= close_local:
             return session.date()
@@ -325,6 +351,11 @@ def resolve_historical_daily_bar_date(
             return cal.previous_session(session).date()
 
         if normalized_phase == "postmarket":
+            # ASX regular-session postmarket can precede its closing auction.
+            # Without a timestamp or persisted effective date, finality cannot
+            # be established from this phase label alone.
+            if market == "au":
+                return None
             return target_date if is_session else None
 
         if is_session:
@@ -387,6 +418,9 @@ def infer_market_phase(
     session only; they do not imply that extended-hours quote data is available.
     ``closing_auction`` uses a small per-market near-close heuristic window and
     does not model full exchange auction microstructure.
+    AU uses XASX's regular-session boundaries without an auction heuristic:
+    its approximate 10:00 open and 16:00 close do not model the randomized
+    opening or the later closing auction. POSTMARKET is not bar finality.
     """
     if market not in MARKET_EXCHANGE or market not in MARKET_TIMEZONE:
         return MarketPhase.UNKNOWN
@@ -569,6 +603,10 @@ def build_market_phase_context(
     market_now = get_market_now(market, current_time=current_time)
     warnings: List[str] = []
 
+    if market == "au":
+        _add_warning_code(warnings, "au_regular_session_approximation")
+        _add_warning_code(warnings, "au_daily_bar_finality_unverified")
+
     if market not in MARKET_EXCHANGE or market not in MARKET_TIMEZONE:
         phase = MarketPhase.UNKNOWN
         _add_warning_code(warnings, "unknown_market")
@@ -590,6 +628,13 @@ def build_market_phase_context(
         current_time=current_time,
     )
     is_trading_day, is_market_open_now, is_partial_bar = _phase_booleans(phase)
+    if market == "au" and phase == MarketPhase.POSTMARKET:
+        # The regular-session close does not include ASX's later auction.
+        # Even after the conservative reuse threshold, provider finality is
+        # unverified rather than inferred from the calendar alone.
+        is_partial_bar = (
+            True if effective_daily_bar_date < market_now.date() else None
+        )
     minutes_to_open, minutes_to_close, minutes_calendar_error = _phase_minutes(
         market,
         market_now,
@@ -644,15 +689,15 @@ def compute_effective_region(
     Compute effective market review region given config and open markets.
 
     Args:
-        config_region: From MARKET_REVIEW_REGION ('cn' | 'hk' | 'us' | 'jp' | 'kr' | 'tw' | 'both' or comma subset)
+        config_region: From MARKET_REVIEW_REGION (supported market key, 'both', or comma subset)
         open_markets: Markets open today
 
     Returns:
         None: caller uses config default (check disabled)
         '': all relevant markets closed, skip market review
-        'cn' | 'hk' | 'us' | 'jp' | 'kr' | 'tw' | 'both': effective subset for today
+        'cn' | 'hk' | 'us' | 'jp' | 'kr' | 'tw' | 'au': effective subset for today
     """
-    markets = ("cn", "hk", "us", "jp", "kr", "tw")
+    markets = tuple(MARKET_EXCHANGE)
     normalized = (config_region or "cn").strip().lower()
     if not normalized:
         normalized = "cn"

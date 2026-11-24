@@ -36,7 +36,7 @@ _MAX_ABS_NUMERIC = 1e15
 # fixed whitelist BEFORE interpolation, so nothing untrusted can appear
 # before the BEGIN_UNTRUSTED sentinel (mirrors the CrossAssetContext schema).
 _VALID_RISK_APPETITES = frozenset({"risk_on", "neutral", "risk_off", "unknown"})
-_VALID_PROMPT_MARKETS = frozenset({"cn", "hk", "us", "jp", "kr", "tw"})
+_VALID_PROMPT_MARKETS = frozenset({"cn", "hk", "us", "jp", "kr", "tw", "au"})
 _TRADE_DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 # Control characters (incl. \r\n\t and U+2028/U+2029) are collapsed so a

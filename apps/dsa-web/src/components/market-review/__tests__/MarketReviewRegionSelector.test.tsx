@@ -14,7 +14,7 @@ describe('MarketReviewRegionSelector', () => {
     expect(serializeMarketReviewRegions(['kr', 'jp'])).toBe('jp,kr');
     expect(serializeMarketReviewRegions(['tw', 'cn'])).toBe('cn,tw');
     expect(serializeMarketReviewRegions(['cn', 'hk', 'us', 'jp', 'kr'])).toBe('cn,hk,us,jp,kr');
-    expect(serializeMarketReviewRegions(['cn', 'hk', 'us', 'jp', 'kr', 'tw'])).toBe('both');
+    expect(serializeMarketReviewRegions(['cn', 'hk', 'us', 'jp', 'kr', 'tw'])).toBe('cn,hk,us,jp,kr,tw');
   });
 
   it('keeps the runtime-resolved server default opaque and emits a canonical override', () => {

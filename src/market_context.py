@@ -2,7 +2,7 @@
 """
 Market context detection for LLM prompts.
 
-Detects the market (A-shares, HK, US) from a stock code and returns
+Detects the market (A-shares, HK, US, JP, KR, TW, AU) from a stock code and returns
 market-specific role descriptions so prompts are not hardcoded to a
 single market.
 
@@ -19,12 +19,18 @@ def detect_market(stock_code: Optional[str]) -> str:
     """Detect market from stock code.
 
     Returns:
-        One of 'cn', 'hk', 'us', or 'cn' as fallback.
+        One of 'cn', 'hk', 'us', 'jp', 'kr', 'tw', 'au'; 'cn' as fallback.
     """
     if not stock_code:
         return "cn"
 
     code = stock_code.strip().upper()
+
+    # Explicit offshore suffixes take precedence over bare-symbol heuristics
+    # (including ASX symbols starting with HK or containing digits).
+    suffix_market = get_suffix_market(code)
+    if suffix_market:
+        return suffix_market
 
     # HK stocks: HK00700, 00700.HK, or 5-digit pure numbers
     if code.startswith("HK") or code.endswith(".HK"):
@@ -35,12 +41,6 @@ def detect_market(stock_code: Optional[str]) -> str:
     # 5-digit pure numbers are HK (A-shares are 6-digit)
     if code.isdigit() and len(code) == 5:
         return "hk"
-
-    # Suffix-only Yahoo symbols for JP/KR/TW. Bare Korean/Taiwan numeric
-    # codes keep existing fallback semantics to avoid cross-market collisions.
-    suffix_market = get_suffix_market(code)
-    if suffix_market:
-        return suffix_market
 
     # US stocks: 1-5 uppercase letters (AAPL, TSLA, GOOGL)
     # Also handles suffixed forms like BRK.B
@@ -54,6 +54,10 @@ def detect_market(stock_code: Optional[str]) -> str:
 # -- Market-specific role descriptions --
 
 _MARKET_ROLES = {
+    "au": {
+        "zh": "澳大利亚 ASX 证券",
+        "en": "Australian ASX security",
+    },
     "cn": {
         "zh": " A 股",
         "en": "China A-shares",
@@ -81,6 +85,31 @@ _MARKET_ROLES = {
 }
 
 _MARKET_GUIDELINES = {
+    "au": {
+        "zh": (
+            "- 本次分析对象为 **澳大利亚 ASX 上市证券**（Yahoo Finance `.AX` 后缀）。\n"
+            "- 报价按澳元（AUD）解释；财务报表必须保留 financialCurrency（例如 NZD），不可假设全为 AUD。交易日期与时间使用 Australia/Sydney（悉尼，含夏令时）；"
+            "若可靠报价元数据明确指定其他币种，须明确标注，不得默认为美元或人民币。\n"
+            "- 使用澳大利亚市场语境；不要套用美股 NYSE/NASDAQ 交易时段、SEC 制度或 A 股涨跌停、"
+            "T+1 交易限制、北向资金、龙虎榜等规则。\n"
+            "- 根据可靠元数据区分公司股票与 ETF：股票关注公司基本面，ETF 关注持仓、基准、费用、"
+            "净值及折溢价；类型未知时明确说明，不得仅凭代码或名称猜测，也不要将 ETF 当作经营公司。\n"
+            "- 日历仅近似常规交易时段，不代表开收盘竞价的精确边界或日线数据已最终完成。"
+        ),
+        "en": (
+            "- This analysis covers an **Australian ASX-listed security** (Yahoo Finance `.AX` suffix).\n"
+            "- Interpret quoted prices in AUD; preserve financial statement financialCurrency (for example NZD), never silently relabel it AUD. Use trading dates/times in Australia/Sydney "
+            "(including daylight saving); explicitly label any different currency established by reliable "
+            "quote metadata, rather than assuming USD or CNY.\n"
+            "- Use Australian-market context; do not apply US NYSE/NASDAQ sessions or SEC rules, or "
+            "China A-share price limits, T+1 trading restrictions, Northbound flows or Dragon Tiger lists.\n"
+            "- Distinguish company stocks from ETFs using reliable instrument metadata: use company "
+            "fundamentals for stocks, and holdings, benchmark, fees, NAV and premium/discount for ETFs. "
+            "If the type is unknown, say so; do not guess from the ticker/name or treat an ETF as an operating company.\n"
+            "- The calendar approximates regular trading only, not exact opening/closing auction "
+            "boundaries or final daily-bar availability."
+        ),
+    },
     "cn": {
         "zh": (
             "- 本次分析对象为 **A 股**（中国沪深交易所上市股票）。\n"
