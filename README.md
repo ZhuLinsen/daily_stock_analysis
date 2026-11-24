@@ -66,7 +66,7 @@
 
 | 类型 | 支持 |
 |------|------|
-| AI 模型 | [Modelflare](https://modelflare.dev/sign-up?utm_source=github&utm_campaign=daily_stock_analysis)、[x6.ai](https://console.x6pro.io/register?code=zJ2qSdns)、AIHubMix、Gemini、OpenAI 兼容、DeepSeek、通义千问、Claude、Ollama 本地模型等 |
+| AI 模型 | [Modelflare](https://modelflare.dev/sign-up?utm_source=github&utm_campaign=daily_stock_analysis)、[x6.ai](https://console.x6pro.io/register?code=zJ2qSdns)、Gemini、OpenAI 兼容、DeepSeek、通义千问、Claude、Ollama 本地模型等 |
 | 行情数据 | [TickPlus（推荐）](http://www.tickplus.org/register?reg=5433cf922395)、AkShare、Tushare、Pytdx、Baostock、YFinance、Longbridge |
 | 新闻搜索 | [SerpAPI](https://serpapi.com/github-daily-stock-analysis)、Tavily、Bocha、Brave、MiniMax、SearXNG |
 | 社交舆情 | Stock Sentiment API（Reddit / X / Polymarket，仅美股，可选） |
@@ -96,7 +96,6 @@
 |------------|------|:----:|
 | `MODELFLARE_KEY` | [Modelflare](https://modelflare.dev/sign-up?utm_source=github&utm_campaign=daily_stock_analysis) API Key，低成本接入全球热门大模型 | **推荐** |
 | `LLM_X6AI_API_KEY` | [x6.ai](https://console.x6pro.io/register?code=zJ2qSdns) API Key，低成本接入 Claude、GPT 等 100+ 模型 | **推荐** |
-| `AIHUBMIX_KEY` | AIHubMix API Key，一Key切换使用全系模型，无需科学上网，本项目可享 10% 优惠 | 可选 |
 | `GEMINI_API_KEY` | Google Gemini API Key | 可选 |
 | `ANTHROPIC_API_KEY` | Anthropic Claude API Key | 可选 |
 | `OPENAI_API_KEY` | OpenAI 兼容 API Key（支持 DeepSeek、通义千问等） | 可选 |
