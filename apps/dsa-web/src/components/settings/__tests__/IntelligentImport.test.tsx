@@ -128,7 +128,7 @@ describe('IntelligentImport', () => {
       expect(update).toHaveBeenCalled();
     });
     await waitFor(() => {
-      expect(onMerged).toHaveBeenCalledWith('SH600000,SZ000001');
+      expect(onMerged).toHaveBeenCalledWith('SH600000,SZ000001', { committed: false });
     });
     expect(await screen.findByText('配置已更新，请再次点击「合并到自选股」')).toBeInTheDocument();
   });
@@ -169,5 +169,37 @@ describe('IntelligentImport', () => {
     await waitFor(() => {
       expect(onMerged).toHaveBeenCalledWith('SH600000,SH600519,AAPL,HK00700');
     });
+  });
+
+  it('passes committed=false to onMerged on 409 conflict and still displays conflict error if refresh fails', async () => {
+    const { SystemConfigConflictError } = await import('../../../api/systemConfig');
+    parseImport.mockResolvedValue({
+      items: [{ code: 'AAPL', name: 'Apple', confidence: 'high' }],
+      codes: [],
+    });
+    update.mockRejectedValueOnce(new SystemConfigConflictError('version mismatch'));
+    onMerged.mockRejectedValueOnce(new Error('500 refresh failed'));
+
+    render(
+      <IntelligentImport
+        stockListValue="SH600519"
+        configVersion="v1"
+        maskToken="******"
+        onMerged={onMerged}
+      />,
+    );
+
+    fireEvent.change(screen.getByPlaceholderText('或粘贴 CSV/Excel 复制的文本...'), {
+      target: { value: 'AAPL' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '解析' }));
+    await screen.findByText('AAPL');
+
+    fireEvent.click(screen.getByRole('button', { name: '合并到自选股' }));
+
+    await waitFor(() => {
+      expect(onMerged).toHaveBeenCalledWith('SH600519,AAPL', { committed: false });
+    });
+    expect(await screen.findByText('配置已更新，请再次点击「合并到自选股」')).toBeInTheDocument();
   });
 });

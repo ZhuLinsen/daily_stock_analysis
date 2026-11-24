@@ -1,5 +1,8 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { createParsedApiError, type ParsedApiError } from '../../api/error';
+import { SystemConfigConflictError, SystemConfigValidationError } from '../../api/systemConfig';
+import type { ConfigValidationIssue } from '../../types/systemConfig';
 import { useSystemConfig } from '../useSystemConfig';
 
 const { getConfig, validate, update } = vi.hoisted(() => ({
@@ -16,15 +19,35 @@ vi.mock('../../api/systemConfig', () => ({
   },
   SystemConfigConflictError: class extends Error {},
   SystemConfigValidationError: class extends Error {
-    issues: unknown[] = [];
-    parsedError = {
-      title: 'validation error',
-      message: 'validation error',
-      rawMessage: 'validation error',
-      category: 'http_error',
-    };
+    issues: ConfigValidationIssue[];
+    parsedError: ParsedApiError;
+
+    constructor(
+      message = '',
+      issues: ConfigValidationIssue[] = [],
+      parsedError: ParsedApiError = {
+        title: 'validation error',
+        message: message || 'validation error',
+        rawMessage: message || 'validation error',
+        category: 'http_error',
+      },
+    ) {
+      super(message);
+      this.issues = issues;
+      this.parsedError = parsedError;
+    }
   },
 }));
+
+function createDeferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
 
 const sampleConfig = {
   configVersion: 'v1',
@@ -348,5 +371,642 @@ describe('useSystemConfig', () => {
     expect(result.current.serverItems.find((item) => item.key === 'OPENAI_VISION_MODEL')?.value).toBe('gpt-4o-vision');
     expect(result.current.hasDirty).toBe(false);
     expect(result.current.dirtyCount).toBe(0);
+  });
+
+  it('ignores stale load responses when newer load or refreshAfterExternalSave resolves first', async () => {
+    const firstLoadDeferred = createDeferred<typeof sampleConfig>();
+    const secondLoadDeferred = createDeferred<typeof sampleConfig>();
+    const staleLoadDeferred = createDeferred<typeof sampleConfig>();
+    const externalRefreshDeferred = createDeferred<typeof sampleConfig>();
+
+    const newerConfig = {
+      ...sampleConfig,
+      configVersion: 'v2',
+      items: [{ ...sampleConfig.items[0], value: 'SH600519' }],
+    };
+    const refreshedConfig = {
+      ...sampleConfig,
+      configVersion: 'v3',
+      items: [{ ...sampleConfig.items[0], value: 'AAPL' }],
+    };
+
+    getConfig
+      .mockReturnValueOnce(firstLoadDeferred.promise)
+      .mockReturnValueOnce(secondLoadDeferred.promise)
+      .mockReturnValueOnce(staleLoadDeferred.promise)
+      .mockReturnValueOnce(externalRefreshDeferred.promise);
+
+    const { result } = renderHook(() => useSystemConfig());
+
+    let p1!: Promise<boolean>;
+    let p2!: Promise<boolean>;
+    act(() => {
+      p1 = result.current.load();
+      p2 = result.current.load();
+    });
+
+    expect(result.current.isLoading).toBe(true);
+
+    let secondResult = false;
+    await act(async () => {
+      secondLoadDeferred.resolve(newerConfig);
+      secondResult = await p2;
+    });
+
+    expect(secondResult).toBe(true);
+    expect(result.current.configVersion).toBe('v2');
+    expect(result.current.serverItems[0]?.value).toBe('SH600519');
+    expect(result.current.isLoading).toBe(false);
+
+    let firstResult = true;
+    await act(async () => {
+      firstLoadDeferred.resolve(sampleConfig);
+      firstResult = await p1;
+    });
+
+    expect(firstResult).toBe(true);
+    expect(result.current.configVersion).toBe('v2');
+    expect(result.current.serverItems[0]?.value).toBe('SH600519');
+    expect(result.current.isLoading).toBe(false);
+
+    let p3!: Promise<boolean>;
+    let pRefresh!: Promise<void>;
+    act(() => {
+      p3 = result.current.load();
+      pRefresh = result.current.refreshAfterExternalSave(['STOCK_LIST']);
+    });
+
+    expect(result.current.isLoading).toBe(true);
+
+    await act(async () => {
+      externalRefreshDeferred.resolve(refreshedConfig);
+      await pRefresh;
+    });
+
+    expect(result.current.configVersion).toBe('v3');
+    expect(result.current.serverItems[0]?.value).toBe('AAPL');
+
+    let thirdResult = false;
+    await act(async () => {
+      staleLoadDeferred.resolve(sampleConfig);
+      thirdResult = await p3;
+    });
+
+    expect(thirdResult).toBe(true);
+    expect(result.current.configVersion).toBe('v3');
+    expect(result.current.serverItems[0]?.value).toBe('AAPL');
+    expect(result.current.isLoading).toBe(false);
+  });
+
+  it('skips state updates and follow-up calls when unmounted mid-flight', async () => {
+    const loadDeferred = createDeferred<typeof sampleConfig>();
+    getConfig.mockReturnValueOnce(loadDeferred.promise);
+
+    const firstHook = renderHook(() => useSystemConfig());
+    let pendingLoad!: Promise<boolean>;
+    act(() => {
+      pendingLoad = firstHook.result.current.load();
+    });
+
+    firstHook.unmount();
+
+    let loadOutcome = true;
+    await act(async () => {
+      loadDeferred.resolve(sampleConfig);
+      loadOutcome = await pendingLoad;
+    });
+    expect(loadOutcome).toBe(false);
+
+    const validateDeferred = createDeferred<{ valid: boolean; issues: ConfigValidationIssue[] }>();
+    getConfig.mockResolvedValueOnce(sampleConfig);
+    validate.mockReturnValueOnce(validateDeferred.promise);
+
+    const secondHook = renderHook(() => useSystemConfig());
+    await act(async () => {
+      await secondHook.result.current.load();
+    });
+
+    act(() => {
+      secondHook.result.current.setDraftValue('STOCK_LIST', 'SH600519');
+    });
+
+    let pendingSave!: Promise<{ success: boolean }>;
+    act(() => {
+      pendingSave = secondHook.result.current.save();
+    });
+
+    secondHook.unmount();
+
+    let saveOutcome: { success: boolean } = { success: true };
+    await act(async () => {
+      validateDeferred.resolve({ valid: true, issues: [] });
+      saveOutcome = await pendingSave;
+    });
+
+    expect(saveOutcome.success).toBe(false);
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('guards against concurrent save re-entry until the active save finishes', async () => {
+    const savedConfigV2 = {
+      ...sampleConfig,
+      configVersion: 'v2',
+      items: [{ ...sampleConfig.items[0], value: 'SH600519' }],
+    };
+    const savedConfigV3 = {
+      ...sampleConfig,
+      configVersion: 'v3',
+      items: [{ ...sampleConfig.items[0], value: 'AAPL' }],
+    };
+    const validateDeferred = createDeferred<{ valid: boolean; issues: ConfigValidationIssue[] }>();
+
+    getConfig
+      .mockResolvedValueOnce(sampleConfig)
+      .mockResolvedValueOnce(savedConfigV2)
+      .mockResolvedValueOnce(savedConfigV3);
+    validate
+      .mockReturnValueOnce(validateDeferred.promise)
+      .mockResolvedValueOnce({ valid: true, issues: [] });
+
+    const { result } = renderHook(() => useSystemConfig());
+    await act(async () => {
+      await result.current.load();
+    });
+
+    act(() => {
+      result.current.setDraftValue('STOCK_LIST', 'SH600519');
+    });
+
+    let firstSave!: Promise<{ success: boolean; message?: string }>;
+    let secondSave!: Promise<{ success: boolean; message?: string }>;
+    act(() => {
+      firstSave = result.current.save();
+      secondSave = result.current.save();
+    });
+
+    const secondOutcome = await secondSave;
+    expect(secondOutcome).toEqual({ success: false, message: '配置保存进行中' });
+    expect(validate).toHaveBeenCalledTimes(1);
+    expect(update).not.toHaveBeenCalled();
+
+    let firstOutcome!: { success: boolean; message?: string };
+    await act(async () => {
+      validateDeferred.resolve({ valid: true, issues: [] });
+      firstOutcome = await firstSave;
+    });
+
+    expect(firstOutcome.success).toBe(true);
+    expect(validate).toHaveBeenCalledTimes(1);
+    expect(update).toHaveBeenCalledTimes(1);
+    expect(result.current.isSaving).toBe(false);
+
+    act(() => {
+      result.current.setDraftValue('STOCK_LIST', 'AAPL');
+    });
+
+    let thirdOutcome!: { success: boolean; message?: string };
+    await act(async () => {
+      thirdOutcome = await result.current.save();
+    });
+
+    expect(thirdOutcome.success).toBe(true);
+    expect(validate).toHaveBeenCalledTimes(2);
+    expect(update).toHaveBeenCalledTimes(2);
+  });
+
+  it('propagates structured conflict and validation errors into both saveError and toast', async () => {
+    getConfig.mockResolvedValueOnce(sampleConfig);
+
+    const { result } = renderHook(() => useSystemConfig());
+    await act(async () => {
+      await result.current.load();
+    });
+
+    act(() => {
+      result.current.setDraftValue('STOCK_LIST', 'SH600519');
+    });
+
+    update.mockRejectedValueOnce(new SystemConfigConflictError('版本已过期'));
+    await act(async () => {
+      await result.current.save();
+    });
+
+    expect(result.current.saveError?.title).toBe('配置版本冲突');
+    expect(result.current.saveError?.message).toContain('版本已过期');
+    expect(result.current.saveError?.message).toContain('请先重新加载配置');
+    expect(result.current.toast).toEqual({
+      type: 'error',
+      error: result.current.saveError,
+    });
+    expect(result.current.retryAction).toBe('save');
+
+    const validationParsedError = createParsedApiError({
+      title: '配置校验失败',
+      message: '股票代码格式无效',
+      rawMessage: '股票代码格式无效',
+      status: 400,
+      category: 'http_error',
+    });
+    const validationIssues: ConfigValidationIssue[] = [
+      {
+        key: 'STOCK_LIST',
+        code: 'invalid_stock_code',
+        message: '股票代码格式无效',
+        severity: 'error',
+      },
+    ];
+    update.mockRejectedValueOnce(
+      new SystemConfigValidationError('股票代码格式无效', validationIssues, validationParsedError),
+    );
+
+    await act(async () => {
+      await result.current.save();
+    });
+
+    expect(result.current.issueByKey.STOCK_LIST).toEqual(validationIssues);
+    expect(result.current.saveError).toEqual(validationParsedError);
+    expect(result.current.toast).toEqual({
+      type: 'error',
+      error: validationParsedError,
+    });
+  });
+
+  it('replays explicit changedItems on retry after failure and clears them on manual edits', async () => {
+    const refreshedAfterRetry = {
+      ...sampleConfig,
+      configVersion: 'v2',
+    };
+
+    getConfig
+      .mockResolvedValueOnce(sampleConfig)
+      .mockResolvedValueOnce(refreshedAfterRetry);
+
+    const { result } = renderHook(() => useSystemConfig());
+    await act(async () => {
+      await result.current.load();
+    });
+
+    update.mockRejectedValueOnce(new Error('network glitch'));
+    await act(async () => {
+      const outcome = await result.current.save([{ key: 'SCHEDULE_ENABLED', value: 'true' }]);
+      expect(outcome.success).toBe(false);
+    });
+
+    expect(result.current.retryAction).toBe('save');
+
+    await act(async () => {
+      await result.current.retry();
+    });
+
+    expect(validate).toHaveBeenNthCalledWith(2, {
+      items: [{ key: 'SCHEDULE_ENABLED', value: 'true' }],
+    });
+    expect(update).toHaveBeenNthCalledWith(2, {
+      configVersion: 'v1',
+      maskToken: '******',
+      reloadNow: true,
+      items: [{ key: 'SCHEDULE_ENABLED', value: 'true' }],
+    });
+    expect(result.current.toast?.type).toBe('success');
+
+    update.mockRejectedValueOnce(new Error('second glitch'));
+    await act(async () => {
+      await result.current.save([{ key: 'SCHEDULE_ENABLED', value: 'false' }]);
+    });
+
+    act(() => {
+      result.current.setDraftValue('STOCK_LIST', 'AAPL');
+    });
+
+    getConfig.mockResolvedValueOnce({
+      ...refreshedAfterRetry,
+      configVersion: 'v3',
+    });
+
+    await act(async () => {
+      await result.current.retry();
+    });
+
+    expect(update).toHaveBeenNthCalledWith(4, {
+      configVersion: 'v2',
+      maskToken: '******',
+      reloadNow: true,
+      items: [{ key: 'STOCK_LIST', value: 'AAPL' }],
+    });
+  });
+
+  it('clears failed explicit save replay state after refreshAfterExternalSave so retry cannot clobber merged imports', async () => {
+    const mergedConfig = {
+      ...sampleConfig,
+      configVersion: 'v2',
+      items: [{ ...sampleConfig.items[0], value: 'SH600519,AAPL' }],
+    };
+
+    getConfig
+      .mockResolvedValueOnce(sampleConfig)
+      .mockResolvedValueOnce(mergedConfig);
+
+    const { result } = renderHook(() => useSystemConfig());
+    await act(async () => {
+      await result.current.load();
+    });
+
+    update.mockRejectedValueOnce(new Error('network glitch'));
+    await act(async () => {
+      const outcome = await result.current.save([{ key: 'STOCK_LIST', value: 'SH600519' }]);
+      expect(outcome.success).toBe(false);
+    });
+    expect(result.current.saveError).not.toBeNull();
+    expect(result.current.retryAction).toBe('save');
+
+    await act(async () => {
+      await result.current.refreshAfterExternalSave(['STOCK_LIST']);
+    });
+
+    expect(result.current.configVersion).toBe('v2');
+    expect(result.current.saveError).toBeNull();
+    expect(result.current.retryAction).toBeNull();
+    expect(result.current.serverItems[0]?.value).toBe('SH600519,AAPL');
+
+    await act(async () => {
+      await result.current.retry();
+    });
+    expect(update).toHaveBeenCalledTimes(1);
+  });
+
+  it('accumulates committedKeys across overlapping external refreshes so earlier committed fields do not stay dirty', async () => {
+    const baseWithScreening = {
+      ...sampleConfig,
+      configVersion: 'v1',
+      items: [
+        sampleConfig.items[0],
+        {
+          key: 'SCREENING_ENABLED',
+          value: 'false',
+          rawValueExists: true,
+          isMasked: false,
+          schema: {
+            key: 'SCREENING_ENABLED',
+            category: 'system',
+            dataType: 'boolean',
+            uiControl: 'switch',
+            isSensitive: false,
+            isRequired: false,
+            isEditable: true,
+            options: [],
+            validation: {},
+            displayOrder: 2,
+          },
+        },
+      ],
+    };
+    const refresh1 = createDeferred<typeof baseWithScreening>();
+    const refresh2 = createDeferred<typeof baseWithScreening>();
+
+    getConfig
+      .mockResolvedValueOnce(baseWithScreening)
+      .mockReturnValueOnce(refresh1.promise)
+      .mockReturnValueOnce(refresh2.promise);
+
+    const { result } = renderHook(() => useSystemConfig());
+    await act(async () => {
+      await result.current.load();
+    });
+
+    // User had an unsaved local edit on STOCK_LIST before external merge ran.
+    act(() => {
+      result.current.setDraftValue('STOCK_LIST', 'SH600519');
+    });
+
+    let p1!: Promise<void>;
+    let p2!: Promise<void>;
+    act(() => {
+      p1 = result.current.refreshAfterExternalSave(['STOCK_LIST']);
+      p2 = result.current.refreshAfterExternalSave(['SCREENING_ENABLED']);
+    });
+
+    await act(async () => {
+      refresh1.resolve({
+        ...baseWithScreening,
+        configVersion: 'v2',
+        items: [
+          { ...baseWithScreening.items[0], value: 'SH600519,AAPL' },
+          baseWithScreening.items[1],
+        ],
+      });
+      refresh2.resolve({
+        ...baseWithScreening,
+        configVersion: 'v3',
+        items: [
+          { ...baseWithScreening.items[0], value: 'SH600519,AAPL' },
+          { ...baseWithScreening.items[1], value: 'true' },
+        ],
+      });
+      await Promise.all([p1, p2]);
+    });
+
+    expect(result.current.configVersion).toBe('v3');
+    expect(result.current.serverItems.find((i) => i.key === 'STOCK_LIST')?.value).toBe('SH600519,AAPL');
+    expect(result.current.serverItems.find((i) => i.key === 'SCREENING_ENABLED')?.value).toBe('true');
+    expect(result.current.hasDirty).toBe(false);
+  });
+
+  it('commits post-save config snapshot when a newer external refresh rejects', async () => {
+    const postSaveDeferred = createDeferred<typeof sampleConfig>();
+    const failedExternalDeferred = createDeferred<typeof sampleConfig>();
+
+    getConfig
+      .mockResolvedValueOnce(sampleConfig)
+      .mockReturnValueOnce(postSaveDeferred.promise)
+      .mockReturnValueOnce(failedExternalDeferred.promise);
+
+    const { result } = renderHook(() => useSystemConfig());
+    await act(async () => {
+      await result.current.load();
+    });
+
+    act(() => {
+      result.current.setDraftValue('STOCK_LIST', 'SH600519');
+    });
+
+    let savePromise!: Promise<{ success: boolean }>;
+    act(() => {
+      savePromise = result.current.save();
+    });
+
+    await waitFor(() => expect(update).toHaveBeenCalledTimes(1));
+
+    let extPromise!: Promise<void>;
+    act(() => {
+      extPromise = result.current.refreshAfterExternalSave(['OTHER']).catch(() => undefined);
+    });
+
+    await act(async () => {
+      failedExternalDeferred.reject(new Error('500 external read failed'));
+      await extPromise;
+      postSaveDeferred.resolve({
+        ...sampleConfig,
+        configVersion: 'v2',
+        items: [{ ...sampleConfig.items[0], value: 'SH600519' }],
+      });
+      const res = await savePromise;
+      expect(res.success).toBe(true);
+    });
+
+    expect(result.current.configVersion).toBe('v2');
+    expect(result.current.hasDirty).toBe(false);
+    expect(result.current.serverItems[0]?.value).toBe('SH600519');
+  });
+
+  it('preserves local STOCK_LIST draft when a conflict refresh fails and a later unrelated external refresh succeeds (OR-COR-1e937175)', async () => {
+    const configWithScreening = {
+      ...sampleConfig,
+      configVersion: 'v1',
+      items: [
+        sampleConfig.items[0],
+        {
+          key: 'SCREENING_ENABLED',
+          value: 'true',
+          rawValueExists: true,
+          isMasked: false,
+          schema: {
+            key: 'SCREENING_ENABLED',
+            category: 'system',
+            dataType: 'boolean',
+            uiControl: 'switch',
+            isSensitive: false,
+            isRequired: false,
+            isEditable: true,
+            options: [],
+            validation: {},
+            displayOrder: 2,
+          },
+        },
+      ],
+    };
+
+    getConfig
+      .mockResolvedValueOnce(configWithScreening)
+      .mockRejectedValueOnce(new Error('500 conflict refresh failed'))
+      .mockResolvedValueOnce({
+        ...configWithScreening,
+        configVersion: 'v2',
+        items: [
+          configWithScreening.items[0],
+          { ...configWithScreening.items[1], value: 'false' },
+        ],
+      });
+
+    const { result } = renderHook(() => useSystemConfig());
+    await act(async () => {
+      await result.current.load();
+    });
+
+    act(() => {
+      result.current.setDraftValue('STOCK_LIST', 'SH600519,TSLA');
+    });
+
+    await act(async () => {
+      await result.current.refreshAfterExternalSave([]).catch(() => undefined);
+    });
+    expect(result.current.getChangedItems()).toEqual([
+      { key: 'STOCK_LIST', value: 'SH600519,TSLA' },
+    ]);
+    expect(result.current.hasDirty).toBe(true);
+
+    await act(async () => {
+      await result.current.refreshAfterExternalSave(['SCREENING_ENABLED']);
+    });
+
+    expect(result.current.getChangedItems()).toEqual([
+      { key: 'STOCK_LIST', value: 'SH600519,TSLA' },
+    ]);
+    expect(result.current.hasDirty).toBe(true);
+    expect(
+      result.current.itemsByCategory.system?.find((item) => item.key === 'SCREENING_ENABLED')?.value,
+    ).toBe('false');
+  });
+
+  it('clears STOCK_LIST dirty state when an external refresh supersedes save post-update getConfig (OR-COR-c582b495)', async () => {
+    const baseWithScreening = {
+      ...sampleConfig,
+      configVersion: 'v1',
+      items: [
+        sampleConfig.items[0],
+        {
+          key: 'SCREENING_ENABLED',
+          value: 'false',
+          rawValueExists: true,
+          isMasked: false,
+          schema: {
+            key: 'SCREENING_ENABLED',
+            category: 'system',
+            dataType: 'boolean',
+            uiControl: 'switch',
+            isSensitive: false,
+            isRequired: false,
+            isEditable: true,
+            options: [],
+            validation: {},
+            displayOrder: 2,
+          },
+        },
+      ],
+    };
+
+    const postSaveGet = createDeferred<typeof baseWithScreening>();
+    const screeningGet = createDeferred<typeof baseWithScreening>();
+
+    getConfig
+      .mockResolvedValueOnce(baseWithScreening)
+      .mockReturnValueOnce(postSaveGet.promise)
+      .mockReturnValueOnce(screeningGet.promise);
+
+    const { result } = renderHook(() => useSystemConfig());
+    await act(async () => {
+      await result.current.load();
+    });
+
+    act(() => {
+      result.current.setDraftValue('STOCK_LIST', 'SH600519');
+    });
+
+    let savePromise!: Promise<{ success: boolean }>;
+    act(() => {
+      savePromise = result.current.save([{ key: 'STOCK_LIST', value: 'SH600519' }]);
+    });
+
+    await waitFor(() => expect(getConfig).toHaveBeenCalledTimes(2));
+
+    let extPromise!: Promise<void>;
+    act(() => {
+      extPromise = result.current.refreshAfterExternalSave(['SCREENING_ENABLED']);
+    });
+
+    await waitFor(() => expect(getConfig).toHaveBeenCalledTimes(3));
+
+    await act(async () => {
+      const latestServerState = {
+        ...baseWithScreening,
+        configVersion: 'v3',
+        items: [
+          { ...baseWithScreening.items[0], value: 'SH600519,AAPL' },
+          { ...baseWithScreening.items[1], value: 'true' },
+        ],
+      };
+      screeningGet.resolve(latestServerState);
+      await extPromise;
+      postSaveGet.resolve(latestServerState);
+      const outcome = await savePromise;
+      expect(outcome.success).toBe(true);
+    });
+
+    expect(result.current.configVersion).toBe('v3');
+    expect(result.current.serverItems.find((item) => item.key === 'STOCK_LIST')?.value).toBe('SH600519,AAPL');
+    expect(
+      result.current.itemsByCategory.base?.find((item) => item.key === 'STOCK_LIST')?.value,
+    ).toBe('SH600519,AAPL');
+    expect(result.current.hasDirty).toBe(false);
+    expect(result.current.getChangedItems()).toEqual([]);
   });
 });
