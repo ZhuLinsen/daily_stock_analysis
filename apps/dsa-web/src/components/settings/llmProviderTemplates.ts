@@ -100,15 +100,6 @@ export const LLM_PROVIDER_TEMPLATES: LLMProviderTemplate[] = [
     ],
   },
   {
-    channelId: 'aihubmix',
-    label: 'AIHubmix（聚合平台）',
-    protocol: 'openai',
-    baseUrl: 'https://aihubmix.com/v1',
-    placeholderModels: 'gpt-6.1-sol,claude-sonnet-4-6,gemini-3.6-flash',
-    capabilities: ['openai-compatible', 'aggregator'],
-    officialSources: [{ label: 'AIHubmix', url: 'https://inferera.com/?aff=CfMq' }],
-  },
-  {
     channelId: 'deepseek',
     label: 'DeepSeek 官方',
     protocol: 'deepseek',
@@ -243,6 +234,15 @@ export const LLM_PROVIDER_TEMPLATES: LLMProviderTemplate[] = [
     capabilities: ['local-runtime'],
     configHint: '需要本机、Docker 或 self-hosted runner 能访问 Ollama 服务。',
     officialSources: [{ label: 'Ollama API', url: 'https://github.com/ollama/ollama/blob/main/docs/api.md' }],
+  },
+  {
+    channelId: 'aihubmix',
+    label: 'AIHubmix（聚合平台）',
+    protocol: 'openai',
+    baseUrl: 'https://aihubmix.com/v1',
+    placeholderModels: 'gpt-6.1-sol,claude-sonnet-4-6,gemini-3.6-flash',
+    capabilities: ['openai-compatible', 'aggregator'],
+    officialSources: [{ label: 'AIHubmix', url: 'https://inferera.com/?aff=CfMq' }],
   },
   {
     channelId: 'anspire',

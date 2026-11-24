@@ -754,15 +754,16 @@ describe('DecisionSignalsPage', () => {
   });
 
   it('reports an expired signal refresh separately and refreshes active views', async () => {
+    const recentCreatedAt = new Date(Date.now() - 60 * 60 * 1000).toISOString();
     const refreshedItem = makeSignal({
       id: 90,
-      createdAt: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
-      updatedAt: new Date(Date.now() - 1000).toISOString(),
       decisionProfile: 'balanced',
       sourceAgent: null,
       triggerSource: 'api',
       action: 'buy',
       status: 'active',
+      createdAt: recentCreatedAt,
+      updatedAt: recentCreatedAt,
       metadata: {
         decision_profile: 'balanced',
         profile_source: 'user_selected',

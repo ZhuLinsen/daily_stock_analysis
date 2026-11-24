@@ -31,6 +31,9 @@ English | [简体中文](../README.md) | [繁體中文](README_CHT.md)
 
 </div>
 
+> [!TIP]
+> 🔎 **Need stock ideas?** Open-source [AlphaSift](https://github.com/ZhuLinsen/alphasift): daily picks + strategy tracking → [**Today's picks (no install)**](https://alphasift.zhulinsen.tech/?lang=en&utm_source=dsa_readme)
+
 <details open>
 <summary><strong>💖 Sponsors</strong></summary>
 <table>
@@ -46,9 +49,6 @@ English | [简体中文](../README.md) | [繁體中文](README_CHT.md)
   <a href="assets/readme_workspace_tour_20260510.gif"><img src="assets/readme_workspace_preview.gif" alt="DSA Web workspace demo" width="640"></a><br>
   <sub>Click the GIF to view the full demo</sub>
 </p>
-
-> [!TIP]
-> 🚀 **Ecosystem Projects**: [AlphaSift · Smart screening](https://github.com/ZhuLinsen/alphasift) | [AlphaEvo · Strategy backtesting & evolution](https://github.com/ZhuLinsen/alphaevo)
 
 ## ✨ Key Features
 
@@ -67,7 +67,7 @@ English | [简体中文](../README.md) | [繁體中文](README_CHT.md)
 
 | Type | Supported |
 |------|-----------|
-| AI Models | [Modelflare](https://modelflare.dev/sign-up?utm_source=github&utm_campaign=daily_stock_analysis), [x6.ai](https://console.x6pro.io/register?code=zJ2qSdns), AIHubMix, Gemini, OpenAI-compatible providers, DeepSeek, Qwen, Claude, Ollama |
+| AI Models | [Modelflare](https://modelflare.dev/sign-up?utm_source=github&utm_campaign=daily_stock_analysis), [x6.ai](https://console.x6pro.io/register?code=zJ2qSdns), Gemini, OpenAI-compatible providers, DeepSeek, Qwen, Claude, Ollama |
 | Market Data | [TickPlus (Recommended)](http://www.tickplus.org/register?reg=5433cf922395), AkShare, Tushare, Pytdx, Baostock, YFinance, Longbridge |
 | News Search | [SerpAPI](https://serpapi.com/github-daily-stock-analysis), Tavily, Bocha, Brave, MiniMax, SearXNG |
 | Social Sentiment | Stock Sentiment API for Reddit / X / Polymarket, US stocks only |
@@ -96,7 +96,6 @@ Start with one provider and one API key. For multi-model routing, image recognit
 |-------------|-------------|:--------:|
 | `MODELFLARE_KEY` | [Modelflare](https://modelflare.dev/sign-up?utm_source=github&utm_campaign=daily_stock_analysis) API key for leading global models at lower cost | **Recommended** |
 | `LLM_X6AI_API_KEY` | [x6.ai](https://console.x6pro.io/register?code=zJ2qSdns) API key for affordable access to 100+ models, including Claude and GPT | **Recommended** |
-| `AIHUBMIX_KEY` | AIHubMix API key, one key for multiple model families and a 10% top-up discount for this project | Optional |
 | `GEMINI_API_KEY` | Google Gemini API key | Optional |
 | `ANTHROPIC_API_KEY` | Anthropic Claude API key | Optional |
 | `OPENAI_API_KEY` | OpenAI-compatible API key, including DeepSeek and Qwen-compatible services | Optional |
@@ -164,6 +163,8 @@ Open the `Actions` tab and click `I understand my workflows, go ahead and enable
 By default, the workflow runs every weekday at 18:00 Beijing time and skips non-trading days. Forced runs, trading-day checks, and resume rules are covered in the [Full Guide](./full-guide_EN.md#scheduled-task-configuration).
 
 ### Option 2: Local / Docker Deployment
+
+For a Windows source install, use a short project path such as `C:\dsa`. See [installation troubleshooting](./FAQ_EN.md#windows-dependency-installation-fails-on-long-paths) if pip reports a path-length error.
 
 ```bash
 # Clone the project

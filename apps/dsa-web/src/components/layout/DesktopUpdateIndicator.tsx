@@ -70,7 +70,7 @@ export const DesktopUpdateIndicator: React.FC = () => {
 
   return (
     <div className="relative" ref={containerRef}>
-      <Tooltip content={tooltip} contentClassName={open ? 'hidden' : undefined}>
+      <Tooltip content={tooltip} side="bottom">
         <button
           type="button"
           className={cn(
