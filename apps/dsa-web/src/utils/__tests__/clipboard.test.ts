@@ -1,0 +1,91 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { copyTextToClipboard } from '../clipboard';
+
+describe('copyTextToClipboard', () => {
+  let originalClipboard: PropertyDescriptor | undefined;
+  let originalExecCommand: PropertyDescriptor | undefined;
+
+  beforeEach(() => {
+    originalClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+    originalExecCommand = Object.getOwnPropertyDescriptor(document, 'execCommand');
+  });
+
+  afterEach(() => {
+    if (originalClipboard) {
+      Object.defineProperty(navigator, 'clipboard', originalClipboard);
+    } else {
+      Reflect.deleteProperty(navigator, 'clipboard');
+    }
+    if (originalExecCommand) {
+      Object.defineProperty(document, 'execCommand', originalExecCommand);
+    } else {
+      Reflect.deleteProperty(document, 'execCommand');
+    }
+    document.body.innerHTML = '';
+    vi.restoreAllMocks();
+  });
+
+  it('uses navigator.clipboard.writeText when available', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+
+    await expect(copyTextToClipboard('hello world')).resolves.toBe(true);
+    expect(writeText).toHaveBeenCalledWith('hello world');
+  });
+
+  it('falls back to document.execCommand when navigator.clipboard is unavailable', async () => {
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: undefined,
+    });
+    const execCommand = vi.fn(() => {
+      const textarea = document.body.querySelector('textarea');
+      expect(textarea?.value).toBe('http-lan-copy');
+      return true;
+    });
+    Object.defineProperty(document, 'execCommand', {
+      configurable: true,
+      value: execCommand,
+    });
+
+    await expect(copyTextToClipboard('http-lan-copy')).resolves.toBe(true);
+    expect(execCommand).toHaveBeenCalledWith('copy');
+    expect(document.body.querySelector('textarea')).toBeNull();
+  });
+
+  it('falls back to execCommand when clipboard.writeText rejects', async () => {
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: {
+        writeText: vi.fn().mockRejectedValue(new DOMException('Denied', 'NotAllowedError')),
+      },
+    });
+    const execCommand = vi.fn().mockReturnValue(true);
+    Object.defineProperty(document, 'execCommand', {
+      configurable: true,
+      value: execCommand,
+    });
+
+    await expect(copyTextToClipboard('fallback-after-reject')).resolves.toBe(true);
+    expect(execCommand).toHaveBeenCalledWith('copy');
+  });
+
+  it('returns false when both Clipboard API and execCommand fail', async () => {
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: {
+        writeText: vi.fn().mockRejectedValue(new Error('denied')),
+      },
+    });
+    Object.defineProperty(document, 'execCommand', {
+      configurable: true,
+      value: vi.fn().mockReturnValue(false),
+    });
+
+    await expect(copyTextToClipboard('cannot-copy')).resolves.toBe(false);
+    expect(document.body.querySelector('textarea')).toBeNull();
+  });
+});

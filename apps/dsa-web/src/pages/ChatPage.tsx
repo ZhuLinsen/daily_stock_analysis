@@ -25,6 +25,7 @@ import {
   sanitizeFollowUpStockName,
 } from '../utils/chatFollowUp';
 import { isNearBottom } from '../utils/chatScroll';
+import { copyTextToClipboard } from '../utils/clipboard';
 import { getReportText } from '../utils/reportLanguage';
 import {
   includesStockCode,
@@ -104,7 +105,7 @@ const ChatPage: React.FC = () => {
   const [contextCompressionConfigVersion, setContextCompressionConfigVersion] = useState('');
   const [contextCompressionMaskToken, setContextCompressionMaskToken] = useState('******');
   const [contextCompressionError, setContextCompressionError] = useState<string | null>(null);
-  const [copiedMessages, setCopiedMessages] = useState<Set<string>>(new Set());
+  const [copyStatusByMessage, setCopyStatusByMessage] = useState<Record<string, 'copied' | 'failed'>>({});
   const [showJumpToBottom, setShowJumpToBottom] = useState(false);
   const [watchlistCodes, setWatchlistCodes] = useState<string[]>([]);
   const [isWatchlistActioning, setIsWatchlistActioning] = useState(false);
@@ -117,6 +118,7 @@ const ChatPage: React.FC = () => {
 
   const watchlistMessageTimerRef = useRef<number | null>(null);
   const copyResetTimerRef = useRef<Partial<Record<string, number>>>({});
+  const copyRequestTokenRef = useRef<Record<string, number>>({});
   const messagesViewportRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const isMountedRef = useRef(true);
@@ -637,24 +639,48 @@ const ChatPage: React.FC = () => {
   };
 
   const copyMessageToClipboard = async (msgId: string, content: string) => {
+    const token = (copyRequestTokenRef.current[msgId] ?? 0) + 1;
+    copyRequestTokenRef.current[msgId] = token;
+    const existingTimer = copyResetTimerRef.current[msgId];
+    if (existingTimer !== undefined) {
+      window.clearTimeout(existingTimer);
+      delete copyResetTimerRef.current[msgId];
+    }
+
+    let copied = false;
     try {
-      await navigator.clipboard.writeText(content);
-      setCopiedMessages((prev) => new Set(prev).add(msgId));
-      const existingTimer = copyResetTimerRef.current[msgId];
-      if (existingTimer !== undefined) {
-        window.clearTimeout(existingTimer);
+      copied = await copyTextToClipboard(content);
+      if (!copied) {
+        console.error('Copy failed: clipboard unavailable');
       }
-      copyResetTimerRef.current[msgId] = window.setTimeout(() => {
-        setCopiedMessages((prev) => {
-          const next = new Set(prev);
-          next.delete(msgId);
-          return next;
-        });
-        delete copyResetTimerRef.current[msgId];
-      }, 2000);
     } catch (err) {
       console.error('Copy failed:', err);
+      copied = false;
     }
+
+    if (!isMountedRef.current || copyRequestTokenRef.current[msgId] !== token) {
+      return;
+    }
+
+    setCopyStatusByMessage((prev) => ({
+      ...prev,
+      [msgId]: copied ? 'copied' : 'failed',
+    }));
+
+    copyResetTimerRef.current[msgId] = window.setTimeout(() => {
+      delete copyResetTimerRef.current[msgId];
+      if (!isMountedRef.current || copyRequestTokenRef.current[msgId] !== token) {
+        return;
+      }
+      setCopyStatusByMessage((prev) => {
+        if (!(msgId in prev)) {
+          return prev;
+        }
+        const next = { ...prev };
+        delete next[msgId];
+        return next;
+      });
+    }, 2000);
   };
 
   const downloadMessageAsMarkdown = useCallback((msg: Message) => {
@@ -1183,16 +1209,24 @@ const ChatPage: React.FC = () => {
                       expandedThinking.has(msg.id) &&
                       msg.thinkingSteps &&
                       renderThinkingDetails(msg.thinkingSteps)}
-                    {msg.role === 'assistant' ? (
+                    {msg.role === 'assistant' ? (() => {
+                      const copyStatus = copyStatusByMessage[msg.id];
+                      const copyLabel =
+                        copyStatus === 'copied'
+                          ? text.copied
+                          : copyStatus === 'failed'
+                            ? t('common.copyFailed')
+                            : text.copy;
+                      return (
                       <div className="relative">
                         <div className="chat-message-actions">
                           <button
                             type="button"
                             onClick={() => copyMessageToClipboard(msg.id, msg.content)}
                             className="chat-copy-btn"
-                            aria-label={copiedMessages.has(msg.id) ? text.copied : text.copy}
+                            aria-label={copyLabel}
                           >
-                            {copiedMessages.has(msg.id) ? text.copied : text.copy}
+                            {copyLabel}
                           </button>
                           <button
                             type="button"
@@ -1209,7 +1243,8 @@ const ChatPage: React.FC = () => {
                           </Markdown>
                         </div>
                       </div>
-                    ) : (
+                      );
+                    })() : (
                       msg.content
                         .split('\n')
                         .map((line, i) => (

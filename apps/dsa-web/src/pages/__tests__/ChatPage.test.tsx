@@ -2115,4 +2115,123 @@ describe('watchlist button with code variants', () => {
     expect(screen.getByText('从自选删除')).toBeInTheDocument();
     expect(mockRemoveFromWatchlist).not.toHaveBeenCalled();
   });
+
+  it('copies assistant reply via legacy fallback when navigator.clipboard is unavailable', async () => {
+    const originalClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+    const originalExecCommand = Object.getOwnPropertyDescriptor(document, 'execCommand');
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: undefined,
+    });
+    const execCommand = vi.fn().mockReturnValue(true);
+    Object.defineProperty(document, 'execCommand', {
+      configurable: true,
+      value: execCommand,
+    });
+    mockStoreState.messages = [
+      { id: 'assistant-copy', role: 'assistant', content: '测试 HTTP 回退复制内容' },
+    ];
+
+    try {
+      render(
+        <MemoryRouter initialEntries={['/chat']}>
+          <ChatPage />
+        </MemoryRouter>,
+      );
+
+      const copyButton = await screen.findByRole('button', { name: '复制' });
+      await act(async () => {
+        fireEvent.click(copyButton);
+        await Promise.resolve();
+      });
+
+      expect(execCommand).toHaveBeenCalledWith('copy');
+      expect(await screen.findByRole('button', { name: '已复制' })).toBeInTheDocument();
+    } finally {
+      if (originalClipboard) {
+        Object.defineProperty(navigator, 'clipboard', originalClipboard);
+      } else {
+        Reflect.deleteProperty(navigator, 'clipboard');
+      }
+      if (originalExecCommand) {
+        Object.defineProperty(document, 'execCommand', originalExecCommand);
+      } else {
+        Reflect.deleteProperty(document, 'execCommand');
+      }
+    }
+  });
+
+  it('surfaces copy failure and clears stale copied state on retry failure', async () => {
+    vi.useFakeTimers();
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const originalClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+    const originalExecCommand = Object.getOwnPropertyDescriptor(document, 'execCommand');
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: undefined,
+    });
+    const execCommand = vi.fn().mockReturnValue(false);
+    Object.defineProperty(document, 'execCommand', {
+      configurable: true,
+      value: execCommand,
+    });
+    mockStoreState.messages = [
+      { id: 'assistant-copy-fail', role: 'assistant', content: '复制失败状态测试' },
+    ];
+
+    try {
+      render(
+        <MemoryRouter initialEntries={['/chat']}>
+          <ChatPage />
+        </MemoryRouter>,
+      );
+
+      // Initial failure shows '复制失败' and resets back to '复制' after 2000ms.
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: '复制' }));
+        await Promise.resolve();
+      });
+      expect(screen.getByRole('button', { name: '复制失败' })).toBeInTheDocument();
+
+      act(() => {
+        vi.advanceTimersByTime(2000);
+      });
+      expect(screen.getByRole('button', { name: '复制' })).toBeInTheDocument();
+
+      // Succeed first -> '已复制', then retry and fail before timer expires -> immediately '复制失败'.
+      execCommand.mockReturnValueOnce(true).mockReturnValueOnce(false);
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: '复制' }));
+        await Promise.resolve();
+      });
+      expect(screen.getByRole('button', { name: '已复制' })).toBeInTheDocument();
+
+      act(() => {
+        vi.advanceTimersByTime(500);
+      });
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: '已复制' }));
+        await Promise.resolve();
+      });
+      expect(screen.getByRole('button', { name: '复制失败' })).toBeInTheDocument();
+
+      act(() => {
+        vi.advanceTimersByTime(2000);
+      });
+      expect(screen.getByRole('button', { name: '复制' })).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+      consoleErrorSpy.mockRestore();
+      if (originalClipboard) {
+        Object.defineProperty(navigator, 'clipboard', originalClipboard);
+      } else {
+        Reflect.deleteProperty(navigator, 'clipboard');
+      }
+      if (originalExecCommand) {
+        Object.defineProperty(document, 'execCommand', originalExecCommand);
+      } else {
+        Reflect.deleteProperty(document, 'execCommand');
+      }
+    }
+  });
 });
