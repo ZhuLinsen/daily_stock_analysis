@@ -18,6 +18,7 @@ interface UseRunFlowSnapshotResult {
 }
 
 type RunFlowRequestState = {
+  sourceKey: string;
   requestKey: string;
   snapshot: RunFlowSnapshot | null;
   error: ParsedApiError | null;
@@ -47,6 +48,25 @@ const isUsableSource = (source?: RunFlowSnapshotSource | null): source is RunFlo
 const eventTime = (event: RunFlowEvent): number => (
   event.timestamp ? Date.parse(event.timestamp) || 0 : 0
 );
+
+const findEventIndex = (events: RunFlowEvent[], target: RunFlowEvent): number => (
+  events.findIndex((event) => (target.id ? event.id === target.id : event === target))
+);
+
+const isPrecedingEvent = (
+  event: RunFlowEvent,
+  index: number,
+  currentEvent: RunFlowEvent,
+  currentIndex: number,
+): boolean => {
+  if (event === currentEvent || (currentEvent.id && event.id === currentEvent.id)) {
+    return false;
+  }
+  if (currentIndex >= 0) {
+    return index < currentIndex;
+  }
+  return eventTime(event) < eventTime(currentEvent);
+};
 
 const mergeEvents = (events: RunFlowEvent[], incoming: RunFlowEvent): RunFlowEvent[] => {
   const byId = new Map<string, RunFlowEvent>();
@@ -106,16 +126,12 @@ const latestEventNodeId = (
   currentEvent: RunFlowEvent,
 ): string | null => {
   const typeSet = new Set(types);
-  const currentTime = eventTime(currentEvent);
-  const matchingEvents = events
-    .filter((event) => (
-      event.id !== currentEvent.id
-      && eventTime(event) < currentTime
-      && typeSet.has(event.type)
-      && event.nodeId
-      && nodeById.has(event.nodeId)
-    ))
-    .sort((left, right) => eventTime(left) - eventTime(right));
+  const currentIndex = findEventIndex(events, currentEvent);
+  const matchingEvents = events.filter((event, index) => (
+    isPrecedingEvent(event, index, currentEvent, currentIndex)
+    && typeSet.has(event.type)
+    && Boolean(event.nodeId && nodeById.has(event.nodeId))
+  ));
   return matchingEvents.at(-1)?.nodeId || null;
 };
 
@@ -171,6 +187,8 @@ const refreshIncomingEdgeStatus = (
   return changed ? refreshed : edges;
 };
 
+const ACTIVE_NODE_STATUSES = new Set(['pending', 'running', 'cancel_requested']);
+
 const providerTransitionKind = (
   previous: { provider: string | null; success: boolean; fallbackTo: string | null },
   current: { provider: string | null; success: boolean; fallbackFrom: string | null },
@@ -178,7 +196,7 @@ const providerTransitionKind = (
   if (previous.fallbackTo || current.fallbackFrom) {
     return 'fallback';
   }
-  if (previous.provider && current.provider && previous.provider === current.provider) {
+  if (!previous.success && previous.provider && current.provider && previous.provider === current.provider) {
     return 'retry';
   }
   if (!previous.success) {
@@ -215,24 +233,61 @@ const appendDerivedEdge = (
 
   if (displayEvent.type === 'provider_run' || displayEvent.type === 'provider_run_started') {
     const dataType = dataTypeFromEvent(displayEvent, node);
-    const currentTime = eventTime(displayEvent);
-    const previousEvent = events
-      .filter((event) => {
-        if (
-          event.id === displayEvent.id
-          || (event.type !== 'provider_run' && event.type !== 'provider_run_started')
-          || !event.nodeId
-        ) {
+    const currentIndex = findEventIndex(events, displayEvent);
+    const currentFallbackFrom = metadataString(displayEvent.metadata, 'fallbackFrom', 'fallback_from');
+    const hasOutgoingFallbackOrRetry = (fromId: string) => edges.some(
+      (edge) => edge.from === fromId && (edge.kind === 'fallback' || edge.kind === 'retry'),
+    );
+    const canFollowFallbackOrRetry = (
+      displayEvent.type === 'provider_run_started'
+      || Boolean(currentFallbackFrom)
+      || node.status !== 'success'
+    );
+    const precedingProviderEvents = events.filter((event, index) => {
+      if (
+        !isPrecedingEvent(event, index, displayEvent, currentIndex)
+        || (event.type !== 'provider_run' && event.type !== 'provider_run_started')
+        || !event.nodeId
+        || event.nodeId === nodeId
+      ) {
+        return false;
+      }
+      const eventNode = nodeById.get(event.nodeId);
+      return Boolean(eventNode && dataTypeFromEvent(event, eventNode) === dataType);
+    });
+
+    const previousEvent = (
+      (canFollowFallbackOrRetry
+        ? precedingProviderEvents.filter((event) => (
+          Boolean(metadataString(event.metadata, 'fallbackTo', 'fallback_to'))
+          && !hasOutgoingFallbackOrRetry(event.nodeId!)
+        )).at(-1)
+        : undefined)
+      ?? (currentFallbackFrom
+        ? precedingProviderEvents.filter((event) => {
+          const eventNode = nodeById.get(event.nodeId!)!;
+          const hasExplicitFallback = Boolean(metadataString(event.metadata, 'fallbackTo', 'fallback_to'));
+          return (
+            !hasOutgoingFallbackOrRetry(event.nodeId!)
+            && !ACTIVE_NODE_STATUSES.has(eventNode.status)
+            && (eventNode.status === 'failed' || eventNode.status === 'timeout' || hasExplicitFallback)
+          );
+        }).at(-1)
+        : undefined)
+      ?? precedingProviderEvents.filter((event) => {
+        const eventNode = nodeById.get(event.nodeId!)!;
+        if (ACTIVE_NODE_STATUSES.has(eventNode.status)) {
           return false;
         }
-        if (eventTime(event) >= currentTime) {
-          return false;
+        if (!canFollowFallbackOrRetry) {
+          const hasExplicitFallback = Boolean(metadataString(event.metadata, 'fallbackTo', 'fallback_to'));
+          if (hasExplicitFallback || eventNode.status === 'failed' || eventNode.status === 'timeout') {
+            return false;
+          }
         }
-        const eventNode = nodeById.get(event.nodeId);
-        return Boolean(eventNode && dataTypeFromEvent(event, eventNode) === dataType);
-      })
-      .sort((left, right) => eventTime(left) - eventTime(right))
-      .at(-1);
+        return true;
+      }).at(-1)
+    );
 
     if (!previousEvent?.nodeId) {
       return nodeById.has('task_queue')
@@ -351,23 +406,29 @@ const mergeFlowEventIntoSnapshot = (
     ...flowEvent,
     metadata: eventMetadata,
   };
-  const eventAlreadyPresent = snapshot.events.some((event) => event.id === displayEvent.id);
+  const eventAlreadyPresent = Boolean(displayEvent.id) && snapshot.events.some((event) => event.id === displayEvent.id);
   const events = mergeEvents(snapshot.events, displayEvent);
   const node = isRunFlowNode(nodeCandidate) ? nodeCandidate : null;
+  const targetNodeId = eventNodeId(displayEvent, node);
+  const nodeAlreadyExisted = Boolean(
+    targetNodeId && snapshot.nodes.some((existing) => existing.id === targetNodeId),
+  );
   const nodes = upsertNode(snapshot.nodes, node);
   const edges = eventAlreadyPresent
     ? snapshot.edges
-    : refreshIncomingEdgeStatus(
-      appendDerivedEdge(
-        nodes,
-        snapshot.edges,
-        events,
-        displayEvent,
-        eventNodeId(displayEvent, node),
-      ),
-      eventNodeId(displayEvent, node),
-      node?.status,
-    );
+    : nodeAlreadyExisted
+      ? refreshIncomingEdgeStatus(snapshot.edges, targetNodeId, node?.status)
+      : refreshIncomingEdgeStatus(
+        appendDerivedEdge(
+          nodes,
+          snapshot.edges,
+          events,
+          displayEvent,
+          targetNodeId,
+        ),
+        targetNodeId,
+        node?.status,
+      );
 
   return {
     ...snapshot,
@@ -388,8 +449,6 @@ const rememberFlowEvent = (events: RunFlowEvent[], flowEvent: RunFlowEvent): Run
     .sort((left, right) => eventTime(left) - eventTime(right))
     .slice(-MAX_BUFFERED_FLOW_EVENTS);
 };
-
-const ACTIVE_NODE_STATUSES = new Set(['pending', 'running', 'cancel_requested']);
 
 const replayEventNodeId = (flowEvent: RunFlowEvent): string | null => {
   const nodeCandidate = flowEvent.metadata?.node;
@@ -425,6 +484,7 @@ export function useRunFlowSnapshot({
   enabled = true,
 }: UseRunFlowSnapshotOptions): UseRunFlowSnapshotResult {
   const [requestState, setRequestState] = useState<RunFlowRequestState>({
+    sourceKey: 'none',
     requestKey: 'none',
     snapshot: null,
     error: null,
@@ -454,13 +514,12 @@ export function useRunFlowSnapshot({
       }
       flowEventBufferRef.current = rememberFlowEvent(flowEventBufferRef.current, flowEvent);
       setRequestState((current) => {
-        const hasFreshState = current.requestKey === requestKey && current.snapshot;
-        if (!hasFreshState) {
+        if (current.sourceKey !== sourceKey || !current.snapshot) {
           return current;
         }
         return {
           ...current,
-          snapshot: mergeFlowEventIntoSnapshot(current.snapshot as RunFlowSnapshot, flowEvent),
+          snapshot: mergeFlowEventIntoSnapshot(current.snapshot, flowEvent),
         };
       });
     },
@@ -499,6 +558,7 @@ export function useRunFlowSnapshot({
             ? replayFlowEvents(result, flowEventBufferRef.current)
             : result;
           setRequestState({
+            sourceKey,
             requestKey,
             snapshot,
             error: null,
@@ -507,25 +567,28 @@ export function useRunFlowSnapshot({
       })
       .catch((err: unknown) => {
         if (active) {
-          setRequestState({
+          const parsedError = getParsedApiError(err);
+          setRequestState((current) => ({
+            sourceKey,
             requestKey,
-            snapshot: null,
-            error: getParsedApiError(err),
-          });
+            snapshot: current.sourceKey === sourceKey ? current.snapshot : null,
+            error: parsedError,
+          }));
         }
       });
 
     return () => {
       active = false;
     };
-  }, [recordId, requestKey, shouldLoad, sourceType, taskId]);
+  }, [recordId, requestKey, shouldLoad, sourceKey, sourceType, taskId]);
 
-  const hasFreshState = shouldLoad && requestState.requestKey === requestKey;
+  const hasSourceState = shouldLoad && requestState.sourceKey === sourceKey;
+  const hasFreshRequest = shouldLoad && requestState.requestKey === requestKey;
 
   return {
-    snapshot: hasFreshState ? requestState.snapshot : null,
-    isLoading: shouldLoad && !hasFreshState,
-    error: hasFreshState ? requestState.error : null,
+    snapshot: hasSourceState ? requestState.snapshot : null,
+    isLoading: shouldLoad && !hasFreshRequest,
+    error: hasFreshRequest ? requestState.error : null,
     refetch,
   };
 }
