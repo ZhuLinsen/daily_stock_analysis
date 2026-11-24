@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [修复] 桌面更新入口复用统一 Tooltip，保留键盘聚焦与悬停提示；修复 DecisionSignal 重评估测试的固定日期漂移，并等待首轮选股轮询完成后再测试恢复，隔离一次性 mock 队列，避免慢速 CI 的级联失败。
+
 - [新功能] 新增原生澳股 `au`：显式 `.AX` 代码使用 Yahoo 数据、XASX/悉尼日历和澳洲提示语，保留报价/财报币种及 ETF 类型，拒绝跨市场 fallback 与污染缓存；支持 AU 指数复盘，详见 `docs/asx_support.md`。
 
 - [新功能] 新增 DSA 内部因子契约（`FactorDefinition`/`FactorSnapshot`/`CandidatePoolRun`/`CandidateFactorScore`，契约版本 1.0）：将选股 `factor_scores` 映射为带字段版本、来源、数据质量与降级原因的内部结构（#1902 P0）；仅新增 schema 与纯映射函数，不改变现有选股、API、回测与 DecisionSignal 行为。`ScreenResult.created_at` 改为带本地偏移的 ISO 字符串（按部署进程本地时钟换算为 UTC），`pick_to_factor_snapshot` 的显式 `computed_at` 同样归一化；内置引擎来源守卫的作用域已修正，原创的 `factor_mapping.py` 不再被误判为 AlphaSift 派生文件。

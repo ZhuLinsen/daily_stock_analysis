@@ -121,11 +121,11 @@ describe('StockScreeningPage', () => {
     getHotspotDetail.mockReset();
     getHotspots.mockReset();
     getStrategies.mockReset();
-    getScreenTask.mockClear();
+    getScreenTask.mockReset();
     navigate.mockReset();
     resetLastScreenResult();
     screenStocks.mockReset();
-    startScreenTask.mockClear();
+    startScreenTask.mockReset();
     getStrategies.mockResolvedValue(mockStrategiesResponse);
     getHotspotDetail.mockResolvedValue({
       enabled: true,
@@ -1243,6 +1243,10 @@ describe('StockScreeningPage', () => {
     expect(await screen.findByText('选股运行中')).toBeInTheDocument();
     expect(window.sessionStorage.getItem('dsa.screening.activeScreenTask.v1')).toContain('screen-task-1');
 
+    // A running label can render before the first poll consumes its response.
+    // Wait for the processing response before unmounting, not a wall-clock delay.
+    expect(await screen.findByText(/35%/)).toBeInTheDocument();
+    expect(getScreenTask).toHaveBeenCalledTimes(1);
     firstRender.unmount();
     render(<StockScreeningPage />);
 

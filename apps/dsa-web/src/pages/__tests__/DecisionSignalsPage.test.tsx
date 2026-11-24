@@ -756,6 +756,8 @@ describe('DecisionSignalsPage', () => {
   it('reports an expired signal refresh separately and refreshes active views', async () => {
     const refreshedItem = makeSignal({
       id: 90,
+      // Keep this refreshed signal inside the active timeline window on any date.
+      createdAt: new Date(Date.now() - 60_000).toISOString(),
       decisionProfile: 'balanced',
       sourceAgent: null,
       triggerSource: 'api',
