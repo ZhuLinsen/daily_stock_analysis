@@ -16,7 +16,7 @@ YfinanceFetcher - 兜底数据源 (Priority 4)
 
 import csv
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from io import StringIO
 from typing import Optional, List, Dict, Any
 from urllib.error import HTTPError, URLError
@@ -181,6 +181,39 @@ class YfinanceFetcher(BaseFetcher):
             logger.warning(f"Cannot determine market for stock {code}, defaulting to SZ")
             return f"{code}.SZ"
 
+    @staticmethod
+    def _exclusive_end_date(end_date: str) -> str:
+        """Convert inclusive YYYY-MM-DD *end_date* to yfinance's exclusive *end*."""
+        try:
+            end_dt = datetime.strptime(end_date[:10], "%Y-%m-%d")
+            return (end_dt + timedelta(days=1)).strftime("%Y-%m-%d")
+        except (TypeError, ValueError):
+            return end_date
+
+    @staticmethod
+    def _clamp_to_end_date(df: pd.DataFrame, end_date: str) -> pd.DataFrame:
+        """Drop bars strictly after *end_date* after fetching with exclusive end+1."""
+        if df is None or df.empty:
+            return df
+        try:
+            end_ts = pd.Timestamp(end_date[:10]).normalize()
+        except (TypeError, ValueError):
+            return df
+        if isinstance(df.index, pd.DatetimeIndex):
+            idx_dates = df.index
+            if idx_dates.tz is not None:
+                idx_dates = idx_dates.tz_localize(None)
+            mask = idx_dates.normalize() <= end_ts
+            return df.loc[mask].copy()
+        for col in ("Date", "Datetime", "date", "datetime"):
+            if col in df.columns:
+                parsed = pd.to_datetime(df[col], errors="coerce")
+                if getattr(parsed.dt, "tz", None) is not None:
+                    parsed = parsed.dt.tz_localize(None)
+                mask = parsed.isna() | (parsed.dt.normalize() <= end_ts)
+                return df.loc[mask].copy()
+        return df
+
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=2, max=30),
@@ -195,22 +228,23 @@ class YfinanceFetcher(BaseFetcher):
 
         流程：
         1. 转换股票代码格式
-        2. 调用 yfinance API
-        3. 处理返回数据
+        2. 将闭区间 end_date 转为 yfinance 开区间 end (+1 天) 后调用 API
+        3. 过滤超出 end_date 的数据并处理返回结构
         """
         import yfinance as yf
 
         # 转换代码格式
         yf_code = self._convert_stock_code(stock_code)
+        yf_end_date = self._exclusive_end_date(end_date)
 
-        logger.debug(f"Calling yfinance.download({yf_code}, {start_date}, {end_date})")
+        logger.debug(f"Calling yfinance.download({yf_code}, {start_date}, {yf_end_date}) [requested end={end_date}]")
 
         try:
-            # 使用 yfinance 下载数据
+            # 使用 yfinance 下载数据（yfinance 的 end 为左闭右开，不 +1 会丢失 end_date 当日 K 线）
             df = yf.download(
                 tickers=yf_code,
                 start=start_date,
-                end=end_date,
+                end=yf_end_date,
                 progress=False,  # 禁止进度条
                 auto_adjust=True,  # 自动调整价格（复权）
                 multi_level_index=True
@@ -222,6 +256,8 @@ class YfinanceFetcher(BaseFetcher):
                 mask = ticker_level == yf_code
                 if mask.any():
                     df = df.loc[:, mask].copy()
+
+            df = self._clamp_to_end_date(df, end_date)
 
             if df.empty:
                 raise DataFetchError(f"Yahoo Finance 未查询到 {stock_code} 的数据")

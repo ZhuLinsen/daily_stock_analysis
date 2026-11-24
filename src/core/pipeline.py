@@ -595,8 +595,16 @@ class StockAnalysisPipeline:
             if _is_current_stock_cancelled():
                 return False, "股票分析已取消"
             logger.info(f"{stock_name}({code}) fetching data from data sources...")
-            df, source_name = self.fetcher_manager.get_daily_data(code, days=30)
+            df, source_name = self.fetcher_manager.get_daily_data(
+                code,
+                end_date=target_date.strftime("%Y-%m-%d"),
+                days=30,
+            )
 
+            if df is None or df.empty:
+                return False, "获取数据为空"
+
+            df = self._filter_closed_daily_bars(df, target_date)
             if df is None or df.empty:
                 return False, "获取数据为空"
 
@@ -3638,6 +3646,40 @@ class StockAnalysisPipeline:
         else:
             market = get_market_for_stock(normalize_stock_code(code))
         return get_effective_trading_date(market, current_time=current_time)
+
+    @staticmethod
+    def _filter_closed_daily_bars(
+        df: Optional[pd.DataFrame],
+        target_date: date,
+    ) -> Optional[pd.DataFrame]:
+        """Keep only daily bars on or before the effective closed trading date."""
+        if df is None or df.empty:
+            return df
+        if "date" in df.columns:
+            raw_dates = df["date"]
+        elif isinstance(df.index, pd.DatetimeIndex):
+            raw_dates = pd.Series(df.index, index=df.index)
+        else:
+            return df
+        try:
+            parsed = pd.to_datetime(raw_dates, errors="coerce")
+            if isinstance(parsed.dtype, pd.DatetimeTZDtype):
+                parsed = parsed.dt.tz_localize(None)
+            mask = parsed.notna() & (parsed.dt.date <= target_date)
+        except (TypeError, ValueError):
+            def _to_bar_date(val: Any) -> Optional[date]:
+                if val is None or pd.isna(val):
+                    return None
+                ts = pd.to_datetime(val, errors="coerce")
+                if pd.isna(ts):
+                    return None
+                if getattr(ts, "tzinfo", None) is not None:
+                    ts = ts.tz_localize(None)
+                return ts.date()
+
+            bar_dates = [_to_bar_date(v) for v in raw_dates]
+            mask = pd.Series([d is not None and d <= target_date for d in bar_dates], index=df.index)
+        return df.loc[mask].copy()
 
     @staticmethod
     def _safe_to_dict(value: Any) -> Optional[Dict[str, Any]]:
