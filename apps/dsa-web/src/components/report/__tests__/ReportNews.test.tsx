@@ -89,4 +89,70 @@ describe('ReportNews', () => {
 
     expect(await screen.findByText('重试成功')).toBeInTheDocument();
   });
+
+  it('ignores stale resolved news responses after switching recordId', async () => {
+    let resolveFirst!: (value: { total: number; items: Array<{ title: string; snippet: string; url: string }> }) => void;
+    let resolveSecond!: (value: { total: number; items: Array<{ title: string; snippet: string; url: string }> }) => void;
+
+    vi.mocked(historyApi.getNews)
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveFirst = resolve;
+          }),
+      )
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveSecond = resolve;
+          }),
+      );
+
+    const { rerender } = render(<ReportNews recordId={1} />);
+    rerender(<ReportNews recordId={2} />);
+
+    resolveSecond({
+      total: 1,
+      items: [{ title: '当前报告新闻B', snippet: 'B内容', url: 'https://example.com/b' }],
+    });
+    expect(await screen.findByText('当前报告新闻B')).toBeInTheDocument();
+
+    resolveFirst({
+      total: 1,
+      items: [{ title: '过期报告新闻A', snippet: 'A内容', url: 'https://example.com/a' }],
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText('当前报告新闻B')).toBeInTheDocument();
+      expect(screen.queryByText('过期报告新闻A')).not.toBeInTheDocument();
+    });
+  });
+
+  it('ignores stale rejected news requests after switching recordId', async () => {
+    let rejectFirst!: (reason?: unknown) => void;
+
+    vi.mocked(historyApi.getNews)
+      .mockImplementationOnce(
+        () =>
+          new Promise((_, reject) => {
+            rejectFirst = reject;
+          }),
+      )
+      .mockResolvedValueOnce({
+        total: 1,
+        items: [{ title: '正常新闻B', snippet: 'B内容', url: 'https://example.com/b' }],
+      });
+
+    const { rerender } = render(<ReportNews recordId={1} />);
+    rerender(<ReportNews recordId={2} />);
+
+    expect(await screen.findByText('正常新闻B')).toBeInTheDocument();
+
+    rejectFirst(new Error('stale request failed'));
+
+    await waitFor(() => {
+      expect(screen.getByText('正常新闻B')).toBeInTheDocument();
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    });
+  });
 });
