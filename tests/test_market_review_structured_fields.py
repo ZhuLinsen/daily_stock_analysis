@@ -684,6 +684,29 @@ class TestDivergenceDiagnosisFallback:
         assert "基本匹配" in diagnosis, diagnosis
         assert "指数行情缺失" not in diagnosis, diagnosis
 
+    def test_reversed_direction_breadth_never_claims_match(self):
+        """OR-COR-97335eff：指数下跌而个股多数上涨时方向相反，兜底不得定性“基本匹配”。
+
+        bot 内存复现场景：指数平均下跌 2%，2700 家上涨、2300 家下跌（上涨占比 54%，
+        未跨过 55% 背离阈值）→ 修复前落入“其余区间”分支输出“宽度与指数表现基本匹配”，
+        但指数与个股涨跌方向明显相反。方向不一致时只能陈述观测值。
+        """
+        ma = _make_analyzer(report_text="复盘")
+        overview = _cn_overview(
+            indices=[
+                MarketIndex(code="000001", name="上证指数", current=3280.0, change_pct=-2.0),
+                MarketIndex(code="399001", name="深证成指", current=10200.0, change_pct=-2.0),
+            ],
+            up_count=2700,
+            down_count=2300,
+            flat_count=0,
+        )
+
+        diagnosis = ma.build_market_review_payload(overview, [], "复盘报告")["breadth"]["divergence_diagnosis"]
+
+        assert "匹配" not in diagnosis, diagnosis
+        assert "上涨家数占比 54%" in diagnosis, diagnosis
+
 
 class TestStructuredTextSanitizing:
     """OR-COR-50abc372：附录里的未配对 UTF-16 代理码点不得进入 payload。
