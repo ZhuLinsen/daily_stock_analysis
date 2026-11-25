@@ -231,6 +231,39 @@ describe('ChatGPT connection status', () => {
     expect(api.disconnect).toHaveBeenCalledWith({ connection_id: 'old' });
   });
 
+  it('keeps the signed-in account after a lost sign-out response until the local exit succeeds', async () => {
+    const target = { identity_id: 'identity-instance' };
+    const signedIn: ChatGPTStatus = {
+      ...disconnected,
+      error: 'chatgpt_plan_permission_required',
+      actions: [
+        { kind: 'grant_plan', target: { registration_id: 'saved' }, label: 'Test' },
+        { kind: 'sign_out', target, label: null },
+      ],
+    };
+    api.status.mockResolvedValue(signedIn);
+    render(<ChatGPTConnectionCard />);
+    const signOut = await screen.findByRole('button', { name: '退出 ChatGPT 登录' });
+    expect(screen.getByRole('button', { name: '补充授权 · Test' })).toBeVisible();
+    expect(screen.getByText(/已登录 · Test/)).toBeVisible();
+    api.disconnect.mockRejectedValueOnce(new AxiosError('timeout', 'ECONNABORTED'));
+    fireEvent.click(signOut);
+
+    expect(await screen.findByText(/断开结果待确认/)).toBeVisible();
+    expect(signOut).toBeEnabled();
+    expect(screen.queryByText(/本地已断开/)).not.toBeInTheDocument();
+    expect(api.disconnect).toHaveBeenCalledWith(target);
+
+    api.disconnect.mockResolvedValueOnce({ disconnected: true, revocation_confirmed: null });
+    api.status.mockResolvedValue({ ...disconnected, error: 'chatgpt_plan_permission_required' });
+    fireEvent.click(signOut);
+    expect(await screen.findByRole('button', { name: '重新授权 · Saved (saved)' })).toBeVisible();
+    expect(screen.getByText('请重新授权以启用 ChatGPT 套餐使用权限。')).toBeVisible();
+    expect(screen.queryByText(/已登录 · Test/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '退出 ChatGPT 登录' })).not.toBeInTheDocument();
+    expect(api.models).not.toHaveBeenCalled();
+  });
+
   it('reconciles the replacement connection when its model list discovers a lost grant', async () => {
     await openConnectionCard();
     api.disconnect.mockRejectedValueOnce({ isAxiosError: true, response: { status: 409, data: {

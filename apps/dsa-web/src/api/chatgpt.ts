@@ -2,14 +2,15 @@ import apiClient from './index';
 
 export type ConnectTarget = { mode: 'new' } | { registration_id: string } | { retry_id: string };
 
-export type DisconnectTarget = { connection_id: string } | { attempt_id: string };
+export type DisconnectTarget = { connection_id: string } | { attempt_id: string } | { identity_id: string };
 
 export type ChatGPTAction = { label: string | null } & (
   | { kind: 'new'; target: { mode: 'new' } }
-  | { kind: 'reauth'; target: { registration_id: string } }
+  | { kind: 'reauth' | 'grant_plan'; target: { registration_id: string } }
   | { kind: 'continue'; target: { retry_id: string } }
   | { kind: 'disconnect' | 'retry_disconnect'; target: { connection_id: string } }
   | { kind: 'cancel'; target: { attempt_id: string } }
+  | { kind: 'sign_out'; target: { identity_id: string } }
 );
 
 export interface Revocation {

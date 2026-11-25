@@ -373,8 +373,9 @@ describe('ChatPage', () => {
     render(<RouterProvider router={router} />);
 
     const input = await screen.findByPlaceholderText(/分析 600519/);
+    const settingsButton = await screen.findByRole('button', { name: '前往 Agent 设置' });
     expect(input).toBeDisabled();
-    fireEvent.click(screen.getByRole('button', { name: '前往 Agent 设置' }));
+    fireEvent.click(settingsButton);
     expect(await screen.findByText('Agent settings destination')).toBeInTheDocument();
     // React Router v7 applies navigations asynchronously; waitFor keeps the
     // assertion in an act-wrapped retry loop instead of reading a stale router state.
@@ -985,7 +986,9 @@ describe('ChatPage', () => {
         <ChatPage />
       </MemoryRouter>
     );
-    fireEvent.click(await screen.findByRole('button', { name: '用缠论分析茅台' }));
+    const shortcut = await screen.findByRole('button', { name: '用缠论分析茅台' });
+    await waitFor(() => expect(shortcut).toBeEnabled());
+    fireEvent.click(shortcut);
 
     await waitFor(() => {
       expect(mockStartStream).toHaveBeenCalledWith(

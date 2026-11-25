@@ -92,6 +92,8 @@ export const useChatGPTStore = create<ChatGPTState>((set, get) => {
     },
     disconnect: async (target) => {
       const connectionId = 'connection_id' in target ? target.connection_id : undefined;
+      const signingOut = 'identity_id' in target;
+      const readStatus = signingOut ? get().recheckStatus : get().refresh;
       ++readSequence;
       let result;
       try {
@@ -100,8 +102,12 @@ export const useChatGPTStore = create<ChatGPTState>((set, get) => {
         if (!isAxiosError(error)) throw error;
         if (error.response) {
           const code = extractErrorCode(error.response.data);
-          if (code === 'chatgpt_target_changed' || code === 'chatgpt_connection_busy' || code === 'chatgpt_store_unavailable') await get().refresh();
+          if (code === 'chatgpt_target_changed' || code === 'chatgpt_connection_busy' || code === 'chatgpt_store_unavailable') await readStatus();
           throw error;
+        }
+        if (signingOut) {
+          await readStatus();
+          return undefined;
         }
         const status = await syncConnection(++readSequence).catch(() => undefined);
         if (status?.available && !status.connected && status.pending === false && !status.disconnect_retry_connection_id) return false;
@@ -113,7 +119,7 @@ export const useChatGPTStore = create<ChatGPTState>((set, get) => {
       if (connectionId && status?.connection_id === connectionId) {
         set({ status: null, models: [], model: '' });
       }
-      await get().refresh();
+      await readStatus();
       return result.revocation_confirmed;
     },
   };

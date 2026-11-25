@@ -2,7 +2,7 @@
 import asyncio
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from starlette.concurrency import run_in_threadpool
 
@@ -29,11 +29,12 @@ class DisconnectRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     connection_id: str | None = Field(default=None, min_length=1)
     attempt_id: str | None = Field(default=None, min_length=1)
+    identity_id: str | None = Field(default=None, min_length=1)
 
     @model_validator(mode="after")
     def one_target(self):
-        if bool(self.connection_id) == bool(self.attempt_id):
-            raise ValueError("Specify one ChatGPT connection or authorization attempt")
+        if sum(value is not None for value in (self.connection_id, self.attempt_id, self.identity_id)) != 1:
+            raise ValueError("Specify one ChatGPT connection, authorization attempt, or sign-in")
         return self
 
 
@@ -64,7 +65,8 @@ def status(request: Request):
 
 
 @router.post("/connect")
-async def connect(request: Request, options: ConnectRequest):
+async def connect(request: Request, options: ConnectRequest, response: Response):
+    response.headers["Cache-Control"] = "no-store"
     return await run_in_threadpool(_operation, request, "connect", asyncio.get_running_loop(), **options.model_dump())
 
 

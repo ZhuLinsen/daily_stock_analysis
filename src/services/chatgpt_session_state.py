@@ -71,7 +71,7 @@ def retired(data, reason):
     key = data.get("current_registration")
     if key in registrations and reason:
         registrations[key] = {**registrations[key], "reauth_reason": reason}
-    return {**data, "connection": None, "registrations": registrations, "grant_pending": None}
+    return {**data, "connection": None, "identity": None, "registrations": registrations, "grant_pending": None}
 
 
 def public_revocations(data):

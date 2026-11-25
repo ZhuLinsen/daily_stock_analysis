@@ -953,7 +953,8 @@ def test_switching_saved_accounts_reuses_registration_and_host(oauth, monkeypatc
     oauth._save({"current_registration": "issued", "registrations": {"issued": REGISTRATION}, "host_id": "original-host"})
     grants = [token_body("openid"), token_body(), token_body()]
     monkeypatch.setattr(oauth, "_grant_request", Mock(side_effect=grants))
-    monkeypatch.setattr(oauth, "_revoke_before", Mock(return_value=True))
+    revoke = Mock(side_effect=[True, False])
+    monkeypatch.setattr(oauth, "_revoke_before", revoke)
     monkeypatch.setattr(oauth, "_identity", lambda attempt, *args: {
         "sub": "account" if attempt["registration"] else "other", "email": "same@example.org",
     })
@@ -968,15 +969,75 @@ def test_switching_saved_accounts_reuses_registration_and_host(oauth, monkeypatc
 
     authorize("issued", "issued")
     assert oauth.status()["error"] == "chatgpt_plan_permission_required"
-    authorize(None, "other-client")
+    assert "id_token_hint" not in authorize(None, "other-client")
     status = oauth.status()
     assert set(oauth._registrations()) == {"issued", "other-client"}
     assert [a["kind"] for a in status["actions"]] == ["disconnect"]
-    oauth.disconnect(None, connection_id=status["connection_id"])
+    assert oauth.disconnect(None, connection_id=status["connection_id"])["revocation_confirmed"] is False
+    assert oauth._load()["identity"] is None
     params = authorize("issued", "issued")
+    assert "id_token_hint" not in params
     assert params["prompt"] == ["consent"]
     assert params["client_id"] == ["issued"] and params["ext_agent_host_id"] == ["original-host"]
     assert oauth.status()["connected"] and oauth.data["current_registration"] == "issued"
+
+
+def test_signed_in_identity_survives_grant_cleanup_and_can_sign_out(oauth, chatgpt_routes, monkeypatch):
+    attempt = begin(oauth)
+    monkeypatch.setattr(oauth, "_identity", Mock(return_value={"sub": "account"}))
+    body = {**token_body("openid"), "id_token": "fixture-id-token"}
+    monkeypatch.setattr(oauth, "_grant_request", Mock(return_value=body))
+
+    def finish_unused_grant(*_args):
+        status = oauth.status()
+        assert status["pending"] and not status["actions"]
+        with pytest.raises(ChatGPTError, match="chatgpt_target_changed"):
+            oauth.disconnect(None, attempt_id=attempt["id"])
+        return True
+
+    monkeypatch.setattr(oauth, "_revoke_before", finish_unused_grant)
+    oauth._complete(attempt, {"code": ["fixture"]})
+    oauth.close()
+
+    restarted = ChatGPTOAuthService(oauth.directory)
+    try:
+        monkeypatch.setattr(chatgpt, "get_chatgpt_service", lambda: restarted)
+        revoke = Mock()
+        monkeypatch.setattr(restarted, "_revoke_before", revoke)
+        client = TestClient(chatgpt_routes)
+        status = client.get("/status")
+        assert not status.json()["connected"]
+        assert body["id_token"] not in status.text
+        actions = {action["kind"]: action["target"] for action in status.json()["actions"]}
+        target = actions["sign_out"]
+        grant = client.post("/connect", json=actions["grant_plan"])
+        assert grant.headers["cache-control"] == "no-store"
+        params = parse_qs(urlsplit(grant.json()["authorization_url"]).query)
+        assert params["client_id"] == ["issued"]
+        assert params["id_token_hint"] == [body["id_token"]]
+        assert params["prompt"] == ["consent"]
+
+        assert client.post("/disconnect", json=target).json()["detail"]["error"] == "chatgpt_connection_busy"
+        upgrade = restarted.pending
+        assert client.post("/disconnect", json={"attempt_id": upgrade["id"]}).status_code == 200
+        upgrade["thread"].join(2)
+        with monkeypatch.context() as failed:
+            failed.setattr(restarted, "_replace_file", Mock(side_effect=OSError("fixture")))
+            assert client.post("/disconnect", json=target).status_code == 503
+        assert client.post("/disconnect", json=target).json() == {
+            "disconnected": True, "revocation_confirmed": None,
+        }
+        assert client.post("/disconnect", json=target).status_code == 409
+        assert restarted._load()["identity"] is None
+        revoke.assert_not_called()
+
+        returning = client.post("/connect", json={"registration_id": "issued"})
+        params = parse_qs(urlsplit(returning.json()["authorization_url"]).query)
+        assert params["client_id"] == ["issued"]
+        assert params["prompt"] == ["consent"]
+        assert "id_token_hint" not in params
+    finally:
+        restarted.close()
 
 
 @pytest.mark.parametrize("failure", ["save", "malformed"])
@@ -1034,6 +1095,7 @@ def test_reconcile_activation_uses_file_before_treating_issued_token_as_unused(o
     else:
         assert status["revocations"][0]["label"] == "Test account (issued)"
         assert oauth._load()["connection"] is None
+        assert oauth._load().get("identity") is None
 
 
 def test_completed_calls_reach_ledger_before_local_validation(monkeypatch, tmp_path):

@@ -236,6 +236,10 @@ class ChatGPTOAuthService:
                         "revocations": state.public_revocations(self.data),
                     }
             connection = self._active_connection() or {}
+            identity = self.data.get("identity") or {}
+            attempt_id = self.pending["id"] if self.pending else None
+            if attempt_id == identity.get("id"):
+                attempt_id = None
             registrations = self._registrations()
             key = self.data.get("current_registration")
             registration = registrations.get(key, {})
@@ -248,15 +252,18 @@ class ChatGPTOAuthService:
             if self.disconnect_retry_id:
                 action("retry_disconnect", {"connection_id": self.disconnect_retry_id})
             elif self.pending:
-                if not self.pending.get("cancelled"):
-                    action("cancel", {"attempt_id": self.pending["id"]})
+                if attempt_id and not self.pending.get("cancelled"):
+                    action("cancel", {"attempt_id": attempt_id})
             elif connection:
                 action("disconnect", {"connection_id": connection["id"]})
             else:
                 if self.retry_target:
                     action("continue", {"retry_id": self.retry_target["id"]})
                 for entry in registrations.values():
-                    action("reauth", {"registration_id": entry["client_id"]}, state.registration_label(entry))
+                    kind = "grant_plan" if entry["client_id"] == identity.get("client_id") else "reauth"
+                    action(kind, {"registration_id": entry["client_id"]}, state.registration_label(entry))
+                if identity:
+                    action("sign_out", {"identity_id": identity["id"]})
                 action("new", {"mode": "new"})
             return {
                 "available": True, "connected": bool(connection), "plan_authorized": bool(connection),
@@ -265,7 +272,7 @@ class ChatGPTOAuthService:
                 "reauth_reason": reason, "revocations": state.public_revocations(self.data), "actions": actions,
                 "retry_id": self.retry_target["id"] if self.retry_target else None,
                 "pending": self.pending is not None,
-                "attempt_id": self.pending["id"] if self.pending else None,
+                "attempt_id": attempt_id,
                 "cancelling": bool(self.pending and self.pending.get("cancelled")),
                 "error": self.error or (PLAN_PERMISSION_REQUIRED if reason == "scope_required" else None),
             }
@@ -437,8 +444,12 @@ class ChatGPTOAuthService:
             }
             if not expected_client_id:
                 query["agent_name_hint"] = APP_NAME
-            elif registration and registration.get("reauth_reason") == "scope_required":
-                query["prompt"] = "consent"
+            elif registration:
+                identity = self.data.get("identity") or {}
+                if identity.get("client_id") == registration_id:
+                    query["id_token_hint"] = identity["id_token"]
+                if registration.get("reauth_reason") == "scope_required":
+                    query["prompt"] = "consent"
             attempt["thread"] = Thread(target=self._listen, args=(attempt,), daemon=True)
             self.pending = attempt
             try:
@@ -521,6 +532,7 @@ class ChatGPTOAuthService:
                     }
                     self._save({
                         **self.data, "registrations": registrations, "current_registration": client_id,
+                        "identity": {"id": attempt["id"], "client_id": client_id, "id_token": body["id_token"]},
                         "grant_pending": None if complete else {**operation, "verified_registration": client_id},
                         "connection": {"id": uuid4().hex, "generation": uuid4().hex, **tokens} if complete else None,
                     })
@@ -665,11 +677,15 @@ class ChatGPTOAuthService:
         op = operation_id or uuid4().hex
         record = (state.grant_revocation(self.data, grant, verified_registration) if operation_id
                   else state.revocation(self.data, client_id))
-        data = state.retired(self.data, reason)
-        if token:
-            data["revocations"] = {**data.get("revocations", {}), op: record}
+        if operation_id and grant["kind"] == "exchange":
+            # Discard the attempt's unused grant while preserving the committed login.
+            retired = {**self.data, "connection": None, "grant_pending": None}
         else:
-            data = state.summarize(data, record)
+            retired = state.retired(self.data, reason)
+        if token:
+            data = {**retired, "revocations": {**retired.get("revocations", {}), op: record}}
+        else:
+            data = state.summarize(retired, record)
         self.models_cache = None
         storage_error = None
         try:
@@ -682,7 +698,7 @@ class ChatGPTOAuthService:
             if self._unconfirmed_digest is not None:
                 # Preserve the known retirement if readback later proves the preceding write failed.
                 # If it published the token, recovery uses that file and the token must not be revoked.
-                self.data = state.summarize(state.retired(self.data, reason), record)
+                self.data = state.summarize(retired, record)
                 raise
             self.data = data
             storage_error = exc
@@ -784,7 +800,7 @@ class ChatGPTOAuthService:
                 self.revoking.pop(client_id, None)
             return False
 
-    def disconnect(self, loop: asyncio.AbstractEventLoop, *, connection_id=None, attempt_id=None):
+    def disconnect(self, loop: asyncio.AbstractEventLoop, *, connection_id=None, attempt_id=None, identity_id=None):
         deadline = time.monotonic() + DISCONNECT_TIMEOUT
         if not self.lock.acquire(timeout=min(DISCONNECT_LOCK_TIMEOUT, DISCONNECT_TIMEOUT)):
             raise ChatGPTError("chatgpt_connection_busy", "ChatGPT is busy. Try disconnecting again shortly")
@@ -799,9 +815,18 @@ class ChatGPTOAuthService:
                     connection_id=connection_id,
                 )
                 return {"disconnected": True, "revocation_confirmed": confirmed}
+            if identity_id is not None:
+                identity = self.data.get("identity") or {}
+                if connection or identity.get("id") != identity_id:
+                    raise ChatGPTError("chatgpt_target_changed", "The ChatGPT sign-in has changed")
+                if self.pending:
+                    raise ChatGPTError("chatgpt_connection_busy", "Finish or cancel the current authorization first")
+                self._save({**self.data, "identity": None})
+                self.error = None
+                return {"disconnected": True, "revocation_confirmed": None}
             if self.pending:
                 attempt = self.pending
-                if attempt_id != attempt["id"]:
+                if attempt_id != attempt["id"] or attempt_id == (self.data.get("identity") or {}).get("id"):
                     raise ChatGPTError("chatgpt_target_changed", "The authorization attempt has changed")
                 attempt["cancelled"] = True
                 if attempt.get("exchanging"):

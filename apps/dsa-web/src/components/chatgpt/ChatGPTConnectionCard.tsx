@@ -9,7 +9,6 @@ const messages: Record<string, string> = {
   chatgpt_deployment_unsupported: '请从 macOS 本机源码启动 DSA，并使用 127.0.0.1 打开 Web。',
   chatgpt_store_unavailable: '无法读取或写入本机 ChatGPT 凭据。请检查存储空间、目录权限及占用该目录的 DSA 进程，然后刷新页面。',
   chatgpt_admin_auth_required: '请先启用管理员认证并登录 DSA。',
-  chatgpt_plan_permission_required: '已验证账号身份，请补充授予 ChatGPT 套餐使用权限。',
   chatgpt_reauthorization_required: '连接已失效，请重新授权。',
   chatgpt_consent_declined: '授权已取消，可以重新连接。',
   chatgpt_authorization_timeout: '授权超时，请重新连接。',
@@ -104,8 +103,17 @@ export function ChatGPTConnectionCard() {
 
   const retryId = status?.retry_id;
   const currentLabel = status?.account_label;
-  const statusMessage = status?.error ? messages[status.error] || '授权未完成，请检查账号后重试。' : status?.reauth_reason === 'legacy_import' ? t('chat.reauthImported')
-    : status?.reauth_reason === 'credential_invalid' ? t('chat.reauthInvalid') : null;
+  const identityOnly = status?.actions?.some(action => action.kind === 'sign_out');
+  const statusMessage = status?.error === 'chatgpt_plan_permission_required'
+    ? identityOnly
+      ? t('chat.planPermissionForSignedInAccount', { account: currentLabel || 'ChatGPT' })
+      : t('chat.reauthorizeForPlanPermission')
+    : status?.error ? messages[status.error] || '授权未完成，请检查账号后重试。'
+      : status?.reauth_reason === 'legacy_import' ? t('chat.reauthImported')
+        : status?.reauth_reason === 'credential_invalid' ? t('chat.reauthInvalid') : null;
+  const pendingMessage = status?.cancelling || !status?.attempt_id
+    ? t('chat.finishingAuthorization')
+    : '请在 ChatGPT 页面完成授权。';
   const feedback = storagePaused ? error : notice || error;
   const button = 'rounded-lg border border-subtle bg-surface px-3 py-1.5 text-sm disabled:opacity-50';
 
@@ -114,7 +122,7 @@ export function ChatGPTConnectionCard() {
       <h3 id="chatgpt-connection-title" className="text-sm font-semibold">ChatGPT 授权</h3>
       <p aria-live="polite" className="text-sm text-secondary-text">
         {storagePaused ? t(status.restart_required ? 'chat.restartBeforeRecheck' : 'chat.fixStorageBeforeRecheck')
-          : disconnectRetryId ? t('chat.fixStorageBeforeRetryingDisconnect') : notice === disconnectStatusUnknown ? null : status?.cancelling ? t('chat.finishingAuthorization') : status?.pending ? '请在 ChatGPT 页面完成授权。' : status?.connected
+          : disconnectRetryId ? t('chat.fixStorageBeforeRetryingDisconnect') : notice === disconnectStatusUnknown ? null : status?.pending ? pendingMessage : status?.connected
           ? `已授权 · ${currentLabel || 'ChatGPT'}`
           : statusMessage || (status?.available ? '连接后可在普通单股分析或问股中选择 ChatGPT。' : null)}
       </p>
@@ -142,15 +150,19 @@ export function ChatGPTConnectionCard() {
               case 'cancel':
               case 'retry_disconnect':
               case 'disconnect':
+              case 'sign_out':
                 return <button key={action.kind} type="button" className={button} disabled={working}
                   onClick={() => void disconnectCurrent(action.target)}>
-                  {action.kind === 'cancel' ? '取消授权' : action.kind === 'disconnect' ? '断开连接' : t('chat.retryDisconnect')}
+                  {action.kind === 'cancel' ? '取消授权'
+                    : action.kind === 'disconnect' ? '断开连接'
+                      : t(action.kind === 'sign_out' ? 'chat.signOutChatGPT' : 'chat.retryDisconnect')}
                 </button>;
               default:
                 return <button key={JSON.stringify(action.target)} type="button" className={button} disabled={working}
                   onClick={() => void connect(action.target)}>
                   {action.kind === 'continue' ? t('chat.continueAuthorization')
                     : action.kind === 'new' ? (retryId ? t('chat.restartAuthorization') : t('chat.newAuthorization'))
+                    : action.kind === 'grant_plan' ? t('chat.grantChatGPTPlan', { account: action.label ?? 'ChatGPT' })
                     : retryId ? t('chat.abandonRetryForSavedAccount', { account: action.label ?? 'ChatGPT' })
                     : t('chat.reauthorizeRegistration', { account: action.label ?? 'ChatGPT' })}
                 </button>;
