@@ -17,20 +17,27 @@ export interface CopyTextToClipboardOptions {
   shouldFallback?: () => boolean;
 }
 
+let latestClipboardAttemptId = 0;
+
 export async function copyTextToClipboard(
   text: string,
   options?: CopyTextToClipboardOptions,
 ): Promise<boolean> {
+  const attemptId = ++latestClipboardAttemptId;
+
   if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
     try {
       await navigator.clipboard.writeText(text);
       return true;
     } catch {
-      // Fall through to legacy execCommand copy unless the caller invalidated this attempt.
+      // Fall through to legacy execCommand copy unless a newer attempt or caller invalidated it.
     }
   }
 
-  if (options?.shouldFallback && !options.shouldFallback()) {
+  if (
+    attemptId !== latestClipboardAttemptId ||
+    (options?.shouldFallback && !options.shouldFallback())
+  ) {
     return false;
   }
 

@@ -119,4 +119,33 @@ describe('copyTextToClipboard', () => {
     expect(execCommand).not.toHaveBeenCalled();
     expect(document.body.querySelector('textarea')).toBeNull();
   });
+
+  it('skips execCommand fallback when a newer copyTextToClipboard call supersedes an older rejection across callers', async () => {
+    let rejectFirst!: (reason?: unknown) => void;
+    const writeText = vi
+      .fn()
+      .mockImplementationOnce(
+        () => new Promise<void>((_resolve, reject) => {
+          rejectFirst = reject;
+        }),
+      )
+      .mockResolvedValueOnce(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+    const execCommand = vi.fn().mockReturnValue(true);
+    Object.defineProperty(document, 'execCommand', {
+      configurable: true,
+      value: execCommand,
+    });
+
+    const firstPromise = copyTextToClipboard('evidence-json');
+    const secondPromise = copyTextToClipboard('quality-json');
+    await expect(secondPromise).resolves.toBe(true);
+
+    rejectFirst(new DOMException('Denied', 'NotAllowedError'));
+    await expect(firstPromise).resolves.toBe(false);
+    expect(execCommand).not.toHaveBeenCalled();
+  });
 });

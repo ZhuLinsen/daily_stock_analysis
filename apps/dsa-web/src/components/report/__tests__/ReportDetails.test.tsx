@@ -252,10 +252,15 @@ describe('ReportDetails', () => {
     });
     expect(execCommand).not.toHaveBeenCalled();
     expect(screen.queryByRole('button', { name: 'Copy failed' })).not.toBeInTheDocument();
+    // Snapshot succeeded; raw button must NOT stay stuck on 'Copied!' after its retry was superseded.
+    expect(screen.getAllByRole('button', { name: 'Copied!' })).toHaveLength(1);
+    expect(screen.getAllByRole('button', { name: 'Copy' })).toHaveLength(1);
 
     act(() => {
       vi.advanceTimersByTime(2000);
     });
+    expect(screen.queryByRole('button', { name: 'Copied!' })).not.toBeInTheDocument();
+    expect(screen.getAllByRole('button', { name: 'Copy' })).toHaveLength(2);
   });
 
   it('clears active copy reset timers on unmount even after content changes', async () => {

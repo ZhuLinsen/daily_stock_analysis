@@ -2302,4 +2302,84 @@ describe('watchlist button with code variants', () => {
       }
     }
   });
+
+  it('does not leave a retried message button stuck on copied when superseded by another message copy', async () => {
+    vi.useFakeTimers();
+    const originalClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+    const originalExecCommand = Object.getOwnPropertyDescriptor(document, 'execCommand');
+    let rejectRetryA!: (reason?: unknown) => void;
+    const writeText = vi
+      .fn()
+      .mockResolvedValueOnce(undefined)
+      .mockImplementationOnce(
+        () => new Promise<void>((_resolve, reject) => {
+          rejectRetryA = reject;
+        }),
+      )
+      .mockResolvedValueOnce(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+    const execCommand = vi.fn().mockReturnValue(true);
+    Object.defineProperty(document, 'execCommand', {
+      configurable: true,
+      value: execCommand,
+    });
+    mockStoreState.messages = [
+      { id: 'assistant-msg-a', role: 'assistant', content: '消息 A 内容' },
+      { id: 'assistant-msg-b', role: 'assistant', content: '消息 B 内容' },
+    ];
+
+    try {
+      render(
+        <MemoryRouter initialEntries={['/chat']}>
+          <ChatPage />
+        </MemoryRouter>,
+      );
+
+      const [btnA, btnB] = screen.getAllByRole('button', { name: '复制' });
+      // 1) Copy A -> '已复制'
+      await act(async () => {
+        fireEvent.click(btnA);
+        await Promise.resolve();
+      });
+      expect(screen.getByRole('button', { name: '已复制' })).toBeInTheDocument();
+
+      // 2) Retry A (pending) -> immediately copy B (succeeds) -> A retry rejects
+      fireEvent.click(screen.getByRole('button', { name: '已复制' }));
+      await act(async () => {
+        fireEvent.click(btnB);
+        await Promise.resolve();
+      });
+      await act(async () => {
+        rejectRetryA(new DOMException('Denied', 'NotAllowedError'));
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(execCommand).not.toHaveBeenCalled();
+      expect(screen.getAllByRole('button', { name: '已复制' })).toHaveLength(1);
+      expect(screen.getAllByRole('button', { name: '复制' })).toHaveLength(1);
+
+      // 3) After 2000ms, both buttons reset cleanly to '复制' (no stuck '已复制').
+      act(() => {
+        vi.advanceTimersByTime(2000);
+      });
+      expect(screen.queryByRole('button', { name: '已复制' })).not.toBeInTheDocument();
+      expect(screen.getAllByRole('button', { name: '复制' })).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+      if (originalClipboard) {
+        Object.defineProperty(navigator, 'clipboard', originalClipboard);
+      } else {
+        Reflect.deleteProperty(navigator, 'clipboard');
+      }
+      if (originalExecCommand) {
+        Object.defineProperty(document, 'execCommand', originalExecCommand);
+      } else {
+        Reflect.deleteProperty(document, 'execCommand');
+      }
+    }
+  });
 });

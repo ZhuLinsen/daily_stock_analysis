@@ -652,6 +652,14 @@ const ChatPage: React.FC = () => {
       window.clearTimeout(existingTimer);
       delete copyResetTimerRef.current[msgId];
     }
+    setCopyStatusByMessage((prev) => {
+      if (!(msgId in prev)) {
+        return prev;
+      }
+      const next = { ...prev };
+      delete next[msgId];
+      return next;
+    });
 
     const isAttemptCurrent = () =>
       isMountedRef.current &&

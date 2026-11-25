@@ -98,6 +98,19 @@ export const ReportDetails: React.FC<ReportDetailsProps> = ({
   const copyToClipboard = async (content: string, panel: JsonPanel, panelKey: string) => {
     const token = ++copyTokenRef.current[panel];
     const clipboardAttemptId = ++clipboardAttemptIdRef.current;
+    const prevTimer = copyResetTimerRef.current[panel];
+    if (prevTimer !== undefined) {
+      window.clearTimeout(prevTimer);
+      delete copyResetTimerRef.current[panel];
+    }
+    setPanelCopyState((prev) =>
+      prev[panel].key === panelKey && prev[panel].status === 'idle'
+        ? prev
+        : {
+            ...prev,
+            [panel]: { key: panelKey, status: 'idle' },
+          },
+    );
     const ok = await copyTextToClipboard(content, {
       shouldFallback: () =>
         mountedRef.current &&
