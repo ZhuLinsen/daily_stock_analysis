@@ -251,4 +251,133 @@ describe('useDashboardLifecycle', () => {
 
     expect(refreshActiveTasks).toHaveBeenCalledTimes(2);
   });
+
+  it('skips onCompletedTaskDataRefreshed after disable or unmount while refreshes settle', async () => {
+    let resolveHistory!: () => void;
+    let resolveStockBar!: () => void;
+    const refreshHistory = vi.fn().mockImplementation(
+      () => new Promise<void>((resolve) => {
+        resolveHistory = resolve;
+      }),
+    );
+    const refreshStockBar = vi.fn().mockImplementation(
+      () => new Promise<void>((resolve) => {
+        resolveStockBar = resolve;
+      }),
+    );
+    const onCompletedTaskDataRefreshed = vi.fn();
+
+    const firstHook = renderHook(
+      ({ enabled }: { enabled: boolean }) =>
+        useDashboardLifecycle({
+          loadInitialHistory: vi.fn().mockResolvedValue(undefined),
+          refreshHistory,
+          refreshActiveTasks: vi.fn().mockResolvedValue(undefined),
+          loadStockBar: vi.fn().mockResolvedValue(undefined),
+          refreshStockBar,
+          loadMarketReviewHistory: vi.fn().mockResolvedValue(undefined),
+          refreshMarketReviewHistory: vi.fn().mockResolvedValue(undefined),
+          syncTaskCreated: vi.fn(),
+          syncTaskUpdated: vi.fn(),
+          syncTaskFailed: vi.fn(),
+          removeTask: vi.fn(),
+          onCompletedTaskDataRefreshed,
+          enabled,
+        }),
+      { initialProps: { enabled: true } },
+    );
+
+    const firstOptions = vi.mocked(useTaskStream).mock.calls.at(-1)?.[0];
+    act(() => {
+      firstOptions?.onTaskCompleted?.(createTask());
+    });
+
+    firstHook.rerender({ enabled: false });
+
+    await act(async () => {
+      resolveHistory();
+      resolveStockBar();
+      await Promise.resolve();
+    });
+
+    expect(onCompletedTaskDataRefreshed).not.toHaveBeenCalled();
+
+    let resolveHistoryUnmount!: () => void;
+    let resolveStockBarUnmount!: () => void;
+    const refreshHistory2 = vi.fn().mockImplementation(
+      () => new Promise<void>((resolve) => {
+        resolveHistoryUnmount = resolve;
+      }),
+    );
+    const refreshStockBar2 = vi.fn().mockImplementation(
+      () => new Promise<void>((resolve) => {
+        resolveStockBarUnmount = resolve;
+      }),
+    );
+
+    const secondHook = renderHook(() =>
+      useDashboardLifecycle({
+        loadInitialHistory: vi.fn().mockResolvedValue(undefined),
+        refreshHistory: refreshHistory2,
+        refreshActiveTasks: vi.fn().mockResolvedValue(undefined),
+        loadStockBar: vi.fn().mockResolvedValue(undefined),
+        refreshStockBar: refreshStockBar2,
+        loadMarketReviewHistory: vi.fn().mockResolvedValue(undefined),
+        refreshMarketReviewHistory: vi.fn().mockResolvedValue(undefined),
+        syncTaskCreated: vi.fn(),
+        syncTaskUpdated: vi.fn(),
+        syncTaskFailed: vi.fn(),
+        removeTask: vi.fn(),
+        onCompletedTaskDataRefreshed,
+      }),
+    );
+
+    const secondOptions = vi.mocked(useTaskStream).mock.calls.at(-1)?.[0];
+    act(() => {
+      secondOptions?.onTaskCompleted?.(createTask());
+    });
+
+    secondHook.unmount();
+
+    await act(async () => {
+      resolveHistoryUnmount();
+      resolveStockBarUnmount();
+      await Promise.resolve();
+    });
+
+    expect(onCompletedTaskDataRefreshed).not.toHaveBeenCalled();
+  });
+
+  it('cancels pending task removal timeouts when enabled switches to false', () => {
+    const removeTask = vi.fn();
+
+    const { rerender } = renderHook(
+      ({ enabled }: { enabled: boolean }) =>
+        useDashboardLifecycle({
+          loadInitialHistory: vi.fn().mockResolvedValue(undefined),
+          refreshHistory: vi.fn().mockResolvedValue(undefined),
+          refreshActiveTasks: vi.fn().mockResolvedValue(undefined),
+          syncTaskCreated: vi.fn(),
+          syncTaskUpdated: vi.fn(),
+          syncTaskFailed: vi.fn(),
+          removeTask,
+          ...defaultMocks,
+          enabled,
+        }),
+      { initialProps: { enabled: true } },
+    );
+
+    const taskStreamOptions = vi.mocked(useTaskStream).mock.calls.at(-1)?.[0];
+    act(() => {
+      taskStreamOptions?.onTaskCompleted?.(createTask());
+    });
+
+    rerender({ enabled: false });
+
+    act(() => {
+      vi.advanceTimersByTime(5_000);
+    });
+
+    expect(removeTask).not.toHaveBeenCalled();
+  });
 });
