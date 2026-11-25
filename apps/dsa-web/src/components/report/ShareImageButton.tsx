@@ -45,20 +45,18 @@ export const ShareImageButton: React.FC<ShareImageButtonProps> = ({
   const renderDesktopShareImage = desktopRuntime?.renderShareImage;
   const activeRecordId = desktopRuntime && !renderDesktopShareImage ? undefined : recordId;
   const text = getReportText(normalizeReportLanguage(reportLanguage));
-  const [stateSnapshot, setStateSnapshot] = useState<{
-    recordId?: number;
-    state: ShareState;
-  }>(() => ({
-    recordId: activeRecordId,
-    state: 'idle',
-  }));
+  const [prevRecordId, setPrevRecordId] = useState<number | undefined>(activeRecordId);
+  const [state, setState] = useState<ShareState>('idle');
+
+  if (prevRecordId !== activeRecordId) {
+    setPrevRecordId(activeRecordId);
+    setState('idle');
+  }
+
   const resetTimerRef = useRef<number | null>(null);
   const loadTokenRef = useRef(0);
+  const inFlightRef = useRef<{ recordId: number; token: number } | null>(null);
   const cachedImageRef = useRef<{ recordId: number; blob: Blob } | null>(null);
-  const state = stateSnapshot.recordId === activeRecordId ? stateSnapshot.state : 'idle';
-  const setState = useCallback((nextState: ShareState) => {
-    setStateSnapshot({ recordId: activeRecordId, state: nextState });
-  }, [activeRecordId]);
   const clearResetTimer = useCallback(() => {
     if (resetTimerRef.current !== null) {
       window.clearTimeout(resetTimerRef.current);
@@ -66,101 +64,118 @@ export const ShareImageButton: React.FC<ShareImageButtonProps> = ({
     }
   }, []);
 
-  const scheduleReset = useCallback(() => {
+  const scheduleReset = useCallback((actionToken: number) => {
     clearResetTimer();
-    const scheduledRecordId = activeRecordId;
     resetTimerRef.current = window.setTimeout(() => {
-      setStateSnapshot((current) => (
-        current.recordId === scheduledRecordId
-          ? { recordId: scheduledRecordId, state: 'idle' }
-          : current
-      ));
+      resetTimerRef.current = null;
+      if (loadTokenRef.current === actionToken) {
+        setState('idle');
+      }
     }, 2200);
-  }, [activeRecordId, clearResetTimer]);
+  }, [clearResetTimer]);
 
   useEffect(() => {
     clearResetTimer();
     loadTokenRef.current += 1;
+    inFlightRef.current = null;
     cachedImageRef.current = null;
 
     return () => {
       clearResetTimer();
       loadTokenRef.current += 1;
+      inFlightRef.current = null;
     };
   }, [activeRecordId, clearResetTimer]);
 
   const handleShare = useCallback(async () => {
-    if (activeRecordId === undefined || state === 'loading') return;
-    clearResetTimer();
-
-    let blob = cachedImageRef.current?.recordId === activeRecordId
-      ? cachedImageRef.current.blob
-      : null;
-    let generatedNow = false;
-
-    if (!blob) {
-      const loadToken = loadTokenRef.current + 1;
-      loadTokenRef.current = loadToken;
-      setState('loading');
-      try {
-        if (renderDesktopShareImage) {
-          const pngBytes = await renderDesktopShareImage(activeRecordId);
-          blob = new Blob([pngBytes], { type: 'image/png' });
-        } else {
-          blob = await historyApi.getShareImage(activeRecordId);
-        }
-      } catch (error) {
-        if (loadTokenRef.current !== loadToken) return;
-        console.error('Generate share image failed:', error);
-        setState('error');
-        return;
-      }
-      if (loadTokenRef.current !== loadToken) return;
-      cachedImageRef.current = { recordId: activeRecordId, blob };
-      generatedNow = true;
-    }
-
-    const filename = `${safeFilenamePart(reportTitle)}-${activeRecordId}.png`;
-    const file = new File([blob], filename, { type: 'image/png' });
-    const canShareFile = typeof navigator.share === 'function'
-      && typeof navigator.canShare === 'function'
-      && navigator.canShare({ files: [file] });
-
-    // A file cannot be shared before it exists, while navigator.share() must run
-    // inside a transient user-activation event. Prepare on the first click and
-    // let the next click invoke native sharing synchronously.
-    if (generatedNow && canShareFile) {
-      setState('ready');
+    if (
+      activeRecordId === undefined
+      || state === 'loading'
+      || inFlightRef.current?.recordId === activeRecordId
+    ) {
       return;
     }
+    clearResetTimer();
 
-    setState('loading');
+    const actionToken = loadTokenRef.current + 1;
+    loadTokenRef.current = actionToken;
+    inFlightRef.current = { recordId: activeRecordId, token: actionToken };
+
     try {
-      if (canShareFile) {
+      let blob = cachedImageRef.current?.recordId === activeRecordId
+        ? cachedImageRef.current.blob
+        : null;
+      let generatedNow = false;
+
+      if (!blob) {
+        setState('loading');
         try {
-          await navigator.share({
-            files: [file],
-            title: reportTitle,
-          });
-        } catch (error) {
-          if (error instanceof DOMException && error.name === 'AbortError') {
-            setState('ready');
-            return;
+          if (renderDesktopShareImage) {
+            const pngBytes = await renderDesktopShareImage(activeRecordId);
+            blob = new Blob([pngBytes], { type: 'image/png' });
+          } else {
+            blob = await historyApi.getShareImage(activeRecordId);
           }
-          console.warn('Native file sharing failed; falling back to download:', error);
-          downloadBlob(blob, filename);
+        } catch (error) {
+          if (loadTokenRef.current !== actionToken) return;
+          console.error('Generate share image failed:', error);
+          setState('error');
+          return;
         }
-      } else {
-        downloadBlob(blob, filename);
+        if (loadTokenRef.current !== actionToken) return;
+        cachedImageRef.current = { recordId: activeRecordId, blob };
+        generatedNow = true;
       }
 
-      setState('success');
-      scheduleReset();
-    } catch (error) {
-      console.error('Generate share image failed:', error);
-      setState('error');
+      const filename = `${safeFilenamePart(reportTitle)}-${activeRecordId}.png`;
+      const file = new File([blob], filename, { type: 'image/png' });
+      const canShareFile = typeof navigator.share === 'function'
+        && typeof navigator.canShare === 'function'
+        && navigator.canShare({ files: [file] });
+
+      // A file cannot be shared before it exists, while navigator.share() must run
+      // inside a transient user-activation event. Prepare on the first click and
+      // let the next click invoke native sharing synchronously.
+      if (generatedNow && canShareFile) {
+        setState('ready');
+        return;
+      }
+
+      setState('loading');
+      try {
+        if (canShareFile) {
+          try {
+            await navigator.share({
+              files: [file],
+              title: reportTitle,
+            });
+          } catch (error) {
+            if (loadTokenRef.current !== actionToken) return;
+            if (error instanceof DOMException && error.name === 'AbortError') {
+              setState('ready');
+              return;
+            }
+            console.warn('Native file sharing failed; falling back to download:', error);
+            downloadBlob(blob, filename);
+          }
+          if (loadTokenRef.current !== actionToken) return;
+        } else {
+          downloadBlob(blob, filename);
+        }
+
+        setState('success');
+        scheduleReset(actionToken);
+      } catch (error) {
+        if (loadTokenRef.current !== actionToken) return;
+        console.error('Generate share image failed:', error);
+        setState('error');
+      }
+    } finally {
+      if (inFlightRef.current?.token === actionToken) {
+        inFlightRef.current = null;
+      }
     }
-  }, [activeRecordId, clearResetTimer, renderDesktopShareImage, reportTitle, scheduleReset, setState, state]);
+  }, [activeRecordId, clearResetTimer, renderDesktopShareImage, reportTitle, scheduleReset, state]);
 
   if (activeRecordId === undefined) return null;
 

@@ -25,6 +25,7 @@ describe('ShareImageButton', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.useRealTimers();
   });
 
   it('downloads the generated PNG when native file sharing is unavailable', async () => {
@@ -248,5 +249,301 @@ describe('ShareImageButton', () => {
     });
 
     expect(screen.getByRole('button', { name: '分享' })).toBeInTheDocument();
+  });
+
+  it('ignores rapid synchronous double-clicks while share image generation is in flight', async () => {
+    let resolveImage: ((blob: Blob) => void) | undefined;
+    mockedGetShareImage.mockReturnValue(
+      new Promise((resolve) => {
+        resolveImage = resolve;
+      }),
+    );
+
+    render(
+      <ShareImageButton
+        recordId={25}
+        reportTitle="双点测试"
+        reportLanguage="zh"
+      />,
+    );
+
+    const shareButton = screen.getByRole('button', { name: '分享' });
+    await act(async () => {
+      shareButton.click();
+      shareButton.click();
+    });
+
+    expect(mockedGetShareImage).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      resolveImage?.(new Blob(['png'], { type: 'image/png' }));
+      await Promise.resolve();
+    });
+
+    await waitFor(() => expect(HTMLAnchorElement.prototype.click).toHaveBeenCalledTimes(1));
+  });
+
+  it('ignores rapid synchronous double-clicks on ready state while navigator.share is pending', async () => {
+    let resolveShare: (() => void) | undefined;
+    const nativeShare = vi.fn().mockImplementation(
+      () => new Promise<void>((resolve) => {
+        resolveShare = resolve;
+      }),
+    );
+    mockedGetShareImage.mockResolvedValue(new Blob(['png'], { type: 'image/png' }));
+    Object.defineProperty(navigator, 'share', { configurable: true, value: nativeShare });
+    Object.defineProperty(navigator, 'canShare', { configurable: true, value: () => true });
+
+    render(
+      <ShareImageButton
+        recordId={26}
+        reportTitle="原生分享防重"
+        reportLanguage="zh"
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '分享' }));
+    const readyButton = await screen.findByRole('button', { name: '再次点击分享' });
+
+    await act(async () => {
+      readyButton.click();
+      readyButton.click();
+    });
+
+    expect(nativeShare).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      resolveShare?.();
+      await Promise.resolve();
+    });
+
+    expect(screen.getByRole('button', { name: '已生成' })).toBeInTheDocument();
+  });
+
+  it('ignores late navigator.share rejections after switching to another record', async () => {
+    let rejectFirstShare: ((reason?: unknown) => void) | undefined;
+    const nativeShare = vi.fn()
+      .mockImplementationOnce(
+        () => new Promise<void>((_, reject) => {
+          rejectFirstShare = reject;
+        }),
+      )
+      .mockResolvedValueOnce(undefined);
+    mockedGetShareImage
+      .mockResolvedValueOnce(new Blob(['a'], { type: 'image/png' }))
+      .mockResolvedValueOnce(new Blob(['b'], { type: 'image/png' }));
+    Object.defineProperty(navigator, 'share', { configurable: true, value: nativeShare });
+    Object.defineProperty(navigator, 'canShare', { configurable: true, value: () => true });
+
+    const { rerender } = render(
+      <ShareImageButton
+        recordId={27}
+        reportTitle="报告A"
+        reportLanguage="zh"
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '分享' }));
+    fireEvent.click(await screen.findByRole('button', { name: '再次点击分享' }));
+    expect(nativeShare).toHaveBeenCalledTimes(1);
+
+    rerender(
+      <ShareImageButton
+        recordId={28}
+        reportTitle="报告B"
+        reportLanguage="zh"
+      />,
+    );
+
+    expect(screen.getByRole('button', { name: '分享' })).toBeEnabled();
+
+    await act(async () => {
+      rejectFirstShare?.(new Error('share failed'));
+      await Promise.resolve();
+    });
+
+    expect(HTMLAnchorElement.prototype.click).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: '分享' })).toBeEnabled();
+
+    fireEvent.click(screen.getByRole('button', { name: '分享' }));
+    fireEvent.click(await screen.findByRole('button', { name: '再次点击分享' }));
+    await waitFor(() => expect(nativeShare).toHaveBeenCalledTimes(2));
+    expect(screen.getByRole('button', { name: '已生成' })).toBeInTheDocument();
+  });
+
+  it('does not trigger fallback download when navigator.share rejects after unmount', async () => {
+    let rejectShare: ((reason?: unknown) => void) | undefined;
+    const nativeShare = vi.fn().mockImplementation(
+      () => new Promise<void>((_, reject) => {
+        rejectShare = reject;
+      }),
+    );
+    mockedGetShareImage.mockResolvedValue(new Blob(['png'], { type: 'image/png' }));
+    Object.defineProperty(navigator, 'share', { configurable: true, value: nativeShare });
+    Object.defineProperty(navigator, 'canShare', { configurable: true, value: () => true });
+
+    const { unmount } = render(
+      <ShareImageButton
+        recordId={29}
+        reportTitle="卸载拒绝测试"
+        reportLanguage="zh"
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '分享' }));
+    fireEvent.click(await screen.findByRole('button', { name: '再次点击分享' }));
+    expect(nativeShare).toHaveBeenCalledTimes(1);
+
+    unmount();
+
+    await act(async () => {
+      rejectShare?.(new Error('share failed after unmount'));
+      await Promise.resolve();
+    });
+
+    expect(HTMLAnchorElement.prototype.click).not.toHaveBeenCalled();
+  });
+
+  it('does not schedule a reset timer when navigator.share resolves after unmount', async () => {
+    let resolveShare: (() => void) | undefined;
+    const nativeShare = vi.fn().mockImplementation(
+      () => new Promise<void>((resolve) => {
+        resolveShare = resolve;
+      }),
+    );
+    mockedGetShareImage.mockResolvedValue(new Blob(['png'], { type: 'image/png' }));
+    Object.defineProperty(navigator, 'share', { configurable: true, value: nativeShare });
+    Object.defineProperty(navigator, 'canShare', { configurable: true, value: () => true });
+
+    const { unmount } = render(
+      <ShareImageButton
+        recordId={30}
+        reportTitle="卸载完成测试"
+        reportLanguage="zh"
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '分享' }));
+    fireEvent.click(await screen.findByRole('button', { name: '再次点击分享' }));
+    expect(nativeShare).toHaveBeenCalledTimes(1);
+
+    vi.useFakeTimers();
+    const setTimeoutSpy = vi.spyOn(window, 'setTimeout');
+
+    unmount();
+    setTimeoutSpy.mockClear();
+
+    await act(async () => {
+      resolveShare?.();
+      await Promise.resolve();
+    });
+
+    expect(setTimeoutSpy.mock.calls.filter(([, delay]) => delay === 2200)).toHaveLength(0);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('resets loading state cleanly when switching A -> B -> A while image generation is in flight', async () => {
+    let resolveFirstImage!: (blob: Blob) => void;
+    mockedGetShareImage
+      .mockImplementationOnce(
+        () => new Promise<Blob>((resolve) => {
+          resolveFirstImage = resolve;
+        }),
+      )
+      .mockResolvedValueOnce(new Blob(['png-a2'], { type: 'image/png' }));
+
+    const { rerender } = render(
+      <ShareImageButton
+        recordId={31}
+        reportTitle="报告A"
+        reportLanguage="zh"
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '分享' }));
+    expect(screen.getByRole('button', { name: '生成中...' })).toBeDisabled();
+
+    rerender(
+      <ShareImageButton
+        recordId={32}
+        reportTitle="报告B"
+        reportLanguage="zh"
+      />,
+    );
+    expect(screen.getByRole('button', { name: '分享' })).toBeEnabled();
+
+    rerender(
+      <ShareImageButton
+        recordId={31}
+        reportTitle="报告A"
+        reportLanguage="zh"
+      />,
+    );
+    expect(screen.getByRole('button', { name: '分享' })).toBeEnabled();
+
+    await act(async () => {
+      resolveFirstImage(new Blob(['stale-a'], { type: 'image/png' }));
+      await Promise.resolve();
+    });
+    expect(HTMLAnchorElement.prototype.click).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: '分享' })).toBeEnabled();
+
+    fireEvent.click(screen.getByRole('button', { name: '分享' }));
+    await waitFor(() => expect(mockedGetShareImage).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(HTMLAnchorElement.prototype.click).toHaveBeenCalledTimes(1));
+  });
+
+  it('resets loading state cleanly when switching A -> B -> A while navigator.share is pending', async () => {
+    let rejectFirstShare!: (reason?: unknown) => void;
+    const nativeShare = vi.fn().mockImplementationOnce(
+      () => new Promise<void>((_, reject) => {
+        rejectFirstShare = reject;
+      }),
+    );
+    mockedGetShareImage
+      .mockResolvedValueOnce(new Blob(['a1'], { type: 'image/png' }))
+      .mockResolvedValueOnce(new Blob(['a2'], { type: 'image/png' }));
+    Object.defineProperty(navigator, 'share', { configurable: true, value: nativeShare });
+    Object.defineProperty(navigator, 'canShare', { configurable: true, value: () => true });
+
+    const { rerender } = render(
+      <ShareImageButton
+        recordId={33}
+        reportTitle="报告A"
+        reportLanguage="zh"
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '分享' }));
+    fireEvent.click(await screen.findByRole('button', { name: '再次点击分享' }));
+    expect(screen.getByRole('button', { name: '生成中...' })).toBeDisabled();
+
+    rerender(
+      <ShareImageButton
+        recordId={34}
+        reportTitle="报告B"
+        reportLanguage="zh"
+      />,
+    );
+    expect(screen.getByRole('button', { name: '分享' })).toBeEnabled();
+
+    rerender(
+      <ShareImageButton
+        recordId={33}
+        reportTitle="报告A"
+        reportLanguage="zh"
+      />,
+    );
+    expect(screen.getByRole('button', { name: '分享' })).toBeEnabled();
+
+    await act(async () => {
+      rejectFirstShare(new Error('stale share error'));
+      await Promise.resolve();
+    });
+    expect(HTMLAnchorElement.prototype.click).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: '分享' })).toBeEnabled();
+
+    fireEvent.click(screen.getByRole('button', { name: '分享' }));
+    expect(await screen.findByRole('button', { name: '再次点击分享' })).toBeEnabled();
   });
 });
