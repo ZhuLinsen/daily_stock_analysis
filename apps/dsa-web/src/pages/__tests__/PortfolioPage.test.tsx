@@ -1810,6 +1810,7 @@ describe('PortfolioPage FX refresh', () => {
 
     await waitFor(() => {
       expect(getSnapshot).toHaveBeenLastCalledWith({ accountId: 1, costMethod: 'fifo', includeRealtime: false });
+      expect(screen.getByRole('button', { name: '刷新汇率' })).not.toBeDisabled();
     });
 
     const snapshotCallsBeforeRefresh = getSnapshot.mock.calls.length;

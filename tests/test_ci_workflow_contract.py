@@ -83,12 +83,19 @@ def test_heavy_ci_jobs_are_path_filtered_and_backend_tests_are_sharded() -> None
 
     assert changes_job["outputs"]["backend"] == (
         "${{ steps.backend-filter.outputs.backend_non_web == 'true' || "
-        "steps.filter.outputs.backend_contract_assets == 'true' || "
-        "steps.filter.outputs.backend_web_contract == 'true' }}"
+        "steps.filter.outputs.backend_web_contract == 'true' || "
+        "(github.event_name != 'pull_request' && "
+        "steps.filter.outputs.backend_contract_assets == 'true') }}"
+    )
+    assert changes_job["outputs"]["backend_docs"] == (
+        "${{ steps.filter.outputs.backend_contract_assets }}"
     )
     assert changes_job["outputs"]["docker"] == "${{ steps.filter.outputs.docker }}"
     assert changes_job["outputs"]["frontend"] == (
         "${{ steps.frontend-filter.outputs.frontend_code }}"
+    )
+    assert changes_job["outputs"]["frontend_runtime"] == (
+        "${{ steps.frontend-filter.outputs.frontend_runtime }}"
     )
     assert filter_step["with"]["predicate-quantifier"] == "every"
     assert backend_filter_step["with"]["predicate-quantifier"] == "every"
@@ -106,12 +113,21 @@ def test_heavy_ci_jobs_are_path_filtered_and_backend_tests_are_sharded() -> None
         "!apps/dsa-web/**",
         "!apps/dsa-site/**",
         "!docs/**",
+        "!tests/fixtures/**",
         "!**/*.md",
         "!LICENSE",
     ]
     assert frontend_filters["frontend_code"] == [
         "apps/dsa-web/**",
         "!**/*.md",
+    ]
+    assert frontend_filters["frontend_runtime"] == [
+        "apps/dsa-web/**",
+        "!**/*.md",
+        "!apps/dsa-web/src/**/__tests__/**",
+        "!apps/dsa-web/**/*.test.ts",
+        "!apps/dsa-web/**/*.test.tsx",
+        "!apps/dsa-web/tests/**",
     ]
     assert "docker:" in filters
     assert "docker/**" in filters
@@ -134,6 +150,7 @@ def test_heavy_ci_jobs_are_path_filtered_and_backend_tests_are_sharded() -> None
     }
 
     backend_tests_job = ci["jobs"]["backend-tests"]
+    docs_contract_job = ci["jobs"]["docs-contract-tests"]
     backend_gate_job = ci["jobs"]["backend-gate"]
     docker_job = ci["jobs"]["docker-build"]
     desktop_tests_job = ci["jobs"]["desktop-tests"]
@@ -147,18 +164,50 @@ def test_heavy_ci_jobs_are_path_filtered_and_backend_tests_are_sharded() -> None
     assert backend_tests_job["if"] == "needs.changes.outputs.backend == 'true'"
     assert backend_tests_job["strategy"]["fail-fast"] == "false"
     assert backend_tests_job["strategy"]["matrix"]["shard"] == ["1", "2", "3"]
+    assert docs_contract_job["needs"] == ["changes"]
+    assert docs_contract_job["if"] == (
+        "needs.changes.outputs.backend != 'true' && "
+        "needs.changes.outputs.backend_docs == 'true'"
+    )
+    docs_test_step = next(
+        step
+        for step in docs_contract_job["steps"]
+        if step["name"] == "✅ Docs and fixture contract tests"
+    )
+    assert "grep -lE" in docs_test_step["run"]
+    assert 'pytest -m "not network"' in docs_test_step["run"]
     assert backend_gate_job["needs"] == [
         "changes",
         "ai-governance",
         "backend-tests",
+        "docs-contract-tests",
     ]
     assert backend_gate_job["if"] == "always()"
     assert docker_job["needs"] == ["changes"]
-    assert docker_job["if"] == "needs.changes.outputs.docker == 'true'"
+    assert docker_job["if"] == (
+        "needs.changes.outputs.docker == 'true' || "
+        "github.event_name != 'pull_request'"
+    )
     assert desktop_tests_job["needs"] == ["changes"]
     assert desktop_tests_job["if"] == "needs.changes.outputs.desktop == 'true'"
     assert web_gate_job["needs"] == ["changes"]
-    assert any(step.get("run") == "npm test" for step in web_gate_job["steps"])
+    expected_runtime_if = (
+        "needs.changes.outputs.frontend_runtime == 'true' || "
+        "github.event_name != 'pull_request'"
+    )
+    for unconditional_run in ("npm run lint", "npm test"):
+        step = next(s for s in web_gate_job["steps"] if s.get("run") == unconditional_run)
+        assert "if" not in step
+    build_step = next(s for s in web_gate_job["steps"] if s.get("run") == "npm run build")
+    assert build_step["if"] == expected_runtime_if
+    smoke_step = next(s for s in web_gate_job["steps"] if s.get("run") == "npm run test:smoke")
+    assert smoke_step["if"] == expected_runtime_if
+    fixture_step = next(
+        s
+        for s in web_gate_job["steps"]
+        if s.get("run") == "npx playwright test --config playwright.fixture.config.ts"
+    )
+    assert fixture_step["if"] == expected_runtime_if
     assert any(
         step.get("uses", "").startswith("actions/cache@")
         and "~/.cache/ms-playwright" in str(step.get("with", {}).get("path", ""))
@@ -223,10 +272,12 @@ def test_backend_filter_covers_mixed_changes_and_shared_web_assets() -> None:
     frontend_filter_step = next(
         step for step in changes_job["steps"] if step.get("id") == "frontend-filter"
     )
-    frontend_filters = yaml.load(
+    frontend_filter_map = yaml.load(
         str(frontend_filter_step["with"]["filters"]),
         Loader=yaml.BaseLoader,
-    )["frontend_code"]
+    )
+    frontend_filters = frontend_filter_map["frontend_code"]
+    frontend_runtime_filters = frontend_filter_map["frontend_runtime"]
     site_filter_step = next(
         step for step in changes_job["steps"] if step.get("id") == "site-filter"
     )
@@ -235,40 +286,81 @@ def test_backend_filter_covers_mixed_changes_and_shared_web_assets() -> None:
         Loader=yaml.BaseLoader,
     )["site_code"]
 
-    def outputs(changed_paths: list[str]) -> tuple[bool, bool, bool, bool]:
-        backend = (
+    def outputs(changed_paths: list[str]) -> tuple[bool, bool, bool, bool, bool, bool]:
+        backend_pr = (
             _filter_output(changed_paths, backend_filters)
-            or _filter_output(changed_paths, filters["backend_contract_assets"])
             or _filter_output(changed_paths, filters["backend_web_contract"])
         )
         return (
-            backend,
+            backend_pr,
+            _filter_output(changed_paths, filters["backend_contract_assets"]),
             _filter_output(changed_paths, filters["docker"]),
             _filter_output(changed_paths, frontend_filters),
+            _filter_output(changed_paths, frontend_runtime_filters),
             _filter_output(changed_paths, filters["futu_packaging"]),
         )
 
     assert backend_filter_step["with"]["predicate-quantifier"] == "every"
-    assert outputs(["docs/CHANGELOG.md"]) == (True, False, False, False)
-    assert outputs(["docs/architecture/api_spec.json"])[0] is True
-    assert outputs(["docs/alerts.md"])[0] is True
-    assert outputs(["tests/fixtures/notification_reports/aggregate_report.md"])[0] is True
-    assert outputs(["THIRD_PARTY_NOTICES.md"])[0] is True
-    assert outputs(["docs/CONTRIBUTING.md"]) == (False, False, False, False)
-    assert outputs(["README.md"]) == (False, False, False, False)
-    assert outputs(["LICENSE"]) == (False, False, False, False)
-    assert outputs(["apps/dsa-web/README.md"]) == (False, False, False, False)
-    assert outputs(["apps/dsa-desktop/README.md"]) == (False, False, False, False)
-    assert outputs(["src/config.py"]) == (True, True, False, False)
-    assert outputs(["requirements.txt"]) == (True, True, False, True)
-    assert outputs(["apps/dsa-web/src/App.tsx"]) == (False, True, True, False)
+    assert outputs(["docs/CHANGELOG.md"]) == (False, True, False, False, False, False)
+    assert outputs(["docs/architecture/api_spec.json"])[0] is False
+    assert outputs(["docs/architecture/api_spec.json"])[1] is True
+    assert outputs(["docs/alerts.md"])[1] is True
+    assert outputs(["tests/fixtures/notification_reports/aggregate_report.md"])[1] is True
+    assert outputs(["tests/fixtures/agent_trajectory/sample.json"]) == (
+        False,
+        True,
+        False,
+        False,
+        False,
+        False,
+    )
+    assert outputs(["THIRD_PARTY_NOTICES.md"])[1] is True
+    assert outputs(["docs/CONTRIBUTING.md"]) == (False, False, False, False, False, False)
+    assert outputs(["README.md"]) == (False, False, False, False, False, False)
+    assert outputs(["LICENSE"]) == (False, False, False, False, False, False)
+    assert outputs(["apps/dsa-web/README.md"]) == (False, False, False, False, False, False)
+    assert outputs(["apps/dsa-desktop/README.md"]) == (False, False, False, False, False, False)
+    assert outputs(["src/config.py"]) == (True, False, True, False, False, False)
+    assert outputs(["src/services/screening/pipeline.py"]) == (True, False, True, False, False, False)
+    assert outputs(["requirements.txt"]) == (True, False, True, False, False, True)
+    assert outputs(["docker/Dockerfile"]) == (True, False, True, False, False, False)
+    assert outputs(["apps/dsa-web/src/App.tsx"]) == (False, False, True, True, True, False)
+    assert outputs(["apps/dsa-web/package-lock.json"]) == (False, False, True, True, True, False)
+    assert outputs(["apps/dsa-web/src/pages/__tests__/PortfolioPage.test.tsx"]) == (
+        False,
+        False,
+        False,
+        True,
+        False,
+        False,
+    )
+    assert outputs(["apps/dsa-web/tests/ui_governance.test.ts"]) == (
+        False,
+        False,
+        False,
+        True,
+        False,
+        False,
+    )
+    assert outputs(["apps/dsa-web/e2e/fixtures/x6ai-settings.spec.ts"]) == (
+        False,
+        False,
+        False,
+        True,
+        True,
+        False,
+    )
     assert outputs(["apps/dsa-web/src/App.tsx", "docs/CHANGELOG.md"]) == (
+        False,
+        True,
         True,
         True,
         True,
         False,
     )
     assert outputs(["apps/dsa-web/src/App.tsx", "src/config.py"]) == (
+        True,
+        False,
         True,
         True,
         True,
