@@ -17,7 +17,7 @@ interface IntelligentImportProps {
   stockListValue: string;
   configVersion: string;
   maskToken: string;
-  onMerged: (newValue: string) => void | Promise<void>;
+  onMerged: (newValue: string, options?: { committed?: boolean }) => void | Promise<void>;
   disabled?: boolean;
 }
 
@@ -277,7 +277,11 @@ export const IntelligentImport: React.FC<IntelligentImportProps> = ({
       await onMerged(value);
     } catch (e) {
       if (e instanceof SystemConfigConflictError) {
-        await onMerged(value);
+        try {
+          await onMerged(value, { committed: false });
+        } catch {
+          // Keep the conflict hint visible even if the background refresh fails.
+        }
         setError(t('settings.intelligentImportConfigUpdated'));
       } else {
         setError(e instanceof Error ? e.message : t('settings.intelligentImportMergeFailed'));
