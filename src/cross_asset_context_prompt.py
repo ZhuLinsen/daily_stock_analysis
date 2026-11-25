@@ -73,8 +73,8 @@ _RISK_APPETITE_LABELS_EN = {
     "unknown": "unknown (insufficient signal)",
 }
 
-_MARKET_LABELS_ZH = {"cn": "A股", "hk": "港股", "us": "美股", "jp": "日股", "kr": "韩股", "tw": "台股"}
-_MARKET_LABELS_EN = {"cn": "A-share", "hk": "HK", "us": "US", "jp": "Japan", "kr": "Korea", "tw": "Taiwan"}
+_MARKET_LABELS_ZH = {"cn": "A股", "hk": "港股", "us": "美股", "jp": "日股", "kr": "韩股", "tw": "台股", "au": "澳股"}
+_MARKET_LABELS_EN = {"cn": "A-share", "hk": "HK", "us": "US", "jp": "Japan", "kr": "Korea", "tw": "Taiwan", "au": "Australia ASX"}
 
 
 def format_cross_asset_context_prompt_section(

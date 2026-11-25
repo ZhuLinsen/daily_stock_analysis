@@ -16,8 +16,9 @@ The shared symbol resolver maps ASCII alphanumeric bases of one to six character
 - System prompts identify Australian ASX securities and exclude US/China-specific market assumptions. Australian market reviews use S&P/ASX 200 (`^AXJO`) and All Ordinaries (`^AORD`). Unsupported breadth, flow, sector-ranking and news data must remain unavailable, not invented.
 - ASX history fetch failure or cached bars from unsupported providers stops the stock analysis. Legacy rows are not silently deleted; users must explicitly repair contaminated caches before reuse.
 - Existing reports are not retroactively repaired or validated by changing market detection.
+- Cross-asset context remains opt-in (`CROSS_ASSET_CONTEXT_ENABLED=true`, default off). When enabled for `au`, its risk-appetite header identifies `澳股` in Chinese and `Australia ASX` in the English framing used by English/Korean prompts, including degraded/unknown signals; it must not fall back to `A股` / `A-share`.
 
-缺失或污染数据不能用“观望”评分代替。财务报表币种不可随报价币种强制重标。
+缺失或污染数据不能用“观望”评分代替。财务报表币种不可随报价币种强制重标。跨资产上下文默认关闭；开启后，澳股风险偏好标题使用“澳股 / Australia ASX”，信号不足时也不能回退为“A股 / A-share”。
 
 ## Calendar / 交易日历
 

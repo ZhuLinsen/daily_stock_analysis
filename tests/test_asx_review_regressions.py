@@ -55,3 +55,58 @@ def test_pipeline_metadata_reaches_model_prompt(language, quote_type):
     assert f'| {type_label} | {quote_type} |' in prompt
     assert '6.3 AUD' in prompt
     assert '6.3 元' not in prompt
+
+
+@pytest.mark.parametrize('language', ['zh', 'en', 'ko'])
+@pytest.mark.parametrize('risk_appetite', ['risk_off', 'unknown'])
+@pytest.mark.parametrize('use_safe_dict', [False, True], ids=['typed', 'safe-dict'])
+def test_cross_asset_prompt_uses_au_market_label(language, risk_appetite, use_safe_dict):
+    """OR-COR-7f0389ac: accepting au must not silently label it as A-share."""
+    from src.cross_asset_context_prompt import format_cross_asset_context_prompt_section
+    from src.schemas.cross_asset_context import CrossAssetContext
+
+    context = CrossAssetContext(
+        market='au', trade_date='2026-11-25', risk_appetite=risk_appetite,
+        impact_summary='Synthetic cross-asset fixture',
+    )
+    payload = context.to_safe_dict() if use_safe_dict else context
+    section = format_cross_asset_context_prompt_section(payload, report_language=language)
+    assert section.count('BEGIN_UNTRUSTED_CROSS_ASSET_SUMMARY') == 1
+    assert section.count('END_UNTRUSTED_CROSS_ASSET_SUMMARY') == 1
+    preamble = section.split('BEGIN_UNTRUSTED_CROSS_ASSET_SUMMARY', 1)[0]
+    prefix = '- 外围风险偏好：' if language == 'zh' else '- Risk appetite: '
+    appetite_line = next(line for line in preamble.splitlines() if line.startswith(prefix))
+    assert appetite_line.endswith('（澳股）' if language == 'zh' else '(Australia ASX)')
+    assert 'A股' not in preamble
+    assert 'A-share' not in preamble
+    assert '2026-11-25' in preamble
+
+
+@pytest.mark.parametrize('language', ['zh', 'en', 'ko'])
+@pytest.mark.parametrize('use_summary', [True, False], ids=['summary', 'dict-fallback'])
+def test_pipeline_cross_asset_au_label_reaches_model_prompt(language, use_summary):
+    from src.analyzer import GeminiAnalyzer
+    from src.core.pipeline import StockAnalysisPipeline
+    from src.schemas.cross_asset_context import CrossAssetContext
+
+    context = {'code': 'BHP.AX', 'today': {'close': 1.0}}
+    cross_asset = CrossAssetContext(
+        market='au', trade_date='2026-11-25', risk_appetite='risk_off',
+        impact_summary='Synthetic cross-asset fixture',
+    )
+    StockAnalysisPipeline._attach_cross_asset_context(
+        context, cross_asset, report_language=language,
+    )
+    assert context['cross_asset_context']['market'] == 'au'
+    if not use_summary:
+        del context['cross_asset_context_summary']
+    analyzer = GeminiAnalyzer.__new__(GeminiAnalyzer)
+    with patch.object(analyzer, '_get_skill_prompt_sections', return_value=('', '', True)):
+        prompt = analyzer._format_prompt(context, 'BHP', report_language=language)
+    expected_line = (
+        '- 外围风险偏好：risk-off（外围偏拖累）（澳股）' if language == 'zh'
+        else '- Risk appetite: risk-off (headwind) (Australia ASX)'
+    )
+    assert expected_line in prompt
+    assert prompt.count('BEGIN_UNTRUSTED_CROSS_ASSET_SUMMARY') == 1
+    assert prompt.count('END_UNTRUSTED_CROSS_ASSET_SUMMARY') == 1

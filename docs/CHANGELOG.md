@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [修复] 澳股跨资产上下文风险偏好标题使用“澳股 / Australia ASX”，不再因市场标签缺失回退为“A股 / A-share”；覆盖中英韩提示语、信号不足与 pipeline 到模型提示语路径，默认关闭的配置语义不变（OR-COR-7f0389ac）。
+
 - [新功能] 新增原生澳股 `au`：显式 `.AX` 代码使用 Yahoo 数据、XASX/悉尼日历和澳洲提示语，保留报价/财报币种及 ETF 类型，拒绝跨市场 fallback 与污染缓存；支持 AU 指数复盘，详见 `docs/asx_support.md`。
 - [新功能] Web 支持澳股：持仓账户可选澳股市场（默认 AUD，切换市场时自动带出对应币种），决策信号与大盘复盘可选择澳股；创建账户表单补齐中英文文案。
 - [改进] CI 瘦身：PR 仅改文档或 `tests/fixtures/**` 时以 `docs-contract-tests` 替代三分片后端全量测试；`docker-build` 保留运行时输入触发并排除前端测试与 Markdown 改动；前端仅改单元测试文件时 `web-gate` 跳过构建与 Playwright（非 PR 事件触发 `web-gate` 时仍执行完整构建与 Playwright，`docker-build` 与文档契约后端全量在非 PR 事件下保持兜底）。
