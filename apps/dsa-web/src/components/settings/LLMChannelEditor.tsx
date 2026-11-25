@@ -152,6 +152,19 @@ interface LLMChannelEditorProps {
   disabled?: boolean;
 }
 
+/** Return a shallow copy without `channelId`, preserving identity when absent. */
+function omitChannelStateKey<T>(
+  previous: Record<string, T>,
+  channelId: string,
+): Record<string, T> {
+  if (!(channelId in previous)) {
+    return previous;
+  }
+  const next = { ...previous };
+  delete next[channelId];
+  return next;
+}
+
 interface ChannelRowProps {
   channel: ChannelConfig;
   index: number;
@@ -164,9 +177,9 @@ interface ChannelRowProps {
   modelProviderPrefixes: ReadonlySet<string>;
   onUpdate: (index: number, field: keyof ChannelConfig, value: string | boolean) => void;
   onRemove: (index: number) => void;
-  onToggleExpand: (index: number) => void;
-  onToggleKeyVisibility: (index: number, nextVisible: boolean) => void;
-  onTest: (channel: ChannelConfig, index: number) => void;
+  onToggleExpand: (channelId: string) => void;
+  onToggleKeyVisibility: (channelId: string, nextVisible: boolean) => void;
+  onTest: (channel: ChannelConfig) => void;
   onDiscoverModels: (channel: ChannelConfig) => void;
   onToggleCapability: (channel: ChannelConfig, capability: LLMCapabilityCheck) => void;
   onCheckCapabilities: (channel: ChannelConfig) => void;
@@ -461,11 +474,11 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
     <div className="mb-2 overflow-hidden rounded-xl border border-[var(--settings-border)] bg-[var(--settings-surface)] shadow-soft-card transition-[background-color,border-color,box-shadow] duration-200 hover:border-[var(--settings-border-strong)] hover:bg-[var(--settings-surface-hover)]">
       <div
         className="flex cursor-pointer select-none items-center gap-2.5 px-4 py-3 transition-colors"
-        onClick={() => onToggleExpand(index)}
+        onClick={() => onToggleExpand(channel.id)}
         onKeyDown={(e) => {
           if (e.key === 'Enter' || e.key === ' ') {
             e.preventDefault();
-            onToggleExpand(index);
+            onToggleExpand(channel.id);
           }
         }}
         role="button"
@@ -675,7 +688,7 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
             allowTogglePassword
             iconType="key"
             passwordVisible={visibleKey}
-            onPasswordVisibleChange={(nextVisible) => onToggleKeyVisibility(index, nextVisible)}
+            onPasswordVisibleChange={(nextVisible) => onToggleKeyVisibility(channel.id, nextVisible)}
             value={channel.apiKey}
             disabled={busy}
             onChange={(e) => onUpdate(index, 'apiKey', e.target.value)}
@@ -779,7 +792,7 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
               size="sm"
               className="px-3 text-[11px] shadow-none"
               disabled={busy}
-              onClick={() => onTest(channel, index)}
+              onClick={() => onTest(channel)}
             >
               {testState?.status === 'loading' ? '测试中...' : '测试连接'}
             </Button>
@@ -1741,17 +1754,19 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
     | null
   >(null);
   const [saveWarnings, setSaveWarnings] = useState<string[]>([]);
-  const [visibleKeys, setVisibleKeys] = useState<Record<number, boolean>>({});
-  const [testStates, setTestStates] = useState<Record<number, ChannelTestState>>({});
+  const [visibleKeys, setVisibleKeys] = useState<Record<string, boolean>>({});
+  const [testStates, setTestStates] = useState<Record<string, ChannelTestState>>({});
   const [discoveryStates, setDiscoveryStates] = useState<Record<string, ChannelDiscoveryState>>({});
   const [capabilityStates, setCapabilityStates] = useState<Record<string, ChannelCapabilityState>>({});
-  const [expandedRows, setExpandedRows] = useState<Record<number, boolean>>({});
+  const [expandedRows, setExpandedRows] = useState<Record<string, boolean>>({});
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [addPreset, setAddPreset] = useState(LLM_PROVIDER_TEMPLATES[0].channelId);
   const registration = getProviderTemplate(addPreset)?.registration;
   const addChannelIdRef = useRef(0);
   const lastDraftFingerprintRef = useRef<string | null>(null);
   const onDraftItemsChangeRef = useRef(onDraftItemsChange);
+  const mountedRef = useRef(true);
+  const saveInFlightRef = useRef(false);
 
   const prevDraftResetTokenRef = useRef(draftResetToken);
   const prevChannelsRef = useRef(channelsFingerprint);
@@ -1764,6 +1779,8 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
     runtime: string;
     resetAfterSave?: boolean;
   } | null>(null);
+  const testNonceRef = useRef<Record<string, number>>({});
+  const testRequestIdRef = useRef(0);
   const discoveryNonceRef = useRef<Record<string, number>>({});
   const discoveryRequestIdRef = useRef(0);
   const capabilityNonceRef = useRef<Record<string, number>>({});
@@ -1870,6 +1887,7 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
     setDiscoveryStates({});
     setCapabilityStates({});
     setExpandedRows({});
+    testNonceRef.current = {};
     discoveryNonceRef.current = {};
     capabilityNonceRef.current = {};
     if (!preserveSaveFeedback) {
@@ -1983,8 +2001,15 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
     onDraftItemsChange(draftItems);
   }, [draftFingerprint, draftItems, onDraftItemsChange]);
 
-  useEffect(() => () => {
-    onDraftItemsChangeRef.current?.([]);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      testNonceRef.current = {};
+      discoveryNonceRef.current = {};
+      capabilityNonceRef.current = {};
+      onDraftItemsChangeRef.current?.([]);
+    };
   }, []);
 
   const busy = disabled || isSaving;
@@ -2012,25 +2037,13 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
 
       return updated;
     }));
-    setTestStates((previous) => {
-      if (!(index in previous)) {
-        return previous;
-      }
-      const next = { ...previous };
-      delete next[index];
-      return next;
-    });
-    if (field !== 'models' && field !== 'enabled') {
-      setDiscoveryStates((previous) => {
-        const channel = channels.find((_, itemIndex) => itemIndex === index);
-        if (!channel || !(channel.id in previous)) {
-          return previous;
-        }
-        const next = { ...previous };
-        delete next[channel.id];
-        delete discoveryNonceRef.current[channel.id];
-        return next;
-      });
+    if (currentChannel) {
+      delete testNonceRef.current[currentChannel.id];
+      setTestStates((previous) => omitChannelStateKey(previous, currentChannel.id));
+    }
+    if (currentChannel && field !== 'models' && field !== 'enabled') {
+      delete discoveryNonceRef.current[currentChannel.id];
+      setDiscoveryStates((previous) => omitChannelStateKey(previous, currentChannel.id));
     }
     if (currentChannel) {
       delete capabilityNonceRef.current[currentChannel.id];
@@ -2056,31 +2069,17 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
   const removeChannel = (index: number) => {
     const removedChannelId = channels[index]?.id || '';
     setChannels((previous) => previous.filter((_, rowIndex) => rowIndex !== index));
-    setVisibleKeys({});
-    setTestStates({});
-    setDiscoveryStates((previous) => {
-      if (!removedChannelId) {
-        return previous;
-      }
-      const next = { ...previous };
-      delete next[removedChannelId];
-      return next;
-    });
-    setCapabilityStates((previous) => {
-      if (!removedChannelId || !(removedChannelId in previous)) {
-        return previous;
-      }
-      const next = { ...previous };
-      delete next[removedChannelId];
-      return next;
-    });
-    if (removedChannelId) {
-      const nextNonce = { ...discoveryNonceRef.current };
-      delete nextNonce[removedChannelId];
-      discoveryNonceRef.current = nextNonce;
-      delete capabilityNonceRef.current[removedChannelId];
+    if (!removedChannelId) {
+      return;
     }
-    setExpandedRows({});
+    delete testNonceRef.current[removedChannelId];
+    delete discoveryNonceRef.current[removedChannelId];
+    delete capabilityNonceRef.current[removedChannelId];
+    setVisibleKeys((previous) => omitChannelStateKey(previous, removedChannelId));
+    setTestStates((previous) => omitChannelStateKey(previous, removedChannelId));
+    setDiscoveryStates((previous) => omitChannelStateKey(previous, removedChannelId));
+    setCapabilityStates((previous) => omitChannelStateKey(previous, removedChannelId));
+    setExpandedRows((previous) => omitChannelStateKey(previous, removedChannelId));
   };
 
   const addChannel = () => {
@@ -2088,6 +2087,8 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
     if (!preset) {
       return;
     }
+    addChannelIdRef.current += 1;
+    const newChannelId = `added:${addChannelIdRef.current}`;
     setChannels((previous) => {
       const existingNames = new Set(previous.map((channel) => channel.name));
       const baseName = addPreset === 'custom' ? 'custom' : addPreset;
@@ -2101,7 +2102,7 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
       return [
         ...previous,
         {
-          id: `added:${addChannelIdRef.current += 1}`,
+          id: newChannelId,
           name: nextName,
           protocol: preset.protocol,
           apiSurface: 'chat_completions',
@@ -2112,16 +2113,14 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
         },
       ];
     });
-    setTestStates({});
-    setDiscoveryStates({});
-    setCapabilityStates({});
-    discoveryNonceRef.current = {};
-    capabilityNonceRef.current = {};
-    setExpandedRows((prev) => ({ ...prev, [channels.length]: true }));
+    setExpandedRows((prev) => ({ ...prev, [newChannelId]: true }));
     setIsCollapsed(false);
   };
 
   const handleSave = async () => {
+    if (busy || saveInFlightRef.current) {
+      return;
+    }
     const hasEmptyName = channels.some((channel) => !channel.name.trim());
     if (hasEmptyName) {
       setSaveMessage({ type: 'local-error', text: '渠道名称不能为空，且只能包含字母、数字或下划线。' });
@@ -2191,6 +2190,7 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
       }
     }
 
+    saveInFlightRef.current = true;
     setIsSaving(true);
     setSaveMessage(null);
     setSaveWarnings([]);
@@ -2217,12 +2217,18 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
         item.key.toUpperCase() === 'LLM_HERMES_API_KEY'
         || (item.key.toUpperCase() === 'MODELFLARE_KEY' && !item.value.trim())
       ));
-      pendingSaveFeedbackFingerprintRef.current = {
-        channels: JSON.stringify(parseChannelsFromItems(updateItems)),
-        runtime: JSON.stringify(parseRuntimeConfigFromItems(updateItems)),
-        resetAfterSave,
-      };
+      if (mountedRef.current) {
+        pendingSaveFeedbackFingerprintRef.current = {
+          channels: JSON.stringify(parseChannelsFromItems(updateItems)),
+          runtime: JSON.stringify(parseRuntimeConfigFromItems(updateItems)),
+          resetAfterSave,
+        };
+      }
+      // Still notify parent so unmounting mid-save (e.g., parent reload overlay) never leaves stale configVersion/items.
       await onSaved(updateItems);
+      if (!mountedRef.current) {
+        return;
+      }
       if (resetAfterSave) {
         setChannels((currentChannels) => currentChannels.map((channel) => {
           const initialChannel = initialChannels.find((initial) => (
@@ -2235,26 +2241,38 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
       setSaveWarnings(responseWarnings);
       setSaveMessage({ type: 'success', text: managesRuntimeConfig ? 'AI 配置已保存' : '渠道配置已保存' });
     } catch (error: unknown) {
+      if (!mountedRef.current) {
+        return;
+      }
       pendingSaveFeedbackFingerprintRef.current = null;
       setSaveWarnings([]);
       setSaveMessage({ type: 'error', error: getParsedApiError(error) });
     } finally {
-      setIsSaving(false);
+      saveInFlightRef.current = false;
+      if (mountedRef.current) {
+        setIsSaving(false);
+      }
     }
   };
 
-  const handleTest = async (channel: ChannelConfig, index: number) => {
+  const handleTest = async (channel: ChannelConfig) => {
     if (hasRuntimeOnlyMaskedHermesSecret(channel, maskToken, hasPersistedHermesSecret(channel))) {
+      delete testNonceRef.current[channel.id];
       setTestStates((previous) => ({
         ...previous,
-        [index]: { status: 'error', text: RUNTIME_ONLY_HERMES_SECRET_MESSAGE },
+        [channel.id]: { status: 'error', text: RUNTIME_ONLY_HERMES_SECRET_MESSAGE },
       }));
       return;
     }
 
+    const requestId = testRequestIdRef.current + 1;
+    testRequestIdRef.current = requestId;
+    testNonceRef.current[channel.id] = requestId;
+    const nonce = requestId;
+
     setTestStates((previous) => ({
       ...previous,
-      [index]: { status: 'loading', text: '测试中...' },
+      [channel.id]: { status: 'loading', text: '测试中...' },
     }));
 
     try {
@@ -2269,6 +2287,10 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
         useSavedSecret: shouldUseSavedHermesSecret(channel, maskToken, hasPersistedHermesSecret(channel)),
       });
 
+      if (!mountedRef.current || testNonceRef.current[channel.id] !== nonce) {
+        return;
+      }
+
       const text = result.success
         ? `连接成功${result.resolvedModel ? ` · ${result.resolvedModel}` : ''}${result.latencyMs ? ` · ${result.latencyMs} ms` : ''}`
         : buildLlmFailureText(result);
@@ -2276,23 +2298,28 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
 
       setTestStates((previous) => ({
         ...previous,
-        [index]: {
+        [channel.id]: {
           status: result.success ? 'success' : 'error',
           text,
           hint,
         },
       }));
     } catch (error: unknown) {
+      if (!mountedRef.current || testNonceRef.current[channel.id] !== nonce) {
+        return;
+      }
+
       const parsed = getParsedApiError(error);
       setTestStates((previous) => ({
         ...previous,
-        [index]: { status: 'error', text: parsed.message || '测试失败' },
+        [channel.id]: { status: 'error', text: parsed.message || '测试失败' },
       }));
     }
   };
 
   const handleDiscoverModels = async (channel: ChannelConfig) => {
     if (hasRuntimeOnlyMaskedHermesSecret(channel, maskToken, hasPersistedHermesSecret(channel))) {
+      delete discoveryNonceRef.current[channel.id];
       setDiscoveryStates((previous) => ({
         ...previous,
         [channel.id]: {
@@ -2330,7 +2357,7 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
         useSavedSecret: shouldUseSavedHermesSecret(channel, maskToken, hasPersistedHermesSecret(channel)),
       });
 
-      if (discoveryNonceRef.current[channel.id] !== nonce) return;
+      if (!mountedRef.current || discoveryNonceRef.current[channel.id] !== nonce) return;
 
       setDiscoveryStates((previous) => ({
         ...previous,
@@ -2344,7 +2371,7 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
         },
       }));
     } catch (error: unknown) {
-      if (discoveryNonceRef.current[channel.id] !== nonce) return;
+      if (!mountedRef.current || discoveryNonceRef.current[channel.id] !== nonce) return;
 
       const parsed = getParsedApiError(error);
       setDiscoveryStates((previous) => ({
@@ -2386,6 +2413,7 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
     if (selected.length === 0) return;
 
     if (hasRuntimeOnlyMaskedHermesSecret(channel, maskToken, hasPersistedHermesSecret(channel))) {
+      delete capabilityNonceRef.current[channel.id];
       setCapabilityStates((previous) => ({
         ...previous,
         [channel.id]: {
@@ -2428,7 +2456,7 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
         useSavedSecret: shouldUseSavedHermesSecret(channel, maskToken, hasPersistedHermesSecret(channel)),
       });
 
-      if (capabilityNonceRef.current[channel.id] !== nonce) return;
+      if (!mountedRef.current || capabilityNonceRef.current[channel.id] !== nonce) return;
 
       const capabilityResults = result.capabilityResults || {};
       const hasFailure = Object.values(capabilityResults).some((item) => item?.status === 'failed');
@@ -2449,7 +2477,7 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
         },
       }));
     } catch (error: unknown) {
-      if (capabilityNonceRef.current[channel.id] !== nonce) return;
+      if (!mountedRef.current || capabilityNonceRef.current[channel.id] !== nonce) return;
 
       const parsed = getParsedApiError(error);
       setCapabilityStates((previous) => ({
@@ -2465,12 +2493,12 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
     }
   };
 
-  const toggleKeyVisibility = (index: number, nextVisible: boolean) => {
-    setVisibleKeys((previous) => ({ ...previous, [index]: nextVisible }));
+  const toggleKeyVisibility = (channelId: string, nextVisible: boolean) => {
+    setVisibleKeys((previous) => ({ ...previous, [channelId]: nextVisible }));
   };
 
-  const toggleExpand = (index: number) => {
-    setExpandedRows((previous) => ({ ...previous, [index]: !previous[index] }));
+  const toggleExpand = (channelId: string) => {
+    setExpandedRows((previous) => ({ ...previous, [channelId]: !previous[channelId] }));
   };
 
   const setPrimaryModel = (value: string) => {
@@ -2571,9 +2599,9 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
                 channel={channel}
                 index={index}
                 busy={busy}
-                visibleKey={Boolean(visibleKeys[index])}
-                expanded={Boolean(expandedRows[index])}
-                testState={testStates[index]}
+                visibleKey={Boolean(visibleKeys[channel.id])}
+                expanded={Boolean(expandedRows[channel.id])}
+                testState={testStates[channel.id]}
                 discoveryState={discoveryStates[channel.id]}
                 capabilityState={capabilityStates[channel.id]}
                 modelProviderPrefixes={modelProviderPrefixSet}
@@ -2581,7 +2609,7 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
                 onRemove={removeChannel}
                 onToggleExpand={toggleExpand}
                 onToggleKeyVisibility={toggleKeyVisibility}
-                onTest={(ch, idx) => void handleTest(ch, idx)}
+                onTest={(ch) => void handleTest(ch)}
                 onDiscoverModels={(channel) => void handleDiscoverModels(channel)}
                 onToggleCapability={toggleCapability}
                 onCheckCapabilities={(channel) => void handleCapabilityCheck(channel)}
