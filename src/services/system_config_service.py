@@ -174,6 +174,14 @@ def check_database_path_usable(db_path_value: Optional[str]) -> bool:
         return False
 
 
+_SETUP_PRIMARY_MODEL_REASONS_EN = {
+    "主模型未出现在当前 LiteLLM YAML model_list 中": "The primary model is not in the current LiteLLM YAML model_list.",
+    "主模型未出现在当前启用渠道模型列表中": "The primary model is not in the model list of any enabled channel.",
+    "主模型缺少可用渠道或匹配的 API Key": "The primary model has no usable channel or matching API key.",
+    "尚未检测到主模型配置": "No primary model configured yet.",
+}
+
+
 class SystemConfigService:
     """Service layer for reading, validating, and updating runtime configuration."""
 
@@ -3831,7 +3839,8 @@ class SystemConfigService:
             "ai_model",
             True,
             "needs_action",
-            ("尚未检测到主模型配置", "No primary model configured yet."),
+            # Keep the resolver's specific reason; it tells the user what to fix.
+            (source, _SETUP_PRIMARY_MODEL_REASONS_EN.get(source, source)),
             ("请配置 LITELLM_MODEL、LLM_CHANNELS、LITELLM_CONFIG 或 legacy provider API Key。", "Configure LITELLM_MODEL, LLM_CHANNELS, LITELLM_CONFIG or a legacy provider API key."),
         )
 
