@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -33,21 +33,23 @@ import {
 } from '../utils/stockCode';
 import { useStockIndex } from '../hooks/useStockIndex';
 import { useUiLanguage } from '../contexts/UiLanguageContext';
+import type { UiLanguage } from '../i18n/uiText';
+import { localizeSkill } from '../locales/strategyText';
 
 // Quick question examples shown on empty state
 type ActiveStockContext = Pick<ChatFollowUpContext, 'stock_code' | 'stock_name'>;
 
 const QUICK_QUESTIONS: Array<{
-  label: string;
+  label: Record<UiLanguage, string>;
   skill: string;
   stockContext?: ActiveStockContext;
 }> = [
-  { label: '用缠论分析茅台', skill: 'chan_theory', stockContext: { stock_code: '600519', stock_name: '贵州茅台' } },
-  { label: '波浪理论看宁德时代', skill: 'wave_theory', stockContext: { stock_code: '300750', stock_name: '宁德时代' } },
-  { label: '分析比亚迪趋势', skill: 'bull_trend', stockContext: { stock_code: '002594', stock_name: '比亚迪' } },
-  { label: '用箱体震荡分析 A 股中芯国际 688981', skill: 'box_oscillation', stockContext: { stock_code: '688981', stock_name: '中芯国际' } },
-  { label: '分析腾讯 hk00700', skill: 'bull_trend', stockContext: { stock_code: 'HK00700', stock_name: '腾讯控股' } },
-  { label: '用情绪周期分析东方财富', skill: 'emotion_cycle', stockContext: { stock_code: '300059', stock_name: '东方财富' } },
+  { label: { zh: '用缠论分析茅台', en: 'Analyze Kweichow Moutai with Chan Theory' }, skill: 'chan_theory', stockContext: { stock_code: '600519', stock_name: '贵州茅台' } },
+  { label: { zh: '波浪理论看宁德时代', en: 'Elliott Wave view of CATL' }, skill: 'wave_theory', stockContext: { stock_code: '300750', stock_name: '宁德时代' } },
+  { label: { zh: '分析比亚迪趋势', en: 'Analyze the BYD trend' }, skill: 'bull_trend', stockContext: { stock_code: '002594', stock_name: '比亚迪' } },
+  { label: { zh: '用箱体震荡分析 A 股中芯国际 688981', en: 'Analyze SMIC (A-share 688981) with Box Range Trading' }, skill: 'box_oscillation', stockContext: { stock_code: '688981', stock_name: '中芯国际' } },
+  { label: { zh: '分析腾讯 hk00700', en: 'Analyze Tencent hk00700' }, skill: 'bull_trend', stockContext: { stock_code: 'HK00700', stock_name: '腾讯控股' } },
+  { label: { zh: '用情绪周期分析东方财富', en: 'Analyze East Money with Sentiment Cycle' }, skill: 'emotion_cycle', stockContext: { stock_code: '300059', stock_name: '东方财富' } },
 ];
 
 const MAX_SELECTED_SKILLS = 3;
@@ -81,7 +83,7 @@ const getPipelineBudgetSkippedLabel = (step: ProgressStep): string => {
 };
 
 const ChatPage: React.FC = () => {
-  const { t } = useUiLanguage();
+  const { language, t } = useUiLanguage();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const [input, setInput] = useState('');
@@ -437,9 +439,13 @@ const ChatPage: React.FC = () => {
       })
     : null;
 
+  const localizedSkills = useMemo(
+    () => skills.map((skill) => localizeSkill(skill, language)),
+    [language, skills],
+  );
   const getSkillNames = useCallback(
-    (skillIds: string[]) => skillIds.map((id) => skills.find((s) => s.id === id)?.name || id),
-    [skills],
+    (skillIds: string[]) => skillIds.map((id) => localizedSkills.find((s) => s.id === id)?.name || id),
+    [localizedSkills],
   );
 
   const normalizeSelectedSkillIds = useCallback((skillIds: string[]) => {
@@ -575,7 +581,7 @@ const ChatPage: React.FC = () => {
       const usedSkillIds = normalizeSelectedSkillIds(
         requestedSkillIds ?? selectedSkillIds,
       );
-      const usedSkillNames = usedSkillIds.length > 0 ? getSkillNames(usedSkillIds) : ['通用'];
+      const usedSkillNames = usedSkillIds.length > 0 ? getSkillNames(usedSkillIds) : [t('chat.generalSkillShort')];
       // Only report/shortcut hints accompany this request. Ordinary follow-ups
       // rely on the server's accepted state, not a replay or a client-selected fact.
       const contextForSend = overrideStockContext ?? followUpContextRef.current ?? undefined;
@@ -601,7 +607,7 @@ const ChatPage: React.FC = () => {
         },
       });
     },
-    [agentAvailable, agentStatus, getSkillNames, input, loading, normalizeSelectedSkillIds, requestScrollToBottom, selectedSkillIds, sessionId, sessionSelectedSkillIds, startStream],
+    [agentAvailable, agentStatus, getSkillNames, input, loading, normalizeSelectedSkillIds, requestScrollToBottom, selectedSkillIds, sessionId, sessionSelectedSkillIds, startStream, t],
   );
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -613,7 +619,7 @@ const ChatPage: React.FC = () => {
 
   const handleQuickQuestion = (q: (typeof QUICK_QUESTIONS)[0]) => {
     setSelectedSkillIds([q.skill]);
-    handleSend(q.label, [q.skill], q.stockContext);
+    handleSend(q.label[language], [q.skill], q.stockContext);
   };
 
   const showSendFeedback = useCallback((nextToast: { type: 'success' | 'error'; message: string }, durationMs: number) => {
@@ -889,8 +895,8 @@ const ChatPage: React.FC = () => {
   );
 
   const selectedSkillSummary = selectedSkillIds.length > 0
-    ? getSkillNames(selectedSkillIds).join('、')
-    : '通用分析';
+    ? getSkillNames(selectedSkillIds).join(language === 'en' ? ', ' : '、')
+    : t('chat.generalSkill');
 
   return (
     <div
@@ -1124,7 +1130,7 @@ const ChatPage: React.FC = () => {
                           disabled={!agentAvailable}
                           className="quick-question-btn disabled:cursor-not-allowed disabled:opacity-60"
                         >
-                          {q.label}
+                          {q.label[language]}
                         </button>
                       ))}
                     </div>
@@ -1380,14 +1386,14 @@ const ChatPage: React.FC = () => {
                   <button
                     type="button"
                     className="home-surface-button flex h-10 w-full items-center justify-between gap-3 rounded-xl px-3 text-left text-sm text-foreground md:hidden"
-                    aria-label={mobileSkillPickerOpen ? '收起策略选择' : '展开策略选择'}
+                    aria-label={mobileSkillPickerOpen ? t('chat.collapseSkillPicker') : t('chat.expandSkillPicker')}
                     aria-expanded={mobileSkillPickerOpen}
                     aria-controls="chat-skill-picker-panel"
                     onClick={() => setMobileSkillPickerOpen((open) => !open)}
                   >
                     <span className="flex min-w-0 items-center gap-2">
                       <SlidersHorizontal className="h-4 w-4 flex-shrink-0" aria-hidden="true" />
-                      <span className="flex-shrink-0 font-medium">策略</span>
+                      <span className="flex-shrink-0 font-medium">{t('chat.skillPickerLabel')}</span>
                       <span className="truncate text-xs text-muted-text">{selectedSkillSummary}</span>
                     </span>
                     <ChevronDown
@@ -1407,7 +1413,7 @@ const ChatPage: React.FC = () => {
                     )}
                   >
                     <span className="text-xs text-muted-text font-medium uppercase tracking-wider flex-shrink-0 mt-1">
-                      策略
+                      {t('chat.skillPickerLabel')}
                     </span>
                     <label className="flex items-center gap-1.5 text-sm cursor-pointer group mt-0.5">
                       <input
@@ -1421,10 +1427,10 @@ const ChatPage: React.FC = () => {
                       <span
                         className={`transition-colors text-sm ${selectedSkillIds.length === 0 ? 'text-foreground font-medium' : 'text-secondary-text group-hover:text-foreground'}`}
                       >
-                        通用分析
+                        {t('chat.generalSkill')}
                       </span>
                     </label>
-                    {skills.map((s) => {
+                    {localizedSkills.map((s) => {
                       const checked = selectedSkillIdSet.has(s.id);
                       const disabled = !checked && skillLimitReached;
                       return (
