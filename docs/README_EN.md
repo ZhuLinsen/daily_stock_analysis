@@ -31,6 +31,9 @@ English | [简体中文](../README.md) | [繁體中文](README_CHT.md)
 
 </div>
 
+> [!TIP]
+> 🔎 **Need stock ideas?** Open-source [AlphaSift](https://github.com/ZhuLinsen/alphasift): daily picks + strategy tracking → [**Today's picks (no install)**](https://alphasift.zhulinsen.tech/?lang=en&utm_source=dsa_readme)
+
 <details open>
 <summary><strong>💖 Sponsors</strong></summary>
 <table>
@@ -46,9 +49,6 @@ English | [简体中文](../README.md) | [繁體中文](README_CHT.md)
   <a href="assets/readme_workspace_tour_20260510.gif"><img src="assets/readme_workspace_preview.gif" alt="DSA Web workspace demo" width="640"></a><br>
   <sub>Click the GIF to view the full demo</sub>
 </p>
-
-> [!TIP]
-> 🚀 **Ecosystem Projects**: [AlphaSift · Smart screening](https://github.com/ZhuLinsen/alphasift) | [AlphaEvo · Strategy backtesting & evolution](https://github.com/ZhuLinsen/alphaevo)
 
 ## ✨ Key Features
 
@@ -67,9 +67,9 @@ English | [简体中文](../README.md) | [繁體中文](README_CHT.md)
 
 | Type | Supported |
 |------|-----------|
-| AI Models | [Modelflare](https://modelflare.dev/sign-up?utm_source=github&utm_campaign=daily_stock_analysis), [x6.ai](https://console.x6pro.io/register?code=zJ2qSdns), AIHubMix, Gemini, OpenAI-compatible providers, DeepSeek, Qwen, Claude, Ollama |
+| AI Models | [Modelflare](https://modelflare.dev/sign-up?utm_source=github&utm_campaign=daily_stock_analysis), [x6.ai](https://console.x6pro.io/register?code=zJ2qSdns), Gemini, OpenAI-compatible providers, DeepSeek, Qwen, Claude, Ollama |
 | Market Data | [TickPlus (Recommended)](http://www.tickplus.org/register?reg=5433cf922395), AkShare, Tushare, Pytdx, Baostock, YFinance, Longbridge |
-| News Search | [SerpAPI](https://serpapi.com/github-daily-stock-analysis), Anspire, Tavily, Bocha, Brave, MiniMax, SearXNG |
+| News Search | [SerpAPI](https://serpapi.com/github-daily-stock-analysis), Tavily, Bocha, Brave, MiniMax, SearXNG |
 | Social Sentiment | Stock Sentiment API for Reddit / X / Polymarket, US stocks only |
 
 > The project includes free market-data sources such as AkShare, Baostock, and YFinance and can run without extra data-source credentials. These free sources can be rate-limited, change upstream contracts, or fluctuate by network condition, so stability is not guaranteed. For scheduled runs, batch analysis, or steadier quotes, configure token-based sources such as Tushare or Longbridge; market coverage, Actions mappings, and fallback rules are documented in [Data Source Configuration](./full-guide_EN.md#data-source-configuration).
@@ -96,7 +96,6 @@ Start with one provider and one API key. For multi-model routing, image recognit
 |-------------|-------------|:--------:|
 | `MODELFLARE_KEY` | [Modelflare](https://modelflare.dev/sign-up?utm_source=github&utm_campaign=daily_stock_analysis) API key for leading global models at lower cost | **Recommended** |
 | `LLM_X6AI_API_KEY` | [x6.ai](https://console.x6pro.io/register?code=zJ2qSdns) API key for affordable access to 100+ models, including Claude and GPT | **Recommended** |
-| `AIHUBMIX_KEY` | AIHubMix API key, one key for multiple model families and a 10% top-up discount for this project | Optional |
 | `GEMINI_API_KEY` | Google Gemini API key | Optional |
 | `ANTHROPIC_API_KEY` | Anthropic Claude API key | Optional |
 | `OPENAI_API_KEY` | OpenAI-compatible API key, including DeepSeek and Qwen-compatible services | Optional |
@@ -130,7 +129,6 @@ News search strongly improves sentiment, announcements, events, and catalyst qua
 | Secret Name | Description | Required |
 |-------------|-------------|:--------:|
 | `SERPAPI_API_KEYS` | [SerpAPI](https://serpapi.com/github-daily-stock-analysis), search-engine results for realtime financial news | **Recommended** |
-| `ANSPIRE_API_KEYS` | Anspire search API key; can also be shared with its LLM gateway | Optional |
 | `TAVILY_API_KEYS` | Tavily, general news search API | Optional |
 | `BOCHA_API_KEYS` | Bocha, Chinese search with AI summaries | Optional |
 | `BRAVE_API_KEYS` | Brave Search, privacy-first search and US-stock news enrichment | Optional |
@@ -166,6 +164,8 @@ By default, the workflow runs every weekday at 18:00 Beijing time and skips non-
 
 ### Option 2: Local / Docker Deployment
 
+For a Windows source install, use a short project path such as `C:\dsa`. See [installation troubleshooting](./FAQ_EN.md#windows-dependency-installation-fails-on-long-paths) if pip reports a path-length error.
+
 ```bash
 # Clone the project
 git clone https://github.com/ZhuLinsen/daily_stock_analysis.git && cd daily_stock_analysis
@@ -192,6 +192,26 @@ python main.py --serve-only
 ```
 
 > Docker deployment, scheduling, and cloud-server WebUI access are documented in the [Full Guide](./full-guide_EN.md).
+
+### Install as an agent plugin
+
+This repo ships an agent-agnostic marketplace at [`.agents/plugins/marketplace.json`](../.agents/plugins/marketplace.json). The plugin lives in [`plugin/`](../plugin/). The `stock_analyzer` skill **drives an already deployed and configured DSA checkout** (or a running DSA service); it does not ship the `src/` runtime. Marketplace installs typically cache only `plugin/`. The skill body is at `plugin/skills/stock_analyzer/SKILL.md`; repo-root `SKILL.md` is a plain-file copy for OpenClaw/docs and `core.symlinks=false` checkouts. Repo-maintenance skills (`analyze-issue`, etc.) are not shipped in the plugin.
+
+**Codex:**
+
+```bash
+codex plugin marketplace add ZhuLinsen/daily_stock_analysis
+codex plugin add daily-stock-analysis@daily-stock-analysis
+```
+
+**Claude Code:**
+
+```bash
+/plugin marketplace add ZhuLinsen/daily_stock_analysis
+/plugin install daily-stock-analysis@daily-stock-analysis
+```
+
+Local checkout: `codex plugin marketplace add /path/to/daily_stock_analysis`. Before using the skill, deploy and configure DSA per the [Full Guide](./full-guide_EN.md), or point the agent at an existing checkout via `DSA_REPO_ROOT` / asking the user (examples `chdir` into that root so relative `DATABASE_PATH` / market-review locks match the Web process). In-chat market review with `send_notification=False` requires a checkout that supports that parameter; older checkouts such as v3.35.0 should be updated first to avoid `TypeError` or accidental pushes. For HTTP, see [OpenClaw integration](./openclaw-skill-integration.md) / [Grok Bot integration](./grok-bot-integration.md): in-chat stock analysis must send `"notify": false`, and market review must send `"send_notification": false`. The optional read-only MCP server (`python -m src.mcp_server`, dependency `mcp>=1.0.0,<2`) is likewise configured manually from a full checkout per the [Full Guide](./full-guide_EN.md#read-only-mcp-stdio-server-optional); it is not bundled in the plugin package.
 
 ## 📱 Sample Output
 

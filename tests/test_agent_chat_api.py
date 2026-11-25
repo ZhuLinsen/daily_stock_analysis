@@ -103,6 +103,100 @@ async def _immediate_to_thread(func, /, *args, **kwargs):
     return func(*args, **kwargs)
 
 
+@pytest.mark.parametrize(
+    ("settings", "deliveries", "expected_error", "message_hint"),
+    [
+        pytest.param({}, [], "no_channels", "未配置通知渠道", id="no-channels"),
+        pytest.param(
+            {"wechat_webhook_url": "https://example.invalid"},
+            [False], "all_failed", "发送失败", id="delivery-failed",
+        ),
+        pytest.param(
+            {"wechat_webhook_url": "https://example.invalid", "notification_min_severity": "critical"},
+            [], "noise_suppressed", "最低级别", id="suppressed",
+        ),
+        pytest.param(
+            {"wechat_webhook_url": "https://example.invalid"}, [True], None, None, id="delivered",
+        ),
+        pytest.param(
+            {"wechat_webhook_url": "https://example.invalid", "custom_webhook_urls": ["https://example.invalid"]},
+            [False, True], None, None, id="partially-delivered",
+        ),
+    ],
+)
+def test_chat_send_reports_dispatch_outcome(tmp_path, settings, deliveries, expected_error, message_hint):
+    config = Config(stock_list=[], **settings)
+    with patch("api.middlewares.auth.is_auth_enabled", return_value=False), \
+         patch("src.notification.get_config", return_value=config), \
+         patch("src.notification.NotificationService._send_to_static_channel", side_effect=deliveries) as send:
+        client = TestClient(create_app(static_dir=tmp_path / "static"))
+        response = client.post("/api/v1/agent/chat/send", json={"content": "# Chat export"})
+
+    assert send.call_count == len(deliveries)
+    assert response.status_code == 200
+    if expected_error is None:
+        assert response.json() == {"success": True}
+    else:
+        body = response.json()
+        assert body["success"] is False
+        assert body["error"] == expected_error
+        assert message_hint in body["message"]
+
+
+def test_chat_send_reports_cooldown_not_duplicate_when_distinct_chats_overlap(tmp_path):
+    import threading
+    from src.notification_noise import reset_notification_noise_state
+
+    reset_notification_noise_state()
+    config = Config(
+        stock_list=[],
+        wechat_webhook_url="https://example.invalid",
+        notification_cooldown_seconds=60,
+    )
+    started = threading.Event()
+    release = threading.Event()
+    first_result = {}
+
+    def slow_send(_self, _channel, _content, **_kwargs):
+        started.set()
+        release.wait(timeout=5)
+        return True
+
+    app = create_app(static_dir=tmp_path / "static")
+    with patch("api.middlewares.auth.is_auth_enabled", return_value=False), \
+         patch("src.notification.get_config", return_value=config), \
+         patch("src.notification.NotificationService._send_to_static_channel", autospec=True, side_effect=slow_send) as send:
+        def send_first():
+            first_result["response"] = TestClient(app).post(
+                "/api/v1/agent/chat/send",
+                json={"content": "# Conversation A"},
+            )
+
+        worker = threading.Thread(target=send_first)
+        worker.start()
+        assert started.wait(timeout=5)
+        try:
+            second_response = TestClient(app).post(
+                "/api/v1/agent/chat/send",
+                json={"content": "# Conversation B"},
+            )
+        finally:
+            release.set()
+            worker.join(timeout=5)
+            reset_notification_noise_state()
+
+    assert send.call_count == 1
+    assert first_result["response"].status_code == 200
+    assert first_result["response"].json() == {"success": True}
+    assert second_response.status_code == 200
+    second_body = second_response.json()
+    assert second_body["success"] is False
+    assert second_body["error"] == "noise_suppressed"
+    assert "冷却" in second_body["message"]
+    assert "已跳过" in second_body["message"]
+    assert "同一通知" not in second_body["message"]
+
+
 def test_chat_session_messages_api_does_not_expose_provider_trace(tmp_path: Path) -> None:
     db = DatabaseManager(db_url=f"sqlite:///{tmp_path / 'trace.db'}")
     session_id = "api-trace-hidden"

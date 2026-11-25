@@ -48,7 +48,7 @@ class AnalysisRepository:
             records = self.db.get_analysis_history(query_id=query_id, limit=1)
             return records[0] if records else None
         except Exception as e:
-            logger.error(f"查询分析记录失败: {e}")
+            logger.error(f"Failed to query analysis record: {e}")
             return None
     
     def get_list(
@@ -75,7 +75,7 @@ class AnalysisRepository:
                 limit=limit
             )
         except Exception as e:
-            logger.error(f"获取分析列表失败: {e}")
+            logger.error(f"Failed to get analysis list: {e}")
             return []
     
     def save(
@@ -108,7 +108,7 @@ class AnalysisRepository:
                 context_snapshot=context_snapshot
             )
         except Exception as e:
-            logger.error(f"保存分析结果失败: {e}")
+            logger.error(f"Failed to save analysis result: {e}")
             return 0
     
     def count_by_code(self, code: str, days: int = 30) -> int:
@@ -126,5 +126,5 @@ class AnalysisRepository:
             records = self.db.get_analysis_history(code=code, days=days, limit=1000)
             return len(records)
         except Exception as e:
-            logger.error(f"统计分析记录失败: {e}")
+            logger.error(f"Failed to count analysis records: {e}")
             return 0

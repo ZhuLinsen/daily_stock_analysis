@@ -336,11 +336,11 @@ class NotificationService(
             self._context_channels.append("飞书会话")
 
         if not self._available_channels and not self._context_channels:
-            logger.warning("未配置有效的通知渠道，将不发送推送通知")
+            logger.warning("No valid notification channels configured; push notifications will not be sent")
         else:
             channel_names = [ChannelDetector.get_channel_name(ch) for ch in self._available_channels]
             channel_names.extend(self._context_channels)
-            logger.info(f"已配置 {len(channel_names)} 个通知渠道：{', '.join(channel_names)}")
+            logger.info(f"Configured {len(channel_names)} notification channel(s): {', '.join(channel_names)}")
 
     def _normalize_report_type(self, report_type: Any) -> ReportType:
         """Normalize string/enum input into ReportType."""
@@ -600,7 +600,7 @@ class NotificationService(
 
         route_config = get_notification_route_config(route_type)
         if route_config is None:
-            logger.warning("未知通知路由类型 %s，沿用全部已配置渠道", route_type)
+            logger.warning("Unknown notification route type %s, falling back to all configured channels", route_type)
             return target_channels
 
         configured_route_channels = getattr(self._config, route_config["config_attr"], []) or []
@@ -610,7 +610,7 @@ class NotificationService(
         valid_channels, invalid_channels = split_notification_route_channels(configured_route_channels)
         if invalid_channels:
             logger.warning(
-                "%s 包含未知通知渠道，将忽略: %s",
+                "%s contains unknown notification channels, ignoring: %s",
                 route_config["env_key"],
                 ", ".join(invalid_channels),
             )
@@ -656,11 +656,12 @@ class NotificationService(
 
     # ===== Context channel =====
     def _has_context_channel(self) -> bool:
-        """判断是否存在基于消息上下文的临时渠道（如钉钉会话、飞书会话）"""
+        """判断是否存在基于消息上下文的临时渠道（如钉钉会话、飞书会话、企微智能机器人会话）"""
         return (
             self._extract_dingtalk_session_webhook() is not None
             or self._extract_feishu_reply_info() is not None
             or self._extract_telegram_context_chat_id() is not None
+            or self._extract_wecom_aibot_context() is not None
         )
 
     def _source_platform(self) -> str:
@@ -693,6 +694,26 @@ class NotificationService(
     def should_broadcast_static_channels(self) -> bool:
         """Whether static notification channels should receive this dispatch."""
         return not self._has_context_channel()
+
+    def _extract_wecom_aibot_context(self) -> Optional[Dict[str, str]]:
+        """从来源消息中提取企微智能机器人会话标识（用于 aibot_send_msg 异步回复）。
+
+        会话键：群聊为回调帧携带的 chatid，单聊为 from.userid（官方协议：单聊
+        主动推送 chatid 即填用户 userid；非超管创建的机器人该值为密文，原样
+        透传——见 bot/platforms/wecom_aibot.py 的已知限制说明）。
+        """
+        if not isinstance(self._source_message, BotMessage):
+            return None
+        if self._source_platform() != "wecom":
+            return None
+        raw_data = getattr(self._source_message, "raw_data", {}) or {}
+        for candidate in (
+            getattr(self._source_message, "chat_id", ""),
+            raw_data.get("_wecom_chat_id") if isinstance(raw_data, dict) else None,
+        ):
+            if isinstance(candidate, str) and candidate.strip():
+                return {"chat_id": candidate.strip()}
+        return None
 
     def _extract_dingtalk_session_webhook(self) -> Optional[str]:
         """从来源消息中提取钉钉会话 Webhook（用于 Stream 模式回复）"""
@@ -749,12 +770,12 @@ class NotificationService(
         if session_webhook:
             try:
                 if self._send_dingtalk_chunked(session_webhook, content, max_bytes=20000):
-                    logger.info("已通过钉钉会话（Stream）推送报告")
+                    logger.info("Report sent via DingTalk session (Stream)")
                     success = True
                 else:
-                    logger.error("钉钉会话（Stream）推送失败")
+                    logger.error("Failed to send via DingTalk session (Stream)")
             except Exception as e:
-                logger.error(f"钉钉会话（Stream）推送异常: {e}")
+                logger.error(f"DingTalk session (Stream) send exception: {e}")
 
         # 尝试飞书会话
         feishu_info = self._extract_feishu_reply_info()
@@ -762,26 +783,77 @@ class NotificationService(
             try:
                 sanitized_content = strip_hidden_markdown_metadata(content).strip()
                 if self._send_feishu_stream_reply(feishu_info["chat_id"], sanitized_content):
-                    logger.info("已通过飞书会话（Stream）推送报告")
+                    logger.info("Report sent via Feishu session (Stream)")
                     success = True
                 else:
-                    logger.error("飞书会话（Stream）推送失败")
+                    logger.error("Failed to send via Feishu session (Stream)")
             except Exception as e:
-                logger.error(f"飞书会话（Stream）推送异常: {e}")
+                logger.error(f"Feishu session (Stream) send exception: {e}")
 
         # 尝试 Telegram 会话上下文（按来源 chat_id 回执）
         telegram_chat_id = self._extract_telegram_context_chat_id()
         if telegram_chat_id:
             try:
                 if self.send_to_telegram(content, chat_id=telegram_chat_id):
-                    logger.info("已通过 Telegram 上下文会话推送报告")
+                    logger.info("Report sent via Telegram context session")
                     success = True
                 else:
-                    logger.error("Telegram 上下文会话推送失败")
+                    logger.error("Failed to send via Telegram context session")
             except Exception as e:
-                logger.error(f"Telegram 上下文会话推送异常: {e}")
+                logger.error(f"Telegram context session send exception: {e}")
+
+        # 尝试企微智能机器人会话上下文（aibot_send_msg 回来源会话）
+        wecom_context = self._extract_wecom_aibot_context()
+        if wecom_context:
+            try:
+                if self._send_wecom_aibot_reply(
+                    wecom_context["chat_id"], content
+                ):
+                    logger.info("Report sent via WeCom AI Bot session")
+                    success = True
+                else:
+                    logger.error("Failed to send via WeCom AI Bot session")
+            except Exception as e:
+                logger.error(f"WeCom AI Bot session send exception: {e}")
 
         return success
+
+    def _send_wecom_aibot_reply(self, chat_id: str, content: str) -> bool:
+        """通过企微智能机器人长连接（aibot_send_msg）发送消息到来源会话。
+
+        前置条件（官方协议）：目标用户/会话须先与机器人建过会话；长连接客户端
+        须在运行（WECOM_AIBOT_ENABLED=true 且 SDK 可用）。违反时由适配器回执
+        errcode 非零并记日志，此处按失败返回。
+        """
+        try:
+            from bot.platforms.wecom_aibot import (
+                WECOM_AIBOT_SDK_AVAILABLE,
+                get_wecom_aibot_client,
+            )
+            if not WECOM_AIBOT_SDK_AVAILABLE:
+                logger.warning("WeCom AI Bot SDK unavailable, cannot reply to source session")
+                return False
+
+            client = get_wecom_aibot_client()
+            if client is None:
+                logger.warning(
+                    "WeCom AI Bot client not ready (disabled or WECOM_AIBOT_BOT_ID/"
+                    "WECOM_AIBOT_SECRET not configured), cannot reply to source session"
+                )
+                return False
+
+            sanitized_content = strip_hidden_markdown_metadata(content).strip()
+            if not sanitized_content:
+                logger.warning("WeCom AI Bot reply content is empty, skipping")
+                return False
+
+            return client.send_to_chat(chat_id, sanitized_content)
+        except ImportError as e:
+            logger.error(f"Failed to import WeCom AI Bot module: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"WeCom AI Bot session reply exception: {e}")
+            return False
 
     def _send_feishu_stream_reply(self, chat_id: str, content: str) -> bool:
         """
@@ -797,7 +869,7 @@ class NotificationService(
         try:
             from bot.platforms.feishu_stream import FeishuReplyClient, FEISHU_SDK_AVAILABLE
             if not FEISHU_SDK_AVAILABLE:
-                logger.warning("飞书 SDK 不可用，无法发送 Stream 回复")
+                logger.warning("Feishu SDK unavailable, cannot send Stream reply")
                 return False
 
             from src.config import get_config
@@ -807,7 +879,7 @@ class NotificationService(
             app_secret = getattr(config, 'feishu_app_secret', None)
 
             if not app_id or not app_secret:
-                logger.warning("飞书 APP_ID 或 APP_SECRET 未配置")
+                logger.warning("Feishu APP_ID or APP_SECRET not configured")
                 return False
 
             # 创建回复客户端
@@ -824,10 +896,10 @@ class NotificationService(
             return reply_client.send_to_chat(chat_id, content)
 
         except ImportError as e:
-            logger.error(f"导入飞书 Stream 模块失败: {e}")
+            logger.error(f"Failed to import Feishu Stream module: {e}")
             return False
         except Exception as e:
-            logger.error(f"飞书 Stream 回复异常: {e}")
+            logger.error(f"Feishu Stream reply exception: {e}")
             return False
 
     def _send_feishu_stream_chunked(
@@ -895,7 +967,7 @@ class NotificationService(
 
             if not reply_client.send_to_chat(chat_id, chunk):
                 success = False
-                logger.error(f"飞书 Stream 分块 {i+1}/{len(chunks)} 发送失败")
+                logger.error(f"Feishu Stream chunk {i+1}/{len(chunks)} send failed")
 
         return success
 
@@ -2569,7 +2641,7 @@ class NotificationService(
             return False
         if channel == NotificationChannel.WECHAT and len(image_bytes) > WECHAT_IMAGE_MAX_BYTES:
             logger.warning(
-                "企业微信图片超限 (%d bytes)，回退为 Markdown 文本发送",
+                "WeCom image size exceeds limit (%d bytes), falling back to Markdown text",
                 len(image_bytes),
             )
             return False
@@ -2643,7 +2715,7 @@ class NotificationService(
             return self.send_to_slack(content)
         if channel == NotificationChannel.ASTRBOT:
             return self.send_to_astrbot(sanitized_content)
-        logger.warning(f"不支持的通知渠道: {channel}")
+        logger.warning(f"Unsupported notification channel: {channel}")
         return False
 
     def send_with_results(
@@ -2684,14 +2756,14 @@ class NotificationService(
         context_success = self.send_to_context(content)
         if not self.should_broadcast_static_channels():
             if context_success:
-                logger.info("已通过上下文会话完成推送，跳过静态通知渠道")
+                logger.info("Sent via context session, skipping static notification channels")
                 return NotificationDispatchResult(
                     dispatched=True,
                     success=True,
                     status="sent",
                     channel_results=[ChannelAttemptResult(channel="__context__", success=True)],
                 )
-            logger.warning("交互式上下文推送失败，已跳过静态通知渠道")
+            logger.warning("Interactive context delivery failed; static notification channels skipped")
             return NotificationDispatchResult(
                 dispatched=True,
                 success=False,
@@ -2709,14 +2781,14 @@ class NotificationService(
 
         if not self._available_channels:
             if context_success:
-                logger.info("已通过消息上下文渠道完成推送（无其他通知渠道）")
+                logger.info("Sent via message context channel (no other notification channels configured)")
                 return NotificationDispatchResult(
                     dispatched=True,
                     success=True,
                     status="sent",
                     channel_results=[ChannelAttemptResult(channel="__context__", success=True)],
                 )
-            logger.warning("通知服务不可用，跳过推送")
+            logger.warning("Notification service unavailable, skipping")
             return NotificationDispatchResult(
                 dispatched=False,
                 success=False,
@@ -2727,14 +2799,17 @@ class NotificationService(
         target_channels = self.get_channels_for_route(route_type)
         if not target_channels:
             if context_success:
-                logger.info("已通过消息上下文渠道完成推送（路由后无其他通知渠道）")
+                logger.info("Sent via message context channel (no other channels after routing)")
                 return NotificationDispatchResult(
                     dispatched=True,
                     success=True,
                     status="sent",
                     channel_results=[ChannelAttemptResult(channel="__context__", success=True)],
                 )
-            logger.warning("通知路由 %s 未命中任何已配置渠道，跳过静态通知渠道", route_type)
+            logger.warning(
+                "Notification route %s matched no configured channels, skipping static notification channels",
+                route_type,
+            )
             return NotificationDispatchResult(
                 dispatched=False,
                 success=False,
@@ -2777,7 +2852,7 @@ class NotificationService(
                 structured_payload=structured_payload,
             )
             if image_bytes:
-                logger.info("Markdown 已转换为图片，将向 %s 发送图片",
+                logger.info("Markdown converted to image, sending image to %s",
                             [ch.value for ch in channels_needing_image])
             elif channels_needing_image:
                 try:
@@ -2790,12 +2865,13 @@ class NotificationService(
                     else "wkhtmltopdf (apt install wkhtmltopdf / brew install wkhtmltopdf)"
                 )
                 logger.warning(
-                    "Markdown 转图片失败，将回退为文本发送。请检查 MARKDOWN_TO_IMAGE_CHANNELS 配置并安装 %s",
+                    "Markdown-to-image conversion failed, falling back to text. "
+                    "Check MARKDOWN_TO_IMAGE_CHANNELS and install %s",
                     hint,
                 )
 
         channel_names = ', '.join(ChannelDetector.get_channel_name(ch) for ch in target_channels)
-        logger.info(f"正在向 {len(target_channels)} 个渠道发送通知：{channel_names}")
+        logger.info(f"Sending notification to {len(target_channels)} channel(s): {channel_names}")
 
         success_count = 0
         fail_count = 0
@@ -2830,7 +2906,7 @@ class NotificationService(
                 )
 
             except Exception as e:
-                logger.error(f"{channel_name} 发送失败: {e}")
+                logger.error(f"{channel_name} send failed: {e}")
                 fail_count += 1
                 channel_results.append(
                     ChannelAttemptResult(
@@ -2843,7 +2919,7 @@ class NotificationService(
                     )
                 )
 
-        logger.info(f"通知发送完成：成功 {success_count} 个，失败 {fail_count} 个")
+        logger.info(f"Notification dispatch completed: {success_count} succeeded, {fail_count} failed")
         if success_count > 0:
             self.record_noise_control(noise_decision)
         else:
@@ -2923,7 +2999,7 @@ class NotificationService(
         with open(filepath, 'w', encoding='utf-8') as f:
             f.write(content)
 
-        logger.info(f"日报已保存到: {filepath}")
+        logger.info(f"Daily report saved to: {filepath}")
         return str(filepath)
 
     def save_and_send_feishu_file(
@@ -2948,7 +3024,7 @@ class NotificationService(
             strip_hidden_markdown_metadata(content).strip(),
             filename=filename,
         )
-        logger.info("将上传文件到飞书: %s", filepath)
+        logger.info("Uploading file to Feishu: %s", filepath)
         return self.send_feishu_file(filepath)
 
 

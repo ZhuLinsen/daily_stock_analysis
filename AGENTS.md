@@ -21,7 +21,7 @@
   - `README.md` 仅承载首页级信息（定位、核心能力总览、快速开始、主要入口、赞助/合作），细则写入 `docs/*.md`。
   - 修改中英双语文档之一时，评估另一份是否同步；未同步须在交付说明中写明原因。
 - 修改报告格式、报告渲染或 Web UI 界面时，PR 描述须附受影响报告/页面截图（涉及前后差异优先附前后对比），无法截图时写明原因与可复现替代证据；一次性验收截图不得作为仓库文件合入。
-- 注释、docstring、日志文案以清晰准确为准，与文件语境保持一致。
+- 运行日志（`logger.*` / `logging.*`）统一使用简洁英文（由 `scripts/check_english_logs.py` 校验）；用户可见分析报告、推送通知、机器人回复与 Web UI 继续保留多语言配置（如 `REPORT_LANGUAGE`）；注释与 docstring 以清晰准确为准，与文件语境保持一致。
 
 ### 1.1 PR 标题规范（非阻断建议）
 
@@ -74,10 +74,15 @@ python scripts/check_ai_assets.py
 | `🔎 Change Detection` | `.github/workflows/ci.yml` | 路径变更检测 | 是 |
 | `ai-governance` | `.github/workflows/ci.yml` | `python scripts/check_ai_assets.py` | 是 |
 | `backend-tests (1/3)`..`(3/3)` | `.github/workflows/ci.yml` | 语法、flake8、确定性检查与 3 分片离线 pytest | 是（触发时） |
-| `backend-gate` | `.github/workflows/ci.yml` | 汇总前置与后端测试门禁 | 是 |
+| `docs-contract-tests` | `.github/workflows/ci.yml` | PR 仅改文档/fixture 契约资产时运行引用 docs/fixtures 的测试文件（替代三分片后端全量） | 是（触发时） |
+| `backend-gate` | `.github/workflows/ci.yml` | 汇总前置、后端分片与文档契约测试门禁 | 是 |
 | `docker-build` | `.github/workflows/ci.yml` | Docker 构建与关键模块导入 smoke | 是（触发时） |
-| `web-gate` | `.github/workflows/ci.yml` | `npm run lint` + `npm run build` + Playwright smoke | 是（触发时） |
+| `web-gate` | `.github/workflows/ci.yml` | `npm run lint` + `npm test` (Vitest) + `npm run build` + Playwright smoke（含浏览器缓存） | 是（触发时） |
+| `desktop-tests` | `.github/workflows/ci.yml` | `apps/dsa-desktop` 单元测试（`npm test`） | 是（触发时） |
+| `site-gate` | `.github/workflows/ci.yml` | `apps/dsa-site` 文档站构建与契约测试 | 是（触发时） |
 | `desktop-futu-package-windows` / `desktop-futu-package-macos` | `.github/workflows/ci.yml` | 桌面端 Futu 打包验证 | 是（触发时） |
+| `ci-gate` | `.github/workflows/ci.yml` | 统一汇聚 PR / `merge_group` / `main` 全链路门禁结果 | 是 |
+| `release` | `.github/workflows/release.yml` | 统一原子发布编排（前置 Gate -> 原生 amd64/arm64 Docker 合并 manifest 与溯源 -> Windows/macOS 打包 -> Release） | tag/手动 |
 | `network-smoke` | `.github/workflows/network-smoke.yml` | `pytest -m network` + `scripts/test.sh quick` | 否 |
 | `pr-review` | `.github/workflows/pr-review.yml` | 手动触发的只读静态检查 + AI 审查 | 否 |
 

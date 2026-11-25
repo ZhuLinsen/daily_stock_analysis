@@ -59,12 +59,12 @@ daily_stock_analysis/
 |------------|------|:----:|
 | `MODELFLARE_KEY` | [Modelflare](https://modelflare.dev/sign-up?utm_source=github&utm_campaign=daily_stock_analysis) API Key，自动补齐默认地址和模型 | 推荐 |
 | `LLM_X6AI_API_KEY` | [x6.ai](https://console.x6pro.io/register?code=zJ2qSdns) API Key，低成本接入 Claude、GPT 等 100+ 模型 | 推荐 |
-| `AIHUBMIX_KEY` | AIHubMix API Key，一 Key 切换使用全系模型，本项目可享 10% 优惠 | 可选 |
 | `GEMINI_API_KEY` | [Google AI Studio](https://aistudio.google.com/) 获取免费 Key | 可选 |
 | `ANTHROPIC_API_KEY` | Anthropic Claude API Key | 可选 |
 | `OPENAI_API_KEY` | OpenAI 兼容 API Key（支持 DeepSeek、通义千问等） | 可选 |
 | `OPENAI_BASE_URL` | OpenAI 兼容 API 地址（如 `https://api.deepseek.com`） | 可选 |
 | `OPENAI_MODEL` | 模型名称（如 `gemini-3.6-flash`、`deepseek-v4-flash`、`gpt-6.1-sol`） | 可选 |
+| `AIHUBMIX_KEY` | [AIHubMix](https://inferera.com/?aff=CfMq) API Key（自动适配 Base URL） | 可选 |
 | `ANSPIRE_API_KEYS` | [Anspire](https://open.anspire.cn/dsa?share_code=QFBC0FYC) API Key（可选，模型与搜索共用；可用性以账号权限为准） | 可选 |
 
 > *注：以上模型 Key / 渠道至少配置一个。Modelflare 只需填写 `MODELFLARE_KEY`，单渠道默认模型为 `openai/gpt-6.1-sol`（可通过 `LITELLM_MODEL` 覆盖），接入地址默认使用 `https://modelflare.dev/v1`，完整示例见 [LLM 配置指南](LLM_CONFIG_GUIDE.md#示例modelflare)。实际模型以账号权限为准。启动时配置校验会在缺少可用 AI 模型 Key 或模型渠道时给出明确错误提示。
@@ -210,10 +210,10 @@ daily_stock_analysis/
 
 如果你想快速开始，最少需要配置以下项：
 
-1. **AI 模型**：按 [Modelflare Channels 示例](LLM_CONFIG_GUIDE.md#示例modelflare) 配置，或使用 `AIHUBMIX_KEY`（[AIHubmix](https://inferera.com/?aff=CfMq)，一 Key 多模型）、`GEMINI_API_KEY` 或 `OPENAI_API_KEY`
+1. **AI 模型**：按 [Modelflare Channels 示例](LLM_CONFIG_GUIDE.md#示例modelflare) 配置，或使用 `GEMINI_API_KEY`、`OPENAI_API_KEY`、`AIHUBMIX_KEY` 等
 2. **通知渠道**：至少配置一个，如 `WECHAT_WEBHOOK_URL` 或 `EMAIL_SENDER` + `EMAIL_PASSWORD`
 3. **股票列表**：`STOCK_LIST`（必填）
-4. **搜索 API**：`SERPAPI_API_KEYS` 或 `TAVILY_API_KEYS`；`ANSPIRE_API_KEYS` 仍可选用
+4. **搜索 API**：`SERPAPI_API_KEYS`、`TAVILY_API_KEYS` 或 `ANSPIRE_API_KEYS`
 
 > 💡 配置完以上 4 项即可开始使用！
 
@@ -286,18 +286,18 @@ daily_stock_analysis/
 | `LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL` | Prompt cache 诊断级别：`off` / `basic` / `debug`；basic/debug 仅在 debug 日志和测试可观察对象中提供脱敏诊断，不作为公开 Usage API 或普通设置页输出 | `off` | 否 |
 | `LLM_USAGE_HMAC_SECRET` | LLM 用量遥测 message HMAC 密钥；留空时自动使用数据目录中的本地密钥文件 | - | 否 |
 | `LLM_USAGE_HMAC_KEY_VERSION` | LLM 用量遥测 HMAC 密钥版本标签，轮换密钥时同步更新 | `local-v1` | 否 |
-| `AIHUBMIX_KEY` | [AIHubmix](https://inferera.com/?aff=CfMq) API Key，一 Key 切换使用全系模型，无需额外配置 Base URL | - | 可选 |
 | `GEMINI_API_KEY` | Google Gemini API Key | - | 可选 |
 | `GEMINI_MODEL` | 主模型名称（legacy，`LITELLM_MODEL` 优先） | `gemini-3.6-flash` | 否 |
 | `GEMINI_MODEL_FALLBACK` | 备选模型（legacy） | `gemini-3.5-flash-lite` | 否 |
 | `OPENAI_API_KEY` | OpenAI 兼容 API Key | - | 可选 |
 | `OPENAI_BASE_URL` | OpenAI 兼容 API 地址 | - | 可选 |
 | `OLLAMA_API_BASE` | Ollama 本地服务地址（如 `http://localhost:11434`），详见 [LLM 配置指南](LLM_CONFIG_GUIDE.md) | - | 可选 |
-| `OPENAI_MODEL` | OpenAI 模型名称（legacy，AIHubmix 用户可填如 `gemini-3.6-flash`、`gpt-6.1-sol`） | `gpt-6.1-sol` | 可选 |
+| `OPENAI_MODEL` | OpenAI 模型名称（legacy，如 `gpt-6.1-sol`） | `gpt-6.1-sol` | 可选 |
 | `ANTHROPIC_API_KEY` | Anthropic Claude API Key | - | 可选 |
 | `ANTHROPIC_MODEL` | Claude 模型名称 | `claude-sonnet-4-6` | 可选 |
 | `ANTHROPIC_TEMPERATURE` | Claude 温度参数（0.0-1.0） | `0.7` | 可选 |
 | `ANTHROPIC_MAX_TOKENS` | Claude 响应最大 token 数 | `8192` | 可选 |
+| `AIHUBMIX_KEY` | [AIHubmix](https://inferera.com/?aff=CfMq) API Key（自动适配 `https://aihubmix.com/v1`） | - | 可选 |
 | `ANSPIRE_API_KEYS` | [Anspire](https://open.anspire.cn/dsa?share_code=QFBC0FYC) API Key（可选，模型与搜索共用；可用性以账号权限为准） | - | 可选 |
 
 > GitHub Actions 说明：仓库自带 `00-daily-analysis.yml` 在 `GENERATION_FALLBACK_BACKEND` 未配置时显式使用 `litellm`，避免未设置的 Secret/Variable 被导出为空值并意外禁用 backend fallback。若要在 Actions 中禁用 backend fallback，请将 fallback 设为 primary backend，让 resolver 走 self no-op。
@@ -420,7 +420,7 @@ daily_stock_analysis/
 调试入口：
 
 - 每条返回会保留 `relevance_score` / `relevance_category` / `relevance_reasons` 元数据，最终 `to_text()` 与情报上下文会附带对应「关联度」说明；
-- 搜索链路日志会输出 `[新闻相关度]` 统计，便于复盘为何该批次触发了 direct/sector/macro 分层。
+- 搜索链路日志会输出 `[NewsRelevance]` 统计，便于复盘为何该批次触发了 direct/sector/macro 分层。
 
 兼容与回退说明：该改动不新增/修改模型、provider、Base URL、LiteLLM route、配置清理或回写逻辑；若出现异常，只能通过回滚本次提交恢复旧排序行为，不涉及历史配置迁移。
 
@@ -1194,6 +1194,19 @@ crontab -e
 2. 复制 Webhook URL
 3. 设置 `WECHAT_WEBHOOK_URL`
 
+**企业微信智能机器人（对话式长连接，可选，默认关）：**
+
+除上面的群 Webhook 单向推送外，系统还支持通过企业微信"智能机器人"进行对话（发送 `/analyze 600519` 等命令并接收回复）。该通道走官方 WebSocket 长连接（`wss://openws.work.weixin.qq.com`），无需公网 IP；本系统不提供回调 URL 模式。与群 Webhook 推送相互独立，互不影响：
+
+```env
+WECOM_AIBOT_ENABLED=false          # 默认关；开启前先完成下面两项
+WECOM_AIBOT_BOT_ID=                # 企业微信后台智能机器人的 Bot ID
+WECOM_AIBOT_SECRET=                # 长连接专用 Secret（与群机器人 Token/EncodingAESKey 是不同凭据）
+WECOM_AIBOT_REPLY_STREAM=false     # 可选：用 stream 流式回复（默认一次性 markdown 回复）
+```
+
+依赖 `wecom-aibot-python-sdk>=1.0.2`（`pip install -r requirements.txt` 已包含；缺失时模块可正常导入、功能自动关闭并提示安装命令）。限制：单机器人仅一条有效长连接（系统已内置互斥与重连风暴防护）；单会话回复上限 30 条/分钟；非超管创建的机器人收到的用户 `userid` 为密文（官方协议限制）。
+
 ### 飞书
 
 Webhook 和 App Bot 交互卡片可附带 Web 工作台按钮。优先读取 `FEISHU_CARD_WEB_URL`，留空时读取 `DSA_WEB_URL`。填写收件人可访问的 `http://` 或 `https://` 地址，两项均清空即可停用按钮。`FEISHU_MAX_BYTES` 控制每页正文预算。分页还会检查完整 JSON 请求体，Webhook 限为 20,000 字节，App Bot 限为 30,000 字节。若工作台 URL 过长导致卡片无法分页，发送时会省略按钮。[飞书自定义机器人指南](https://open.feishu.cn/document/client-docs/bot-v3/add-custom-bot) · [飞书消息 API](https://open.feishu.cn/document/server-docs/im-v1/message/create)
@@ -1750,6 +1763,7 @@ FastAPI 提供 RESTful API 服务，支持配置管理和触发分析。
 - 🧩 **输入数据块可见** - 普通分析报告会在历史详情、同步响应和 completed 任务状态中返回低敏 `AnalysisContextPack` overview，Web 报告页在策略点位和资讯之后默认折叠展示数据块状态、来源、缺失原因和降级摘要
 - 💬 **问股主讨论对象** - 服务端接受明确代码或索引中唯一名称后保存对象；普通追问、刷新、重开和切回会话从服务端恢复。明确切股才更新主对象，比较只扩大本轮范围，首次比较不任选一只；报告跳转只是提示，不自行建立已确认状态。模型失败或停止不撤销已接受的对象。
 - 🧠 **会话级 Skill 选择** - 问股会话会持久化当前 Skill 选择；刷新或切换会话时恢复各自选择，新会话继续使用服务器默认 Skill
+- **发送会话到通知渠道** - 在问股页点击「发送」后，只要有一个渠道发送成功，页面就会提示成功。如果降噪规则跳过发送，页面会说明原因。如果所有渠道都发送失败，可查看服务日志后重试。如果尚未配置渠道，请前往设置添加。
 - 📈 **回测验证** - 评估历史分析准确率，查询方向胜率与模拟收益
 - 🔗 **API 文档** - 访问 `/docs` 查看 Swagger UI
 
@@ -1819,6 +1833,7 @@ FastAPI 提供 RESTful API 服务，支持配置管理和触发分析。
 > 说明：该端点若返回 `task_id`，WebUI 会轮询 `GET /api/v1/analysis/status/{task_id}` 展示状态。状态为 `completed` 时给出完成提示（报告已生成并按配置推送），状态为 `failed` 时在前端错误区域显示 `error` 原因。
 > 说明：`GET /api/v1/history/{record_id}/diagnostics` 支持历史记录主键 ID 或 `query_id`，返回 `normal/degraded/failed/unknown` 摘要、关键链路组件和可复制的脱敏 `copy_text`；旧报告缺少诊断快照时返回 `unknown`，不影响报告读取。
 > 说明：`GET /api/v1/history` 的列表摘要可按 `stock_code` 分页查询同一股票历史，并返回趋势判断、分析摘要、模型名与分析时价格/涨跌幅等可选字段；旧记录缺少快照字段时返回空值。`created_at` 与 `/api/v1/history/stocks` 的 `last_analysis_time` 使用带服务器时区偏移的 ISO 8601 时间戳；日期筛选仍按服务器本地日期解释。Web 报告页的“历史趋势”抽屉复用该接口加载同股历史。
+> Web 首页和历史趋势的近 30 天、近 90 天筛选，均从上海当天的日期向前推算日历天数。
 > 说明：`GET /api/v1/usage/dashboard` 复用 `llm_usage` 审计表，不新增配置项或数据库迁移。接口仅返回已落库的调用次数、Prompt/Completion/Total Token 聚合、模型维度用量和最近调用记录，不推导模型上下文窗口或 provider 元数据。
 > 说明（Issue #1520）：列表中的模型名展示字段仅来源于历史快照中的 `model_used`，仅用于历史回溯展示，不影响运行时模型模型路由（`litellm_model`、`llm_model_list`）、Provider、Base URL 与配置迁移/清理语义。回退方式为回退本次提交，现网历史查询/抽屉/接口链路兼容性保持不变。
 > 说明：历史详情、同步分析响应和 completed 任务状态会在 `report.details.analysis_context_pack_overview` 返回低敏输入数据块 overview；其中同步分析响应依赖本次已持久化的 `analysis_history.context_snapshot`，`SAVE_CONTEXT_SNAPSHOT=false` 时新记录不保证返回 overview。`details.context_snapshot` 会剥离该顶层字段，不返回完整 `AnalysisContextPack` 或 Prompt summary。
@@ -2038,3 +2053,29 @@ worker 会把 `triggered`、`skipped`、`degraded`、`failed` 写入 `alert_trig
 - Agent 可通过 `get_portfolio_snapshot` 获取面向账户的紧凑持仓摘要，默认包含精简风险块，适合控制 Token 开销。
 - 可选参数包括 `account_id`、`cost_method`、`as_of`、`include_positions`、`include_risk`。
 - 若风险块生成失败，快照仍会返回；若当前环境未启用持仓模块，工具会返回结构化 `not_supported`。
+
+
+---
+
+## 只读 MCP Stdio 服务（可选）
+
+外部 AI 客户端（如 Claude Code、Cursor、Codex、Gemini CLI）可通过可选的只读 stdio MCP 服务接入 DSA 的行情、历史报告和异步分析能力。
+
+1. 安装可选依赖（不影响核心运行与 Docker 镜像体积）：
+
+   ```bash
+   pip install "mcp>=1.0.0,<2"
+   ```
+
+2. 在客户端 MCP 配置中启动：
+
+   ```bash
+   python -m src.mcp_server
+   ```
+
+   如需额外暴露宏观工具（`fxmacrodata_*`），可追加 `--include-macro`。
+
+默认安全边界：
+- 仅开放 `ToolSurface` 中声明为 `read_only=True` 的工具，以及 `resolve_stock`、`start_stock_analysis`、`get_analysis_status`、`get_latest_report`。
+- 默认关闭 `get_portfolio_snapshot` 与所有写配置能力；`start_stock_analysis` 默认 `notify=False`，避免外部 Agent 自动触发群推送。
+- `start_stock_analysis` 会消耗模型调用额度并保存本地分析报告；部分行情与检索工具可能更新本地缓存。

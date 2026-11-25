@@ -1810,6 +1810,7 @@ describe('PortfolioPage FX refresh', () => {
 
     await waitFor(() => {
       expect(getSnapshot).toHaveBeenLastCalledWith({ accountId: 1, costMethod: 'fifo', includeRealtime: false });
+      expect(screen.getByRole('button', { name: '刷新汇率' })).not.toBeDisabled();
     });
 
     const snapshotCallsBeforeRefresh = getSnapshot.mock.calls.length;
@@ -1873,6 +1874,8 @@ describe('PortfolioPage FX refresh', () => {
   it('renders backend-provided position valuation fields and stale missing-price hint', async () => {
     getSnapshot.mockResolvedValueOnce(makeSnapshot({ fxStale: true, positions: [
       { symbol: 'HK00700', market: 'hk', currency: 'HKD', quantity: 10, avgCost: 400, totalCost: 4000, lastPrice: 420, marketValueBase: 4200, unrealizedPnlBase: 200, unrealizedPnlPct: 5, valuationCurrency: 'HKD', priceSource: 'history_close', priceDate: '2026-03-18', priceStale: true, priceAvailable: true },
+      { symbol: '600519', market: 'cn', currency: 'CNY', quantity: 10, avgCost: 1500, totalCost: 15000, lastPrice: 1450, marketValueBase: 14500, unrealizedPnlBase: -500, unrealizedPnlPct: -3.33, valuationCurrency: 'CNY', priceSource: 'history_close', priceDate: '2026-03-18', priceStale: false, priceAvailable: true },
+      { symbol: 'MSFT', market: 'us', currency: 'USD', quantity: 2, avgCost: 400, totalCost: 800, lastPrice: 400, marketValueBase: 800, unrealizedPnlBase: 0, unrealizedPnlPct: 0, valuationCurrency: 'USD', priceSource: 'history_close', priceDate: '2026-03-18', priceStale: false, priceAvailable: true },
       { symbol: 'AAPL', market: 'us', currency: 'USD', quantity: 5, avgCost: 100, totalCost: 500, lastPrice: 0, marketValueBase: 0, unrealizedPnlBase: 0, unrealizedPnlPct: null, valuationCurrency: 'USD', priceSource: 'missing', priceDate: null, priceStale: true, priceAvailable: false },
     ] }));
 
@@ -1889,13 +1892,31 @@ describe('PortfolioPage FX refresh', () => {
     expect(screen.getAllByText('--').length).toBeGreaterThanOrEqual(2);
 
     const hkRow = screen.getByText('HK00700').closest('tr');
+    const cnRow = screen.getByText('600519').closest('tr');
+    const msftRow = screen.getByText('MSFT').closest('tr');
     const aaplRow = screen.getByText('AAPL').closest('tr');
     expect(hkRow).not.toBeNull();
+    expect(cnRow).not.toBeNull();
+    expect(msftRow).not.toBeNull();
     expect(aaplRow).not.toBeNull();
 
     const hkRowCells = within(hkRow as HTMLTableRowElement).getAllByRole('cell');
+    const cnRowCells = within(cnRow as HTMLTableRowElement).getAllByRole('cell');
+    const msftRowCells = within(msftRow as HTMLTableRowElement).getAllByRole('cell');
     const aaplRowCells = within(aaplRow as HTMLTableRowElement).getAllByRole('cell');
-    expect(hkRowCells.at(-3)).toHaveClass('text-success');
+    // Positive PnL & PnL% -> red-up (text-price-up)
+    expect(hkRowCells.at(-4)).toHaveClass('text-price-up');
+    expect(hkRowCells.at(-3)).toHaveClass('text-price-up');
+    // Negative PnL & PnL% -> green-down (text-price-down)
+    expect(cnRowCells.at(-4)).toHaveClass('text-price-down');
+    expect(cnRowCells.at(-3)).toHaveClass('text-price-down');
+    // Zero PnL & PnL% -> neutral (neither price-up nor price-down)
+    expect(msftRowCells.at(-4)).not.toHaveClass('text-price-up');
+    expect(msftRowCells.at(-4)).not.toHaveClass('text-price-down');
+    expect(msftRowCells.at(-3)).not.toHaveClass('text-price-up');
+    expect(msftRowCells.at(-3)).not.toHaveClass('text-price-down');
+    // Missing price -> muted text-secondary
+    expect(aaplRowCells.at(-4)).toHaveClass('text-secondary');
     expect(aaplRowCells.at(-3)).toHaveClass('text-secondary');
   });
 

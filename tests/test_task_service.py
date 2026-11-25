@@ -3,6 +3,7 @@
 Regression tests for TaskService failure handling.
 """
 
+import logging
 import os
 import sys
 import unittest
@@ -19,6 +20,7 @@ ensure_litellm_stub()
 
 from src.analyzer import AnalysisResult
 from src.services.task_service import TaskService
+from scripts.check_english_logs import CJK_RE
 
 
 def _make_failed_result(code: str) -> AnalysisResult:
@@ -216,6 +218,38 @@ class TestTaskService(unittest.TestCase):
         call = _CapturingPipeline.calls[0]
         self.assertEqual(call["code"], "csi930955")
         self.assertIs(call["analysis_target"], target)
+
+
+class _EmptyPipeline:
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def process_single_stock(self, *args, **kwargs):
+        return None
+
+
+class TestTaskServiceEnglishLogging(unittest.TestCase):
+    def test_empty_analysis_result_logs_english_while_preserving_error_contract(self):
+        service = TaskService()
+        service._tasks = {"task-empty-1": {}}
+        service._tasks_lock = threading.Lock()
+
+        fake_main = ModuleType("main")
+        fake_main.StockAnalysisPipeline = _EmptyPipeline
+
+        with (
+            patch.dict("sys.modules", {"main": fake_main}),
+            patch("src.config.get_config", return_value=SimpleNamespace()),
+            self.assertLogs("src.services.task_service", level="WARNING") as captured,
+        ):
+            result = service._run_analysis(code="AAPL", task_id="task-empty-1")
+
+        self.assertFalse(result["success"])
+        self.assertEqual(result["error"], "分析返回空结果")
+        log_messages = [record.getMessage() for record in captured.records]
+        self.assertTrue(any("empty analysis result" in msg for msg in log_messages))
+        for msg in log_messages:
+            self.assertIsNone(CJK_RE.search(msg), f"Unexpected CJK text in log: {msg}")
 
 
 if __name__ == "__main__":

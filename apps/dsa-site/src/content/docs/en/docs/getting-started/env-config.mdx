@@ -1,0 +1,21 @@
+---
+title: "Minimal Environment Configuration"
+description: "You only need STOCK_LIST and one AI provider key to run DSA; add data and notification tokens incrementally."
+---
+
+DSA is designed to run out of the box with free market data providers (`AkShare`, `Baostock`, `YFinance`). You only need two essentials to generate your first analysis.
+
+## 1. Required Core
+
+| Variable | Description | Example |
+| --- | --- | --- |
+| `STOCK_LIST` | Comma-separated symbols across A-share, HK, US, JP, KR, TW | `600519,hk00700,AAPL,NVDA` |
+| **One AI API Key** | Gemini, Anthropic, OpenAI-compatible, DeepSeek, or local Ollama | `GEMINI_API_KEY=...` or `OPENAI_API_KEY=...` |
+
+## 2. Recommended Enhancements
+
+- **News Search**: `SERPAPI_API_KEYS`, `TAVILY_API_KEYS`, or `BRAVE_API_KEYS` to enrich earnings and catalyst context.
+- **Market Data Stability**: `TICKPLUS_API_KEY` / `TUSHARE_TOKEN` (A-shares), or `LONGBRIDGE_*` (HK/US).
+- **Notifications**: `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID`, `DISCORD_WEBHOOK_URL`, `FEISHU_WEBHOOK_URL`, `WECHAT_WEBHOOK_URL`, or SMTP `EMAIL_SENDER` + `EMAIL_PASSWORD`.
+
+See the [LLM Configuration Guide](/en/docs/configuration/llm-guide/) for advanced multi-model routing.

@@ -53,8 +53,8 @@ class RateLimiter:
 
         # 清理过期记录
         self._requests[user_id] = [
-            t for t in self._requests[user_id]
-            if t > window_start
+            entry for entry in self._requests[user_id]
+            if entry[0] > window_start
         ]
 
         # 检查是否超限
@@ -62,8 +62,75 @@ class RateLimiter:
             return False
 
         # 记录本次请求
-        self._requests[user_id].append(now)
+        self._requests[user_id].append((now, None))
         return True
+
+    def would_allow(self, user_id: str) -> bool:
+        """
+        只读配额检查：清理滑动窗口并判断新请求是否会被放行，不记账
+
+        与 :meth:`record` 配对使用，支持调用方在单临界区内完成
+        「检查多窗口 → 统一扣量」的原子配额决策（如企微智能机器人出站
+        双窗口限流，OR-COM-62e2b418）。
+
+        Args:
+            user_id: 用户标识
+
+        Returns:
+            若立即 :meth:`record` 是否会被放行
+        """
+        now = time.time()
+        window_start = now - self.window_seconds
+
+        # 清理过期记录
+        self._requests[user_id] = [
+            entry for entry in self._requests[user_id]
+            if entry[0] > window_start
+        ]
+
+        return len(self._requests[user_id]) < self.max_requests
+
+    def record(self, user_id: str, token: Optional[str] = None) -> None:
+        """
+        记录一次已获准的请求（调用方应先经 :meth:`would_allow` 检查）
+
+        Args:
+            user_id: 用户标识
+            token: 本次请求的唯一标识（如 uuid4）；提供后可用 :meth:`refund`
+                按标识精确回滚本次记录，同会话发送交错完成时不会退错记录
+        """
+        self._requests[user_id].append((time.time(), token))
+
+    def refund(self, user_id: str, token: Optional[str] = None) -> bool:
+        """
+        撤销一次已记账请求（回滚滑动窗口计数）
+
+        带 token 时按标识精确移除本次记录（同会话发送交错完成不会退错
+        记录）；不带 token 时回退为移除最近一条无标识记录。用于「记账后
+        发送失败」的额度回滚（企微智能机器人出站配额，OR-COM-62e2b418）。
+        调用方应持有相应临界区锁保证原子性。
+
+        Args:
+            user_id: 用户标识
+            token: :meth:`record` 时传入的发送标识
+
+        Returns:
+            是否成功移除（找不到对应记录时不动作，返回 False）
+        """
+        records = self._requests.get(user_id)
+        if not records:
+            return False
+        if token is None:
+            for index in range(len(records) - 1, -1, -1):
+                if records[index][1] is None:
+                    records.pop(index)
+                    return True
+            return False
+        for index, (_, record_token) in enumerate(records):
+            if record_token == token:
+                records.pop(index)
+                return True
+        return False
 
     def get_remaining(self, user_id: str) -> int:
         """获取剩余可用请求数"""
@@ -72,8 +139,8 @@ class RateLimiter:
 
         # 清理过期记录
         self._requests[user_id] = [
-            t for t in self._requests[user_id]
-            if t > window_start
+            entry for entry in self._requests[user_id]
+            if entry[0] > window_start
         ]
 
         return max(0, self.max_requests - len(self._requests[user_id]))
@@ -131,18 +198,18 @@ class CommandDispatcher:
         name = command.name.lower()
 
         if name in self._commands:
-            logger.warning(f"[Dispatcher] 命令 '{name}' 已存在，将被覆盖")
+            logger.warning(f"[Dispatcher] Command '{name}' already exists and will be overwritten")
 
         self._commands[name] = command
-        logger.debug(f"[Dispatcher] 注册命令: {name}")
+        logger.debug(f"[Dispatcher] Registered command: {name}")
 
         # 注册别名
         for alias in command.aliases:
             alias_lower = alias.lower()
             if alias_lower in self._aliases:
-                logger.warning(f"[Dispatcher] 别名 '{alias_lower}' 已存在，将被覆盖")
+                logger.warning(f"[Dispatcher] Alias '{alias_lower}' already exists and will be overwritten")
             self._aliases[alias_lower] = name
-            logger.debug(f"[Dispatcher] 注册别名: {alias_lower} -> {name}")
+            logger.debug(f"[Dispatcher] Registered alias: {alias_lower} -> {name}")
 
     def register_class(self, command_class: Type[BotCommand]) -> None:
         """
@@ -174,7 +241,7 @@ class CommandDispatcher:
         for alias in command.aliases:
             self._aliases.pop(alias.lower(), None)
 
-        logger.debug(f"[Dispatcher] 注销命令: {name}")
+        logger.debug(f"[Dispatcher] Unregistered command: {name}")
         return True
 
     def get_command(self, name: str) -> Optional[BotCommand]:
@@ -270,7 +337,7 @@ class CommandDispatcher:
         if cmd_name is None:
             return None, args, None, None
 
-        logger.info(f"[Dispatcher] 收到命令: {cmd_name}, 参数: {args}, 用户: {message.user_name}")
+        logger.info(f"[Dispatcher] Received command: {cmd_name}, args: {args}, user: {message.user_name}")
 
         command = self.get_command(cmd_name)
         if command is None:
@@ -312,10 +379,10 @@ class CommandDispatcher:
 
         try:
             response = command.execute(message, args)
-            logger.info(f"[Dispatcher] 命令 {cmd_name} 执行成功")
+            logger.info(f"[Dispatcher] Command {cmd_name} executed successfully")
             return response
         except Exception as e:
-            logger.error(f"[Dispatcher] 命令 {cmd_name} 执行失败: {e}")
+            logger.error(f"[Dispatcher] Command {cmd_name} execution failed: {e}")
             logger.exception(e)
             return BotResponse.error_response(f"命令执行失败: {str(e)[:100]}")
 
@@ -353,10 +420,10 @@ class CommandDispatcher:
         # 6. 执行命令
         try:
             response = await command.execute_async(message, args)
-            logger.info(f"[Dispatcher] 命令 {cmd_name} 执行成功")
+            logger.info(f"[Dispatcher] Command {cmd_name} executed successfully")
             return response
         except Exception as e:
-            logger.error(f"[Dispatcher] 命令 {cmd_name} 执行失败: {e}")
+            logger.error(f"[Dispatcher] Command {cmd_name} execution failed: {e}")
             logger.exception(e)
             return BotResponse.error_response(f"命令执行失败: {str(e)[:100]}")
 
@@ -758,7 +825,7 @@ def get_dispatcher() -> CommandDispatcher:
         for command_class in ALL_COMMANDS:
             _dispatcher.register_class(command_class)
 
-        logger.info(f"[Dispatcher] 初始化完成，已注册 {len(_dispatcher._commands)} 个命令")
+        logger.info(f"[Dispatcher] Initialization complete, registered {len(_dispatcher._commands)} commands")
 
     return _dispatcher
 

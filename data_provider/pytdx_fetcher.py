@@ -160,7 +160,7 @@ class PytdxFetcher(BaseFetcher):
         self._unavailable_until = time.time() + _PYTDX_CONNECTION_COOLDOWN_SECONDS
         self._last_unavailable_reason = str(reason or "").strip()
         logger.info(
-            "Pytdx 连接失败，进入冷却 %.0fs: %s",
+            "Pytdx connection failed, entering cooldown for %.0fs: %s",
             _PYTDX_CONNECTION_COOLDOWN_SECONDS,
             self._last_unavailable_reason or "unknown",
         )
@@ -178,7 +178,7 @@ class PytdxFetcher(BaseFetcher):
             from pytdx.hq import TdxHq_API
             return TdxHq_API
         except ImportError:
-            logger.warning("pytdx 未安装，请运行: pip install pytdx")
+            logger.warning("pytdx is not installed, please run: pip install pytdx")
             return None
     
     @contextmanager
@@ -217,10 +217,10 @@ class PytdxFetcher(BaseFetcher):
                     if api.connect(host, port, time_out=5):
                         connected = True
                         self._current_host_idx = host_idx
-                        logger.debug(f"Pytdx 连接成功: {host}:{port}")
+                        logger.debug(f"Pytdx connected successfully: {host}:{port}")
                         break
                 except Exception as e:
-                    logger.debug(f"Pytdx 连接 {host}:{port} 失败: {e}")
+                    logger.debug(f"Pytdx connection to {host}:{port} failed: {e}")
                     continue
             
             if not connected:
@@ -233,9 +233,9 @@ class PytdxFetcher(BaseFetcher):
             # 确保断开连接
             try:
                 api.disconnect()
-                logger.debug("Pytdx 连接已断开")
+                logger.debug("Pytdx connection closed")
             except Exception as e:
-                logger.warning(f"Pytdx 断开连接时出错: {e}")
+                logger.warning(f"Error disconnecting Pytdx: {e}")
     
     def _get_market_code(self, stock_code: str) -> Tuple[int, str]:
         """
@@ -342,7 +342,7 @@ class PytdxFetcher(BaseFetcher):
         days = (end_dt - start_dt).days
         count = min(max(days * 5 // 7 + 10, 30), 800)  # 估算交易日，最大 800 条
         
-        logger.debug(f"调用 Pytdx get_security_bars(market={market}, code={code}, count={count})")
+        logger.debug(f"Calling Pytdx get_security_bars(market={market}, code={code}, count={count})")
         
         with self._pytdx_session() as api:
             try:
@@ -448,7 +448,7 @@ class PytdxFetcher(BaseFetcher):
                     return name
                 
         except Exception as e:
-            logger.debug(f"Pytdx 获取股票名称失败 {stock_code}: {e}")
+            logger.debug(f"Pytdx failed to fetch stock name for {stock_code}: {e}")
         
         return None
     
@@ -488,7 +488,7 @@ class PytdxFetcher(BaseFetcher):
                         'ask_prices': [quote.get(f'ask{i}', 0) for i in range(1, 6)],
                     }
         except Exception as e:
-            logger.warning(f"Pytdx 获取实时行情失败 {stock_code}: {e}")
+            logger.warning(f"Pytdx failed to fetch realtime quote for {stock_code}: {e}")
         
         return None
 

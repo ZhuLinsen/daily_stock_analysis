@@ -1,0 +1,14 @@
+{
+  "name": "dsa-page",
+  "compatibility_date": "2026-05-09",
+  "routes": [
+    {
+      "pattern": "dsa.zhulinsen.tech",
+      "custom_domain": true
+    }
+  ],
+  "assets": {
+    "directory": "./dist",
+    "not_found_handling": "404-page"
+  }
+}

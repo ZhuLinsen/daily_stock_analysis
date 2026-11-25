@@ -1,0 +1,254 @@
+---
+import openapi from '../data/openapi-endpoints.json';
+
+interface Props {
+  lang?: 'zh' | 'en';
+}
+
+const { lang = 'zh' } = Astro.props;
+const isEn = lang === 'en';
+const tags = openapi.tags || [];
+const endpoints = openapi.endpoints || [];
+
+const copy = {
+  searchPlaceholder: isEn
+    ? 'Search endpoints by path, summary, or tag (e.g. /analyze, alerts, portfolio)...'
+    : '按路径、摘要或标签搜索接口（如 /analyze、alerts、portfolio）...',
+  allTags: isEn ? 'All' : '全部',
+  downloadSpec: isEn ? 'Download Snapshot openapi.json' : '下载快照 openapi.json',
+  endpointsLabel: isEn ? 'Snapshot Endpoints' : '静态规格接口',
+  schemasLabel: isEn ? 'Schemas' : '数据模型',
+  versionLabel: isEn ? 'Spec Version' : '规格版本',
+  paramsLabel: isEn ? 'Parameters' : '请求参数',
+  reqBodyLabel: isEn ? 'Request Body Schema' : '请求体 Schema',
+  respLabel: isEn ? 'Responses' : '响应状态',
+  noParams: isEn ? 'No path or query parameters.' : '无路径或查询参数。',
+  emptyMatch: isEn ? 'No matching endpoints found.' : '未找到匹配的 API 接口。',
+};
+---
+
+<div class="api-explorer not-content my-6 space-y-4">
+  <!-- Summary Strip -->
+  <div class="grid grid-cols-1 sm:grid-cols-4 gap-3">
+    <div class="api-stat-card p-3.5 rounded-xl border">
+      <div class="text-xs opacity-70">{copy.endpointsLabel}</div>
+      <div class="text-xl font-bold mt-0.5 tabular-nums">{openapi.endpointCount}</div>
+    </div>
+    <div class="api-stat-card p-3.5 rounded-xl border">
+      <div class="text-xs opacity-70">{copy.schemasLabel}</div>
+      <div class="text-xl font-bold mt-0.5 tabular-nums">{openapi.schemaCount}</div>
+    </div>
+    <div class="api-stat-card p-3.5 rounded-xl border">
+      <div class="text-xs opacity-70">{copy.versionLabel}</div>
+      <div class="text-xl font-bold mt-0.5 tabular-nums">v{openapi.info.version}</div>
+    </div>
+    <a
+      href="/openapi.json"
+      download="dsa-openapi.json"
+      class="api-download-card p-3.5 rounded-xl border flex items-center justify-between no-underline transition"
+    >
+      <div>
+        <div class="text-xs opacity-70">OpenAPI 3.1</div>
+        <div class="text-sm font-semibold mt-0.5">{copy.downloadSpec}</div>
+      </div>
+      <span aria-hidden="true" class="text-lg">↓</span>
+    </a>
+  </div>
+
+  <!-- Search & Tag Filters -->
+  <div class="api-toolbar p-3.5 rounded-xl border space-y-3">
+    <input
+      type="search"
+      id="apiSearchInput"
+      placeholder={copy.searchPlaceholder}
+      class="api-search-input w-full px-3.5 py-2 rounded-lg border text-sm outline-none"
+    />
+    <div class="flex flex-wrap gap-1.5" role="group" aria-label="API Tags">
+      <button type="button" data-api-tag="ALL" class="api-tag-btn is-active px-2.5 py-1 rounded-md text-xs font-medium border cursor-pointer">
+        {copy.allTags} ({endpoints.length})
+      </button>
+      {tags.map((tag) => {
+        const count = endpoints.filter((ep) => ep.tag === tag).length;
+        return (
+          <button type="button" data-api-tag={tag} class="api-tag-btn px-2.5 py-1 rounded-md text-xs font-medium border cursor-pointer">
+            {tag} ({count})
+          </button>
+        );
+      })}
+    </div>
+  </div>
+
+  <!-- Endpoint Accordion List -->
+  <div id="apiList" class="space-y-2.5">
+    {endpoints.map((ep) => {
+      const searchText = `${ep.method} ${ep.path} ${ep.summary} ${ep.tag} ${ep.description}`.toLowerCase();
+      return (
+        <details class="api-ep-card rounded-xl border overflow-hidden" data-tag={ep.tag} data-search={searchText}>
+          <summary class="px-4 py-3 flex flex-wrap items-center justify-between gap-3 cursor-pointer list-none">
+            <div class="flex flex-wrap items-center gap-2.5 min-w-0">
+              <span class={`api-method api-method--${ep.method.toLowerCase()} px-2 py-0.5 rounded text-xs font-bold font-mono`}>
+                {ep.method}
+              </span>
+              <code class="text-xs sm:text-sm font-mono font-semibold break-all">{ep.path}</code>
+            </div>
+            <div class="flex items-center gap-2 text-xs">
+              <span class="opacity-80">{ep.summary}</span>
+              <span class="api-tag-pill px-2 py-0.5 rounded text-[11px] font-mono">{ep.tag}</span>
+            </div>
+          </summary>
+
+          <div class="api-ep-body px-4 py-3.5 border-t space-y-3 text-xs">
+            {ep.description && <p class="m-0 leading-relaxed opacity-85">{ep.description}</p>}
+
+            <div>
+              <div class="font-semibold mb-1.5 opacity-75">{copy.paramsLabel}</div>
+              {ep.parameters.length > 0 ? (
+                <div class="overflow-x-auto rounded-lg border api-subtable-wrap">
+                  <table class="w-full text-left border-collapse text-xs">
+                    <thead>
+                      <tr class="border-b api-subtable-head">
+                        <th class="p-2 font-semibold">Name</th>
+                        <th class="p-2 font-semibold">In</th>
+                        <th class="p-2 font-semibold">Type</th>
+                        <th class="p-2 font-semibold">Required</th>
+                        <th class="p-2 font-semibold">Description</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {ep.parameters.map((p) => (
+                        <tr class="border-b last:border-b-0 api-subtable-row">
+                          <td class="p-2 font-mono font-semibold">{p.name}</td>
+                          <td class="p-2 font-mono opacity-80">{p.in}</td>
+                          <td class="p-2 font-mono opacity-80">{p.type || '-'}</td>
+                          <td class="p-2">{p.required ? 'Yes' : 'No'}</td>
+                          <td class="p-2 opacity-80">{p.description || '-'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div class="opacity-65">{copy.noParams}</div>
+              )}
+            </div>
+
+            {ep.requestSchema && (
+              <div>
+                <span class="font-semibold opacity-75">{copy.reqBodyLabel}: </span>
+                <code class="px-2 py-0.5 rounded font-mono">{ep.requestSchema}</code>
+              </div>
+            )}
+
+            {ep.responses.length > 0 && (
+              <div>
+                <div class="font-semibold mb-1.5 opacity-75">{copy.respLabel}</div>
+                <div class="flex flex-wrap gap-2">
+                  {ep.responses.map((r) => (
+                    <span class="px-2.5 py-1 rounded-md border api-resp-pill font-mono">
+                      <strong>{r.code}</strong> · {r.description}{r.schema ? ` (${r.schema})` : ''}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </details>
+      );
+    })}
+  </div>
+
+  <div id="apiEmptyState" class="hidden p-6 text-center rounded-xl border text-sm opacity-75">
+    {copy.emptyMatch}
+  </div>
+</div>
+
+<style>
+  .api-stat-card,
+  .api-download-card,
+  .api-toolbar,
+  .api-ep-card {
+    background: var(--sl-color-gray-6);
+    border-color: var(--sl-color-hairline-light);
+    color: var(--sl-color-white);
+  }
+  .api-download-card:hover {
+    border-color: var(--sl-color-text-accent);
+    color: var(--sl-color-text-accent);
+  }
+  .api-search-input {
+    background: var(--sl-color-black);
+    border-color: var(--sl-color-hairline-light);
+    color: var(--sl-color-white);
+  }
+  .api-search-input:focus {
+    border-color: var(--sl-color-text-accent);
+  }
+  .api-tag-btn {
+    background: var(--sl-color-black);
+    border-color: var(--sl-color-hairline-light);
+    color: var(--sl-color-gray-2);
+  }
+  .api-tag-btn.is-active {
+    background: var(--sl-color-accent-low);
+    border-color: var(--sl-color-text-accent);
+    color: var(--sl-color-text-accent);
+  }
+  .api-ep-body {
+    border-color: var(--sl-color-hairline-light);
+    background: color-mix(in srgb, var(--sl-color-black) 60%, var(--sl-color-gray-6));
+  }
+  .api-tag-pill,
+  .api-resp-pill {
+    background: var(--sl-color-black);
+    border-color: var(--sl-color-hairline-light);
+    color: var(--sl-color-gray-2);
+  }
+  .api-subtable-wrap,
+  .api-subtable-head,
+  .api-subtable-row {
+    border-color: var(--sl-color-hairline-light);
+  }
+  .api-subtable-head {
+    background: var(--sl-color-black);
+  }
+  .api-method--get { background: rgba(56, 189, 248, 0.16); color: #38bdf8; }
+  .api-method--post { background: rgba(52, 211, 153, 0.16); color: #34d399; }
+  .api-method--put, .api-method--patch { background: rgba(251, 191, 36, 0.16); color: #fbbf24; }
+  .api-method--delete { background: rgba(251, 113, 133, 0.16); color: #fb7185; }
+  :global([data-theme='light']) .api-method--get { color: #0284c7; }
+  :global([data-theme='light']) .api-method--post { color: #059669; }
+  :global([data-theme='light']) .api-method--put,
+  :global([data-theme='light']) .api-method--patch { color: #b45309; }
+  :global([data-theme='light']) .api-method--delete { color: #dc2626; }
+</style>
+
+<script>
+  const input = document.getElementById('apiSearchInput') as HTMLInputElement | null;
+  const tagBtns = Array.from(document.querySelectorAll<HTMLButtonElement>('[data-api-tag]'));
+  const cards = Array.from(document.querySelectorAll<HTMLElement>('.api-ep-card'));
+  const emptyEl = document.getElementById('apiEmptyState');
+  let activeTag = 'ALL';
+
+  function applyFilter() {
+    const q = (input?.value || '').trim().toLowerCase();
+    let visible = 0;
+    cards.forEach((card) => {
+      const tagMatch = activeTag === 'ALL' || card.dataset.tag === activeTag;
+      const textMatch = !q || (card.dataset.search || '').includes(q);
+      const show = tagMatch && textMatch;
+      card.style.display = show ? '' : 'none';
+      if (show) visible += 1;
+    });
+    if (emptyEl) emptyEl.classList.toggle('hidden', visible > 0);
+  }
+
+  tagBtns.forEach((btn) => {
+    btn.addEventListener('click', () => {
+      activeTag = btn.dataset.apiTag || 'ALL';
+      tagBtns.forEach((b) => b.classList.toggle('is-active', b === btn));
+      applyFilter();
+    });
+  });
+
+  input?.addEventListener('input', applyFilter);
+</script>

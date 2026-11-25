@@ -206,7 +206,7 @@ def _get_stock_index_signature(index_path: Path) -> tuple[float, int] | None:
     try:
         stat_result = index_path.stat()
     except OSError as exc:
-        logger.debug("[股票名称] 读取股票索引元数据失败 %s: %s", index_path, exc)
+        logger.debug("[StockName] Failed to read stock index metadata %s: %s", index_path, exc)
         return None
     if not index_path.is_file():
         return None
@@ -292,13 +292,13 @@ def get_stock_name_index_map() -> Dict[str, str]:
                 else:
                     _STOCK_INDEX_CACHE = _load_stock_index_file(index_path)
                 logger.debug(
-                    "[股票名称] 已加载前端股票索引映射: %s (%d 条)",
+                    "[StockName] Loaded frontend stock index mapping: %s (%d entries)",
                     index_path,
                     len(_STOCK_INDEX_CACHE),
                 )
                 return _STOCK_INDEX_CACHE
             except (OSError, TypeError, ValueError) as exc:
-                logger.debug("[股票名称] 读取股票索引失败 %s: %s", index_path, exc)
+                logger.debug("[StockName] Failed to read stock index %s: %s", index_path, exc)
 
         _STOCK_INDEX_CACHE = {}
         return _STOCK_INDEX_CACHE
@@ -370,7 +370,7 @@ def get_stock_code_candidates_map() -> Dict[str, tuple[str, ...]]:
                     merged_candidates.setdefault(key, set()).update(values)
             except (OSError, TypeError, ValueError) as exc:
                 logger.debug(
-                    "[股票索引] 解析代码候选失败 %s: %s",
+                    "[StockIndex] Failed to parse code candidates from %s: %s",
                     index_path,
                     exc,
                 )
@@ -452,7 +452,7 @@ def _load_active_index_rows() -> list:
                     bundled_rows = rows
                     bundled_canonicals = {str(r[0]) for r in rows}
             except (OSError, TypeError, ValueError) as exc:
-                logger.debug("[股票索引] 解析 bundled 指数行失败 %s: %s", bundled_path, exc)
+                logger.debug("[StockIndex] Failed to parse bundled index rows from %s: %s", bundled_path, exc)
 
         # Second pass: pick the best candidate (remote preferred when it is a
         # legal superset of the bundled baseline).
@@ -484,7 +484,8 @@ def _load_active_index_rows() -> list:
                     missing = bundled_canonicals - candidate_canonicals
                     if missing:
                         logger.warning(
-                            "[股票索引] 指数候选 %s 缺少 bundled baseline canonical: %s — 回退 bundled",
+                            "[StockIndex] Index candidate %s is missing bundled baseline canonicals: %s - "
+                            "falling back to bundled",
                             index_path,
                             sorted(missing),
                         )
@@ -493,10 +494,10 @@ def _load_active_index_rows() -> list:
                 _CHAT_INDEX_PAYLOAD_CACHE = raw_items
                 return rows
             except (OSError, TypeError, ValueError) as exc:
-                logger.debug("[股票索引] 解析指数行失败 %s: %s", index_path, exc)
+                logger.debug("[StockIndex] Failed to parse index rows from %s: %s", index_path, exc)
 
         # All candidates failed or were skipped — empty registry + WARNING.
-        logger.warning("[股票索引] 所有指数候选均失败，指数注册表为空")
+        logger.warning("[StockIndex] All index candidates failed; index registry is empty")
         _ACTIVE_INDEX_ROWS_CACHE = []
         _CHAT_INDEX_PAYLOAD_CACHE = stock_only_fallback or []
         return _ACTIVE_INDEX_ROWS_CACHE

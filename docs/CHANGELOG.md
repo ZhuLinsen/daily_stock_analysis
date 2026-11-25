@@ -39,7 +39,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [新功能] HiThink 提供主要指数快照、指数日 K，以及按完整目录分批计算的行业和概念涨跌排行。指数日 K 只在现有 Tencent、AkShare、TickFlow、YFinance 固定路由全部失败后尝试，并记录数据源诊断。
 - [新功能] HiThink 补充 A 股名称检索、代码表、热股榜和涨停池，仅在现有数据源没有结果时使用。代码表接入批量名称查询，热股榜价格来自行情快照。
 
+- [改进] CI 瘦身：PR 仅改文档或 `tests/fixtures/**` 时以 `docs-contract-tests` 替代三分片后端全量测试；`docker-build` 保留运行时输入触发并排除前端测试与 Markdown 改动；前端仅改单元测试文件时 `web-gate` 跳过构建与 Playwright（非 PR 事件触发 `web-gate` 时仍执行完整构建与 Playwright，`docker-build` 与文档契约后端全量在非 PR 事件下保持兜底）。
+
+- [新功能] 新增 DSA 内部因子契约（`FactorDefinition`/`FactorSnapshot`/`CandidatePoolRun`/`CandidateFactorScore`，契约版本 1.0）：将选股 `factor_scores` 映射为带字段版本、来源、数据质量与降级原因的内部结构（#1902 P0）；仅新增 schema 与纯映射函数，不改变现有选股、API、回测与 DecisionSignal 行为。`ScreenResult.created_at` 改为带本地偏移的 ISO 字符串（按部署进程本地时钟换算为 UTC），`pick_to_factor_snapshot` 的显式 `computed_at` 同样归一化；内置引擎来源守卫的作用域已修正，原创的 `factor_mapping.py` 不再被误判为 AlphaSift 派生文件。
+- [改进] 优化 CI 与发布流水线：`ci.yml` 新增 `push: main` 与 `merge_group` 触发、顶层只读权限与统一 `ci-gate` 汇总门禁，解除 `ai-governance` 对域内检查的串行阻塞；后端引入 `uv` 加速依赖安装，Web CI 补跑 `npm test` (Vitest) 并缓存 Playwright 浏览器，新增 `desktop-tests` 执行桌面端单元测试；将 `create-release.yml`、`docker-publish.yml`、`desktop-release.yml` 收敛为单入口原子发布流 `release.yml`（原生 `ubuntu-24.04-arm` + `ubuntu-24.04` 双架构合并 manifest 与构建溯源），并同步 `scripts/ci_gate.sh` 与契约测试。
+- [修复] Agent 的 `analyze_pattern` 按形态出现前的趋势命名长影线 K 线。取形态出现前的收盘价，以 MA5 与 MA10 的高低判断方向（`StockTrendAnalyzer` 比较的同一组均线），并要求形态前最后一个收盘价也越过 MA5（下跌时低于 MA5，上涨时高于 MA5）：下跌时命名为锤子线/倒锤子，上涨时命名为上吊线/流星线；趋势不明确（包括 MA5 与 MA10 相等、形态前最后一个收盘价等于 MA5）或形态前不足 10 个收盘价时不给出这四个名称。`type` 取值保持不变（锤子线/上吊线为 `reversal_signal`，流星线为 `bearish_signal`），仅倒锤子由 `bearish_signal` 改为 `reversal_signal`；上吊线与倒锤子的说明文字随之调整，锤子线与流星线的条目内容不变。原先按单日涨跌和 K 线颜色命名，与趋势无关。其余形态的识别不变。
+- [改进] 将后端运行日志（`logger.*` / `logging.*`）统一为简洁英文，新增 AST 门禁 `scripts/check_english_logs.py` 并接入 `scripts/ci_gate.sh`，同时在贡献文档与开发规范中明确日志使用英文、用户可见报告与通知保留多语言配置（Fixes #2601）。
+
+- [修复] 新增幂等的 `py_mini_racer.MiniRacer` 线程安全保护（`src/utils/mini_racer_guard.py`），在应用初始化与数据源层串行化 V8 isolate 创建与求值调用，避免多线程并发分析（`MAX_WORKERS > 1`）时触发原生 `SIGTRAP` 崩溃（Fixes #2586）。
+- [新功能] 新增 agent-agnostic 插件市场入口（`.agents/plugins/marketplace.json`）与 Codex/Claude Code 插件清单（`plugin/`）；将 `stock_analyzer` 正文迁至 `plugin/skills/stock_analyzer/SKILL.md`，根目录 `SKILL.md` 保留为普通文件副本（兼容 `core.symlinks=false` / OpenClaw）；技能明确要求驱动已部署的 DSA 检出，示例先 `chdir` 到检出根目录以共用相对库路径与复盘锁，大盘复盘在支持 `send_notification` 时默认不推送且对旧检出安全拒绝回退；HTTP 对话内个股须 `"notify": false`、大盘复盘须 `"send_notification": false`（`MarketReviewRequest` 亦接受 `notify` 别名）；只读 MCP 仍按完整指南在 checkout 中手动配置（不写入插件包）。
+- [新功能] 新增基于 Astro + Starlight 的官方官网与文档中心子项目（`apps/dsa-site/`），采用 Obsidian Bento 视觉与 5 大支柱文档体系，构建时直读主仓 `docs/`、`strategies/` 与 `docs/architecture/api_spec.json` 生成交互式 OpenAPI 浏览器与中英文全文搜索，并配套 `.dockerignore` 与独立 `site-gate` CI 门禁。
+- [新功能] 企业微信智能机器人 Phase 1：WebSocket 长连接客户端基建与对话最小闭环（#755）。新增 `bot/platforms/wecom_aibot.py` 长连接适配器（`aibot_subscribe` 认证、30s 心跳、断线指数退避重连、单机器人单连接互斥、msgid 排重、会话级限流），收到文本消息复用 `bot/dispatcher` 命令分发与 `AnalyzeCommand`（一次性分析、不改自选股），分析完成后经 source-context 链路以 `aibot_send_msg` 回推企微来源会话，回复经 `aibot_respond_msg` 帧（透传回调 req_id；`reply_stream` 可选、默认关）；出站回复/推送执行双窗口会话配额（30 条/分钟 + 1000 条/小时）。引入可选依赖 `wecom-aibot-python-sdk>=1.0.2`，SDK 缺失时模块可导入、功能自动关闭。新增配置 `WECOM_AIBOT_ENABLED` / `WECOM_AIBOT_BOT_ID` / `WECOM_AIBOT_SECRET` / `WECOM_AIBOT_REPLY_STREAM`（全部默认关，不改变现有用户行为）；既有企业微信群 Webhook 推送通道行为零变化。
+- [修复] 问股页「发送到通知渠道」区分未配置渠道、降噪跳过和全部发送失败，并修正并发命中共享冷却时的提示语，避免把不同会话的冷却跳过误报为“同一通知正在发送中”。
+- [新功能] 新增 A 股收盘情绪快照后端，支持手动提交后台任务、查看规则指标及按实际交易日查询历史趋势。
+- [新功能] 新增可选跨资产上下文通道（cross-asset-v1，Issue #1910 一期，默认关闭）：显式开启 `CROSS_ASSET_CONTEXT_ENABLED=true` 后，个股分析 Prompt 注入“外围环境与跨资产”低敏摘要（一期数据源为 yfinance：港/美/日/韩/台指数 + 富时A50 尽力而为 + VIX + 美债10Y），`risk_appetite` 由确定性投票规则生成，四级 fail-open 降级不中断主分析；Prompt 段落带 UNTRUSTED 哨兵、限行与数值溢出守卫，不配置时主流程零行为差异（Refs #1910）。
 - [文档] 在 `AGENTS.md`、中英文贡献指南、PR 模板与 `analyze-pr` 规范中确立“产品做减法、只做必要高价值改动、把核心功能做简单可靠”的演进与审查原则。
+- [新功能] 将分析报告组装逻辑下沉至共享服务层（`src/services/report_builder_service.py`），并新增可选的只读 stdio MCP 服务（`python -m src.mcp_server`，可选依赖 `mcp>=1.0.0,<2`，默认关闭持仓与配置写入且分析默认不推送）；文档补充分析会消耗模型额度并可能更新本地缓存的提示。
 - [新功能] Web 与桌面端已保存个股报告的策略点位区新增按需价格点位图，展示近 60 个交易日、MA5/MA20 及可解析的狙击点位参考线。
 - [修复] 数据源超时但个股按时完成时复用分析槽位，取消后跳过迟到的报告和新闻写入，保留 LiteLLM 同模型部署重试。识别英文止损点位倒挂，按发行人筛选同名公告，并保留复合风险警报。
 - [chore] 仓库协作 skill 迁至 `.agents/skills/` 并保留 `.claude/skills/` 同步副本兼容 Claude Code，重构 `analyze-pr` 审查规范（文件覆盖账本、14 维影响面清单与不可逆变更约束），精简 `AGENTS.md`、PR 模板与 `ai-governance` 校验脚本，本地审查产物默认直接对话输出（可选 `.reviews/`）。
@@ -55,8 +70,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [修复] Agent 缺少真实历史置信度数据时保持中性校准，不再使用固定的估计值。
 - [文档] 将简体、英文和繁体 README 首页的 HelloGitHub 徽章替换为 Star History 全球排名徽章，与 Trendshift 徽章等高并排展示。
 - [改进] 历史个股栏批量统计展示股票的历史分析次数，减少刷新时的数据库查询。
+- [修复] Web 首页和历史趋势按上海日期计算近 30 天和 90 天的查询起点，避免浏览器所在地切换夏令时时多查或漏查一天。
 - [修复] 持仓交易、现金流水和公司行动拒绝 NaN / Infinity 等非有限数值；CSV 预览、预演和提交在写入前拒绝包含非有限数值或费税合计溢出的交易行，并返回行号和字段，避免污染账本和快照；API 校验错误中的非有限数值可安全返回 JSON。
 - [改进] Web 股票输入框的联想搜索为每只股票只规范化一次代码、名称、拼音和别名，后续搜索直接复用，不再每次都对约 3.2 万条索引重新做 Unicode 规范化。
+- [修复] 持仓页浮动盈亏与收益率改用 A 股习惯的红涨绿跌配色，新增 `text-price-up` / `text-price-down` 工具类并复用 `--home-price-up` / `--home-price-down` 变量，收益为 0 时保持中性色，与个股页保持一致。
+- [修复] 为 MiniMax-M3.1-Flash 推理模型在部署层自动合并默认 `reasoning_effort=low`（保留 YAML deployment 原有 `extra_body` 路由/隐私参数及用户显式推理设置），避免隐藏推理耗尽 `max_tokens` 后返回 HTTP 200 但内容为空。
 
 ## [3.35.0] - 2026-11-16
 

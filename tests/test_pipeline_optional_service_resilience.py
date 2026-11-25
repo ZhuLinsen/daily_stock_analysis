@@ -51,12 +51,13 @@ def test_search_service_init_failure_logs_traceback_and_failure_state(caplog):
     assert pipeline.search_service is None
 
     init_failure_records = [
-        record for record in caplog.records if "搜索服务初始化失败，将以无搜索模式运行" in record.message
+        record for record in caplog.records
+        if "Search service initialization failed; running without search" in record.message
     ]
     assert len(init_failure_records) == 1
     assert init_failure_records[0].exc_info is not None
-    assert "搜索服务未启用（初始化失败或依赖缺失）" in caplog.text
-    assert "搜索服务未启用（未配置搜索能力）" not in caplog.text
+    assert "Search service disabled (initialization failed or missing dependencies)" in caplog.text
+    assert "Search service disabled (search not configured)" not in caplog.text
 
 
 def test_social_sentiment_init_failure_logs_traceback(caplog):
@@ -72,7 +73,8 @@ def test_social_sentiment_init_failure_logs_traceback(caplog):
     assert pipeline.social_sentiment_service is None
 
     init_failure_records = [
-        record for record in caplog.records if "社交舆情服务初始化失败，将跳过舆情分析" in record.message
+        record for record in caplog.records
+        if "Social sentiment service initialization failed; skipping sentiment analysis" in record.message
     ]
     assert len(init_failure_records) == 1
     assert init_failure_records[0].exc_info is not None

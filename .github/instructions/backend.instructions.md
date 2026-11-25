@@ -9,3 +9,4 @@ applyTo: "main.py,server.py,src/**/*.py,data_provider/**/*.py,api/**/*.py,bot/**
 - Changes in `data_provider/` must preserve provider priority, normalization behavior, timeout/retry expectations, and graceful degradation.
 - Prefer `./scripts/ci_gate.sh` when feasible; otherwise run `python -m py_compile` on changed files plus the closest deterministic tests.
 - Do not let a single provider, notification channel, or optional integration failure break the main analysis flow unless the requirement explicitly demands fail-fast behavior.
+- Write all runtime `logger.*` / `logging.*` messages in concise English (checked by `python scripts/check_english_logs.py`); keep user-facing reports, notifications, and bot replies localized.

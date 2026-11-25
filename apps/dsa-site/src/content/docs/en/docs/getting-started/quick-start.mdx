@@ -1,0 +1,54 @@
+---
+title: "Quick Start: Choose Your Runtime"
+description: "Compare Desktop App, GitHub Actions, Docker Compose, and Local Python CLI to generate your first report in 5 minutes."
+---
+
+import { Tabs, TabItem, Steps } from '@astrojs/starlight/components';
+
+DSA provides four primary ways to run. Pick the one that matches your workflow and infrastructure preference.
+
+## Runtime Comparison
+
+| Runtime | Best For | Infrastructure | WebUI & Agent Q&A |
+| --- | --- | --- | --- |
+| **Desktop App** | Non-technical users & local workstation | Installer only (Windows / macOS) | Built-in |
+| **GitHub Actions** | Serverless scheduled daily delivery | Zero server cost | Notifications & logs |
+| **Docker Compose** | NAS / VPS 24×7 hosting | Single container command | Built-in (`:8000`) |
+| **Local Python CLI** | Developers debugging models, sources & backtests | Python 3.10+ | `--serve` flag |
+
+<Tabs>
+  <TabItem label="GitHub Actions">
+    <Steps>
+      1. Fork [ZhuLinsen/daily_stock_analysis](https://github.com/ZhuLinsen/daily_stock_analysis).
+      2. Open `Settings → Secrets and variables → Actions` and add an AI key (`GEMINI_API_KEY` or `OPENAI_API_KEY`), `STOCK_LIST` (e.g. `AAPL,NVDA,hk00700`), and a notification secret (e.g. `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID`).
+      3. Enable Actions workflows and run **Daily Stock Analysis** manually once to verify delivery.
+    </Steps>
+  </TabItem>
+
+  <TabItem label="Docker Compose">
+    ```bash
+    git clone https://github.com/ZhuLinsen/daily_stock_analysis.git
+    cd daily_stock_analysis
+    cp .env.example .env
+    # Edit .env: set STOCK_LIST and at least one AI API key (see Minimal Env Config)
+
+    docker-compose -f ./docker/docker-compose.yml up -d server
+    ```
+    Configure at least one AI key before triggering analysis — see [Minimal Environment Configuration](/en/docs/getting-started/env-config/) and the [LLM Configuration Guide](/en/docs/configuration/llm-guide/).
+  </TabItem>
+
+  <TabItem label="Local Python">
+    ```bash
+    git clone https://github.com/ZhuLinsen/daily_stock_analysis.git
+    cd daily_stock_analysis
+    python -m venv .venv && source .venv/bin/activate
+    pip install -r requirements.txt
+    cp .env.example .env
+    # Edit .env: set STOCK_LIST and at least one AI API key (e.g. GEMINI_API_KEY or DEEPSEEK_API_KEY)
+
+    python main.py --doctor
+    python main.py --stocks AAPL,NVDA,600519 --serve
+    ```
+    Make sure an AI API key is configured in `.env` before running analysis — see [Minimal Environment Configuration](/en/docs/getting-started/env-config/) and the [LLM Configuration Guide](/en/docs/configuration/llm-guide/).
+  </TabItem>
+</Tabs>

@@ -34,7 +34,7 @@ description: 调用 daily_stock_analysis API 做股票分析。当用户说「�
 仅当 Bot HTTP 超时 ≥300 秒、且用户在等单次同步结果时，才用 `async_mode: false`。同步超时后不要改发异步重跑；先查询该股是否已有进行中任务（409 / status），或读最新 DecisionSignal。
 
 3. 只需最新建议、不要重跑分析时：`GET {DSA_BASE_URL}/api/v1/decision-signals/latest/{stock_code}`。
-4. 大盘复盘：`POST {DSA_BASE_URL}/api/v1/analysis/market-review` 固定返回 202 + `task_id`，不是复盘正文。轮询同一条 status 接口，完成后读顶层 `market_review_report` 或 `market_review_payload`（不在 `result.report`）。
+4. 大盘复盘：`POST {DSA_BASE_URL}/api/v1/analysis/market-review`，对话内查看须显式传 `"send_notification": false`（默认 `true`；不读个股的 `notify`）。固定返回 202 + `task_id`，不是复盘正文。轮询同一条 status 接口，完成后读顶层 `market_review_report` 或 `market_review_payload`（不在 `result.report`）。
 5. 健康检查失败先 `GET {DSA_BASE_URL}/api/health`。
 
 ## 如何呈现结果

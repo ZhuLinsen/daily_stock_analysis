@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.astro/
+public/docs-assets/
+public/openapi.json
+src/data/site-meta.json
+src/data/openapi-endpoints.json
+src/content/docs/**/*.md

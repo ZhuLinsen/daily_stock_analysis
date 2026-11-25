@@ -104,7 +104,7 @@ def test_stream_and_reply_clients_share_lark_domain():
 
 def test_invalid_stream_domain_falls_back_to_feishu(caplog):
     assert feishu_stream._resolve_feishu_domain("invalid") == FEISHU_DOMAIN
-    assert "回退为 feishu" in caplog.text
+    assert "falling back to feishu" in caplog.text
 
 
 def test_reply_text_chunked_keeps_reply_and_at_user(monkeypatch):

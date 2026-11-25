@@ -1,0 +1,582 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Existing release tag in semver format, e.g. v3.35.0'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  GHCR_REGISTRY: ghcr.io
+  DOCKERHUB_REGISTRY: docker.io
+  GHCR_IMAGE_NAME: ${{ github.repository }}
+  DOCKERHUB_IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/${{ github.event.repository.name }}
+  HAS_DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN != '' && 'true' || 'false' }}
+  HAS_DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME != '' && 'true' || 'false' }}
+
+jobs:
+  pre-release-gate:
+    name: Pre-release Gate & Release Notes
+    runs-on: ubuntu-24.04
+    outputs:
+      release_tag: ${{ steps.release_ref.outputs.release_tag }}
+      version: ${{ steps.release_ref.outputs.version }}
+      revision: ${{ steps.release_ref.outputs.revision }}
+      ghcr_repo: ${{ steps.release_ref.outputs.ghcr_repo }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Resolve and validate release tag
+        id: release_ref
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            RELEASE_TAG="${{ inputs.release_tag }}"
+            [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+            git fetch --tags --force
+            git rev-parse "$RELEASE_TAG" >/dev/null
+            git checkout "$RELEASE_TAG"
+          else
+            RELEASE_TAG="${GITHUB_REF_NAME}"
+            [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          fi
+          test -f README.md
+          TAG_BODY="$(git tag -l --format='%(contents)' "$RELEASE_TAG")"
+          if [[ -z "${TAG_BODY// }" ]]; then
+            echo "ERROR: Tag $RELEASE_TAG has no annotation message." >&2
+            echo "Use: git tag -a $RELEASE_TAG -m '<release notes>' (annotated tag required)" >&2
+            exit 1
+          fi
+          echo "release_tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
+          echo "version=${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
+          echo "revision=$(git rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
+          echo "ghcr_repo=$(printf '%s/%s' "${GHCR_REGISTRY}" "${GHCR_IMAGE_NAME}" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            requirements.txt
+            .github/requirements-ci.txt
+
+      - name: Install backend gate dependencies
+        run: |
+          for attempt in 1 2 3; do
+            if uv pip install --system -r .github/requirements-ci.txt; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "Dependency install failed after ${attempt} attempts." >&2
+              exit 1
+            fi
+            echo "Dependency install attempt ${attempt} failed, retrying in 15s..." >&2
+            sleep 15
+          done
+
+      - name: Run backend gate before publish
+        run: ./scripts/ci_gate.sh
+
+      - name: Generate release notes from merged PRs and labels
+        env:
+          RELEASE_TAG: ${{ steps.release_ref.outputs.release_tag }}
+          GH_REPO: ${{ github.repository }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python .github/scripts/build_release_notes.py /tmp/release_body.md
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: release-notes-${{ steps.release_ref.outputs.release_tag }}
+          path: /tmp/release_body.md
+          retention-days: 7
+          if-no-files-found: error
+
+  docker-build:
+    name: Docker Build (${{ matrix.arch }})
+    needs: [pre-release-gate]
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            arch: amd64
+            runner: ubuntu-24.04
+          - platform: linux/arm64
+            arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.pre-release-gate.outputs.release_tag }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.GHCR_REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to Docker Hub
+        if: ${{ env.HAS_DOCKERHUB_TOKEN == 'true' && env.HAS_DOCKERHUB_USERNAME == 'true' }}
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.DOCKERHUB_REGISTRY }}
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build local image for smoke test
+        uses: docker/build-push-action@v6
+        env:
+          DOCKER_BUILD_RECORD_RETENTION_DAYS: '7'
+        with:
+          context: .
+          file: docker/Dockerfile
+          platforms: ${{ matrix.platform }}
+          load: true
+          tags: stock-analysis:release
+          build-args: |
+            DSA_WEB_VERSION=${{ needs.pre-release-gate.outputs.version }}
+            DSA_WEB_REVISION=${{ needs.pre-release-gate.outputs.revision }}
+          cache-from: type=gha,scope=release-docker-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=release-docker-${{ matrix.arch }},ignore-error=true
+
+      - name: Pre-publish docker smoke
+        run: |
+          docker run --rm stock-analysis:release python -c "
+          from src.config import get_config; print('ok-config')
+          from src.storage import DatabaseManager; print('ok-storage')
+          from src.notification import NotificationService; print('ok-notification')
+          from data_provider import DataFetcherManager; print('ok-data-provider')
+          from src.analyzer import GeminiAnalyzer; print('ok-analyzer')
+          from api.app import app; print('ok-api')
+          import futu; print('ok-futu')
+          print('release-smoke-ok')
+          "
+
+      - name: Push GHCR image by digest
+        id: push_ghcr
+        uses: docker/build-push-action@v6
+        env:
+          DOCKER_BUILD_RECORD_RETENTION_DAYS: '7'
+        with:
+          context: .
+          file: docker/Dockerfile
+          platforms: ${{ matrix.platform }}
+          outputs: type=image,name=${{ needs.pre-release-gate.outputs.ghcr_repo }},push-by-digest=true,name-canonical=true,push=true
+          build-args: |
+            DSA_WEB_VERSION=${{ needs.pre-release-gate.outputs.version }}
+            DSA_WEB_REVISION=${{ needs.pre-release-gate.outputs.revision }}
+          cache-from: type=gha,scope=release-docker-${{ matrix.arch }}
+
+      - name: Resolve Docker Hub repository
+        if: ${{ env.HAS_DOCKERHUB_TOKEN == 'true' && env.HAS_DOCKERHUB_USERNAME == 'true' }}
+        run: |
+          DOCKERHUB_REPO="$(printf '%s/%s' "${DOCKERHUB_REGISTRY}" "${DOCKERHUB_IMAGE_NAME}" | tr '[:upper:]' '[:lower:]')"
+          echo "DOCKERHUB_REPO=${DOCKERHUB_REPO}" >> "$GITHUB_ENV"
+
+      - name: Push Docker Hub image by digest
+        if: ${{ env.HAS_DOCKERHUB_TOKEN == 'true' && env.HAS_DOCKERHUB_USERNAME == 'true' }}
+        id: push_dockerhub
+        uses: docker/build-push-action@v6
+        env:
+          DOCKER_BUILD_RECORD_RETENTION_DAYS: '7'
+        with:
+          context: .
+          file: docker/Dockerfile
+          platforms: ${{ matrix.platform }}
+          outputs: type=image,name=${{ env.DOCKERHUB_REPO }},push-by-digest=true,name-canonical=true,push=true
+          build-args: |
+            DSA_WEB_VERSION=${{ needs.pre-release-gate.outputs.version }}
+            DSA_WEB_REVISION=${{ needs.pre-release-gate.outputs.revision }}
+          cache-from: type=gha,scope=release-docker-${{ matrix.arch }}
+
+      - name: Export architecture digest
+        run: |
+          mkdir -p /tmp/digests
+          printf '%s\n' "${{ steps.push_ghcr.outputs.digest }}" > "/tmp/digests/ghcr-${{ matrix.arch }}.txt"
+          if [[ "${{ env.HAS_DOCKERHUB_TOKEN }}" == "true" && "${{ env.HAS_DOCKERHUB_USERNAME }}" == "true" ]]; then
+            printf '%s\n' "${{ steps.push_dockerhub.outputs.digest }}" > "/tmp/digests/dockerhub-${{ matrix.arch }}.txt"
+          fi
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: docker-digests-${{ matrix.arch }}-${{ needs.pre-release-gate.outputs.release_tag }}
+          path: /tmp/digests/*
+          retention-days: 7
+          if-no-files-found: error
+
+  docker-merge-manifest:
+    name: Docker Merge Multi-Arch Manifest & Attest
+    needs: [pre-release-gate, docker-build, desktop-windows, desktop-macos]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: docker-digests-*
+          path: /tmp/digests
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.GHCR_REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to Docker Hub
+        if: ${{ env.HAS_DOCKERHUB_TOKEN == 'true' && env.HAS_DOCKERHUB_USERNAME == 'true' }}
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.DOCKERHUB_REGISTRY }}
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Resolve Docker Hub repository
+        if: ${{ env.HAS_DOCKERHUB_TOKEN == 'true' && env.HAS_DOCKERHUB_USERNAME == 'true' }}
+        run: |
+          DOCKERHUB_REPO="$(printf '%s/%s' "${DOCKERHUB_REGISTRY}" "${DOCKERHUB_IMAGE_NAME}" | tr '[:upper:]' '[:lower:]')"
+          echo "DOCKERHUB_REPO=${DOCKERHUB_REPO}" >> "$GITHUB_ENV"
+
+      - name: Record previous latest digests
+        id: prev_digests
+        run: |
+          set -euo pipefail
+          GHCR_PREV="$(docker buildx imagetools inspect "${{ needs.pre-release-gate.outputs.ghcr_repo }}:latest" --format '{{json .Manifest.Digest}}' 2>/dev/null | tr -d '"' || true)"
+          echo "ghcr_latest=${GHCR_PREV}" >> "$GITHUB_OUTPUT"
+          DOCKERHUB_PREV=""
+          if [[ "${{ env.HAS_DOCKERHUB_TOKEN }}" == "true" && "${{ env.HAS_DOCKERHUB_USERNAME }}" == "true" && -n "${DOCKERHUB_REPO:-}" ]]; then
+            DOCKERHUB_PREV="$(docker buildx imagetools inspect "${DOCKERHUB_REPO}:latest" --format '{{json .Manifest.Digest}}' 2>/dev/null | tr -d '"' || true)"
+          fi
+          echo "dockerhub_latest=${DOCKERHUB_PREV}" >> "$GITHUB_OUTPUT"
+
+      - name: Stage immutable GHCR multi-arch manifest
+        id: merge_ghcr
+        run: |
+          set -euo pipefail
+          AMD64_DIGEST="$(tr -d '[:space:]' < /tmp/digests/ghcr-amd64.txt)"
+          ARM64_DIGEST="$(tr -d '[:space:]' < /tmp/digests/ghcr-arm64.txt)"
+          REPO="${{ needs.pre-release-gate.outputs.ghcr_repo }}"
+          REV_TAG="sha-${{ needs.pre-release-gate.outputs.revision }}"
+          docker buildx imagetools create \
+            -t "${REPO}:${REV_TAG}" \
+            "${REPO}@${AMD64_DIGEST}" \
+            "${REPO}@${ARM64_DIGEST}"
+          MANIFEST_DIGEST="$(docker buildx imagetools inspect "${REPO}:${REV_TAG}" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          echo "digest=${MANIFEST_DIGEST}" >> "$GITHUB_OUTPUT"
+
+      - name: Attest GHCR build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ needs.pre-release-gate.outputs.ghcr_repo }}
+          subject-digest: ${{ steps.merge_ghcr.outputs.digest }}
+          push-to-registry: true
+
+      - name: Publish public GHCR tags
+        run: |
+          set -euo pipefail
+          AMD64_DIGEST="$(tr -d '[:space:]' < /tmp/digests/ghcr-amd64.txt)"
+          ARM64_DIGEST="$(tr -d '[:space:]' < /tmp/digests/ghcr-arm64.txt)"
+          REPO="${{ needs.pre-release-gate.outputs.ghcr_repo }}"
+          RELEASE_TAG="${{ needs.pre-release-gate.outputs.release_tag }}"
+          docker buildx imagetools create \
+            -t "${REPO}:${RELEASE_TAG}" \
+            -t "${REPO}:latest" \
+            "${REPO}@${AMD64_DIGEST}" \
+            "${REPO}@${ARM64_DIGEST}"
+          PUBLISHED_DIGEST="$(docker buildx imagetools inspect "${REPO}:${RELEASE_TAG}" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          if [[ "${PUBLISHED_DIGEST}" != "${{ steps.merge_ghcr.outputs.digest }}" ]]; then
+            echo "ERROR: Published digest ${PUBLISHED_DIGEST} differs from attested digest ${{ steps.merge_ghcr.outputs.digest }}" >&2
+            exit 1
+          fi
+
+      - name: Publish Docker Hub tags
+        if: ${{ env.HAS_DOCKERHUB_TOKEN == 'true' && env.HAS_DOCKERHUB_USERNAME == 'true' }}
+        run: |
+          set -euo pipefail
+          AMD64_DIGEST="$(tr -d '[:space:]' < /tmp/digests/dockerhub-amd64.txt)"
+          ARM64_DIGEST="$(tr -d '[:space:]' < /tmp/digests/dockerhub-arm64.txt)"
+          REPO="${DOCKERHUB_REPO}"
+          docker buildx imagetools create \
+            -t "${REPO}:latest" \
+            -t "${REPO}:${{ needs.pre-release-gate.outputs.release_tag }}" \
+            -t "${REPO}:sha-${{ needs.pre-release-gate.outputs.revision }}" \
+            "${REPO}@${AMD64_DIGEST}" \
+            "${REPO}@${ARM64_DIGEST}"
+
+      - name: Publish Docker summary
+        run: |
+          echo "### Docker release published" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- GHCR: \`${{ needs.pre-release-gate.outputs.ghcr_repo }}:${{ needs.pre-release-gate.outputs.release_tag }}\` (\`${{ steps.merge_ghcr.outputs.digest }}\`)" >> "$GITHUB_STEP_SUMMARY"
+          if [[ -n "${{ steps.prev_digests.outputs.ghcr_latest }}" ]]; then
+            echo "  - Previous GHCR \`latest\`: \`${{ steps.prev_digests.outputs.ghcr_latest }}\` (rollback: \`docker buildx imagetools create -t ${{ needs.pre-release-gate.outputs.ghcr_repo }}:latest ${{ needs.pre-release-gate.outputs.ghcr_repo }}@${{ steps.prev_digests.outputs.ghcr_latest }}\`)" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [[ "${{ env.HAS_DOCKERHUB_TOKEN }}" == "true" && "${{ env.HAS_DOCKERHUB_USERNAME }}" == "true" ]]; then
+            echo "- Docker Hub: \`${DOCKERHUB_REPO}:${{ needs.pre-release-gate.outputs.release_tag }}\`" >> "$GITHUB_STEP_SUMMARY"
+            if [[ -n "${{ steps.prev_digests.outputs.dockerhub_latest }}" ]]; then
+              echo "  - Previous Docker Hub \`latest\`: \`${{ steps.prev_digests.outputs.dockerhub_latest }}\` (rollback: \`docker buildx imagetools create -t ${DOCKERHUB_REPO}:latest ${DOCKERHUB_REPO}@${{ steps.prev_digests.outputs.dockerhub_latest }}\`)" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          else
+            echo "- Docker Hub: skipped (missing \`DOCKERHUB_TOKEN\` / \`DOCKERHUB_USERNAME\` secret)" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  desktop-windows:
+    name: Desktop Build (Windows)
+    needs: [pre-release-gate]
+    runs-on: windows-latest
+    env:
+      RELEASE_TAG: ${{ needs.pre-release-gate.outputs.release_tag }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.pre-release-gate.outputs.release_tag }}
+          fetch-depth: 0
+
+      - name: Export version environment
+        shell: bash
+        run: |
+          echo "DSA_WEB_VERSION=${{ needs.pre-release-gate.outputs.version }}" >> "$GITHUB_ENV"
+          echo "DSA_WEB_REVISION=${{ needs.pre-release-gate.outputs.revision }}" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: |
+            apps/dsa-web/package-lock.json
+            apps/dsa-desktop/package-lock.json
+
+      - name: Sync desktop app version from release tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          export VERSION="${{ needs.pre-release-gate.outputs.version }}"
+          cd apps/dsa-desktop
+          npm version "${VERSION}" --no-git-tag-version --allow-same-version
+          node -e "const pkg = require('./package.json'); if (pkg.version !== process.env.VERSION) throw new Error('package version mismatch: ' + pkg.version); console.log('desktop version:', pkg.version);"
+
+      - name: Build desktop package (Windows)
+        shell: pwsh
+        env:
+          DSA_SKIP_DEVMODE_CHECK: 'true'
+        run: |
+          powershell -ExecutionPolicy Bypass -File scripts/build-all.ps1
+
+      - name: Prepare release artifact (Windows)
+        shell: pwsh
+        run: |
+          $expectedInstallerName = "daily-stock-analysis-windows-installer-$env:RELEASE_TAG.exe"
+          $installerPath = Join-Path 'apps/dsa-desktop/dist' $expectedInstallerName
+          $installerExe = Get-Item -Path $installerPath -ErrorAction SilentlyContinue
+          if (-not $installerExe) {
+            throw "No expected NSIS installer found under apps/dsa-desktop/dist: $expectedInstallerName"
+          }
+          $winUnpacked = 'apps/dsa-desktop/dist/win-unpacked'
+          if (-not (Test-Path $winUnpacked)) {
+            throw 'No win-unpacked directory found under apps/dsa-desktop/dist.'
+          }
+          New-Item -ItemType Directory -Path 'dist/release-assets' -Force | Out-Null
+          $exeTarget = "dist/release-assets/$expectedInstallerName"
+          $zipTarget = "dist/release-assets/daily-stock-analysis-windows-noinstall-$env:RELEASE_TAG.zip"
+          Copy-Item -Path $installerExe.FullName -Destination $exeTarget -Force
+          Compress-Archive -Path $winUnpacked -DestinationPath $zipTarget -CompressionLevel Optimal -Force
+          Get-ChildItem -Path 'apps/dsa-desktop/dist' -File |
+            Where-Object { $_.Name -eq 'latest.yml' -or $_.Name -like '*.blockmap' } |
+            ForEach-Object {
+              Copy-Item -Path $_.FullName -Destination "dist/release-assets/$($_.Name)" -Force
+            }
+          if (-not (Test-Path 'dist/release-assets/latest.yml')) {
+            throw 'No latest.yml found under dist/release-assets.'
+          }
+          $expectedVersion = $env:RELEASE_TAG.TrimStart('v')
+          $versionPattern = '^version:\s*[''"]?' + [regex]::Escape($expectedVersion) + '[''"]?\s*$'
+          if (-not (Select-String -Path 'dist/release-assets/latest.yml' -Pattern $versionPattern)) {
+            throw "latest.yml version does not match release tag $env:RELEASE_TAG."
+          }
+          $latestText = Get-Content -Path 'dist/release-assets/latest.yml' -Raw
+          $pathMatch = [regex]::Match($latestText, '(?m)^\s*path:\s*[''"]?([^''"\r\n]+)[''"]?\s*$')
+          if (-not $pathMatch.Success) {
+            throw 'latest.yml missing path field.'
+          }
+          $latestInstallerPath = $pathMatch.Groups[1].Value.Trim()
+          if ($latestInstallerPath -ne $expectedInstallerName) {
+            throw "latest.yml path ($latestInstallerPath) does not match release installer $expectedInstallerName."
+          }
+          $urlMatch = [regex]::Match($latestText, '(?m)^\s*-\s*url:\s*[''"]?([^''"\r\n]+)[''"]?\s*$')
+          if ($urlMatch.Success -and $urlMatch.Groups[1].Value.Trim() -ne $expectedInstallerName) {
+            throw "latest.yml file url ($($urlMatch.Groups[1].Value.Trim())) does not match release installer $expectedInstallerName."
+          }
+          $expectedBlockmapName = "$expectedInstallerName.blockmap"
+          if (-not (Get-ChildItem -Path 'dist/release-assets' -Filter $expectedBlockmapName -File)) {
+            throw "No matching blockmap found under dist/release-assets: $expectedBlockmapName"
+          }
+          Get-ChildItem -Path 'dist/release-assets' -File | Sort-Object Name | Format-Table Name, Length
+
+      - uses: actions/upload-artifact@v6
+        with:
+          retention-days: 7
+          name: desktop-windows-${{ env.RELEASE_TAG }}
+          path: dist/release-assets/*
+          if-no-files-found: error
+
+  desktop-macos:
+    name: Desktop Build (macOS ${{ matrix.arch }})
+    needs: [pre-release-gate]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: macos-15-intel
+          - arch: arm64
+            runner: macos-15
+    runs-on: ${{ matrix.runner }}
+    env:
+      RELEASE_TAG: ${{ needs.pre-release-gate.outputs.release_tag }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.pre-release-gate.outputs.release_tag }}
+          fetch-depth: 0
+
+      - name: Export version environment
+        shell: bash
+        run: |
+          echo "DSA_WEB_VERSION=${{ needs.pre-release-gate.outputs.version }}" >> "$GITHUB_ENV"
+          echo "DSA_WEB_REVISION=${{ needs.pre-release-gate.outputs.revision }}" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: |
+            apps/dsa-web/package-lock.json
+            apps/dsa-desktop/package-lock.json
+
+      - name: Sync desktop app version from release tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          export VERSION="${{ needs.pre-release-gate.outputs.version }}"
+          cd apps/dsa-desktop
+          npm version "${VERSION}" --no-git-tag-version --allow-same-version
+          node -e "const pkg = require('./package.json'); if (pkg.version !== process.env.VERSION) throw new Error('package version mismatch: ' + pkg.version); console.log('desktop version:', pkg.version);"
+
+      - name: Cache Electron binaries
+        uses: actions/cache@v5
+        with:
+          path: ~/Library/Caches/electron
+          key: electron-macos-${{ matrix.arch }}-${{ hashFiles('apps/dsa-desktop/package-lock.json') }}
+          restore-keys: |
+            electron-macos-${{ matrix.arch }}-
+
+      - name: Disable Spotlight indexing (prevents hdiutil Resource busy)
+        run: sudo mdutil -a -i off
+
+      - name: Build desktop package (macOS)
+        env:
+          DSA_MAC_ARCH: ${{ matrix.arch }}
+        run: bash scripts/build-all-macos.sh
+
+      - name: Prepare release artifact (macOS)
+        shell: bash
+        run: |
+          set -euo pipefail
+          dmg_file="$(ls -t apps/dsa-desktop/dist/*${{ matrix.arch }}*.dmg 2>/dev/null | head -n 1 || true)"
+          if [[ -z "${dmg_file}" ]]; then
+            dmg_file="$(ls -t apps/dsa-desktop/dist/*.dmg | head -n 1)"
+          fi
+          test -n "$dmg_file"
+          mkdir -p dist/release-assets
+          cp "$dmg_file" "dist/release-assets/daily-stock-analysis-macos-${{ matrix.arch }}-${RELEASE_TAG}.dmg"
+
+      - uses: actions/upload-artifact@v6
+        with:
+          retention-days: 7
+          name: desktop-macos-${{ matrix.arch }}-${{ env.RELEASE_TAG }}
+          path: dist/release-assets/*.dmg
+          if-no-files-found: error
+
+  publish-release:
+    name: Publish Atomic GitHub Release
+    runs-on: ubuntu-24.04
+    needs: [pre-release-gate, docker-merge-manifest, desktop-windows, desktop-macos]
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ needs.pre-release-gate.outputs.release_tag }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.pre-release-gate.outputs.release_tag }}
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: release-notes-${{ env.RELEASE_TAG }}
+          path: release-notes
+
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: desktop-*
+          path: dist/release-assets
+          merge-multiple: true
+
+      - name: Generate SHA256SUMS.txt
+        run: |
+          set -euo pipefail
+          cd dist/release-assets
+          sha256sum * > SHA256SUMS.txt
+          ls -lah
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: ${{ env.RELEASE_TAG }}
+          body_path: release-notes/release_body.md
+          draft: false
+          prerelease: false
+          generate_release_notes: false
+          files: dist/release-assets/*
+          fail_on_unmatched_files: true

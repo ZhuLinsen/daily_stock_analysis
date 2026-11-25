@@ -1270,8 +1270,8 @@ describe('StockScreeningPage', () => {
     render(<StockScreeningPage />);
 
     await waitFor(() => expect(getScreenTask).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText('选股任务仍在后台运行，状态轮询暂时超时，将自动重试。')).toBeInTheDocument();
     expect(screen.getByText('选股运行中')).toBeInTheDocument();
-    expect(screen.getByText('选股任务仍在后台运行，状态轮询暂时超时，将自动重试。')).toBeInTheDocument();
     expect(screen.queryByText(/连接上游服务超时/)).not.toBeInTheDocument();
     expect(window.sessionStorage.getItem('dsa.screening.activeScreenTask.v1')).toContain('screen-task-1');
   });
