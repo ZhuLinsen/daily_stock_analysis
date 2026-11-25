@@ -424,6 +424,41 @@ class TestPayloadStructuredFields:
         # OR-COR-91e5bc73：仅有当日行情、无任何均线输入，模型回传的 ma_status 必须丢弃
         assert "ma_status" not in payload["indices"][0], payload["indices"][0]
 
+    def test_appendix_only_response_keeps_parsed_fields_with_template_body(self):
+        """OR-COR-6c30b83b：模型只返回有效附录（无正文/章节标题）时，不得丢弃整份复盘。
+
+        修复前：generate_market_review 将非空模型响应判为成功，附录剥离后正文为空；
+        美股无行业排行兜底块、指数表也找不到可注入的标题，外层编排（market_review.py
+        ``if review_report:`` / analysis.py ``if not report: raise``）随之丢弃整份结果，
+        已解析的 summary 等结构化字段一并丢失。修复后回填模板报告并保留已解析字段。
+        """
+        appendix = json.dumps(
+            {
+                "summary": {
+                    "temperature": 42,
+                    "market_status": "appendix-only",
+                    "position_advice": "1-2成",
+                    "core_conclusion": "指数缩量整理",
+                },
+                "indices": [{"code": "SPX", "comment": "缩量整理"}],
+            },
+            ensure_ascii=False,
+        )
+        ma = _make_analyzer(region="us", profile=US_PROFILE, report_text=f"```json\n{appendix}\n```")
+        ma.config.report_language = "en"
+        overview = MarketOverview(
+            date="2026-06-05",
+            indices=[MarketIndex(code="SPX", name="S&P 500", current=5200.0, change_pct=0.6)],
+        )
+        ma.get_market_overview = MagicMock(return_value=overview)
+
+        result = ma._run_daily_review_parts()
+
+        assert result.report.strip(), "附录剥离后正文为空，整份复盘被丢弃"
+        assert result.structured_payload["summary"]["market_status"] == "appendix-only", result.structured_payload.get("summary")
+        assert result.structured_payload["summary"]["temperature"] == 42
+        assert result.structured_payload["indices"][0]["comment"] == "缩量整理"
+
 
 class TestIndexCommentMapping:
     """OR-COR-f4725a90：Prompt 必须携带指数内部代码；消费端兼容行情符号别名与名称回退。

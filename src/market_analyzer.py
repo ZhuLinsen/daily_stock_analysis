@@ -2665,6 +2665,15 @@ Market conditions can change quickly. The data above is for reference only and d
         report = self.generate_market_review(overview, news)
         # Issue #1584: 提取并剥离 LLM 结构化附录；失败时保持原报告不变（fail-open）。
         report, llm_structured = self._extract_structured_market_review_appendix(report)
+        # OR-COR-6c30b83b：模型只返回有效附录时正文为空，外层编排（正文为空即不保存/
+        # 不推送/直接报错）会连已解析的附录字段一起丢弃。回填模板报告兜底，
+        # llm_structured 继续往下传，保证已解析的结构化字段进入最终结果。
+        if not (report or "").strip():
+            logger.warning(
+                "[Market] %s action=generate_review status=fallback_template reason=appendix_only_response",
+                self._log_context(),
+            )
+            report = self._with_tw_index_coverage(self._generate_template_review(overview, news), overview)
         snapshot = self.build_market_light_snapshot(overview) if self._supports_market_light() else None
         structured_payload = self.build_market_review_payload(
             overview,
