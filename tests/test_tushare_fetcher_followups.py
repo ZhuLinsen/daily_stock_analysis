@@ -291,13 +291,15 @@ class TestTushareFetcherFollowUps(unittest.TestCase):
             [
                 {"ts_code": "600519.SH", "close": 1520.0, "pre_close": 1500.0, "amount": 1000.0},
                 {"ts_code": "300750.SZ", "close": "", "pre_close": "-", "amount": 0.0},
-                {"ts_code": "000001.SZ", "close": 9.9, "pre_close": 11.0, "amount": None},
+                {"ts_code": "000002.SZ", "close": "", "pre_close": "", "amount": None},
+                {"ts_code": "000001.SZ", "close": 9.9, "pre_close": 11.0, "amount": 500.0},
             ]
         )
         fetcher._api.stock_basic.return_value = pd.DataFrame(
             [
                 {"ts_code": "600519.SH", "name": "贵州茅台"},
                 {"ts_code": "000001.SZ", "name": "平安银行"},
+                {"ts_code": "000002.SZ", "name": "万科A"},
                 {"ts_code": "300750.SZ", "name": "宁德时代"},
             ]
         )
@@ -312,7 +314,7 @@ class TestTushareFetcherFollowUps(unittest.TestCase):
         self.assertEqual(stats["up_count"], 1)
         self.assertEqual(stats["down_count"], 1)
         self.assertEqual(stats["limit_down_count"], 1)
-        self.assertAlmostEqual(stats["total_amount"], 1000.0 * 1000 / 1e8)
+        self.assertAlmostEqual(stats["total_amount"], 1500.0 * 1000 / 1e8)
 
         # Case 2b: active traded stock (amount > 0) missing from partial stock_basic must fail closed (OR-COR-63ba8fc3)
         fetcher._api.daily.return_value = pd.DataFrame(
@@ -592,3 +594,103 @@ class TestTushareFetcherFollowUps(unittest.TestCase):
             fetcher, "_check_rate_limit"
         ):
             self.assertIsNone(fetcher.get_sector_rankings(n=1))
+
+    def test_get_market_stats_fails_closed_on_missing_or_nonfinite_amount_and_falls_back(self) -> None:
+        """OR-COR-91ef0fcb: active rows with missing/unparseable/non-finite amount must return None so backup runs."""
+        from data_provider.base import BaseFetcher, DataFetcherManager
+
+        fetcher = self._make_fetcher()
+        fetcher._api.trade_cal.return_value = pd.DataFrame(
+            {"cal_date": ["20260317", "20260316"], "is_open": [1, 1]}
+        )
+        fetcher._api.stock_basic.return_value = pd.DataFrame(
+            [
+                {"ts_code": "600519.SH", "name": "贵州茅台"},
+                {"ts_code": "000001.SZ", "name": "平安银行"},
+                {"ts_code": "300750.SZ", "name": "宁德时代"},
+            ]
+        )
+
+        corrupt_active_amounts = [
+            None,
+            float("nan"),
+            "--",
+            "bad",
+            float("inf"),
+            float("-inf"),
+            "inf",
+            "-inf",
+            -10.0,
+        ]
+        for bad_amount in corrupt_active_amounts:
+            with self.subTest(bad_amount=bad_amount):
+                fetcher._api.daily.return_value = pd.DataFrame(
+                    [
+                        {"ts_code": "600519.SH", "close": 1520.0, "pre_close": 1500.0, "amount": 1000.0},
+                        {"ts_code": "000001.SZ", "close": 9.9, "pre_close": 11.0, "amount": bad_amount},
+                    ]
+                )
+                with patch.object(fetcher, "_get_china_now", return_value=datetime(2026, 3, 17, 20, 0)), patch.object(
+                    fetcher, "_check_rate_limit"
+                ):
+                    self.assertIsNone(fetcher.get_market_stats())
+
+                # Realtime (_calc_market_stats direct) path must also reject the same corrupt values.
+                rt_df = pd.DataFrame(
+                    [
+                        {"ts_code": "600519.SH", "name": "贵州茅台", "close": 1520.0, "pre_close": 1500.0, "amount": 1e6},
+                        {"ts_code": "000001.SZ", "name": "平安银行", "close": 9.9, "pre_close": 11.0, "amount": bad_amount},
+                    ]
+                )
+                self.assertIsNone(fetcher._calc_market_stats(rt_df))
+
+        # Non-finite or corrupt amount even on a blank-price row must fail closed.
+        for bad_suspended_amount in (float("inf"), float("-inf"), "inf", "-inf", "--"):
+            with self.subTest(bad_suspended_amount=bad_suspended_amount):
+                fetcher._api.daily.return_value = pd.DataFrame(
+                    [
+                        {"ts_code": "600519.SH", "close": 1520.0, "pre_close": 1500.0, "amount": 1000.0},
+                        {"ts_code": "300750.SZ", "close": "", "pre_close": "-", "amount": bad_suspended_amount},
+                    ]
+                )
+                with patch.object(fetcher, "_get_china_now", return_value=datetime(2026, 3, 17, 20, 0)), patch.object(
+                    fetcher, "_check_rate_limit"
+                ):
+                    self.assertIsNone(fetcher.get_market_stats())
+
+        # DataFetcherManager must fall back to a complete backup source when Tushare fails closed.
+        class _BackupMarketStatsFetcher(BaseFetcher):
+            name = "BackupFetcher"
+            priority = 3
+
+            def _fetch_raw_data(self, stock_code: str, start_date: str, end_date: str) -> pd.DataFrame:
+                return pd.DataFrame()
+
+            def _normalize_data(self, df: pd.DataFrame, stock_code: str) -> pd.DataFrame:
+                return df
+
+            def get_market_stats(self, *, allow_cache: bool = True):
+                return {
+                    "up_count": 3000,
+                    "down_count": 2000,
+                    "flat_count": 100,
+                    "limit_up_count": 50,
+                    "limit_down_count": 10,
+                    "total_amount": 9500.5,
+                }
+
+        fetcher._api.daily.return_value = pd.DataFrame(
+            [
+                {"ts_code": "600519.SH", "close": 1520.0, "pre_close": 1500.0, "amount": 1000.0},
+                {"ts_code": "000001.SZ", "close": 9.9, "pre_close": 11.0, "amount": None},
+            ]
+        )
+        manager = DataFetcherManager(fetchers=[fetcher, _BackupMarketStatsFetcher()])
+        with patch.object(manager, "_get_tickflow_fetcher", return_value=None), patch.object(
+            fetcher, "_get_china_now", return_value=datetime(2026, 3, 17, 20, 0)
+        ), patch.object(fetcher, "_check_rate_limit"):
+            resolved = manager.get_market_stats(include_provider=True)
+
+        self.assertEqual(resolved.get("provider"), "BackupFetcher")
+        self.assertEqual(resolved.get("up_count"), 3000)
+        self.assertAlmostEqual(resolved.get("total_amount"), 9500.5)

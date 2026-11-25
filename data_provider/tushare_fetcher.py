@@ -1299,9 +1299,14 @@ class TushareFetcher(BaseFetcher):
                         df_basic.columns = [col.lower() for col in df_basic.columns]
                         if 'ts_code' in df_basic.columns and 'ts_code' in df.columns:
                             df = pd.merge(df, df_basic, on='ts_code', how='left')
-                    # 将 daily的 amount 列的值乘以 1000 来和其他数据源保持一致
+                    # 将 daily 的 amount 列的值乘以 1000 来和其他数据源保持一致；
+                    # 保留无法解析的非空原始值，避免将损坏数据静默转为 NaN 伪装成停牌空值
                     if 'amount' in df.columns:
-                        df['amount'] = pd.to_numeric(df['amount'], errors='coerce') * 1000
+                        numeric_amounts = pd.to_numeric(df['amount'], errors='coerce')
+                        df['amount'] = [
+                            val * 1000 if pd.notna(val) else raw
+                            for val, raw in zip(numeric_amounts, df['amount'])
+                        ]
 
                     return self._calc_market_stats(df)
                 except TusharePermissionError:
@@ -1321,6 +1326,7 @@ class TushareFetcher(BaseFetcher):
             df: pd.DataFrame,
             ) -> Optional[Dict[str, Any]]:
             """从行情 DataFrame 计算涨跌统计。"""
+            import math
             import numpy as np
             from .realtime_types import safe_float
 
@@ -1353,6 +1359,7 @@ class TushareFetcher(BaseFetcher):
             down_count = 0
             flat_count = 0
             valid_rows = 0
+            total_amount = 0.0
 
             for code, name, raw_close, raw_pre_close, raw_amount in zip(
                 codes, names, df[close_col], df[pre_close_col], amounts
@@ -1361,25 +1368,30 @@ class TushareFetcher(BaseFetcher):
                 pre_close = safe_float(raw_pre_close)
                 amount_val = safe_float(raw_amount)
 
-                if amount_val is not None and amount_val < 0:
+                if amount_val is not None and (not math.isfinite(amount_val) or amount_val < 0):
                     return None
 
-                # Genuine suspended stocks have 0 turnover or standard blank/'-' quotes without positive turnover.
+                # Genuine suspended stocks have 0 turnover or standard blank/'-' quotes without turnover.
                 if amount_val == 0:
                     continue
 
                 is_blank_close = pd.isna(raw_close) or str(raw_close).strip() in {"", "-"}
                 is_blank_pre_close = pd.isna(raw_pre_close) or str(raw_pre_close).strip() in {"", "-"}
-                if amount_val is None and (is_blank_close or is_blank_pre_close):
+                is_blank_amount = pd.isna(raw_amount) or str(raw_amount).strip() in {"", "-"}
+                if amount_val is None and is_blank_amount and (is_blank_close or is_blank_pre_close):
                     continue
 
-                # Active/traded or corrupted rows must have valid prices and stock_basic identity;
-                # fail closed (return None) so DataFetcherManager falls back to complete market stats.
+                # Active/traded or corrupted rows must have valid finite prices, finite positive
+                # turnover, and stock_basic identity; fail closed (return None) so
+                # DataFetcherManager falls back to complete market stats.
                 if (
                     current_price is None
+                    or not math.isfinite(current_price)
                     or current_price <= 0
                     or pre_close is None
+                    or not math.isfinite(pre_close)
                     or pre_close <= 0
+                    or amount_val is None
                 ):
                     return None
 
@@ -1410,6 +1422,7 @@ class TushareFetcher(BaseFetcher):
 
                 # C. 精确比对
                 valid_rows += 1
+                total_amount += amount_val
                 is_limit_up = abs(current_price - limit_up_price) <= limit_up_price_Tolerance
                 is_limit_down = abs(current_price - limit_down_price) <= limit_down_price_Tolerance
 
@@ -1425,12 +1438,7 @@ class TushareFetcher(BaseFetcher):
                 else:
                     flat_count += 1
                     
-            if valid_rows == 0:
-                return None
-
-            numeric_amount = pd.to_numeric(df[amount_col], errors='coerce')
-            total_amount = numeric_amount.sum(min_count=1)
-            if pd.isna(total_amount):
+            if valid_rows == 0 or not math.isfinite(total_amount):
                 return None
 
             # 统计数量
