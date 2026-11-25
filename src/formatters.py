@@ -476,13 +476,54 @@ def _is_markdown_table_separator(row: str) -> bool:
     return bool(re.match(r'^\s*\|?\s*[:-]+\s*(\|\s*[:-]+\s*)+\|?\s*$', row))
 
 
+def _split_unescaped_pipes(text: str) -> List[str]:
+    """Split a stripped GFM table row on unescaped pipes and unescape \\| within cells."""
+    cells: List[str] = []
+    current: List[str] = []
+    i = 0
+    n = len(text)
+    while i < n:
+        if text[i] == '\\':
+            run = 1
+            while i + run < n and text[i + run] == '\\':
+                run += 1
+            if i + run < n and text[i + run] == '|':
+                if run % 2 == 1:
+                    current.append('\\' * (run // 2) + '|')
+                    i += run + 1
+                    continue
+                current.append('\\' * (run // 2))
+                cells.append(''.join(current))
+                current = []
+                i += run + 1
+                continue
+            current.append(text[i:i + run])
+            i += run
+            continue
+        if text[i] == '|':
+            cells.append(''.join(current))
+            current = []
+            i += 1
+            continue
+        current.append(text[i])
+        i += 1
+    cells.append(''.join(current))
+    return cells
+
+
 def _parse_markdown_table_row(row: str) -> List[str]:
     stripped = row.strip()
     if stripped.startswith('|'):
         stripped = stripped[1:]
     if stripped.endswith('|'):
-        stripped = stripped[:-1]
-    return [c.strip() for c in stripped.split('|')]
+        backslashes = 0
+        idx = len(stripped) - 2
+        while idx >= 0 and stripped[idx] == '\\':
+            backslashes += 1
+            idx -= 1
+        if backslashes % 2 == 0:
+            stripped = stripped[:-1]
+    return [c.strip() for c in _split_unescaped_pipes(stripped)]
 
 
 def _strip_inline_markdown(text: str) -> str:

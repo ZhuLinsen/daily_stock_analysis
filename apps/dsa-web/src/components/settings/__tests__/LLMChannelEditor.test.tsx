@@ -2929,4 +2929,254 @@ describe('LLMChannelEditor', () => {
       expect(screen.queryByLabelText('stale-openai')).not.toBeInTheDocument();
     });
   });
+
+  it('keeps remaining channel test and expanded state isolated when another channel is deleted', async () => {
+    let resolveOpenAITest!: (value: unknown) => void;
+    const pendingOpenAITest = new Promise((resolve) => {
+      resolveOpenAITest = resolve;
+    });
+
+    testLLMChannel
+      .mockImplementationOnce(() => pendingOpenAITest)
+      .mockResolvedValueOnce({
+        success: true,
+        resolvedModel: 'qwen-max',
+        latencyMs: 42,
+      });
+
+    render(
+      <LLMChannelEditor
+        items={[
+          { key: 'LLM_CHANNELS', value: 'openai,dashscope' },
+          { key: 'LLM_OPENAI_PROTOCOL', value: 'openai' },
+          { key: 'LLM_OPENAI_BASE_URL', value: 'https://api.openai.com/v1' },
+          { key: 'LLM_OPENAI_ENABLED', value: 'true' },
+          { key: 'LLM_OPENAI_API_KEY', value: 'sk-openai' },
+          { key: 'LLM_OPENAI_MODELS', value: 'gpt-4o' },
+          { key: 'LLM_DASHSCOPE_PROTOCOL', value: 'openai' },
+          { key: 'LLM_DASHSCOPE_BASE_URL', value: 'https://dashscope.aliyuncs.com/compatible-mode/v1' },
+          { key: 'LLM_DASHSCOPE_ENABLED', value: 'true' },
+          { key: 'LLM_DASHSCOPE_API_KEY', value: 'sk-dash' },
+          { key: 'LLM_DASHSCOPE_MODELS', value: 'qwen-max' },
+        ]}
+        configVersion="v1"
+        maskToken="******"
+        onSaved={() => {}}
+      />,
+    );
+
+    const openaiHeader = screen.getByRole('button', { name: /OpenAI 官方/i });
+    const dashHeader = screen.getByRole('button', { name: /通义千问/i });
+    fireEvent.click(openaiHeader);
+    fireEvent.click(dashHeader);
+
+    const testButtons = screen.getAllByRole('button', { name: '测试连接' });
+    expect(testButtons).toHaveLength(2);
+
+    fireEvent.click(testButtons[0]);
+    fireEvent.click(testButtons[1]);
+
+    expect(await screen.findByText('连接成功 · qwen-max · 42 ms')).toBeInTheDocument();
+
+    fireEvent.click(within(openaiHeader).getByRole('button', { name: '✕' }));
+
+    expect(screen.queryByRole('button', { name: /OpenAI 官方/i })).not.toBeInTheDocument();
+    expect(screen.getByText('连接成功 · qwen-max · 42 ms')).toBeInTheDocument();
+    expect(screen.getAllByRole('button', { name: '测试连接' })).toHaveLength(1);
+
+    resolveOpenAITest({
+      success: false,
+      message: 'openai timed out',
+      errorCode: 'timeout',
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText('连接成功 · qwen-max · 42 ms')).toBeInTheDocument();
+      expect(screen.queryByText(/openai timed out/i)).not.toBeInTheDocument();
+      expect(screen.queryByText('连接失败')).not.toBeInTheDocument();
+    });
+  });
+
+  it('ignores stale testLLMChannel settlement after editing a channel', async () => {
+    let resolvePendingTest!: (value: unknown) => void;
+    const pendingTest = new Promise((resolve) => {
+      resolvePendingTest = resolve;
+    });
+
+    testLLMChannel.mockImplementationOnce(() => pendingTest);
+
+    render(
+      <LLMChannelEditor
+        items={[
+          { key: 'LLM_CHANNELS', value: 'deepseek' },
+          { key: 'LLM_DEEPSEEK_PROTOCOL', value: 'deepseek' },
+          { key: 'LLM_DEEPSEEK_BASE_URL', value: 'https://api.deepseek.com/v1' },
+          { key: 'LLM_DEEPSEEK_ENABLED', value: 'true' },
+          { key: 'LLM_DEEPSEEK_API_KEY', value: 'sk-ds' },
+          { key: 'LLM_DEEPSEEK_MODELS', value: 'deepseek-chat' },
+        ]}
+        configVersion="v1"
+        maskToken="******"
+        onSaved={() => {}}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /DeepSeek 官方/i }));
+    fireEvent.click(screen.getByRole('button', { name: '测试连接' }));
+    expect(screen.getByRole('button', { name: '测试中...' })).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('Base URL'), {
+      target: { value: 'https://proxy.example.com/v1' },
+    });
+
+    expect(screen.queryByText('测试中...')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '测试连接' })).toBeInTheDocument();
+
+    resolvePendingTest({
+      success: true,
+      resolvedModel: 'stale-deepseek',
+      latencyMs: 12,
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByText(/stale-deepseek/i)).not.toBeInTheDocument();
+      expect(screen.queryByText('连接正常')).not.toBeInTheDocument();
+    });
+  });
+
+  it('preserves existing channels test and discovery states when adding a channel', async () => {
+    testLLMChannel.mockResolvedValueOnce({
+      success: true,
+      resolvedModel: 'deepseek-chat',
+      latencyMs: 33,
+    });
+    discoverLLMChannelModels.mockResolvedValueOnce({
+      success: true,
+      models: ['deepseek-chat', 'deepseek-reasoner'],
+      latencyMs: 44,
+    });
+
+    render(
+      <LLMChannelEditor
+        items={[
+          { key: 'LLM_CHANNELS', value: 'deepseek' },
+          { key: 'LLM_DEEPSEEK_PROTOCOL', value: 'deepseek' },
+          { key: 'LLM_DEEPSEEK_BASE_URL', value: 'https://api.deepseek.com/v1' },
+          { key: 'LLM_DEEPSEEK_ENABLED', value: 'true' },
+          { key: 'LLM_DEEPSEEK_API_KEY', value: 'sk-ds' },
+          { key: 'LLM_DEEPSEEK_MODELS', value: 'deepseek-chat' },
+        ]}
+        configVersion="v1"
+        maskToken="******"
+        onSaved={() => {}}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /DeepSeek 官方/i }));
+    fireEvent.click(screen.getByRole('button', { name: '测试连接' }));
+    fireEvent.click(screen.getByRole('button', { name: '获取模型' }));
+
+    expect(await screen.findByText('连接成功 · deepseek-chat · 33 ms')).toBeInTheDocument();
+    expect(await screen.findByText('已获取 2 个模型 · 44 ms')).toBeInTheDocument();
+
+    const presetSelect = screen.getAllByRole('combobox').find((element) => (
+      Array.from((element as HTMLSelectElement).options).some((option) => option.value === 'minimax')
+    ));
+    expect(presetSelect).toBeDefined();
+    fireEvent.change(presetSelect!, { target: { value: 'minimax' } });
+    fireEvent.click(screen.getByRole('button', { name: '+ 添加渠道' }));
+
+    await screen.findByRole('button', { name: /MiniMax 官方/i });
+    expect(screen.getByText('连接成功 · deepseek-chat · 33 ms')).toBeInTheDocument();
+    expect(screen.getByText('已获取 2 个模型 · 44 ms')).toBeInTheDocument();
+    expect(screen.getByLabelText('deepseek-reasoner')).toBeInTheDocument();
+    expect(screen.getAllByRole('button', { name: '测试连接' })).toHaveLength(2);
+    expect(screen.getAllByLabelText('Base URL').map((input) => (input as HTMLInputElement).value)).toEqual([
+      'https://api.deepseek.com/v1',
+      'https://api.minimax.io/v1',
+    ]);
+  });
+
+  it('guards concurrent save re-entry and ignores post-unmount async settlements', async () => {
+    let resolveSave!: (value: unknown) => void;
+    let resolveTest!: (value: unknown) => void;
+    let rejectDiscovery!: (reason?: unknown) => void;
+    const pendingSave = new Promise((resolve) => {
+      resolveSave = resolve;
+    });
+    const pendingTest = new Promise((resolve) => {
+      resolveTest = resolve;
+    });
+    const pendingDiscovery = new Promise((_resolve, reject) => {
+      rejectDiscovery = reject;
+    });
+
+    update.mockImplementationOnce(() => pendingSave);
+    testLLMChannel.mockImplementationOnce(() => pendingTest);
+    discoverLLMChannelModels.mockImplementationOnce(() => pendingDiscovery);
+
+    const onSaved = vi.fn();
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const { unmount } = render(
+        <LLMChannelEditor
+          items={[
+            { key: 'LLM_CHANNELS', value: 'deepseek' },
+            { key: 'LLM_DEEPSEEK_PROTOCOL', value: 'deepseek' },
+            { key: 'LLM_DEEPSEEK_BASE_URL', value: 'https://api.deepseek.com/v1' },
+            { key: 'LLM_DEEPSEEK_ENABLED', value: 'true' },
+            { key: 'LLM_DEEPSEEK_API_KEY', value: 'sk-ds' },
+            { key: 'LLM_DEEPSEEK_MODELS', value: 'deepseek-chat' },
+          ]}
+          configVersion="v1"
+          maskToken="******"
+          onSaved={onSaved}
+        />,
+      );
+
+      fireEvent.click(screen.getByRole('button', { name: /DeepSeek 官方/i }));
+      fireEvent.change(screen.getByLabelText('模型（逗号分隔）'), {
+        target: { value: 'deepseek-chat,deepseek-reasoner' },
+      });
+
+      fireEvent.click(screen.getByRole('button', { name: '测试连接' }));
+      fireEvent.click(screen.getByRole('button', { name: '获取模型' }));
+
+      const saveButton = screen.getByRole('button', { name: '保存 AI 配置' });
+      fireEvent.click(saveButton);
+      fireEvent.click(saveButton);
+
+      expect(update).toHaveBeenCalledTimes(1);
+
+      unmount();
+
+      await act(async () => {
+        resolveSave({
+          success: true,
+          configVersion: 'v2',
+          appliedCount: 1,
+          skippedMaskedCount: 0,
+          reloadTriggered: true,
+          updatedKeys: ['LLM_DEEPSEEK_MODELS'],
+          warnings: [],
+        });
+        resolveTest({
+          success: true,
+          resolvedModel: 'deepseek-chat',
+          latencyMs: 10,
+        });
+        rejectDiscovery(new Error('network aborted after unmount'));
+        await Promise.resolve();
+      });
+
+      expect(onSaved).toHaveBeenCalledTimes(1);
+      expect(onSaved).toHaveBeenCalledWith(expect.arrayContaining([
+        expect.objectContaining({ key: 'LLM_CHANNELS', value: 'deepseek' }),
+      ]));
+      expect(consoleErrorSpy).not.toHaveBeenCalled();
+    } finally {
+      consoleErrorSpy.mockRestore();
+    }
+  });
 });

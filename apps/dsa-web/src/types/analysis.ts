@@ -262,6 +262,12 @@ export interface MarketReviewIndex {
   volume?: number;
   amount?: number;
   amplitude?: number;
+  /**
+   * Optional one-line comment from the LLM appendix; absent on legacy records.
+   * Note: there is deliberately no MA-status field — index quotes carry no
+   * moving-average input, so a model-provided standing would be unverifiable.
+   */
+  comment?: string | null;
 }
 
 export interface MarketReviewBreadth {
@@ -272,6 +278,37 @@ export interface MarketReviewBreadth {
   limitDownCount?: number;
   totalAmount?: number;
   turnoverUnit?: string;
+  /** Optional deterministic/LLM breadth-vs-index divergence diagnosis. */
+  divergenceDiagnosis?: string | null;
+}
+
+/** Issue #1584: one-glance market summary (all fields optional, null when missing). */
+export interface MarketReviewSummary {
+  temperature?: number | null;
+  marketStatus?: string | null;
+  positionAdvice?: string | null;
+  coreConclusion?: string | null;
+}
+
+export interface MarketReviewStyleRotation {
+  signal?: string | null;
+  comment?: string | null;
+}
+
+export interface MarketReviewCatalyst {
+  title?: string;
+  direction?: 'bullish' | 'bearish' | 'neutral' | string | null;
+  scope?: string | null;
+  persistence?: string | null;
+  /** Whether the market has already priced the catalyst in; null when unknown. */
+  digested?: boolean | null;
+}
+
+export interface MarketReviewNextDayPlan {
+  watchlist?: string[] | null;
+  positionAdvice?: string | null;
+  invalidation?: string | null;
+  notes?: string | null;
 }
 
 export interface MarketReviewPayload {
@@ -293,6 +330,12 @@ export interface MarketReviewPayload {
   sections?: MarketReviewPayloadSection[];
   markets?: Record<string, MarketReviewPayload>;
   markdownReport?: string;
+  /** ---- Issue #1584 optional structured enhancements (absent on legacy records) ---- */
+  summary?: MarketReviewSummary | null;
+  styleRotation?: MarketReviewStyleRotation | null;
+  catalysts?: MarketReviewCatalyst[] | null;
+  nextDayPlan?: MarketReviewNextDayPlan | null;
+  crossMarketNote?: string | null;
 }
 
 export type AnalysisContextPackBlockStatus =

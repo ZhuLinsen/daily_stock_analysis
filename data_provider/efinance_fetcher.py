@@ -26,9 +26,8 @@ import random
 import re
 import time
 from concurrent.futures import TimeoutError as FuturesTimeoutError
-from dataclasses import dataclass, field
-from datetime import datetime
-from threading import Event
+from dataclasses import dataclass
+from threading import Event, Lock
 from typing import Optional, Dict, Any, List, Tuple
 
 import pandas as pd
@@ -132,6 +131,8 @@ USER_AGENTS = [
     'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
 ]
 
+
+_realtime_cache_lock = Lock()
 
 # 缓存实时行情数据（避免重复请求）
 # TTL 设为 10 分钟 (600秒)：批量分析场景下避免重复拉取
@@ -665,6 +666,18 @@ class EfinanceFetcher(BaseFetcher):
         
         return df
     
+    @staticmethod
+    def _find_quote_row(df: pd.DataFrame, code_col: str, stock_code: str) -> Tuple[str, pd.DataFrame]:
+        """Normalize an A-share/ETF code and return matching rows from a quote DataFrame."""
+        normalized = normalize_stock_code(stock_code)
+        if _is_us_code(stock_code) or _is_hk_market(stock_code):
+            return normalized, df.iloc[0:0]
+        target_code = normalized.zfill(6) if normalized.isdigit() else normalized
+        code_series = df[code_col].astype(str).str.strip().apply(
+            lambda val: val.zfill(6) if val.isdigit() else val
+        )
+        return target_code, df[code_series == target_code]
+
     def get_realtime_quote(self, stock_code: str) -> Optional[UnifiedRealtimeQuote]:
         """
         获取实时行情数据
@@ -688,6 +701,10 @@ class EfinanceFetcher(BaseFetcher):
         if _is_etf_code(stock_code):
             return self._get_etf_realtime_quote(stock_code)
 
+        # US and HK equities are not included in A-share full-market spot snapshots
+        if _is_us_code(stock_code) or _is_hk_market(stock_code):
+            return None
+
         import efinance as ef
         circuit_breaker = get_realtime_circuit_breaker()
         source_key = "efinance"
@@ -700,12 +717,17 @@ class EfinanceFetcher(BaseFetcher):
         try:
             # 检查缓存
             current_time = time.time()
-            if (_realtime_cache['data'] is not None and 
-                current_time - _realtime_cache['timestamp'] < _realtime_cache['ttl']):
-                df = _realtime_cache['data']
-                cache_age = int(current_time - _realtime_cache['timestamp'])
+            with _realtime_cache_lock:
+                cached_df = _realtime_cache['data']
+                cached_ts = _realtime_cache['timestamp']
+                cache_ttl = _realtime_cache['ttl']
+            if (cached_df is not None and
+                not cached_df.empty and
+                current_time - cached_ts < cache_ttl):
+                df = cached_df
+                cache_age = int(current_time - cached_ts)
                 logger.debug(
-                    f"[Cache Hit] Realtime quote(efinance) - cache age {cache_age}s/{_realtime_cache['ttl']}s"
+                    f"[Cache Hit] Realtime quote(efinance) - cache age {cache_age}s/{cache_ttl}s"
                 )
             else:
                 # 触发全量刷新
@@ -720,8 +742,16 @@ class EfinanceFetcher(BaseFetcher):
                 
                 # efinance 的实时行情 API (with timeout to avoid indefinite hangs)
                 df = _ef_call_with_timeout(ef.stock.get_realtime_quotes)
-                
                 api_elapsed = _time.time() - api_start
+
+                if df is None or df.empty:
+                    logger.info(
+                        "[Realtime] ef.stock.get_realtime_quotes returned empty, skipping %s (elapsed %.2fs)",
+                        stock_code,
+                        api_elapsed,
+                    )
+                    return None
+
                 logger.info(
                     f"[API Response] ef.stock.get_realtime_quotes succeeded: "
                     f"returned {len(df)} stocks, elapsed {api_elapsed:.2f}s"
@@ -729,14 +759,19 @@ class EfinanceFetcher(BaseFetcher):
                 circuit_breaker.record_success(source_key)
                 
                 # 更新缓存
-                _realtime_cache['data'] = df
-                _realtime_cache['timestamp'] = current_time
-                logger.info(f"[Cache Update] Realtime quote(efinance) cache refreshed, TTL={_realtime_cache['ttl']}s")
+                with _realtime_cache_lock:
+                    _realtime_cache['data'] = df
+                    _realtime_cache['timestamp'] = current_time
+                logger.info(f"[Cache Update] Realtime quote(efinance) cache refreshed, TTL={cache_ttl}s")
             
             # 查找指定股票
             # efinance 返回的列名可能是 '股票代码' 或 'code'
             code_col = '股票代码' if '股票代码' in df.columns else 'code'
-            row = df[df[code_col] == stock_code]
+            if code_col not in df.columns:
+                logger.warning(f"[Realtime] Missing code column in efinance quotes for {stock_code}")
+                return None
+
+            target_code, row = self._find_quote_row(df, code_col, stock_code)
             if row.empty:
                 logger.info(f"[API Response] Realtime quote not found for stock {stock_code}")
                 return None
@@ -761,10 +796,13 @@ class EfinanceFetcher(BaseFetcher):
             pe_col = '市盈率' if '市盈率' in df.columns else 'pe_ratio'
             total_mv_col = '总市值' if '总市值' in df.columns else 'total_mv'
             circ_mv_col = '流通市值' if '流通市值' in df.columns else 'circ_mv'
+
+            raw_name = row.get(name_col)
+            stock_name = '' if pd.isna(raw_name) else str(raw_name)
             
             quote = UnifiedRealtimeQuote(
-                code=stock_code,
-                name=str(row.get(name_col, '')),
+                code=target_code,
+                name=stock_name,
                 source=RealtimeSource.EFINANCE,
                 price=safe_float(row.get(price_col)),
                 change_pct=safe_float(row.get(pct_col)),
@@ -895,15 +933,20 @@ class EfinanceFetcher(BaseFetcher):
 
         try:
             current_time = time.time()
+            with _realtime_cache_lock:
+                cached_df = _etf_realtime_cache['data']
+                cached_ts = _etf_realtime_cache['timestamp']
+                cache_ttl = _etf_realtime_cache['ttl']
             if (
-                _etf_realtime_cache['data'] is not None and
-                current_time - _etf_realtime_cache['timestamp'] < _etf_realtime_cache['ttl']
+                cached_df is not None and
+                not cached_df.empty and
+                current_time - cached_ts < cache_ttl
             ):
-                df = _etf_realtime_cache['data']
-                cache_age = int(current_time - _etf_realtime_cache['timestamp'])
+                df = cached_df
+                cache_age = int(current_time - cached_ts)
                 logger.debug(
                     f"[Cache Hit] ETF realtime quote(efinance) - "
-                    f"cache age {cache_age}s/{_etf_realtime_cache['ttl']}s"
+                    f"cache age {cache_age}s/{cache_ttl}s"
                 )
             else:
                 self._set_random_user_agent()
@@ -915,26 +958,25 @@ class EfinanceFetcher(BaseFetcher):
                 df = _ef_call_with_timeout(ef.stock.get_realtime_quotes, ['ETF'])
                 api_elapsed = _time.time() - api_start
 
-                if df is not None and not df.empty:
-                    logger.info(
-                        f"[API Response] ETF realtime quotes succeeded: {len(df)} rows, elapsed {api_elapsed:.2f}s"
-                    )
-                    circuit_breaker.record_success(source_key)
-                else:
+                if df is None or df.empty:
                     logger.info(f"[API Response] ETF realtime quotes empty, elapsed {api_elapsed:.2f}s")
-                    df = pd.DataFrame()
+                    logger.info(f"[Realtime] ETF realtime quote data is empty(efinance), skipping {stock_code}")
+                    return None
 
-                _etf_realtime_cache['data'] = df
-                _etf_realtime_cache['timestamp'] = current_time
-
-            if df is None or df.empty:
-                logger.info(f"[Realtime] ETF realtime quote data is empty(efinance), skipping {stock_code}")
-                return None
+                logger.info(
+                    f"[API Response] ETF realtime quotes succeeded: {len(df)} rows, elapsed {api_elapsed:.2f}s"
+                )
+                circuit_breaker.record_success(source_key)
+                with _realtime_cache_lock:
+                    _etf_realtime_cache['data'] = df
+                    _etf_realtime_cache['timestamp'] = current_time
 
             code_col = '股票代码' if '股票代码' in df.columns else 'code'
-            code_series = df[code_col].astype(str).str.zfill(6)
-            target_code = str(stock_code).strip().zfill(6)
-            row = df[code_series == target_code]
+            if code_col not in df.columns:
+                logger.warning(f"[Realtime] Missing code column in efinance ETF quotes for {stock_code}")
+                return None
+
+            target_code, row = self._find_quote_row(df, code_col, stock_code)
             if row.empty:
                 logger.info(f"[API Response] ETF realtime quote not found for {stock_code}(efinance)")
                 return None
@@ -952,9 +994,12 @@ class EfinanceFetcher(BaseFetcher):
             low_col = '最低' if '最低' in df.columns else 'low'
             open_col = '开盘' if '开盘' in df.columns else 'open'
 
+            raw_name = row.get(name_col)
+            etf_name = '' if pd.isna(raw_name) else str(raw_name)
+
             quote = UnifiedRealtimeQuote(
                 code=target_code,
-                name=str(row.get(name_col, '')),
+                name=etf_name,
                 source=RealtimeSource.EFINANCE,
                 price=safe_float(row.get(price_col)),
                 change_pct=safe_float(row.get(pct_col)),
@@ -1011,7 +1056,10 @@ class EfinanceFetcher(BaseFetcher):
 
             logger.info(f"[API Response] Index quotes succeeded: {len(df)} rows, elapsed {api_elapsed:.2f}s")
             code_col = '股票代码' if '股票代码' in df.columns else 'code'
-            code_series = df[code_col].astype(str).str.zfill(6)
+            if code_col not in df.columns:
+                logger.warning("[efinance] Missing code column in index quotes response")
+                return None
+            code_series = df[code_col].astype(str).str.strip().str.zfill(6)
 
             results: List[Dict[str, Any]] = []
             for code, (name, full_code) in indices_map.items():
@@ -1030,8 +1078,15 @@ class EfinanceFetcher(BaseFetcher):
                 amt_col = '成交额' if '成交额' in df.columns else 'amount'
                 amp_col = '振幅' if '振幅' in df.columns else 'amplitude'
 
-                current = safe_float(item.get(price_col, 0))
-                change_amount = safe_float(item.get(chg_col, 0))
+                current = safe_float(item.get(price_col))
+                change_amount = safe_float(item.get(chg_col))
+                change_pct = safe_float(item.get(pct_col))
+                if current is None or current <= 0 or change_amount is None or change_pct is None:
+                    logger.warning(
+                        "[efinance] Index quote %s missing valid price/change fields; aborting partial index payload",
+                        full_code,
+                    )
+                    return None
                 open_price = 0.0
                 for column in open_cols:
                     candidate = safe_float(item.get(column), default=None)
@@ -1039,21 +1094,21 @@ class EfinanceFetcher(BaseFetcher):
                         open_price = candidate
                         break
                 if open_price == 0.0 and open_cols:
-                    open_price = safe_float(item.get(open_cols[0], 0), 0)
+                    open_price = safe_float(item.get(open_cols[0], 0), default=0.0)
 
                 results.append({
                     'code': full_code,
                     'name': name,
                     'current': current,
                     'change': change_amount,
-                    'change_pct': safe_float(item.get(pct_col, 0)),
+                    'change_pct': change_pct,
                     'open': open_price,
-                    'high': safe_float(item.get(high_col, 0)),
-                    'low': safe_float(item.get(low_col, 0)),
-                    'prev_close': current - change_amount if current or change_amount else 0,
-                    'volume': safe_float(item.get(vol_col, 0)),
-                    'amount': safe_float(item.get(amt_col, 0)),
-                    'amplitude': safe_float(item.get(amp_col, 0)),
+                    'high': safe_float(item.get(high_col, 0), default=0.0),
+                    'low': safe_float(item.get(low_col, 0), default=0.0),
+                    'prev_close': current - change_amount,
+                    'volume': safe_float(item.get(vol_col, 0), default=0.0),
+                    'amount': safe_float(item.get(amt_col, 0), default=0.0),
+                    'amplitude': safe_float(item.get(amp_col, 0), default=0.0),
                 })
 
             if results:
@@ -1074,15 +1129,19 @@ class EfinanceFetcher(BaseFetcher):
             self._enforce_rate_limit()
 
             current_time = time.time()
+            with _realtime_cache_lock:
+                cached_df = _realtime_cache['data']
+                cached_ts = _realtime_cache['timestamp']
+                cache_ttl = _realtime_cache['ttl']
             if (
-                allow_cache and _realtime_cache['data'] is not None and
-                current_time - _realtime_cache['timestamp'] < _realtime_cache['ttl']
+                allow_cache and cached_df is not None and not cached_df.empty and
+                current_time - cached_ts < cache_ttl
             ):
-                df = _realtime_cache['data']
+                df = cached_df
                 logger.info(
                     "[MarketStats] component=market_stats provider=EfinanceFetcher "
                     "api=ef.stock.get_realtime_quotes action=cache_hit cache_age=%.0fs",
-                    current_time - _realtime_cache['timestamp'],
+                    current_time - cached_ts,
                 )
             else:
                 started_at = time.monotonic()
@@ -1097,15 +1156,19 @@ class EfinanceFetcher(BaseFetcher):
                     "api=ef.stock.get_realtime_quotes action=request_complete elapsed=%.2fs",
                     elapsed,
                 )
-                _realtime_cache['data'] = df
-                _realtime_cache['timestamp'] = current_time
-
-            if df is None or df.empty:
-                logger.warning(
-                    "[MarketStats] component=market_stats provider=EfinanceFetcher "
-                    "api=ef.stock.get_realtime_quotes action=parse status=empty"
-                )
-                return None
+                if df is None or df.empty:
+                    logger.warning(
+                        "[MarketStats] component=market_stats provider=EfinanceFetcher "
+                        "api=ef.stock.get_realtime_quotes action=parse status=empty"
+                    )
+                    return None
+                stats = self._calc_market_stats(df)
+                if stats is None:
+                    return None
+                with _realtime_cache_lock:
+                    _realtime_cache['data'] = df
+                    _realtime_cache['timestamp'] = current_time
+                return stats
 
             return self._calc_market_stats(df)
         except Exception as e:
@@ -1133,53 +1196,73 @@ class EfinanceFetcher(BaseFetcher):
         pre_close_col = next((c for c in ['昨收', '昨日收盘', 'pre_close','lastClose'] if c in df.columns), None)
         amount_col = next((c for c in ['成交额', '成交额', 'amount','amount'] if c in df.columns), None) 
         
+        if code_col is None or close_col is None or pre_close_col is None:
+            return None
+
+        codes = df[code_col]
+        names = df[name_col] if name_col else [""] * len(df)
+        amounts = df[amount_col] if amount_col else [None] * len(df)
+
         limit_up_count = 0
         limit_down_count = 0
         up_count = 0
         down_count = 0
         flat_count = 0
+        counted_rows = 0
 
-        for code, name, current_price, pre_close, amount in zip(
-            df[code_col], df[name_col], df[close_col], df[pre_close_col], df[amount_col]
+        for code, name, raw_close, raw_pre_close, raw_amount in zip(
+            codes, names, df[close_col], df[pre_close_col], amounts
         ):
-            
-            # 停牌过滤 efinance 的停牌数据有时候会缺失价格显示为 '-'，em 显示为none
-            if pd.isna(current_price) or pd.isna(pre_close) or current_price in ['-'] or pre_close in ['-'] or amount == 0:
+            current_price = safe_float(raw_close)
+            pre_close = safe_float(raw_pre_close)
+            amount_val = safe_float(raw_amount)
+
+            # 停牌过滤：缺失价格、无效昨收、或成交额为 0 均跳过
+            if (
+                current_price is None
+                or pre_close is None
+                or pre_close <= 0
+                or (amount_val is not None and amount_val == 0)
+            ):
                 continue
-            
-            # em、efinance 为str 需要转换为float
-            current_price = float(current_price)
-            pre_close = float(pre_close)
-            
-            # 获取去除前缀的纯数字代码
-            pure_code = normalize_stock_code(str(code)) 
 
-            # A. 确定每只股票的涨跌幅比例 (使用纯数字代码判断)
-            if is_bse_code(pure_code): 
-                ratio = 0.30
-            elif is_kc_cy_stock(pure_code): #pure_code.startswith(('688', '30')):
-                ratio = 0.20
-            elif is_st_stock(name): #'ST' in str_name:
-                ratio = 0.05
-            else:
-                ratio = 0.10
+            code_str = "" if pd.isna(code) else str(code).strip()
+            name_str = "" if pd.isna(name) else str(name).strip()
 
-            # B. 严格按照 A 股规则计算涨跌停价：昨收 * (1 ± 比例) -> 四舍五入保留2位小数
-            limit_up_price = np.floor(pre_close * (1 + ratio) * 100 + 0.5) / 100.0
-            limit_down_price = np.floor(pre_close * (1 - ratio) * 100 + 0.5) / 100.0
+            # 获取去除前缀的纯数字代码；缺代码行不可归类板块，直接跳过以免误计
+            pure_code = normalize_stock_code(code_str)
+            if not pure_code:
+                continue
 
-            limit_up_price_Tolerance = round(abs(pre_close * (1 + ratio) - limit_up_price), 10)
-            limit_down_price_Tolerance = round(abs(pre_close * (1 - ratio) - limit_down_price), 10)
+            if current_price > 0:
+                counted_rows += 1
+                # A. 确定涨跌幅阈值：缺失名称的主板/普通股票无法判断是否为 ST (5%)，跳过涨跌停分类
+                can_classify_limits = bool(name_str) or is_bse_code(pure_code) or is_kc_cy_stock(pure_code)
+                if can_classify_limits:
+                    if is_bse_code(pure_code):
+                        ratio = 0.30
+                    elif is_kc_cy_stock(pure_code):
+                        ratio = 0.20
+                    elif is_st_stock(name_str):
+                        ratio = 0.05
+                    else:
+                        ratio = 0.10
 
-            # C. 精确比对
-            if current_price > 0 :
-                is_limit_up = (current_price > 0) and (abs(current_price - limit_up_price) <= limit_up_price_Tolerance)
-                is_limit_down = (current_price > 0) and (abs(current_price - limit_down_price) <= limit_down_price_Tolerance)
+                    # B. 严格按照 A 股规则计算涨跌停价：昨收 * (1 ± 比例) -> 四舍五入保留2位小数
+                    limit_up_price = np.floor(pre_close * (1 + ratio) * 100 + 0.5) / 100.0
+                    limit_down_price = np.floor(pre_close * (1 - ratio) * 100 + 0.5) / 100.0
 
-                if is_limit_up:
-                    limit_up_count += 1
-                if is_limit_down:
-                    limit_down_count += 1
+                    limit_up_price_Tolerance = round(abs(pre_close * (1 + ratio) - limit_up_price), 10)
+                    limit_down_price_Tolerance = round(abs(pre_close * (1 - ratio) - limit_down_price), 10)
+
+                    # C. 精确比对
+                    is_limit_up = abs(current_price - limit_up_price) <= limit_up_price_Tolerance
+                    is_limit_down = abs(current_price - limit_down_price) <= limit_down_price_Tolerance
+
+                    if is_limit_up:
+                        limit_up_count += 1
+                    if is_limit_down:
+                        limit_down_count += 1
 
                 if current_price > pre_close:
                     up_count += 1
@@ -1187,6 +1270,9 @@ class EfinanceFetcher(BaseFetcher):
                     down_count += 1
                 else:
                     flat_count += 1
+
+        if counted_rows == 0:
+            return None
                 
         # 统计数量
         stats = {
@@ -1200,8 +1286,9 @@ class EfinanceFetcher(BaseFetcher):
         
         # 成交额统计
         if amount_col and amount_col in df.columns:
-            df[amount_col] = pd.to_numeric(df[amount_col], errors='coerce')
-            stats['total_amount'] = (df[amount_col].sum() / 1e8)
+            numeric_amount = pd.to_numeric(df[amount_col], errors='coerce')
+            total_amount = numeric_amount.sum(min_count=1)
+            stats['total_amount'] = float(total_amount) / 1e8 if pd.notna(total_amount) else 0.0
             
         return stats
 
@@ -1226,17 +1313,23 @@ class EfinanceFetcher(BaseFetcher):
             if change_col not in df.columns or name_col not in df.columns:
                 return None
 
+            df = df.copy()
             df[change_col] = pd.to_numeric(df[change_col], errors='coerce')
-            df = df.dropna(subset=[change_col])
+            df = df.dropna(subset=[change_col, name_col])
+            df[name_col] = df[name_col].astype(str).str.strip()
+            df = df[df[name_col] != '']
+            if df.empty:
+                return None
+
             top = df.nlargest(n, change_col)
             bottom = df.nsmallest(n, change_col)
 
             top_sectors = [
-                {'name': str(row[name_col]), 'change_pct': float(row[change_col])}
+                {'name': row[name_col], 'change_pct': float(row[change_col])}
                 for _, row in top.iterrows()
             ]
             bottom_sectors = [
-                {'name': str(row[name_col]), 'change_pct': float(row[change_col])}
+                {'name': row[name_col], 'change_pct': float(row[change_col])}
                 for _, row in bottom.iterrows()
             ]
             return top_sectors, bottom_sectors

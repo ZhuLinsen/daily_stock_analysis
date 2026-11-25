@@ -3,9 +3,10 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
-import type React from 'react';
+import { act, render, screen, fireEvent } from '@testing-library/react';
+import { useState } from 'react';
 import { StockAutocomplete } from '../StockAutocomplete';
+import type { UseAutocompleteResult } from '../../../hooks/useAutocomplete';
 import type { StockIndexItem, StockSuggestion } from '../../../types/stockIndex';
 
 let stockIndexHookImpl: () => {
@@ -16,32 +17,21 @@ let stockIndexHookImpl: () => {
   loaded: boolean;
 };
 
-let autocompleteHookImpl: () => {
-  query: string;
-  setQuery: ReturnType<typeof vi.fn>;
-  suggestions: StockSuggestion[];
-  isOpen: boolean;
-  highlightedIndex: number;
-  setHighlightedIndex: ReturnType<typeof vi.fn>;
-  highlightPrevious: ReturnType<typeof vi.fn>;
-  highlightNext: ReturnType<typeof vi.fn>;
-  handleSelect: ReturnType<typeof vi.fn>;
-  close: ReturnType<typeof vi.fn>;
-  reset: ReturnType<typeof vi.fn>;
-  isComposing: boolean;
-  setIsComposing: ReturnType<typeof vi.fn>;
-  runtimeFallback: boolean;
-  error: Error | null;
-};
+let useRealAutocomplete = false;
+let autocompleteHookImpl: () => UseAutocompleteResult;
 
 // Mock the hooks
 vi.mock('../../../hooks/useStockIndex', () => ({
   useStockIndex: () => stockIndexHookImpl(),
 }));
 
-vi.mock('../../../hooks/useAutocomplete', () => ({
-  useAutocomplete: () => autocompleteHookImpl(),
-}));
+vi.mock('../../../hooks/useAutocomplete', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../hooks/useAutocomplete')>();
+  return {
+    useAutocomplete: (index: StockIndexItem[]) =>
+      (useRealAutocomplete ? actual.useAutocomplete(index) : autocompleteHookImpl()),
+  };
+});
 
 const mockIndex: StockIndexItem[] = [
   {
@@ -116,6 +106,7 @@ describe('StockAutocomplete', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    useRealAutocomplete = false;
     stockIndexHookImpl = () => ({
       index: mockIndex,
       loading: false,
@@ -705,6 +696,426 @@ describe('StockAutocomplete', () => {
       expect(fallbackInput).toHaveAttribute('data-autocomplete-mode', 'fallback');
       expect(consoleErrorSpy).toHaveBeenCalled();
       consoleErrorSpy.mockRestore();
+    });
+  });
+
+  describe('selection and timer lifecycle', () => {
+    it('syncs prevValueRef on click selection so parent value update does not re-trigger search', async () => {
+      const setQueryMock = vi.fn();
+      const handleSelectMock = vi.fn();
+      const closeMock = vi.fn();
+      autocompleteHookImpl = () => ({
+        query: '茅台',
+        setQuery: setQueryMock,
+        suggestions: mockSuggestions,
+        isOpen: true,
+        highlightedIndex: -1,
+        setHighlightedIndex: vi.fn(),
+        highlightPrevious: vi.fn(),
+        highlightNext: vi.fn(),
+        handleSelect: handleSelectMock,
+        close: closeMock,
+        reset: vi.fn(),
+        isComposing: false,
+        setIsComposing: vi.fn(),
+        runtimeFallback: false,
+        error: null,
+      });
+
+      const { rerender } = render(
+        <StockAutocomplete
+          value="茅台"
+          onChange={mockOnChange}
+          onSubmit={mockOnSubmit}
+        />
+      );
+
+      fireEvent.click(await screen.findByText('贵州茅台'));
+
+      expect(handleSelectMock).toHaveBeenCalledWith(mockSuggestions[0]);
+      expect(closeMock).toHaveBeenCalledTimes(1);
+      expect(mockOnChange).toHaveBeenCalledWith('600519');
+      expect(mockOnSubmit).toHaveBeenCalledWith('600519.SH', '贵州茅台', 'autocomplete', {
+        market: 'CN',
+        displayCode: '600519',
+      });
+      expect(setQueryMock).not.toHaveBeenCalled();
+
+      rerender(
+        <StockAutocomplete
+          value="600519"
+          onChange={mockOnChange}
+          onSubmit={mockOnSubmit}
+        />
+      );
+      expect(setQueryMock).not.toHaveBeenCalled();
+
+      rerender(
+        <StockAutocomplete
+          value="00700"
+          onChange={mockOnChange}
+          onSubmit={mockOnSubmit}
+        />
+      );
+      expect(setQueryMock).toHaveBeenCalledWith('00700');
+    });
+
+    it('does not prematurely close the dropdown when submitting raw input on Enter without highlight', () => {
+      const closeMock = vi.fn();
+      autocompleteHookImpl = () => ({
+        query: '6005',
+        setQuery: vi.fn(),
+        suggestions: mockSuggestions,
+        isOpen: true,
+        highlightedIndex: -1,
+        setHighlightedIndex: vi.fn(),
+        highlightPrevious: vi.fn(),
+        highlightNext: vi.fn(),
+        handleSelect: vi.fn(),
+        close: closeMock,
+        reset: vi.fn(),
+        isComposing: false,
+        setIsComposing: vi.fn(),
+        runtimeFallback: false,
+        error: null,
+      });
+
+      render(
+        <StockAutocomplete
+          value="6005"
+          onChange={mockOnChange}
+          onSubmit={mockOnSubmit}
+        />
+      );
+
+      fireEvent.keyDown(screen.getByDisplayValue('6005'), { key: 'Enter' });
+
+      expect(closeMock).not.toHaveBeenCalled();
+      expect(mockOnSubmit).toHaveBeenCalledWith('6005');
+    });
+
+    it('cancels pending blur close timer on refocus, typing, and unmount', () => {
+      vi.useFakeTimers();
+      try {
+        const closeMock = vi.fn();
+        autocompleteHookImpl = () => ({
+          query: '6005',
+          setQuery: vi.fn(),
+          suggestions: mockSuggestions,
+          isOpen: true,
+          highlightedIndex: -1,
+          setHighlightedIndex: vi.fn(),
+          highlightPrevious: vi.fn(),
+          highlightNext: vi.fn(),
+          handleSelect: vi.fn(),
+          close: closeMock,
+          reset: vi.fn(),
+          isComposing: false,
+          setIsComposing: vi.fn(),
+          runtimeFallback: false,
+          error: null,
+        });
+
+        const { unmount } = render(
+          <StockAutocomplete
+            value="6005"
+            onChange={mockOnChange}
+            onSubmit={mockOnSubmit}
+          />
+        );
+
+        const input = screen.getByDisplayValue('6005');
+
+        fireEvent.blur(input);
+        act(() => {
+          vi.advanceTimersByTime(100);
+        });
+        fireEvent.focus(input);
+        act(() => {
+          vi.advanceTimersByTime(250);
+        });
+        expect(closeMock).not.toHaveBeenCalled();
+
+        fireEvent.blur(input);
+        act(() => {
+          vi.advanceTimersByTime(100);
+        });
+        fireEvent.change(input, { target: { value: '60051' } });
+        act(() => {
+          vi.advanceTimersByTime(250);
+        });
+        expect(closeMock).not.toHaveBeenCalled();
+
+        fireEvent.blur(input);
+        unmount();
+        act(() => {
+          vi.advanceTimersByTime(250);
+        });
+        expect(closeMock).not.toHaveBeenCalled();
+      } finally {
+        useRealAutocomplete = false;
+        vi.useRealTimers();
+      }
+    });
+
+    it('ignores ArrowDown/ArrowUp and submits raw value on Enter when dropdown is closed', () => {
+      const highlightNextMock = vi.fn();
+      const highlightPreviousMock = vi.fn();
+      const closeMock = vi.fn();
+      const handleSelectMock = vi.fn();
+      autocompleteHookImpl = () => ({
+        query: '6005',
+        setQuery: vi.fn(),
+        suggestions: mockSuggestions,
+        isOpen: false,
+        highlightedIndex: 0,
+        setHighlightedIndex: vi.fn(),
+        highlightPrevious: highlightPreviousMock,
+        highlightNext: highlightNextMock,
+        handleSelect: handleSelectMock,
+        close: closeMock,
+        reset: vi.fn(),
+        isComposing: false,
+        setIsComposing: vi.fn(),
+        runtimeFallback: false,
+        error: null,
+      });
+
+      render(
+        <StockAutocomplete
+          value="6005"
+          onChange={mockOnChange}
+          onSubmit={mockOnSubmit}
+        />
+      );
+
+      const input = screen.getByDisplayValue('6005');
+      fireEvent.keyDown(input, { key: 'ArrowDown' });
+      fireEvent.keyDown(input, { key: 'ArrowUp' });
+      expect(highlightNextMock).not.toHaveBeenCalled();
+      expect(highlightPreviousMock).not.toHaveBeenCalled();
+
+      fireEvent.keyDown(input, { key: 'Enter' });
+      expect(handleSelectMock).not.toHaveBeenCalled();
+      expect(closeMock).not.toHaveBeenCalled();
+      expect(mockOnSubmit).toHaveBeenCalledWith('6005');
+    });
+
+    it('keeps debounced suggestions alive when Enter submits an incomplete input within the debounce window', () => {
+      vi.useFakeTimers();
+      try {
+        stockIndexHookImpl = () => ({
+          index: [
+            ...mockIndex,
+            {
+              canonicalCode: '000660.KS',
+              displayCode: '000660.KS',
+              nameZh: 'SK Hynix',
+              pinyinFull: 'skhynix',
+              pinyinAbbr: 'skhl',
+              aliases: ['海力士'],
+              market: 'KR',
+              assetType: 'stock',
+              active: true,
+              popularity: 80,
+            },
+            {
+              canonicalCode: 'AAPL',
+              displayCode: 'AAPL',
+              nameZh: '苹果',
+              pinyinFull: 'pingguo',
+              pinyinAbbr: 'pg',
+              aliases: ['Apple'],
+              market: 'US',
+              assetType: 'stock',
+              active: true,
+              popularity: 95,
+            },
+          ],
+          loading: false,
+          fallback: false,
+          error: null,
+          loaded: true,
+        });
+        useRealAutocomplete = true;
+
+        const rejectedSubmit = vi.fn();
+        function ControlledHarness() {
+          const [val, setVal] = useState('');
+          return (
+            <StockAutocomplete
+              value={val}
+              onChange={setVal}
+              onSubmit={(...args) => {
+                rejectedSubmit(...args);
+                if (args[1] || args[2] === 'autocomplete') {
+                  mockOnSubmit(...args);
+                }
+              }}
+            />
+          );
+        }
+
+        render(<ControlledHarness />);
+
+        const input = screen.getByRole('combobox');
+        fireEvent.change(input, { target: { value: '000660.K' } });
+
+        act(() => {
+          vi.advanceTimersByTime(50);
+        });
+        fireEvent.keyDown(input, { key: 'Enter' });
+        expect(rejectedSubmit).toHaveBeenCalledWith('000660.K');
+
+        act(() => {
+          vi.advanceTimersByTime(250);
+        });
+        act(() => {
+          vi.advanceTimersByTime(20);
+        });
+
+        const matchItem = screen.getByText('SK Hynix');
+        expect(matchItem).toBeInTheDocument();
+
+        fireEvent.click(matchItem);
+        expect(mockOnSubmit).toHaveBeenCalledWith('000660.KS', 'SK Hynix', 'autocomplete', {
+          market: 'KR',
+          displayCode: '000660.KS',
+        });
+      } finally {
+        useRealAutocomplete = false;
+        vi.useRealTimers();
+      }
+    });
+
+    it('keeps already-open suggestions visible when Enter submits an unhighlighted rejected input and closes on cleared value', () => {
+      vi.useFakeTimers();
+      try {
+        stockIndexHookImpl = () => ({
+          index: [
+            ...mockIndex,
+            {
+              canonicalCode: '000660.KS',
+              displayCode: '000660.KS',
+              nameZh: 'SK Hynix',
+              pinyinFull: 'skhynix',
+              pinyinAbbr: 'skhl',
+              aliases: ['海力士'],
+              market: 'KR',
+              assetType: 'stock',
+              active: true,
+              popularity: 80,
+            },
+            {
+              canonicalCode: 'AAPL',
+              displayCode: 'AAPL',
+              nameZh: '苹果',
+              pinyinFull: 'pingguo',
+              pinyinAbbr: 'pg',
+              aliases: ['Apple'],
+              market: 'US',
+              assetType: 'stock',
+              active: true,
+              popularity: 95,
+            },
+          ],
+          loading: false,
+          fallback: false,
+          error: null,
+          loaded: true,
+        });
+        useRealAutocomplete = true;
+
+        const rejectedSubmit = vi.fn();
+        function ControlledHarness() {
+          const [val, setVal] = useState('');
+          return (
+            <StockAutocomplete
+              value={val}
+              onChange={setVal}
+              onSubmit={(code, name, source, extra) => {
+                rejectedSubmit(code);
+                if (name || source === 'autocomplete') {
+                  mockOnSubmit(code, name, source, extra);
+                } else if (code === 'RESET_ME') {
+                  setVal('');
+                }
+              }}
+            />
+          );
+        }
+
+        render(<ControlledHarness />);
+
+        const input = screen.getByRole('combobox');
+        fireEvent.change(input, { target: { value: '000660.K' } });
+
+        act(() => {
+          vi.advanceTimersByTime(250);
+        });
+        act(() => {
+          vi.advanceTimersByTime(20);
+        });
+
+        expect(screen.getByText('SK Hynix')).toBeInTheDocument();
+
+        fireEvent.keyDown(input, { key: 'Enter' });
+        expect(rejectedSubmit).toHaveBeenCalledWith('000660.K');
+        expect(screen.getByText('SK Hynix')).toBeInTheDocument();
+
+        fireEvent.click(screen.getByText('SK Hynix'));
+        expect(mockOnSubmit).toHaveBeenCalledWith('000660.KS', 'SK Hynix', 'autocomplete', {
+          market: 'KR',
+          displayCode: '000660.KS',
+        });
+
+        fireEvent.change(input, { target: { value: 'RESET_ME' } });
+        act(() => {
+          vi.advanceTimersByTime(250);
+        });
+        act(() => {
+          vi.advanceTimersByTime(20);
+        });
+        fireEvent.keyDown(input, { key: 'Enter' });
+        expect(input).toHaveValue('');
+        expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+
+        // Regression test for OR-COR-0a29a1a7: clearing an open dropdown and pasting another
+        // ticker within the debounce window must reopen and position the listbox when results arrive.
+        fireEvent.change(input, { target: { value: '000660.K' } });
+        act(() => {
+          vi.advanceTimersByTime(250);
+        });
+        act(() => {
+          vi.advanceTimersByTime(20);
+        });
+        expect(screen.getByRole('listbox')).toBeInTheDocument();
+        expect(screen.getByText('SK Hynix')).toBeInTheDocument();
+
+        fireEvent.change(input, { target: { value: '' } });
+        act(() => {
+          vi.advanceTimersByTime(50);
+        });
+        fireEvent.change(input, { target: { value: 'AAPL' } });
+        act(() => {
+          vi.advanceTimersByTime(250);
+        });
+        act(() => {
+          vi.advanceTimersByTime(20);
+        });
+
+        expect(input).toHaveAttribute('aria-expanded', 'true');
+        expect(screen.getByRole('listbox')).toBeInTheDocument();
+        const aaplOption = screen.getByText('苹果');
+        fireEvent.click(aaplOption);
+        expect(mockOnSubmit).toHaveBeenCalledWith('AAPL', '苹果', 'autocomplete', {
+          market: 'US',
+          displayCode: 'AAPL',
+        });
+      } finally {
+        useRealAutocomplete = false;
+        vi.useRealTimers();
+      }
     });
   });
 });

@@ -1496,7 +1496,7 @@ const SettingsPage: React.FC = () => {
             className="mt-3"
             error={saveError}
             actionLabel={retryAction === 'save' ? t('settings.saveRetry') : undefined}
-            onAction={retryAction === 'save' ? () => void retry() : undefined}
+            onAction={retryAction === 'save' ? () => void handleSaveConfig() : undefined}
           />
         ) : null}
       </div>
@@ -1820,8 +1820,8 @@ const SettingsPage: React.FC = () => {
                   }
                   configVersion={configVersion}
                   maskToken={maskToken}
-                  onMerged={async () => {
-                    await refreshAfterExternalSave(['STOCK_LIST']);
+                  onMerged={async (_value, options) => {
+                    await refreshAfterExternalSave(options?.committed === false ? [] : ['STOCK_LIST']);
                     void refreshSetupStatus();
                   }}
                   disabled={isSaving || isLoading || isImportingEnv}

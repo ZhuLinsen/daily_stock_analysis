@@ -430,6 +430,21 @@ class TestNotificationMarkdownFormatters(unittest.TestCase):
         self.assertIn(f"Header1{colon}Value1 | Header2{colon} | Header3{colon}Value3", result)
         self.assertNotIn(f"Header2{colon}Value3", result)
 
+    def test_feishu_and_kv_formatters_preserve_escaped_pipes_without_column_shift(self):
+        text = (
+            "| 行动窗口 | 当前动作 | 下次检查 |\n"
+            "| --- | --- | --- |\n"
+            "| 盘中 仅在放量 \\| 跌破撤单 | 保持观望 | 14:30 |"
+        )
+
+        feishu = format_feishu_markdown(text)
+        self.assertIn("• 行动窗口：盘中 仅在放量 | 跌破撤单 | 当前动作：保持观望 | 下次检查：14:30", feishu)
+        self.assertNotIn("列4", feishu)
+
+        kv = markdown_tables_to_key_value_rows(text)
+        self.assertIn("• 行动窗口：盘中 仅在放量 | 跌破撤单 | 当前动作：保持观望 | 下次检查：14:30", kv)
+        self.assertNotIn("列4", kv)
+
     def test_telegram_formatter_uses_supported_markdown(self):
         text = "## 日报\n\n| 股票 | 信号 |\n| --- | --- |\n| 600519 | 强势 |\n\n[详情](https://example.com/report)"
 
