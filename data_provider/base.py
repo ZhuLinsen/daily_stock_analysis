@@ -663,7 +663,7 @@ class DataFetcherManager:
         "BaostockFetcher": {"cn"},
         "YfinanceFetcher": {"cn", "hk", "us", "jp", "kr", "tw"},
         "LongbridgeFetcher": {"hk", "us"},
-        "FutuFetcher": {"hk"},
+        "FutuFetcher": {"hk", "cn", "us"},
         "FinnhubFetcher": {"us"},
         "AlphaVantageFetcher": {"us"},
     }
@@ -2067,9 +2067,9 @@ class DataFetcherManager:
                 # 指数始终 YFinance 首选（Longbridge 不提供指数K线）
                 source_order = ["YfinanceFetcher", "FinnhubFetcher"]
             elif prefer_lb:
-                source_order = ["LongbridgeFetcher", "FinnhubFetcher", "AlphaVantageFetcher", "YfinanceFetcher"]
+                source_order = ["FutuFetcher", "LongbridgeFetcher", "FinnhubFetcher", "AlphaVantageFetcher", "YfinanceFetcher"]
             else:
-                source_order = ["FinnhubFetcher", "AlphaVantageFetcher", "YfinanceFetcher", "LongbridgeFetcher"]
+                source_order = ["FutuFetcher", "FinnhubFetcher", "AlphaVantageFetcher", "YfinanceFetcher", "LongbridgeFetcher"]
             # 消费各数据源当前优先级(含 *_PRIORITY 环境变量):默认优先级与内置链路一致,
             # 单项调整(如 YFINANCE_PRIORITY=0)即时生效;指数/Longbridge preferred 的锚定首选不被普通优先级覆盖
             pin_first = bool(is_us_index or prefer_lb)
@@ -2473,6 +2473,16 @@ class DataFetcherManager:
         }
         return mapping.get(fetcher_name, fetcher_name.replace("Fetcher", "").lower())
 
+    @staticmethod
+    def _futu_realtime_enabled() -> bool:
+        """True when Futu OpenD is configured (and importable)."""
+        try:
+            from data_provider.futu_fetcher import FutuFetcher
+
+            return bool(FutuFetcher.has_configured_endpoint())
+        except Exception:  # noqa: BLE001 - fail closed: treat futu as disabled
+            return False
+
     def _enrich_realtime_quote(
         self,
         quote,
@@ -2583,6 +2593,22 @@ class DataFetcherManager:
         if is_us or is_hk:
             prefer_lb = self._longbridge_preferred() and not is_us_index
             if is_us:
+                # Futu OpenD covers US stocks (US.AAPL) via a broker quote feed;
+                # when configured it is tried first, otherwise keep the
+                # YFinance/Longbridge route untouched.
+                if not is_us_index and self._futu_realtime_enabled():
+                    quote = self._try_fetcher_quote(stock_code, "FutuFetcher", **target_kwargs)
+                    if quote is not None:
+                        logger.info(
+                            "[realtime quote] US %s fetched (source: FutuFetcher)", stock_code
+                        )
+                        return self._enrich_realtime_quote(
+                            quote,
+                            realtime_cache_ttl=getattr(config, "realtime_cache_ttl", None),
+                        )
+                    logger.info(
+                        "[realtime quote] US %s futu source failed, falling back", stock_code
+                    )
                 primary_src = "LongbridgeFetcher" if prefer_lb else "YfinanceFetcher"
                 secondary_src = "YfinanceFetcher" if prefer_lb else "LongbridgeFetcher"
                 market_label = "US index" if is_us_index else "US"
@@ -2762,6 +2788,16 @@ class DataFetcherManager:
                 elif source in {"tickplus", "tickflow"}:
                     fetcher_name = "TickPlusFetcher" if source == "tickplus" else "TickFlowFetcher"
                     fetcher = self._get_fetcher_by_name(fetcher_name, capability="realtime_quote")
+                    if fetcher is not None and hasattr(fetcher, 'get_realtime_quote'):
+                        record_provider_run_started(
+                            data_type="realtime_quote",
+                            provider=fetcher.name,
+                            operation="get_realtime_quote",
+                        )
+                        quote = self._call_fetcher_method(fetcher, 'get_realtime_quote', raw_stock_code or stock_code)
+
+                elif source == "futu":
+                    fetcher = self._get_fetcher_by_name("FutuFetcher", capability="realtime_quote")
                     if fetcher is not None and hasattr(fetcher, 'get_realtime_quote'):
                         record_provider_run_started(
                             data_type="realtime_quote",
@@ -3211,7 +3247,7 @@ class DataFetcherManager:
         # 3. 依次尝试各个数据源
         upper_code = stock_code.strip().upper()
         market = "us" if upper_code.endswith(_US_EXCHANGE_SUFFIXES) else _market_tag(upper_code)
-        _US_CAPABLE_FETCHERS = {"YfinanceFetcher", "LongbridgeFetcher", "FinnhubFetcher", "AlphaVantageFetcher"}
+        _US_CAPABLE_FETCHERS = {"YfinanceFetcher", "LongbridgeFetcher", "FutuFetcher", "FinnhubFetcher", "AlphaVantageFetcher"}
         for fetcher in self._get_fetchers_snapshot():
             if not hasattr(fetcher, 'get_stock_name'):
                 continue

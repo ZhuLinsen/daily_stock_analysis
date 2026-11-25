@@ -170,3 +170,45 @@ class TestFutuBoundedConnect(unittest.TestCase):
         self.assertEqual(results, [None] * 5)
         self.assertEqual(len(created), 1)
         self.assertEqual(len(logs.records), 1)
+
+
+class TestFutuMultiMarketSymbolMapping(unittest.TestCase):
+    """Futu OpenD covers HK, A-share and US symbols."""
+
+    def test_hk_symbols(self):
+        for code in ("09618.HK", "09618", "HK09618", "700"):
+            self.assertEqual(futu_fetcher._futu_market(code), "hk")
+        self.assertEqual(futu_fetcher._futu_symbol("700"), "HK.00700")
+        self.assertEqual(futu_fetcher._futu_symbol("09618.HK"), "HK.09618")
+
+    def test_cn_symbols(self):
+        self.assertEqual(futu_fetcher._futu_market("600519"), "cn")
+        self.assertEqual(futu_fetcher._futu_symbol("600519"), "SH.600519")
+        self.assertEqual(futu_fetcher._futu_symbol("300750"), "SZ.300750")
+        self.assertEqual(futu_fetcher._futu_symbol("600519.SH"), "SH.600519")
+        self.assertEqual(futu_fetcher._futu_symbol("SZ.000001"), "SZ.000001")
+
+    def test_unsupported_cn_prefix_returns_none(self):
+        self.assertIsNone(futu_fetcher._futu_symbol("830799"))
+
+    def test_us_symbols(self):
+        for code in ("AAPL", "US.AAPL", "aapl.us"):
+            self.assertEqual(futu_fetcher._futu_market(code), "us")
+        self.assertEqual(futu_fetcher._futu_symbol("AAPL"), "US.AAPL")
+        self.assertEqual(futu_fetcher._futu_symbol("US.AAPL"), "US.AAPL")
+        self.assertEqual(futu_fetcher._futu_symbol("aalb.us"), "US.AALB")
+        self.assertEqual(futu_fetcher._futu_symbol("BRK.B"), "US.BRK.B")
+
+    def test_unknown_code_returns_none(self):
+        self.assertIsNone(futu_fetcher._futu_market(""))
+        self.assertIsNone(futu_fetcher._futu_symbol("   "))
+
+
+class TestFutuMarketAwareTimestamp(unittest.TestCase):
+    def test_us_quote_uses_new_york_time(self):
+        value = futu_fetcher._provider_timestamp("2026-11-25 09:30:00", "us")
+        self.assertEqual(value, "2026-11-25T09:30:00-05:00")
+
+    def test_us_quote_uses_dst_offset_in_summer(self):
+        value = futu_fetcher._provider_timestamp("2026-08-24 09:30:00", "us")
+        self.assertEqual(value, "2026-08-24T09:30:00-04:00")

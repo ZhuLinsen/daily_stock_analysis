@@ -140,8 +140,8 @@ _PROVIDER_DEFINITIONS: Sequence[_ProviderDefinition] = (
         label="Futu OpenD",
         fetcher_name="FutuFetcher",
         dataset_markets={
-            "quote.realtime": ("hk",),
-            "kline.daily": ("hk",),
+            "quote.realtime": ("hk", "cn", "us"),
+            "kline.daily": ("hk", "cn", "us"),
             "financial.snapshot": ("hk",),
         },
     ),
@@ -207,6 +207,7 @@ _CN_REALTIME_SOURCES = {
     "tushare",
     "tickplus",
     "tickflow",
+    "futu",
 }
 
 _SCREENING_SOURCES = {"tushare", "sina", "efinance", "akshare_em", "em_datacenter"}
@@ -441,7 +442,7 @@ class DataCapabilityService:
                 "us.realtime",
                 self._us_realtime_priority(fetchers),
                 "DataFetcherManager US realtime route",
-                known_sources={"longbridge", "yfinance"},
+                known_sources={"futu", "longbridge", "yfinance"},
             ),
             self._priority_view(
                 "daily.generic",
@@ -498,6 +499,12 @@ class DataCapabilityService:
 
     def _us_realtime_priority(self, fetchers: Sequence[Any]) -> List[str]:
         fetcher_map = {str(getattr(fetcher, "name", "")): fetcher for fetcher in fetchers}
+        futu = fetcher_map.get("FutuFetcher")
+        if futu is not None and self._fetcher_available_for_capability(
+            futu,
+            capability="realtime_quote",
+        ):
+            return ["futu", "longbridge", "yfinance"]
         longbridge = fetcher_map.get("LongbridgeFetcher")
         if longbridge is not None and self._fetcher_available_for_capability(
             longbridge,
