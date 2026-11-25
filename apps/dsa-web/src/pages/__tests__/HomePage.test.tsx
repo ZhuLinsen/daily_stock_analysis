@@ -3383,6 +3383,39 @@ describe('HomePage', () => {
     });
   });
 
+  it('renders built-in strategy names in English when the UI language is English', async () => {
+    window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'en');
+    vi.mocked(agentApi.getSkills).mockResolvedValue({
+      default_skill_id: 'bull_trend',
+      skills: [
+        { id: 'bull_trend', name: '默认多头趋势', description: '默认个股分析优先策略，识别多头排列、趋势延续与回踩低吸机会。' },
+        { id: 'growth_quality', name: '成长质量', description: '结合收入利润增长、ROE、现金流和行业空间，识别高质量成长股与成长失速风险。' },
+      ],
+    });
+    vi.mocked(historyApi.getList).mockResolvedValue({
+      total: 0,
+      page: 1,
+      limit: 20,
+      items: [],
+    });
+
+    render(
+      <UiLanguageProvider>
+        <MemoryRouter>
+          <HomePage />
+        </MemoryRouter>
+      </UiLanguageProvider>,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Strategy' }));
+    expect(screen.getByRole('menuitemradio', { name: /Default Bull Trend/ })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('menuitemradio', { name: /Growth Quality/ }));
+
+    expect(await screen.findByRole('button', { name: 'Growth Quality' })).toBeInTheDocument();
+    expect(screen.queryByText('成长质量')).not.toBeInTheDocument();
+    expect(screen.queryByText('默认多头趋势')).not.toBeInTheDocument();
+  });
+
   it('supports keyboard navigation in the strategy menu', async () => {
     vi.mocked(agentApi.getSkills).mockResolvedValue({
       default_skill_id: 'bull_trend',
