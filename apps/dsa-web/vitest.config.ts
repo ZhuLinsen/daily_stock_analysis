@@ -7,6 +7,8 @@ export default defineConfig({
     environment: 'jsdom',
     globals: true,
     setupFiles: './src/setupTests.ts',
+    // Leaves room for several 5 s findBy/waitFor waits in one test.
+    testTimeout: 20000,
     exclude: [...configDefaults.exclude, 'e2e/**', 'playwright.config.ts'],
   },
 });
