@@ -38,7 +38,7 @@ export interface UseAutocompleteResult {
   /** Select suggestion item */
   handleSelect: (suggestion: StockSuggestion) => void;
   /** Close suggestions list */
-  close: () => void;
+  close: (options?: { cancelPendingSearch?: boolean }) => void;
   /** Reset state */
   reset: () => void;
   /** Whether IME is composing */
@@ -79,6 +79,13 @@ export function useAutocomplete(
   // Use ref to store debounce timer
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  const clearDebounceTimer = useCallback(() => {
+    if (debounceTimerRef.current !== null) {
+      clearTimeout(debounceTimerRef.current);
+      debounceTimerRef.current = null;
+    }
+  }, []);
+
   // Search function (debounced)
   const search = useCallback((q: string) => {
     if (runtimeFallback) {
@@ -111,32 +118,38 @@ export function useAutocomplete(
   // Input handling (with debounce)
   const handleInputChange = useCallback((value: string) => {
     setQuery(value);
-
-    // Clear previous timer
-    if (debounceTimerRef.current) {
-      clearTimeout(debounceTimerRef.current);
-    }
+    clearDebounceTimer();
 
     if (runtimeFallback) {
       return;
     }
 
+    if (value.trim().length < minLength) {
+      setSuggestions([]);
+      setIsOpen(false);
+      setHighlightedIndex(-1);
+      return;
+    }
+
     // Set new timer
     debounceTimerRef.current = setTimeout(() => {
+      debounceTimerRef.current = null;
       search(value);
     }, debounceMs);
-  }, [search, debounceMs, runtimeFallback]);
+  }, [clearDebounceTimer, search, debounceMs, minLength, runtimeFallback]);
 
   // Select suggestion item
   const handleSelect = useCallback((suggestion: StockSuggestion) => {
+    clearDebounceTimer();
     setQuery(suggestion.displayCode);
     setIsOpen(false);
     setSuggestions([]);
     setHighlightedIndex(-1);
-  }, []);
+  }, [clearDebounceTimer]);
 
   // Highlight previous item
   const highlightPrevious = useCallback(() => {
+    if (suggestions.length === 0) return;
     setHighlightedIndex(prev => {
       if (prev <= 0) return suggestions.length - 1;
       return prev - 1;
@@ -145,6 +158,7 @@ export function useAutocomplete(
 
   // Highlight next item
   const highlightNext = useCallback(() => {
+    if (suggestions.length === 0) return;
     setHighlightedIndex(prev => {
       if (prev >= suggestions.length - 1) return 0;
       return prev + 1;
@@ -152,27 +166,25 @@ export function useAutocomplete(
   }, [suggestions.length]);
 
   // Close dropdown
-  const close = useCallback(() => {
+  const close = useCallback((options?: { cancelPendingSearch?: boolean }) => {
+    if (options?.cancelPendingSearch !== false) {
+      clearDebounceTimer();
+    }
     setIsOpen(false);
     setHighlightedIndex(-1);
-  }, []);
+  }, [clearDebounceTimer]);
 
   // Reset
   const reset = useCallback(() => {
+    clearDebounceTimer();
     setQuery('');
     setSuggestions([]);
     setIsOpen(false);
     setHighlightedIndex(-1);
-  }, []);
+  }, [clearDebounceTimer]);
 
   // Cleanup timer (on component unmount)
-  useEffect(() => {
-    return () => {
-      if (debounceTimerRef.current) {
-        clearTimeout(debounceTimerRef.current);
-      }
-    };
-  }, []);
+  useEffect(() => clearDebounceTimer, [clearDebounceTimer]);
 
   return {
     query,
