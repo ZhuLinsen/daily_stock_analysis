@@ -33,23 +33,25 @@ import {
 } from '../utils/stockCode';
 import { useStockIndex } from '../hooks/useStockIndex';
 import { useUiLanguage } from '../contexts/UiLanguageContext';
-import type { UiLanguage } from '../i18n/uiText';
 import { localizeSkill } from '../locales/strategyText';
 
 // Quick question examples shown on empty state
 type ActiveStockContext = Pick<ChatFollowUpContext, 'stock_code' | 'stock_name'>;
 
+// Quick questions are sent verbatim as the chat message. The server confirms
+// the target stock from Chinese operation words in that text, so they are not
+// translated with the UI language.
 const QUICK_QUESTIONS: Array<{
-  label: Record<UiLanguage, string>;
+  label: string;
   skill: string;
   stockContext?: ActiveStockContext;
 }> = [
-  { label: { zh: '用缠论分析茅台', en: 'Analyze Kweichow Moutai with Chan Theory' }, skill: 'chan_theory', stockContext: { stock_code: '600519', stock_name: '贵州茅台' } },
-  { label: { zh: '波浪理论看宁德时代', en: 'Elliott Wave view of CATL' }, skill: 'wave_theory', stockContext: { stock_code: '300750', stock_name: '宁德时代' } },
-  { label: { zh: '分析比亚迪趋势', en: 'Analyze the BYD trend' }, skill: 'bull_trend', stockContext: { stock_code: '002594', stock_name: '比亚迪' } },
-  { label: { zh: '用箱体震荡分析 A 股中芯国际 688981', en: 'Analyze SMIC (A-share 688981) with Box Range Trading' }, skill: 'box_oscillation', stockContext: { stock_code: '688981', stock_name: '中芯国际' } },
-  { label: { zh: '分析腾讯 hk00700', en: 'Analyze Tencent hk00700' }, skill: 'bull_trend', stockContext: { stock_code: 'HK00700', stock_name: '腾讯控股' } },
-  { label: { zh: '用情绪周期分析东方财富', en: 'Analyze East Money with Sentiment Cycle' }, skill: 'emotion_cycle', stockContext: { stock_code: '300059', stock_name: '东方财富' } },
+  { label: '用缠论分析茅台', skill: 'chan_theory', stockContext: { stock_code: '600519', stock_name: '贵州茅台' } },
+  { label: '波浪理论看宁德时代', skill: 'wave_theory', stockContext: { stock_code: '300750', stock_name: '宁德时代' } },
+  { label: '分析比亚迪趋势', skill: 'bull_trend', stockContext: { stock_code: '002594', stock_name: '比亚迪' } },
+  { label: '用箱体震荡分析 A 股中芯国际 688981', skill: 'box_oscillation', stockContext: { stock_code: '688981', stock_name: '中芯国际' } },
+  { label: '分析腾讯 hk00700', skill: 'bull_trend', stockContext: { stock_code: 'HK00700', stock_name: '腾讯控股' } },
+  { label: '用情绪周期分析东方财富', skill: 'emotion_cycle', stockContext: { stock_code: '300059', stock_name: '东方财富' } },
 ];
 
 const MAX_SELECTED_SKILLS = 3;
@@ -619,7 +621,7 @@ const ChatPage: React.FC = () => {
 
   const handleQuickQuestion = (q: (typeof QUICK_QUESTIONS)[0]) => {
     setSelectedSkillIds([q.skill]);
-    handleSend(q.label[language], [q.skill], q.stockContext);
+    handleSend(q.label, [q.skill], q.stockContext);
   };
 
   const showSendFeedback = useCallback((nextToast: { type: 'success' | 'error'; message: string }, durationMs: number) => {
@@ -1130,7 +1132,7 @@ const ChatPage: React.FC = () => {
                           disabled={!agentAvailable}
                           className="quick-question-btn disabled:cursor-not-allowed disabled:opacity-60"
                         >
-                          {q.label[language]}
+                          {q.label}
                         </button>
                       ))}
                     </div>

@@ -58,4 +58,11 @@ describe('localizeSkill', () => {
     expect(localizeSkill(custom, 'en')).toBe(custom);
     expect(localizeSkill(overridden, 'en')).toEqual(overridden);
   });
+
+  it('ignores ids that match Object.prototype properties', () => {
+    for (const id of ['constructor', 'toString', 'hasOwnProperty', '__proto__']) {
+      const custom = { id, name: '自定义', description: '自定义描述' };
+      expect(localizeSkill(custom, 'en')).toBe(custom);
+    }
+  });
 });

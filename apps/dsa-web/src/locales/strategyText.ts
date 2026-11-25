@@ -77,10 +77,12 @@ export const BUILTIN_STRATEGY_TEXT: Record<string, Record<UiLanguage, StrategyTe
 
 /** Returns the skill with built-in display text translated for the active UI language. */
 export function localizeSkill<T extends LocalizableSkill>(skill: T, language: UiLanguage): T {
-  const text = BUILTIN_STRATEGY_TEXT[skill.id];
-  if (!text || language === 'zh') {
+  // Skill ids come from the API (custom YAML names included), so only look up
+  // own keys: ids such as `constructor` must not resolve to Object.prototype.
+  if (language === 'zh' || !Object.hasOwn(BUILTIN_STRATEGY_TEXT, skill.id)) {
     return skill;
   }
+  const text = BUILTIN_STRATEGY_TEXT[skill.id];
   const localized = text[language];
   return {
     ...skill,
