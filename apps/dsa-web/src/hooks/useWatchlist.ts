@@ -24,6 +24,7 @@ export function useWatchlist(getCodeKey: (code: string) => string = toAssetAware
   const actionInFlightRef = useRef(false);
   const nextRequestSeqRef = useRef(0);
   const committedSeqRef = useRef(0);
+  const inFlightRefreshSeqsRef = useRef<Set<number>>(new Set());
 
   useEffect(() => {
     mountedRef.current = true;
@@ -38,14 +39,17 @@ export function useWatchlist(getCodeKey: (code: string) => string = toAssetAware
 
   const refresh = useCallback(async () => {
     const requestSeq = ++nextRequestSeqRef.current;
+    inFlightRefreshSeqsRef.current.add(requestSeq);
     try {
       const result = await systemConfigApi.getWatchlist();
-      if (mountedRef.current && requestSeq >= committedSeqRef.current) {
+      if (mountedRef.current && requestSeq > committedSeqRef.current) {
         committedSeqRef.current = requestSeq;
         setCodes(result);
       }
     } catch {
       // Keep committed codes and do not invalidate older in-flight GET snapshots on failure.
+    } finally {
+      inFlightRefreshSeqsRef.current.delete(requestSeq);
     }
   }, []);
 
@@ -87,10 +91,22 @@ export function useWatchlist(getCodeKey: (code: string) => string = toAssetAware
       actionInFlightRef.current = true;
       const mutationSeq = ++nextRequestSeqRef.current;
       setIsActioning(true);
+      let shouldFollowUpRefresh = false;
       try {
         const result = await mutate(stockCode);
         if (mountedRef.current) {
-          committedSeqRef.current = Math.max(committedSeqRef.current, mutationSeq);
+          for (const seq of inFlightRefreshSeqsRef.current) {
+            if (seq > mutationSeq) {
+              shouldFollowUpRefresh = true;
+              break;
+            }
+          }
+          // Invalidate every GET initiated before this mutation committed so an
+          // overlapping pre-write read cannot revert the committed result.
+          committedSeqRef.current = Math.max(
+            committedSeqRef.current,
+            nextRequestSeqRef.current,
+          );
           setCodes(result);
           showMessage(successMessage);
         }
@@ -98,10 +114,15 @@ export function useWatchlist(getCodeKey: (code: string) => string = toAssetAware
         if (mountedRef.current) showMessage('操作失败');
       } finally {
         actionInFlightRef.current = false;
-        if (mountedRef.current) setIsActioning(false);
+        if (mountedRef.current) {
+          setIsActioning(false);
+          if (shouldFollowUpRefresh) {
+            void refresh();
+          }
+        }
       }
     },
-    [showMessage],
+    [refresh, showMessage],
   );
 
   const addToWatchlist = useCallback(
