@@ -53,6 +53,9 @@ log "Checking Futu SDK availability..."
 log "Checking orjson availability..."
 "${PYTHON_BIN}" -c "import orjson"
 
+log "Checking fin_primitives availability..."
+"${PYTHON_BIN}" -c "import fin_primitives"
+
 log "Checking MiniRacer JavaScript runtime..."
 "${PYTHON_BIN}" -c "from py_mini_racer import MiniRacer; assert MiniRacer().eval('1 + 1') == 2"
 
@@ -102,6 +105,7 @@ hidden_imports=(
   "src.services.screening"
   "src.services.screening.pipeline"
   "orjson"
+  "fin_primitives"
   "uvicorn.logging"
   "uvicorn.loops"
   "uvicorn.loops.auto"
@@ -124,6 +128,7 @@ cmd=("${PYTHON_BIN}" -m PyInstaller --name stock_analysis --onedir --noconfirm -
 cmd+=("--collect-all" "src.services.screening")
 cmd+=("--collect-all" "futu")
 cmd+=("--collect-all" "py_mini_racer")
+cmd+=("--collect-all" "fin_primitives")
 cmd+=("--add-data" "src/services/screening/strategies:src/services/screening/strategies")
 cmd+=("${hidden_import_args[@]}" "main.py")
 
@@ -168,6 +173,14 @@ if DSA_PACKAGED_IMPORT_PROBE="src.agent.factory" "${packaged_entry}" >/tmp/dsa-p
   cat /tmp/dsa-packaged-import.log
 else
   echo "ERROR: packaged backend artifact cannot build the agent tool registry."
+  cat /tmp/dsa-packaged-import.log
+  exit 1
+fi
+
+if DSA_PACKAGED_IMPORT_PROBE="fin_primitives" "${packaged_entry}" >/tmp/dsa-packaged-import.log 2>&1; then
+  cat /tmp/dsa-packaged-import.log
+else
+  echo "ERROR: packaged backend artifact cannot import fin_primitives."
   cat /tmp/dsa-packaged-import.log
   exit 1
 fi

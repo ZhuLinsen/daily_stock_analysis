@@ -4,12 +4,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 from math import isfinite
 from typing import Any, Dict, Optional
 
 import pandas as pd
 
+from src.core.trading_calendar import (
+    _XCALS_AVAILABLE,
+    get_effective_trading_date,
+    get_market_for_stock,
+    get_market_now,
+)
 from src.utils.rsi import wilder_rsi
 
 
@@ -24,6 +30,14 @@ TECHNICAL_ALERT_TYPES = frozenset({
 ABOVE_BELOW_DIRECTIONS = frozenset({"above", "below"})
 CROSS_DIRECTIONS = frozenset({"bullish_cross", "bearish_cross"})
 MAX_REQUESTED_DAYS = 365
+_MARKET_CLOSE_TIMES = {
+    "cn": time(15, 0),
+    "hk": time(16, 0),
+    "us": time(16, 0),
+    "jp": time(15, 30),
+    "kr": time(15, 30),
+    "tw": time(13, 30),
+}
 
 
 @dataclass
@@ -132,7 +146,7 @@ def evaluate_indicator_alert(
         columns = ("high", "low", "close")
 
     try:
-        normalized = normalize_ohlcv(df, required_columns=columns, now=now)
+        normalized = normalize_ohlcv(df, required_columns=columns, stock_code=stock_code, now=now)
     except ValueError as exc:
         return IndicatorEvaluation(
             status="degraded",
@@ -183,6 +197,7 @@ def normalize_ohlcv(
     df: Any,
     *,
     required_columns: tuple[str, ...],
+    stock_code: Optional[str] = None,
     now: Optional[datetime] = None,
 ) -> pd.DataFrame:
     if df is None or getattr(df, "empty", True):
@@ -207,7 +222,7 @@ def normalize_ohlcv(
     output = output.dropna(subset=list(required_columns)).copy()
     if output.empty:
         return output
-    output = _drop_partial_today(output, now=now)
+    output = _drop_partial_today(output, stock_code=stock_code, now=now)
     if output.empty:
         return output.reset_index(drop=True)
     output = output.sort_values(by="date", kind="stable", na_position="first").reset_index(drop=True)
@@ -483,7 +498,39 @@ def _date_series(df: pd.DataFrame) -> pd.Series:
     return pd.Series([pd.NaT] * len(df), index=df.index)
 
 
-def _drop_partial_today(df: pd.DataFrame, *, now: Optional[datetime] = None) -> pd.DataFrame:
+def _drop_partial_today(
+    df: pd.DataFrame,
+    *,
+    stock_code: Optional[str] = None,
+    now: Optional[datetime] = None,
+) -> pd.DataFrame:
+    market = get_market_for_stock(stock_code) if stock_code else None
+    if market in _MARKET_CLOSE_TIMES:
+        market_now = get_market_now(market, current_time=now)
+        if _XCALS_AVAILABLE:
+            effective_date = get_effective_trading_date(market, current_time=now)
+        else:
+            close_time = _MARKET_CLOSE_TIMES[market]
+            effective_date = (
+                market_now.date() - timedelta(days=1)
+                if market_now.time() < close_time
+                else market_now.date()
+            )
+        if effective_date < market_now.date():
+            try:
+                parsed_last = pd.to_datetime(df["date"].iloc[-1], errors="coerce")
+            except (KeyError, IndexError, TypeError, ValueError, OverflowError):
+                return df.iloc[:-1].copy()
+            if pd.isna(parsed_last):
+                df = df.iloc[:-1].copy()
+                if df.empty:
+                    return df
+        parsed_dates = pd.to_datetime(df["date"], errors="coerce")
+        if isinstance(parsed_dates.dtype, pd.DatetimeTZDtype):
+            parsed_dates = parsed_dates.dt.tz_localize(None)
+        mask = parsed_dates.isna() | (parsed_dates.dt.date <= effective_date)
+        return df.loc[mask].copy()
+
     current = now or datetime.now()
     if current.time() >= time(16, 0):
         return df
