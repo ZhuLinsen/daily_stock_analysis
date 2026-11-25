@@ -7,14 +7,31 @@
  * `<textarea>` + `document.execCommand('copy')` keeps copy actions working
  * consistently across HTTPS, LAN HTTP, and embedded WebViews.
  */
-export async function copyTextToClipboard(text: string): Promise<boolean> {
+export interface CopyTextToClipboardOptions {
+  /**
+   * Optional guard checked right before falling back to DOM-based
+   * `document.execCommand('copy')`. Returning `false` aborts the fallback so a
+   * superseded or unmounted async `navigator.clipboard.writeText` rejection
+   * cannot steal focus or clobber a newer clipboard write.
+   */
+  shouldFallback?: () => boolean;
+}
+
+export async function copyTextToClipboard(
+  text: string,
+  options?: CopyTextToClipboardOptions,
+): Promise<boolean> {
   if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
     try {
       await navigator.clipboard.writeText(text);
       return true;
     } catch {
-      // Fall through to legacy execCommand copy.
+      // Fall through to legacy execCommand copy unless the caller invalidated this attempt.
     }
+  }
+
+  if (options?.shouldFallback && !options.shouldFallback()) {
+    return false;
   }
 
   if (typeof document === 'undefined' || !document.body) {

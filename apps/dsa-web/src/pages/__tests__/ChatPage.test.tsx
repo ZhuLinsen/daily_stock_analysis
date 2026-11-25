@@ -2234,4 +2234,72 @@ describe('watchlist button with code variants', () => {
       }
     }
   });
+
+  it('skips execCommand fallback when an older message writeText rejects after copying a newer message', async () => {
+    const originalClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+    const originalExecCommand = Object.getOwnPropertyDescriptor(document, 'execCommand');
+    let rejectFirstMessage!: (reason?: unknown) => void;
+    const writeText = vi
+      .fn()
+      .mockImplementationOnce(
+        () => new Promise<void>((_resolve, reject) => {
+          rejectFirstMessage = reject;
+        }),
+      )
+      .mockResolvedValueOnce(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+    const execCommand = vi.fn().mockReturnValue(true);
+    Object.defineProperty(document, 'execCommand', {
+      configurable: true,
+      value: execCommand,
+    });
+    mockStoreState.messages = [
+      { id: 'assistant-msg-a', role: 'assistant', content: '消息 A 内容' },
+      { id: 'assistant-msg-b', role: 'assistant', content: '消息 B 内容' },
+    ];
+
+    try {
+      render(
+        <MemoryRouter initialEntries={['/chat']}>
+          <ChatPage />
+        </MemoryRouter>,
+      );
+
+      const copyButtons = await screen.findAllByRole('button', { name: '复制' });
+      expect(copyButtons).toHaveLength(2);
+
+      // Copy message A (pending), then copy message B (succeeds).
+      fireEvent.click(copyButtons[0]);
+      await act(async () => {
+        fireEvent.click(copyButtons[1]);
+        await Promise.resolve();
+      });
+      expect(screen.getByRole('button', { name: '已复制' })).toBeInTheDocument();
+
+      // Message A's pending writeText rejects -> must NOT run execCommand or show failure.
+      await act(async () => {
+        rejectFirstMessage(new DOMException('Denied', 'NotAllowedError'));
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(execCommand).not.toHaveBeenCalled();
+      expect(screen.getByRole('button', { name: '已复制' })).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: '复制失败' })).not.toBeInTheDocument();
+    } finally {
+      if (originalClipboard) {
+        Object.defineProperty(navigator, 'clipboard', originalClipboard);
+      } else {
+        Reflect.deleteProperty(navigator, 'clipboard');
+      }
+      if (originalExecCommand) {
+        Object.defineProperty(document, 'execCommand', originalExecCommand);
+      } else {
+        Reflect.deleteProperty(document, 'execCommand');
+      }
+    }
+  });
 });

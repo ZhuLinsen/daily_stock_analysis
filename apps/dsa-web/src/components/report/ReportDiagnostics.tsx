@@ -317,7 +317,9 @@ export const ReportDiagnostics: React.FC<ReportDiagnosticsProps> = ({
 
     const token = ++copyTokenRef.current;
     const targetIdentity = copyIdentity;
-    const ok = await copyTextToClipboard(visibleSummary.copyText);
+    const ok = await copyTextToClipboard(visibleSummary.copyText, {
+      shouldFallback: () => mountedRef.current && copyTokenRef.current === token,
+    });
     if (!mountedRef.current || copyTokenRef.current !== token) {
       return;
     }

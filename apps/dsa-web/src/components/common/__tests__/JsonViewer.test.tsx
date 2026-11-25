@@ -149,4 +149,48 @@ describe('JsonViewer', () => {
     );
     expect(screen.getByRole('button', { name: '复制' })).toBeInTheDocument();
   });
+
+  it('skips execCommand fallback when a stale writeText rejects after data changes and newer copy succeeds', async () => {
+    let rejectFirstCopy!: (reason?: unknown) => void;
+    const writeText = vi
+      .fn()
+      .mockImplementationOnce(
+        () => new Promise<void>((_resolve, reject) => {
+          rejectFirstCopy = reject;
+        }),
+      )
+      .mockResolvedValueOnce(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+    const execCommand = vi.fn().mockReturnValue(true);
+    Object.defineProperty(document, 'execCommand', {
+      configurable: true,
+      value: execCommand,
+    });
+
+    const { rerender } = renderJsonViewer({ signalId: 1 });
+    fireEvent.click(screen.getByRole('button', { name: '复制' }));
+
+    rerender(
+      <UiLanguageProvider>
+        <JsonViewer data={{ signalId: 2 }} />
+      </UiLanguageProvider>,
+    );
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: '复制' }));
+      await Promise.resolve();
+    });
+    expect(screen.getByRole('button', { name: '已复制!' })).toBeInTheDocument();
+
+    await act(async () => {
+      rejectFirstCopy(new DOMException('Denied', 'NotAllowedError'));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(execCommand).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: '已复制!' })).toBeInTheDocument();
+  });
 });

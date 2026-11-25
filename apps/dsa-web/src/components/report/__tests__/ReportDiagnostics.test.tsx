@@ -220,4 +220,48 @@ describe('ReportDiagnostics', () => {
     rerender(<ReportDiagnostics recordId={1} summary={summaryA} />);
     expect(screen.getByRole('button', { name: '复制排障信息' })).toBeInTheDocument();
   });
+
+  it('skips execCommand fallback when a stale summary writeText rejects after switching and copying summary B', async () => {
+    let rejectSummaryA!: (reason?: unknown) => void;
+    const writeText = vi
+      .fn()
+      .mockImplementationOnce(
+        () => new Promise<void>((_resolve, reject) => {
+          rejectSummaryA = reject;
+        }),
+      )
+      .mockResolvedValueOnce(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+    const execCommand = vi.fn().mockReturnValue(true);
+    Object.defineProperty(document, 'execCommand', {
+      configurable: true,
+      value: execCommand,
+    });
+
+    const summaryA = { ...diagnosticSummary, copyText: 'trace-A-copy' };
+    const summaryB = { ...diagnosticSummary, copyText: 'trace-B-copy' };
+
+    const { rerender } = render(<ReportDiagnostics recordId={1} summary={summaryA} />);
+    fireEvent.click(screen.getByText('运行状态'));
+    fireEvent.click(screen.getByRole('button', { name: '复制排障信息' }));
+
+    rerender(<ReportDiagnostics recordId={2} summary={summaryB} />);
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: '复制排障信息' }));
+      await Promise.resolve();
+    });
+    expect(screen.getByRole('button', { name: '已复制' })).toBeInTheDocument();
+
+    await act(async () => {
+      rejectSummaryA(new DOMException('Denied', 'NotAllowedError'));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(execCommand).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: '已复制' })).toBeInTheDocument();
+  });
 });

@@ -119,6 +119,7 @@ const ChatPage: React.FC = () => {
   const watchlistMessageTimerRef = useRef<number | null>(null);
   const copyResetTimerRef = useRef<Partial<Record<string, number>>>({});
   const copyRequestTokenRef = useRef<Record<string, number>>({});
+  const clipboardAttemptIdRef = useRef(0);
   const messagesViewportRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const isMountedRef = useRef(true);
@@ -136,12 +137,15 @@ const ChatPage: React.FC = () => {
   useEffect(() => {
     const timers = copyResetTimerRef.current;
     return () => {
+      clipboardAttemptIdRef.current += 1;
       if (sendToastTimerRef.current !== null) {
         window.clearTimeout(sendToastTimerRef.current);
       }
-      Object.values(timers).forEach((timerId) => {
+      Object.keys(timers).forEach((key) => {
+        const timerId = timers[key];
         if (timerId !== undefined) {
           window.clearTimeout(timerId);
+          delete timers[key];
         }
       });
     };
@@ -274,6 +278,7 @@ const ChatPage: React.FC = () => {
   }, [syncScrollState]);
 
   useEffect(() => {
+    clipboardAttemptIdRef.current += 1;
     syncScrollState();
   }, [syncScrollState, sessionId]);
 
@@ -641,24 +646,34 @@ const ChatPage: React.FC = () => {
   const copyMessageToClipboard = async (msgId: string, content: string) => {
     const token = (copyRequestTokenRef.current[msgId] ?? 0) + 1;
     copyRequestTokenRef.current[msgId] = token;
+    const clipboardAttemptId = ++clipboardAttemptIdRef.current;
     const existingTimer = copyResetTimerRef.current[msgId];
     if (existingTimer !== undefined) {
       window.clearTimeout(existingTimer);
       delete copyResetTimerRef.current[msgId];
     }
 
+    const isAttemptCurrent = () =>
+      isMountedRef.current &&
+      copyRequestTokenRef.current[msgId] === token &&
+      clipboardAttemptIdRef.current === clipboardAttemptId;
+
     let copied = false;
     try {
-      copied = await copyTextToClipboard(content);
-      if (!copied) {
+      copied = await copyTextToClipboard(content, {
+        shouldFallback: isAttemptCurrent,
+      });
+      if (!copied && isAttemptCurrent()) {
         console.error('Copy failed: clipboard unavailable');
       }
     } catch (err) {
-      console.error('Copy failed:', err);
+      if (isAttemptCurrent()) {
+        console.error('Copy failed:', err);
+      }
       copied = false;
     }
 
-    if (!isMountedRef.current || copyRequestTokenRef.current[msgId] !== token) {
+    if (!isAttemptCurrent()) {
       return;
     }
 
@@ -1215,7 +1230,7 @@ const ChatPage: React.FC = () => {
                         copyStatus === 'copied'
                           ? text.copied
                           : copyStatus === 'failed'
-                            ? t('common.copyFailed')
+                            ? text.copyFailed
                             : text.copy;
                       return (
                       <div className="relative">

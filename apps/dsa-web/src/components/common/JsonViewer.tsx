@@ -101,7 +101,9 @@ export const JsonViewer: React.FC<JsonViewerProps> = ({
   const handleCopy = async () => {
     const token = ++copyTokenRef.current;
     const targetKey = jsonString;
-    const ok = await copyTextToClipboard(jsonString);
+    const ok = await copyTextToClipboard(jsonString, {
+      shouldFallback: () => mountedRef.current && copyTokenRef.current === token,
+    });
     if (!mountedRef.current || copyTokenRef.current !== token) {
       return;
     }

@@ -22,6 +22,16 @@ const createIdleCopyState = (): PanelCopyState => ({
   snapshot: { key: '', status: 'idle' },
 });
 
+function clearPanelResetTimers(timers: Partial<Record<JsonPanel, number>>): void {
+  (Object.keys(timers) as JsonPanel[]).forEach((panel) => {
+    const timerId = timers[panel];
+    if (timerId !== undefined) {
+      window.clearTimeout(timerId);
+      delete timers[panel];
+    }
+  });
+}
+
 function serializeDetailValue(value: unknown): string {
   if (value === undefined || value === null) {
     return '';
@@ -43,8 +53,6 @@ export const ReportDetails: React.FC<ReportDetailsProps> = ({
 }) => {
   const reportLanguage = normalizeReportLanguage(language);
   const text = getReportText(reportLanguage);
-  const copyFailedText =
-    reportLanguage === 'en' ? 'Copy failed' : reportLanguage === 'ko' ? '복사 실패' : '复制失败';
   const rawJsonStr = details?.rawResult ? serializeDetailValue(details.rawResult) : '';
   const snapshotJsonStr = details?.contextSnapshot ? serializeDetailValue(details.contextSnapshot) : '';
   const rawPanelKey = `${recordId ?? ''}\u0000${rawJsonStr}`;
@@ -61,6 +69,7 @@ export const ReportDetails: React.FC<ReportDetailsProps> = ({
   const copyResetTimerRef = useRef<Partial<Record<JsonPanel, number>>>({});
   const mountedRef = useRef(true);
   const copyTokenRef = useRef<Record<JsonPanel, number>>({ raw: 0, snapshot: 0 });
+  const clipboardAttemptIdRef = useRef(0);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -68,25 +77,18 @@ export const ReportDetails: React.FC<ReportDetailsProps> = ({
     const resetTimers = copyResetTimerRef.current;
     return () => {
       mountedRef.current = false;
+      clipboardAttemptIdRef.current += 1;
       copyTokens.raw += 1;
       copyTokens.snapshot += 1;
-      Object.values(resetTimers).forEach((timerId) => {
-        if (timerId !== undefined) {
-          window.clearTimeout(timerId);
-        }
-      });
+      clearPanelResetTimers(resetTimers);
     };
   }, []);
 
   useEffect(() => {
+    clipboardAttemptIdRef.current += 1;
     copyTokenRef.current.raw += 1;
     copyTokenRef.current.snapshot += 1;
-    Object.values(copyResetTimerRef.current).forEach((timerId) => {
-      if (timerId !== undefined) {
-        window.clearTimeout(timerId);
-      }
-    });
-    copyResetTimerRef.current = {};
+    clearPanelResetTimers(copyResetTimerRef.current);
   }, [contentKey]);
 
   if (!details?.rawResult && !details?.contextSnapshot && !recordId) {
@@ -95,8 +97,18 @@ export const ReportDetails: React.FC<ReportDetailsProps> = ({
 
   const copyToClipboard = async (content: string, panel: JsonPanel, panelKey: string) => {
     const token = ++copyTokenRef.current[panel];
-    const ok = await copyTextToClipboard(content);
-    if (!mountedRef.current || copyTokenRef.current[panel] !== token) {
+    const clipboardAttemptId = ++clipboardAttemptIdRef.current;
+    const ok = await copyTextToClipboard(content, {
+      shouldFallback: () =>
+        mountedRef.current &&
+        copyTokenRef.current[panel] === token &&
+        clipboardAttemptIdRef.current === clipboardAttemptId,
+    });
+    if (
+      !mountedRef.current ||
+      copyTokenRef.current[panel] !== token ||
+      clipboardAttemptIdRef.current !== clipboardAttemptId
+    ) {
       return;
     }
     setPanelCopyState((prev) => ({
@@ -126,7 +138,7 @@ export const ReportDetails: React.FC<ReportDetailsProps> = ({
     const activeEntry = panelCopyState[panel];
     const status: CopyStatus = activeEntry.key === panelKey ? activeEntry.status : 'idle';
     const buttonLabel =
-      status === 'copied' ? text.copied : status === 'failed' ? copyFailedText : text.copy;
+      status === 'copied' ? text.copied : status === 'failed' ? text.copyFailed : text.copy;
     return (
       <div className="relative overflow-hidden">
         <span className="absolute top-2 right-2 z-10 inline-flex">

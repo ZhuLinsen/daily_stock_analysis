@@ -174,4 +174,109 @@ describe('ReportDetails', () => {
     );
     expect(screen.getByRole('button', { name: 'Copy' })).toBeInTheDocument();
   });
+
+  it('skips execCommand fallback when a stale writeText rejects after switching reports or copying another panel', async () => {
+    let rejectRecord7Raw!: (reason?: unknown) => void;
+    let rejectRecord8Raw!: (reason?: unknown) => void;
+    const writeText = vi
+      .fn()
+      .mockImplementationOnce(
+        () => new Promise<void>((_resolve, reject) => {
+          rejectRecord7Raw = reject;
+        }),
+      )
+      .mockResolvedValueOnce(undefined)
+      .mockImplementationOnce(
+        () => new Promise<void>((_resolve, reject) => {
+          rejectRecord8Raw = reject;
+        }),
+      )
+      .mockResolvedValueOnce(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+    const execCommand = vi.fn().mockReturnValue(true);
+    Object.defineProperty(document, 'execCommand', {
+      configurable: true,
+      value: execCommand,
+    });
+
+    const { rerender } = render(
+      <ReportDetails
+        recordId={7}
+        details={{ rawResult: { score: 82 }, contextSnapshot: { window: '30d' } }}
+        language="en"
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Raw Analysis Result' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Analysis Snapshot' }));
+
+    // 1) Start copying record 7 raw -> switch to record 8 and copy record 8 raw.
+    const [rawBtn7] = screen.getAllByRole('button', { name: 'Copy' });
+    fireEvent.click(rawBtn7);
+
+    rerender(
+      <ReportDetails
+        recordId={8}
+        details={{ rawResult: { score: 91 }, contextSnapshot: { window: '60d' } }}
+        language="en"
+      />,
+    );
+    const [rawBtn8, snapshotBtn8] = screen.getAllByRole('button', { name: 'Copy' });
+    await act(async () => {
+      fireEvent.click(rawBtn8);
+      await Promise.resolve();
+    });
+    expect(screen.getByRole('button', { name: 'Copied!' })).toBeInTheDocument();
+
+    // Record 7's pending writeText rejects -> must NOT invoke execCommand or clobber record 8.
+    await act(async () => {
+      rejectRecord7Raw(new DOMException('Denied', 'NotAllowedError'));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(execCommand).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'Copied!' })).toBeInTheDocument();
+
+    // 2) On record 8, start a new pending raw copy, then succeed copying snapshot -> raw rejects.
+    fireEvent.click(screen.getByRole('button', { name: 'Copied!' }));
+    await act(async () => {
+      fireEvent.click(snapshotBtn8);
+      await Promise.resolve();
+    });
+    await act(async () => {
+      rejectRecord8Raw(new DOMException('Denied', 'NotAllowedError'));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(execCommand).not.toHaveBeenCalled();
+    expect(screen.queryByRole('button', { name: 'Copy failed' })).not.toBeInTheDocument();
+
+    act(() => {
+      vi.advanceTimersByTime(2000);
+    });
+  });
+
+  it('clears active copy reset timers on unmount even after content changes', async () => {
+    const { rerender, unmount } = render(
+      <ReportDetails recordId={7} details={{ rawResult: { score: 82 } }} language="en" />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Raw Analysis Result' }));
+
+    // Trigger contentKey change before setting a copy reset timer to verify ref identity is preserved.
+    rerender(
+      <ReportDetails recordId={8} details={{ rawResult: { score: 91 } }} language="en" />,
+    );
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Copy' }));
+      await Promise.resolve();
+    });
+    expect(screen.getByRole('button', { name: 'Copied!' })).toBeInTheDocument();
+    expect(vi.getTimerCount()).toBe(1);
+
+    unmount();
+    expect(vi.getTimerCount()).toBe(0);
+  });
 });

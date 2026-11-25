@@ -88,4 +88,35 @@ describe('copyTextToClipboard', () => {
     await expect(copyTextToClipboard('cannot-copy')).resolves.toBe(false);
     expect(document.body.querySelector('textarea')).toBeNull();
   });
+
+  it('skips execCommand fallback when shouldFallback returns false after async writeText rejection', async () => {
+    let rejectWriteText!: (reason?: unknown) => void;
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: {
+        writeText: vi.fn(
+          () => new Promise<void>((_resolve, reject) => {
+            rejectWriteText = reject;
+          }),
+        ),
+      },
+    });
+    const execCommand = vi.fn().mockReturnValue(true);
+    Object.defineProperty(document, 'execCommand', {
+      configurable: true,
+      value: execCommand,
+    });
+    let current = true;
+
+    const copyPromise = copyTextToClipboard('stale-text', {
+      shouldFallback: () => current,
+    });
+
+    current = false;
+    rejectWriteText(new DOMException('Denied', 'NotAllowedError'));
+
+    await expect(copyPromise).resolves.toBe(false);
+    expect(execCommand).not.toHaveBeenCalled();
+    expect(document.body.querySelector('textarea')).toBeNull();
+  });
 });
