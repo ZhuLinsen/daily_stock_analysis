@@ -110,3 +110,44 @@ def test_pipeline_cross_asset_au_label_reaches_model_prompt(language, use_summar
     assert expected_line in prompt
     assert prompt.count('BEGIN_UNTRUSTED_CROSS_ASSET_SUMMARY') == 1
     assert prompt.count('END_UNTRUSTED_CROSS_ASSET_SUMMARY') == 1
+
+
+
+@pytest.mark.parametrize('language,titles', [
+    ('zh', ['日股市场复盘', '澳股市场复盘']),
+    ('en', ['Japan Market Recap', 'Australian ASX Market Recap']),
+])
+def test_multi_market_share_image_renders_the_asx_section(tmp_path, language, titles):
+    import re
+
+    from src.config import Config
+    from src.core.market_review import run_market_review
+    from src.market_analyzer import MarketIndex
+    from src.share_image import build_share_image_html
+    from src.storage import DatabaseManager
+
+    config = Config(database_path=str(tmp_path / 'recap.db'), market_review_region='jp', report_language=language)
+    indices = {
+        'jp': MarketIndex(code='N225', name='Nikkei 225', current=39000),
+        'au': MarketIndex(code='^AXJO', name='S&P/ASX 200', current=8000),
+    }
+    notifier = Mock()
+    notifier.is_available.return_value = notifier.send.return_value = True
+    DatabaseManager.reset_instance()
+    try:
+        with patch('src.storage.get_config', return_value=config), \
+                patch('src.market_analyzer.DataFetcherManager') as manager:
+            manager.return_value.get_main_indices.side_effect = lambda region: [
+                {**indices[region].to_dict(), 'prev_close': indices[region].current}
+            ]
+            result = run_market_review(
+                notifier, analyzer=None, config=config, override_region='jp,au', query_id='asx-share',
+                return_structured=True, save_report_file=False,
+            )
+    finally:
+        DatabaseManager.reset_instance()
+
+    for payload in (None, result.market_review_payload):
+        html = build_share_image_html(result.report, structured_payload=payload)
+        assert re.findall(r'market-region-title"><h2><b>◎</b>(.*?)</h2>', html) == titles
+        assert 'S&amp;P/ASX 200' in html or 'S&P/ASX 200' in html
