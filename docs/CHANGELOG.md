@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [新功能] 新增原生澳股 `au`：显式 `.AX` 代码使用 Yahoo 数据、XASX/悉尼日历和澳洲提示语，保留报价/财报币种及 ETF 类型，拒绝跨市场 fallback 与污染缓存；支持 AU 指数复盘，详见 `docs/asx_support.md`。
 - [修复] 含澳股的多市场复盘分享图可识别澳股/ASX 分段并使用其结构化数据，不再按未识别段落降级。
 - [修复] Web 分析输入、自选股添加接口（`POST /api/v1/stocks/watchlist/add`）与图片识别导入现可接受澳股 `.AX` 代码（如 `BHP.AX`、`A2M.AX`、`A200.AX`，大小写不敏感并统一转大写）；格式错误的 `.AX` 代码在自选股接口返回 400 而非 500。
+- [文档] 公开契约与配置说明补齐澳股 `au`：决策信号/Portfolio 市场枚举、复盘 region 字段与帮助文本、API 规范及使用文档改为列出七个市场（`both` = `cn,hk,us,jp,kr,tw,au`），并链接 `docs/asx_support.md`。
 - [新功能] Web 支持澳股：持仓账户可选澳股市场（默认 AUD，切换市场时自动带出对应币种），决策信号与大盘复盘可选择澳股；创建账户表单补齐中英文文案。
 - [新功能] 大盘复盘结构化字段（Issue #1584）：复盘 Prompt 要求 LLM 在报告末尾输出 ```json 结构化附录，后端提取剥离后并入 payload，新增可选 `summary`（市场温度/状态/建议仓位/核心结论）、`indices[].comment`（指数一句话点评）、`breadth.divergence_diagnosis`（宽度与分化诊断，LLM 缺省时按指数-家数背离确定性兜底）、`style_rotation`（风格轮动信号）、`catalysts[]`（利好/利空、影响范围、持续性、是否已消化）、`next_day_plan`（明日观察清单/仓位建议/失效条件）及可选 `cross_market_note`（跨市场参考，P3）；解析失败或字段缺失逐字段降级为 null/省略，绝不中断复盘，旧 Markdown/历史/推送渲染零差异，不新增任何配置键；Web 大盘复盘视图对新增字段可选渲染（无字段时与旧版一致）。
 - [测试] Web 单元测试的 Testing Library 异步等待上限由 1 秒放宽到 5 秒（单测超时 20 秒），减少 CI 慢机上首屏加载未完成导致的随机失败。

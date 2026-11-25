@@ -1737,7 +1737,7 @@ class PortfolioService:
     def _normalize_market(value: str) -> str:
         market = (value or "").strip().lower()
         if market not in VALID_MARKETS:
-            raise ValueError("market must be one of: cn, hk, us, jp, kr, tw")
+            raise ValueError("market must be one of: cn, hk, us, jp, kr, tw, au")
         return market
 
     @staticmethod
