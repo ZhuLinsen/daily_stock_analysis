@@ -42,7 +42,7 @@ python main.py --stocks BHP.AX,A200.AX --dry-run --workers 1 --no-market-review 
 ## Compatibility and limits / 兼容性与限制
 
 - This is backend/CLI support, not complete web-chat support: the free-text web-chat tokenizer can still split or misidentify `.AX` tokens. Use explicit CLI symbols; do not rely on chat parsing for AU.
-- AU frontend selectors and TypeScript market unions remain follow-up work. The existing six-market UI serializes its exact selection rather than `both`, so it cannot silently request AU.
+- The web UI offers AU in the portfolio account form (default currency AUD), the decision-signal market filter and the market-review region selector. The region selector serializes its exact selection rather than `both`.
 - Existing CN/HK/US/JP/KR/TW routing is preserved. AU is added to backend market schemas and capability reporting; no database migration or dependency addition is required.
 - Public Yahoo data can be delayed and is not an executable broker quote. Yahoo does not guarantee coverage of every ASX security. Missing-symbol handling must remain fail-closed.
 - AU does not enable unsupported Market Light/breadth feeds. Portfolio valuation retains explicit partial-support limitations.
