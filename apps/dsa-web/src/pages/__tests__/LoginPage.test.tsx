@@ -77,4 +77,41 @@ describe('LoginPage', () => {
     expect(pageRoot).not.toBeNull();
     expect(pageRoot?.getAttribute('style') ?? '').not.toContain('--login-bg-main');
   });
+
+  it('guards synchronous double-submit and skips navigation after unmount', async () => {
+    let resolveLogin!: (result: { success: boolean }) => void;
+    const login = vi.fn().mockImplementation(
+      () => new Promise<{ success: boolean }>((resolve) => {
+        resolveLogin = resolve;
+      }),
+    );
+    useAuthMock.mockReturnValue({
+      login,
+      passwordSet: true,
+      setupState: 'enabled',
+    });
+
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const { unmount } = render(<LoginPage />);
+
+      fireEvent.change(screen.getByLabelText('登录密码'), { target: { value: 'passwd6' } });
+      const submitButton = screen.getByRole('button', { name: '授权进入工作台' });
+      fireEvent.click(submitButton);
+      fireEvent.click(submitButton);
+
+      expect(login).toHaveBeenCalledTimes(1);
+      expect(submitButton).toBeDisabled();
+
+      unmount();
+
+      resolveLogin({ success: true });
+      await Promise.resolve();
+
+      expect(navigate).not.toHaveBeenCalled();
+      expect(consoleErrorSpy).not.toHaveBeenCalled();
+    } finally {
+      consoleErrorSpy.mockRestore();
+    }
+  });
 });
