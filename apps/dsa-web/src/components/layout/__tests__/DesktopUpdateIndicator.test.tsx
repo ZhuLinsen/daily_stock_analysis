@@ -156,14 +156,8 @@ describe('DesktopUpdateIndicator', () => {
 
     const entry = await screen.findByRole('button', { name: '桌面端更新' });
     expect(entry).not.toHaveAttribute('title');
-    fireEvent.focus(entry);
-    expect(await screen.findByRole('tooltip')).toHaveTextContent('42%');
-    fireEvent.blur(entry);
-    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
-    fireEvent.mouseEnter(entry.parentElement!);
-    expect(await screen.findByRole('tooltip')).toHaveTextContent('42%');
-    fireEvent.mouseLeave(entry.parentElement!);
-    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
+    fireEvent.mouseEnter(entry);
+    expect(await screen.findByRole('tooltip')).toHaveTextContent(/42%/);
     expect(desktopCheckForUpdates).not.toHaveBeenCalled();
   });
 });

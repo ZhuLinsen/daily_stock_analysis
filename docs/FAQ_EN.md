@@ -4,6 +4,23 @@ This document compiles common issues encountered by users and their solutions.
 
 ---
 
+## Source Installation
+
+### Windows dependency installation fails on long paths
+
+If `pip install -r requirements.txt` raises `OSError: [Errno 2]` for a file under `.venv\Lib\site-packages\litellm\` and mentions Windows long-path support, the full install path may exceed the Windows path-length limit.
+
+Clone or extract a fresh copy of the project into a short, writable directory such as `C:\dsa`. From that directory, use PowerShell to create a new virtual environment and reinstall the dependencies.
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+See [Microsoft Learn](https://learn.microsoft.com/windows/win32/fileio/maximum-file-path-limitation) for Windows long-path requirements.
+
+---
+
 ## Data Related
 
 ### Q1: US stock codes (e.g., AMD, AAPL) show incorrect prices during analysis?
