@@ -1,4 +1,4 @@
-import type { SystemConfigCategory } from '../types/systemConfig';
+import type { SetupStatusResponse, SystemConfigCategory } from '../types/systemConfig';
 import type { UiLanguage } from '../i18n/uiText';
 
 const categoryTitleMap: Record<UiLanguage, Record<SystemConfigCategory, string>> = {
@@ -625,4 +625,21 @@ export function getFieldOptionLabel(
   }
 
   return fallbackLabel ?? value;
+}
+
+/** Show the English setup-check texts the API sends when the UI is in English. */
+export function localizeSetupStatus(
+  status: SetupStatusResponse | null,
+  locale: UiLanguage,
+): SetupStatusResponse | null {
+  if (!status || locale !== 'en') return status;
+  return {
+    ...status,
+    checks: status.checks.map((check) => ({
+      ...check,
+      title: check.titleEn || check.title,
+      message: check.messageEn || check.message,
+      nextStep: check.nextStep ? check.nextStepEn || check.nextStep : check.nextStep,
+    })),
+  };
 }
