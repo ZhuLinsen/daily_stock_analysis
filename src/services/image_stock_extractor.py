@@ -21,6 +21,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from src.config import Config, channel_allows_empty_api_key, get_config
 from src.llm.hermes import route_has_hermes
+from src.services.market_symbol_utils import is_suffix_market_symbol
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +100,9 @@ def _normalize_code(raw: str) -> Optional[str]:
         return s
     # US stocks: 1-5 letters, optionally with . (e.g. BRK.B)
     if re.match(r"^[A-Z]{1,5}(\.[A-Z])?$", s):
+        return s
+    # ASX: 1-6 alphanumeric base + .AX (e.g. BHP.AX, A2M.AX)
+    if is_suffix_market_symbol(s, "au"):
         return s
     # 尝试去除 SH/SZ 后缀
     for suffix in (".SH", ".SZ", ".SS"):

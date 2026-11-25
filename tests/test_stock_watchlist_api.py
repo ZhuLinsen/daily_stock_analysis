@@ -109,6 +109,29 @@ def test_watchlist_mutations_accept_yahoo_class_share_alias() -> None:
 
 
 @pytest.mark.parametrize(
+    ("raw", "expected"),
+    [("BHP.AX", "BHP.AX"), ("a2m.ax", "A2M.AX"), ("A200.AX", "A200.AX")],
+)
+def test_watchlist_add_accepts_asx_suffix_codes(raw: str, expected: str) -> None:
+    service = FakeSystemConfigService("600519")
+
+    response = add_to_watchlist(WatchlistRequest(stock_code=raw), service=service)
+
+    assert response.stock_codes == ["600519", expected]
+
+
+@pytest.mark.parametrize("raw", ["TOOLONG7.AX", "B-H.AX", ".AX", "BHP.AXX"])
+def test_watchlist_add_rejects_malformed_asx_codes(raw: str) -> None:
+    service = FakeSystemConfigService("600519")
+
+    with pytest.raises(HTTPException) as exc_info:
+        add_to_watchlist(WatchlistRequest(stock_code=raw), service=service)
+
+    assert exc_info.value.status_code == 400
+    assert service.update_calls == []
+
+
+@pytest.mark.parametrize(
     "invalid_llm_config",
     [
         "LITELLM_FALLBACK_MODELS=openai/removed-model\n",
