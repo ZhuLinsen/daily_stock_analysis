@@ -851,6 +851,36 @@ class TestBackwardCompatibility:
         assert rendered.count("AI算力") == 1
         assert rendered.count("领涨概念 Top 5") == 0
 
+    def test_existing_concept_table_does_not_drop_missing_industry_fallback(self):
+        """OR-COR-e7c6a2d1：正文已有概念表、payload 同时有行业+概念榜时，
+        兜底应只补缺失的行业部分，行业榜不得因概念标记连坐跳过而丢失。"""
+        concept_table = (
+            "#### 概念板块领涨 Top 5\n"
+            "| 排名 | 概念板块 | 涨跌幅 |\n|------|------|--------|\n| 1 | AI算力 | +5.40% |"
+        )
+        market_payload = {
+            "title": "复盘报告",
+            "region": "cn",
+            "sectors": {"top": [{"name": "半导体", "change_pct": 3.25}]},
+            "concepts": {"top": [{"name": "AI算力", "change_pct": 5.4}]},
+            "markdown_report": "## 复盘报告\n\n### 板块主线\n\n" + concept_table,
+        }
+        combined = {
+            "region": "cn",
+            "language": "zh",
+            "markets": {"cn": market_payload},
+            "markdown_report": market_payload["markdown_report"],
+        }
+
+        rendered = _render_market_review_payload_markdown(combined, wrapper_title="🎯 大盘复盘")
+
+        # 概念表不重复
+        assert rendered.count("AI算力") == 1
+        assert rendered.count("领涨概念 Top 5") == 0
+        # 缺失的行业榜必须补齐（当前全局判定会把行业兜底一起跳过）
+        assert "半导体" in rendered
+        assert "领涨板块 Top 5" in rendered
+
     def test_render_ignores_new_fields_zero_diff(self):
         ma = _make_analyzer(report_text="复盘")
         overview = _cn_overview()
