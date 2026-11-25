@@ -46,7 +46,7 @@ description: 审查 daily_stock_analysis 仓库的 GitHub PR，基于完整 diff
    - `CLI / 调度`：`main.py` 参数、`--schedule`
    - `依赖`：`requirements*.txt`、`apps/*/package.json`
    - `CI / Docker / 发布`：`.github/**`、`docker/**`、`scripts/**`
-   - `文档`：`docs/**`、`docs/CHANGELOG.md`、`README.md`、中英对照文档
+   - `文档`：`docs/**`、`README.md`、中英对照文档
 4. **因果链与同语义排查**：核实问题现象 → 触发条件 → 根因（`path:line`）；对被改函数/配置键/字段做 `git grep`，查清 CLI / API / Bot / Web / Desktop / Scheduler 中未覆盖的同类入口。
 5. **必要性与减法评估（产品取舍建议，非硬阻断）+ 声明 vs 事实 & 测试质量**：
    - 对照 `AGENTS.md` §0 评估改动是否聚焦核心痛点，还是在叠加低频开关、平行入口或重复模板；若存在明显冗余，在建议项中提示维护者可瘦身或关闭，但**不单凭主观范围直接判为合入阻断**，以免误伤正常的 Bug 修复与低耦合实用改进。
