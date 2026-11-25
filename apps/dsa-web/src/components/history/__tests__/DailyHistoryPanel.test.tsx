@@ -322,7 +322,7 @@ describe('DailyHistoryPanel', () => {
       requestedPages.push(page);
       const respond = () => {
         const all = baseRows.filter((row) => row.id !== swap.deletedId);
-        if (swap.added) all.unshift(swap.added);
+        if (swap.added) all.unshift(swap.added as (typeof all)[number]);
         const offset = (page - 1) * 100;
         return { total: all.length, page, limit: 100, items: all.slice(offset, offset + 100) };
       };
