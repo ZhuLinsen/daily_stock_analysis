@@ -583,6 +583,34 @@ class TestIndexCommentMapping:
 
         assert all("comment" not in idx for idx in payload["indices"]), payload["indices"]
 
+    def test_conflicting_code_and_name_attaches_nothing(self):
+        """OR-COR-835dbd99：code 与 name 各自命中不同行情时，点评必须丢弃（不挂载）。
+
+        真实代码名取自 data_provider/yfinance_fetcher.py（sh000001 上证指数 /
+        sz399001 深证成指）。附录把 code 填 sh000001、name 填深证成指，点评描述
+        深证成指走势；修复前 code 命中即返回，点评挂到上证指数行并随历史快照保存。
+        docs/full-guide.md 承诺“匹配不唯一/冲突时不挂载”，冲突时不得绕过该逻辑。
+        """
+        overview = MarketOverview(
+            date="2026-06-05",
+            indices=[
+                MarketIndex(code="sh000001", name="上证指数", current=3372.4, change_pct=0.9),
+                MarketIndex(code="sz399001", name="深证成指", current=10200.0, change_pct=-0.3),
+            ],
+        )
+        ma = _make_analyzer(report_text="复盘")
+
+        payload = ma.build_market_review_payload(
+            overview,
+            [],
+            "复盘报告",
+            llm_structured={
+                "indices": [{"code": "sh000001", "name": "深证成指", "comment": "深证成指午后走弱"}]
+            },
+        )
+
+        assert all("comment" not in idx for idx in payload["indices"]), payload["indices"]
+
 
 class TestDivergenceDiagnosisFallback:
     def test_index_up_but_breadth_weak_reports_divergence(self):

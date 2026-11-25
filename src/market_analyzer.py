@@ -1337,9 +1337,16 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         by_name = {str(idx.get("name") or "").strip().lower(): idx for idx in rows}
 
         code_key = cls._index_code_key(annotation.get("code"))
-        if code_key and code_key in by_code:
-            return by_code[code_key]
+        code_match = by_code.get(code_key) if code_key else None
         raw_code = str(annotation.get("code") or "").strip().lower()
+        name_key = str(annotation.get("name") or "").strip().lower()
+        name_match = by_name.get(name_key) if name_key else None
+        if code_match is not None and name_match is not None and code_match is not name_match:
+            # OR-COR-835dbd99：code 与 name 两个标识各自命中不同行情，标识冲突。
+            # 点评归属不明，遵循“匹配不唯一/冲突时不挂载”，绝不猜测挂到 code 命中的行。
+            return None
+        if code_match is not None:
+            return code_match
         name_key = str(annotation.get("name") or "").strip().lower()
         if name_key and name_key in by_name:
             return by_name[name_key]
