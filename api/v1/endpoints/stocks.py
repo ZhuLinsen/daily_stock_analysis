@@ -31,6 +31,7 @@ from api.v1.schemas.stocks import (
 from api.v1.schemas.history import WatchlistRequest, WatchlistResponse
 from api.v1.schemas.common import ErrorResponse
 from data_provider.us_index_mapping import normalize_us_hyphen_symbol
+from src.services.market_symbol_utils import is_suffix_market_symbol
 from src.services.image_stock_extractor import (
     ALLOWED_MIME,
     MAX_SIZE_BYTES,
@@ -84,13 +85,18 @@ def _validate_stock_code(code: str, *, allow_watchlist_aliases: bool = False) ->
         )
     if _STOCK_CODE_RE.fullmatch(stripped):
         return stripped
+    if is_suffix_market_symbol(stripped, "au"):
+        return stripped.upper()
     us_symbol = normalize_us_hyphen_symbol(stripped)
     if us_symbol:
         return us_symbol
     if allow_watchlist_aliases:
         if parse_analysis_target(stripped).asset_type == ParseStatus.INDEX:
             return stripped
-        normalized = canonicalize_watchlist_code(stripped)
+        try:
+            normalized = canonicalize_watchlist_code(stripped)
+        except ValueError:  # e.g. malformed .AX symbols; report as 400, not 500
+            normalized = ""
         if _STOCK_CODE_RE.fullmatch(normalized):
             return normalized
     raise HTTPException(
