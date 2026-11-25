@@ -475,3 +475,161 @@ class TestReportRenderer(unittest.TestCase):
         out = render("markdown", [], summary_only=True)
         self.assertIsNotNone(out)
         self.assertIn("0", out)
+
+    def test_render_rejects_path_traversal_platform(self) -> None:
+        """Platform names containing path separators or dots return None."""
+        r = _make_result()
+        self.assertIsNone(render("../README", [r]))
+        self.assertIsNone(render("markdown/../../etc", [r]))
+        self.assertIsNone(render("", [r]))
+
+    def test_render_markdown_preserves_zero_history_score_and_escapes_table_cells(self) -> None:
+        """Numeric 0 is preserved and pipes/newlines inside table cells stay single-line."""
+        r = _make_result(
+            dashboard={
+                "core_conclusion": {
+                    "one_sentence": "等待确认",
+                    "position_advice": {
+                        "no_position": "分批低吸 | 等待放量\n不宜追高",
+                        "has_position": "持有观察",
+                    },
+                },
+                "intelligence": {"risk_alerts": []},
+                "phase_decision": {
+                    "action_window": "盘中 | 尾盘",
+                    "immediate_action": "观望\n等待突破",
+                    "next_check_time": "14:30",
+                },
+                "battle_plan": {
+                    "sniper_points": {
+                        "ideal_buy": "理想买入点：10.5 | 10.8\n分批吸纳",
+                        "stop_loss": "10.0",
+                    }
+                },
+            }
+        )
+        r.market_snapshot = {
+            "close": "10.90",
+            "prev_close": "10.90",
+            "open": "10.80",
+            "high": "11.00",
+            "low": "10.75",
+            "pct_chg": 0,
+            "change_amount": 0,
+            "amplitude": "2.29%",
+            "volume": 0,
+            "amount": 0,
+            "price": "10.90",
+            "volume_ratio": 0,
+            "turnover_rate": 0,
+            "source": "ak | em\nv2",
+        }
+        history_rows = [
+            {
+                "created_at": "2026-03-20 09:30:00",
+                "sentiment_score": 0,
+                "action": None,
+                "action_label": "止损 | 减仓\n立即执行",
+                "operation_advice": "卖出",
+                "trend_prediction": "弱势 | 破位",
+            }
+        ]
+
+        out = render(
+            "markdown",
+            [r],
+            summary_only=False,
+            extra_context={"history_by_code": {"600519": history_rows}},
+        )
+
+        self.assertIsNotNone(out)
+        self.assertIn("| 2026-03-20 09:30 | 0 | 止损 \\| 减仓 立即执行 | 弱势 \\| 破位 |", out)
+        self.assertIn("| 🆕 **空仓者** | 分批低吸 \\| 等待放量 不宜追高 |", out)
+        self.assertIn("| 盘中 \\| 尾盘 | 观望 等待突破 | 14:30 |", out)
+        self.assertIn("| 🎯 理想买入点 | 10.5 \\| 10.8 分批吸纳 |", out)
+        self.assertIn("| 10.90 | 0 | 0 | ak \\| em v2 |", out)
+
+        table_lines = [line for line in out.splitlines() if line.startswith("|")]
+        self.assertGreaterEqual(len(table_lines), 10)
+        for line in table_lines:
+            self.assertTrue(line.rstrip().endswith("|"), f"Malformed table row: {line!r}")
+
+    def test_render_brief_collapses_multiline_summary(self) -> None:
+        """Brief template keeps each stock entry on one clean line when summary has newlines."""
+        r = _make_result(
+            dashboard={
+                "core_conclusion": {"one_sentence": "第一句判断\n第二句补充"},
+            }
+        )
+
+        out = render("brief", [r])
+
+        self.assertIsNotNone(out)
+        self.assertIn("第一句判断 第二句补充", out)
+        self.assertNotIn("第一句判断\n第二句补充", out)
+
+    def test_explicit_blank_position_advice_does_not_default_to_continue_holding(self) -> None:
+        """Explicit null/blank has_position must render N/A instead of contradicting a Sell signal."""
+        for blank_val in (None, "", "   "):
+            with self.subTest(blank_val=blank_val):
+                r = _make_result(
+                    operation_advice="卖出",
+                    dashboard={
+                        "core_conclusion": {
+                            "one_sentence": "趋势破位建议离场",
+                            "position_advice": {
+                                "no_position": "不追高",
+                                "has_position": blank_val,
+                            },
+                        }
+                    },
+                )
+                out = render("markdown", [r], summary_only=False)
+                self.assertIsNotNone(out)
+                self.assertIn("| 💼 **持仓者** | N/A |", out)
+                self.assertNotIn("继续持有", out)
+
+    def test_preserves_already_escaped_pipes_without_double_escaping(self) -> None:
+        """Existing escaped \\| in cells and sniper values must not become \\\\|."""
+        r = _make_result(
+            dashboard={
+                "core_conclusion": {
+                    "one_sentence": "严格止损",
+                    "position_advice": {
+                        "no_position": "分批 \\| 轻仓",
+                        "has_position": "持仓 \\| 设止损",
+                    },
+                },
+                "battle_plan": {
+                    "sniper_points": {
+                        "stop_loss": "止损位：100 \\| 跌破即退出",
+                    }
+                },
+            }
+        )
+        out = render("markdown", [r], summary_only=False)
+        self.assertIsNotNone(out)
+        self.assertIn("| 🛑 止损位 | 100 \\| 跌破即退出 |", out)
+        self.assertNotIn("100 \\\\| 跌破即退出", out)
+        self.assertIn("| 🆕 **空仓者** | 分批 \\| 轻仓 |", out)
+        self.assertNotIn("分批 \\\\| 轻仓", out)
+
+    def test_rendered_phase_decision_pipe_preserves_feishu_column_mapping(self) -> None:
+        """Escaped pipes in collapsed table cells must not shift Feishu columns or spill into 列4."""
+        from src.formatters import format_feishu_markdown
+
+        r = _make_result(
+            dashboard={
+                "core_conclusion": {"one_sentence": "控制节奏"},
+                "phase_decision": {
+                    "action_window": "盘中\n仅在放量 | 跌破撤单",
+                    "immediate_action": "保持观望",
+                    "next_check_time": "14:30",
+                },
+            }
+        )
+        md = render("markdown", [r], summary_only=False)
+        self.assertIsNotNone(md)
+        feishu = format_feishu_markdown(md)
+        self.assertIn("• 行动窗口：盘中 仅在放量 | 跌破撤单 | 当前动作：保持观望 | 下次检查：14:30", feishu)
+        self.assertNotIn("列4", feishu)
