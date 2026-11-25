@@ -3691,6 +3691,7 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertNotIn("JSONSECRET789", str(payload))
         self.assertNotIn("JSONSIGN012", str(payload))
         self.assertNotIn("dingsecret", str(payload))
+        self.assertNotIn("[REDACTED]]", str(payload))
 
     @patch("src.notification_sender.custom_webhook_sender.requests.post")
     def test_test_notification_channel_redacts_escaped_quote_json_secrets(self, mock_post) -> None:
@@ -3752,6 +3753,66 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         rendered = str(payload)
         for leaked in ("SECRET123", "TAIL_LEAK", "END_LEAK", "dingsecret"):
             self.assertNotIn(leaked, rendered)
+        self.assertNotIn("[REDACTED]]", rendered)
+
+    @patch("src.notification_sender.custom_webhook_sender.requests.post")
+    def test_test_notification_channel_redacts_arbitrarily_nested_json_secrets_and_no_double_bracket(
+        self, mock_post
+    ) -> None:
+        """OR-COR-f3da1870: 3x/4x json.dumps escaped secrets, trailing backslash, adjacent URL, and O(n) ReDoS guard."""
+        import time as _time
+
+        base = {
+            "secret": 'TOPSECRET_765"TAIL_SECRET_876\\END_SECRET_987\\',
+            "token": 'https://proxy.example/cb?k=URLSECRET_321"URLTAIL_654\\',
+            "ok": 1,
+        }
+        nested_3x = json.dumps(json.dumps(json.dumps(base)))
+        nested_4x = json.dumps(nested_3x)
+
+        for label, encoded in (("3x", nested_3x), ("4x", nested_4x)):
+            with self.subTest(depth=label):
+                sanitized = self.service._sanitize_notification_text(encoded)
+                for leaked in ("TOPSECRET_765", "TAIL_SECRET_876", "END_SECRET_987", "URLSECRET_321", "URLTAIL_654"):
+                    self.assertNotIn(leaked, sanitized)
+                self.assertIn("[REDACTED]", sanitized)
+                self.assertNotIn("[REDACTED]]", sanitized)
+
+        # Backslash flood must run in linear time without backtracking.
+        start = _time.monotonic()
+        flood_out = self.service._sanitize_notification_text("secret" + ("\\" * 50000) + "a")
+        self.assertLess(_time.monotonic() - start, 0.2)
+        self.assertTrue(flood_out.startswith("secret"))
+
+        # End-to-end channel test with 3x json.dumps DingTalk error payload.
+        err_3x = json.dumps(
+            json.dumps(
+                json.dumps({"secret": 'TOPSECRET_765"TAIL_SECRET_876\\END_SECRET_987', "ok": 1})
+            )
+        )
+        mock_post.return_value = self._mock_http_response(
+            200,
+            {"errcode": 310000, "errmsg": f"nested={err_3x}"},
+        )
+        with self._notification_test_env():
+            payload = self.service.test_notification_channel(
+                channel="custom",
+                items=[
+                    {
+                        "key": "CUSTOM_WEBHOOK_URLS",
+                        "value": "https://oapi.dingtalk.com/robot/send?access_token=dingsecret",
+                    }
+                ],
+                title="Test title",
+                content="hello",
+                timeout_seconds=4,
+            )
+
+        self.assertFalse(payload["success"])
+        rendered = str(payload)
+        for leaked in ("TOPSECRET_765", "TAIL_SECRET_876", "END_SECRET_987", "dingsecret"):
+            self.assertNotIn(leaked, rendered)
+        self.assertNotIn("[REDACTED]]", rendered)
 
     @patch("src.notification_sender.ntfy_sender.requests.post")
     def test_test_notification_channel_supports_ntfy_and_masks_topic_target(self, mock_post) -> None:

@@ -28,78 +28,160 @@ logger = logging.getLogger(__name__)
 BARK_BODY_MAX_BYTES = 3000
 BARK_TRUNCATION_SUFFIX = "..."
 
-# Linear-time key-prefix matcher for quoted and backslash-escaped quoted
-# credential values; the paired scanner below handles inner escapes without
-# backtracking on truncated payloads.
-_CREDENTIAL_KEY_PREFIX_RE = re.compile(
-    r"(?i)((?:\\?[\"'])?(?:access_token|token|secret|password|sign|sendkey|api_key)(?:\\?[\"'])?\s*[=:]\s*)"
+# Linear-time keyword matcher for quoted, arbitrarily nested escaped-JSON, and
+# unquoted credential values; all boundary scanning runs in O(n) without regex
+# quantifier backtracking.
+_CREDENTIAL_KEY_RE = re.compile(
+    r"(?i)(?:access_token|token|secret|password|sign|sendkey|api_key)"
 )
+_UNQUOTED_VALUE_STOP_CHARS = frozenset(" \t\r\n\f\v,;&\"')]}")
 
 
-def _find_escaped_quote_end(text: str, start: int, quote: str) -> int:
-    """Return index past closing `\\<quote>` (or stop before bare quote / EOF)."""
+def _scan_credential_value_start(text: str, start: int) -> Tuple[Optional[int], int]:
+    """Advance past optional escaped closing quote + '=' / ':' after a key name.
+
+    Returns ``(val_start, next_pos)``. When the matched keyword is not followed
+    by a key-value delimiter, ``val_start`` is ``None`` and ``next_pos`` skips
+    past any scanned non-letter delimiter characters so callers stay O(n).
+    """
     n = len(text)
+    j = start
+    bs_start = j
+    while j < n and text[j] == "\\":
+        j += 1
+    if j < n and text[j] in ('"', "'"):
+        j += 1
+    elif j > bs_start:
+        return None, j
+
+    while j < n and text[j].isspace():
+        j += 1
+    if j >= n or text[j] not in ("=", ":"):
+        return None, j
+    j += 1
+    while j < n and text[j].isspace():
+        j += 1
+    return j, j
+
+
+def _find_nested_quoted_value_end(text: str, start: int, quote: str, bs_open: int) -> int:
+    """Return index past closing quote for arbitrary json.dumps nesting depth.
+
+    At JSON nesting depth ``d >= 0``, an opening/closing quote is preceded by
+    ``2^d - 1`` backslashes (plus multiples of ``2^(d+1)`` for trailing literal
+    backslashes), while an inner escaped quote is preceded by ``2^(d+1) - 1``
+    (plus multiples of ``2^(d+1)``). Any quote whose ``(run + 1)`` is not
+    divisible by ``stride = 2^d`` belongs to an outer JSON layer (e.g., when
+    the inner value was truncated), so we stop right before the outer delimiter.
+    """
+    n = len(text)
+    # Extract the trailing 1-bits of bs_open so valid depths (0, 1, 3, 7, 15, ...)
+    # map to stride = 2^d, and malformed non-(2^d - 1) prefixes degrade safely.
+    stride = (bs_open + 1) & -(bs_open + 1)
+    period = 2 * stride
     i = start
     while i < n:
         ch = text[i]
         if ch == "\\":
-            bs = 0
-            while i + bs < n and text[i + bs] == "\\":
-                bs += 1
-            if i + bs < n and text[i + bs] == quote and bs % 4 == 1:
-                return i + bs + 1
-            i += bs + (1 if i + bs < n else 0)
+            run = 0
+            while i + run < n and text[i + run] == "\\":
+                run += 1
+            if i + run < n and text[i + run] == quote:
+                r1 = run + 1
+                rem = r1 % period
+                if rem == stride:
+                    return i + run + 1
+                if rem != 0:
+                    outer_bs = (r1 & -r1) - 1
+                    return i + run - outer_bs
+                i += run + 1
+                continue
+            i += run
             continue
         if ch == quote:
+            if stride == 1:
+                return i + 1
             return i
         i += 1
     return n
 
 
-def _find_quoted_value_end(text: str, start: int, quote: str) -> int:
-    """Return index past closing `<quote>` in a quoted credential value (or EOF)."""
-    n = len(text)
-    i = start
-    while i < n:
-        ch = text[i]
-        if ch == "\\":
-            i += 2 if i + 1 < n else 1
-            continue
-        if ch == quote:
-            return i + 1
-        i += 1
-    return n
-
-
 def redact_quoted_credentials(text: str) -> str:
-    """Redact quoted and escaped-JSON credential values in O(n) without regex backtracking."""
+    """Redact quoted and arbitrarily nested escaped-JSON credential values in O(n)."""
     if not text:
         return text
     n = len(text)
     pos = 0
+    search_pos = 0
     parts: List[str] = []
-    while pos < n:
-        match = _CREDENTIAL_KEY_PREFIX_RE.search(text, pos)
+    while search_pos < n:
+        match = _CREDENTIAL_KEY_RE.search(text, search_pos)
         if match is None:
             parts.append(text[pos:])
             break
-        val_start = match.end()
+        val_start, next_pos = _scan_credential_value_start(text, match.end())
+        if val_start is None:
+            search_pos = max(match.end(), next_pos)
+            continue
         if val_start >= n:
             parts.append(text[pos:])
             break
-        if text[val_start] == "\\" and val_start + 1 < n and text[val_start + 1] in ('"', "'"):
-            end = _find_escaped_quote_end(text, val_start + 2, text[val_start + 1])
+        bs_end = val_start
+        while bs_end < n and text[bs_end] == "\\":
+            bs_end += 1
+        if bs_end < n and text[bs_end] in ('"', "'"):
+            bs_open = bs_end - val_start
+            end = _find_nested_quoted_value_end(text, bs_end + 1, text[bs_end], bs_open)
             parts.append(text[pos:val_start])
             parts.append("[REDACTED]")
             pos = end
-        elif text[val_start] in ('"', "'"):
-            end = _find_quoted_value_end(text, val_start + 1, text[val_start])
-            parts.append(text[pos:val_start])
-            parts.append("[REDACTED]")
-            pos = end
+            search_pos = end
         else:
+            search_pos = max(val_start, bs_end)
+    else:
+        if pos < n:
+            parts.append(text[pos:])
+    return "".join(parts)
+
+
+def redact_unquoted_credentials(text: str) -> str:
+    """Redact unquoted credential values in O(n) while preserving existing ``[REDACTED]`` tokens."""
+    if not text:
+        return text
+    n = len(text)
+    pos = 0
+    search_pos = 0
+    parts: List[str] = []
+    while search_pos < n:
+        match = _CREDENTIAL_KEY_RE.search(text, search_pos)
+        if match is None:
+            parts.append(text[pos:])
+            break
+        val_start, next_pos = _scan_credential_value_start(text, match.end())
+        if val_start is None:
+            search_pos = max(match.end(), next_pos)
+            continue
+        if val_start >= n:
+            parts.append(text[pos:])
+            break
+        if text.startswith("[REDACTED]", val_start) and (
+            val_start + 10 == n or text[val_start + 10] in _UNQUOTED_VALUE_STOP_CHARS
+        ):
+            search_pos = val_start + 10
+            continue
+        end = val_start
+        while end < n and text[end] not in _UNQUOTED_VALUE_STOP_CHARS:
+            end += 1
+        if end > val_start:
             parts.append(text[pos:val_start])
-            pos = val_start
+            parts.append("[REDACTED]")
+            pos = end
+            search_pos = end
+        else:
+            search_pos = val_start
+    else:
+        if pos < n:
+            parts.append(text[pos:])
     return "".join(parts)
 
 
@@ -289,12 +371,7 @@ class CustomWebhookSender:
             r"\1[REDACTED]",
             sanitized,
         )
-        sanitized = re.sub(
-            r"(?i)((?:\\?[\"'])?(?:access_token|token|secret|password|sign|sendkey|api_key)(?:\\?[\"'])?\s*[=:]\s*)"
-            r"[^\s,;&\"'\)\]}]+",
-            r"\1[REDACTED]",
-            sanitized,
-        )
+        sanitized = redact_unquoted_credentials(sanitized)
         sanitized = re.sub(
             r"https?://[^\s\"'\\<>\)\],;]+",
             lambda match: cls._mask_url_for_log(match.group(0)),

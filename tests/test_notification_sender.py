@@ -1954,12 +1954,14 @@ class TestCustomWebhookSender(unittest.TestCase):
         self.assertIn("errcode=310000", joined_logs)
         self.assertNotIn("JSONSECRET789", joined_logs)
         self.assertNotIn("JSONSIGN012", joined_logs)
+        self.assertNotIn("[REDACTED]]", joined_logs)
 
         attempts = sender.test_custom_webhooks("hello")
         self.assertEqual(len(attempts), 1)
         self.assertFalse(attempts[0]["success"])
         self.assertNotIn("JSONSECRET789", attempts[0]["message"])
         self.assertNotIn("JSONSIGN012", attempts[0]["message"])
+        self.assertNotIn("[REDACTED]]", attempts[0]["message"])
 
     @mock.patch("src.notification_sender.custom_webhook_sender.requests.post")
     def test_dingtalk_error_redacts_escaped_quotes_inside_json_and_escaped_json_secrets(self, mock_post):
@@ -2022,6 +2024,59 @@ class TestCustomWebhookSender(unittest.TestCase):
         elapsed = _time.monotonic() - start
         self.assertLess(elapsed, 0.2)
         self.assertNotIn("aaaa", redacted)
+        self.assertNotIn("[REDACTED]]", redacted)
+
+        # Backslash-flood input must also run in linear time without ReDoS backtracking.
+        backslash_flood = "secret" + ("\\" * 50000) + "a"
+        start = _time.monotonic()
+        flood_redacted = CustomWebhookSender._sanitize_error_text(backslash_flood)
+        elapsed = _time.monotonic() - start
+        self.assertLess(elapsed, 0.2)
+        self.assertTrue(flood_redacted.startswith("secret"))
+
+    @mock.patch("src.notification_sender.custom_webhook_sender.requests.post")
+    def test_dingtalk_error_redacts_arbitrarily_nested_json_dumps_secrets(self, mock_post):
+        """OR-COR-f3da1870: 3x and 4x json.dumps escaped secrets with quotes, trailing backslashes, and URLs."""
+        base_payload = {
+            "secret": 'TOPSECRET_765"TAIL_SECRET_876\\END_SECRET_987\\',
+            "token": 'https://proxy.example/cb?k=URLSECRET_111"URLTAIL_222\\',
+            "ok": 1,
+        }
+        depth_0 = json.dumps(base_payload)
+        depth_1 = json.dumps(depth_0)
+        depth_2 = json.dumps(depth_1)  # 3x json.dumps: \\\"secret\\\": \\\"...\\\"
+        depth_3 = json.dumps(depth_2)  # 4x json.dumps: \\\\\\\"secret\\\\\\\": \\\\\\\"...\\\\\\\"
+
+        for label, encoded in (("3x", depth_2), ("4x", depth_3)):
+            with self.subTest(depth=label):
+                redacted = CustomWebhookSender._sanitize_error_text(encoded, max_len=2000)
+                for leaked in ("TOPSECRET_765", "TAIL_SECRET_876", "END_SECRET_987", "URLSECRET_111", "URLTAIL_222"):
+                    self.assertNotIn(leaked, redacted)
+                self.assertIn("[REDACTED]", redacted)
+                self.assertNotIn("[REDACTED]]", redacted)
+                self.assertIn("ok", redacted)
+
+        # Verify end-to-end DingTalk error logging and test attempt output on 3x json.dumps payload.
+        nested_3x = json.dumps(
+            json.dumps(
+                json.dumps({"secret": 'TOPSECRET_765"TAIL_SECRET_876\\END_SECRET_987', "ok": 1})
+            )
+        )
+        mock_post.return_value = _response(200, {"errcode": 310000, "errmsg": f"nested={nested_3x}"})
+        cfg = _config(
+            custom_webhook_urls=["https://oapi.dingtalk.com/robot/send?access_token=topsecret"],
+        )
+        sender = CustomWebhookSender(cfg)
+
+        with self.assertLogs("src.notification_sender.custom_webhook_sender", level="ERROR") as captured:
+            self.assertFalse(sender.send_to_custom("hello"))
+
+        joined_logs = "\n".join(captured.output)
+        attempts = sender.test_custom_webhooks("hello")
+        for surface in (joined_logs, attempts[0]["message"]):
+            for leaked in ("TOPSECRET_765", "TAIL_SECRET_876", "END_SECRET_987", "topsecret"):
+                self.assertNotIn(leaked, surface)
+            self.assertNotIn("[REDACTED]]", surface)
 
     @mock.patch("time.sleep", return_value=None)
     @mock.patch("src.notification_sender.custom_webhook_sender.requests.post")
@@ -2033,6 +2088,7 @@ class TestCustomWebhookSender(unittest.TestCase):
             _response(200, {"errcode": -1, "errmsg": "system busy"}),
             _response(200, {"errcode": 0, "errmsg": "ok"}),
             _response(200, {"errcode": 0, "errmsg": "ok"}),
+            _response(200, {"errcode": 0, "errmsg": "ok"}),
         ]
         cfg = _config(
             custom_webhook_urls=["https://oapi.dingtalk.com/robot/send?access_token=token"],
@@ -2040,10 +2096,10 @@ class TestCustomWebhookSender(unittest.TestCase):
         )
         sender = CustomWebhookSender(cfg)
 
-        # Chunk 1 fails with errcode=-1 ("system busy"), but remaining chunks still continue cleanly.
+        # Chunk 1 fails with errcode=-1 ("system busy"), but remaining 3 chunks still continue cleanly.
         self.assertFalse(sender.send_to_custom("A" * 60000))
-        self.assertGreater(mock_post.call_count, 2)
-        mock_sleep.assert_called()
+        self.assertEqual(mock_post.call_count, 5)
+        self.assertEqual(mock_sleep.call_count, 3)
 
         mock_post.side_effect = None
         mock_post.return_value = _response(200, {"errcode": -1, "errmsg": "system busy"})

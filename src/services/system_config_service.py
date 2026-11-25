@@ -69,7 +69,10 @@ from src.core.config_registry import (
     get_field_definition,
     get_registered_field_keys,
 )
-from src.notification_sender.custom_webhook_sender import redact_quoted_credentials
+from src.notification_sender.custom_webhook_sender import (
+    redact_quoted_credentials,
+    redact_unquoted_credentials,
+)
 from src.llm.errors import call_litellm_with_param_recovery
 from src.llm.backend_registry import (
     AUTO_AGENT_BACKEND_ID,
@@ -3335,18 +3338,13 @@ class SystemConfigService:
         sanitized = cls._sanitize_llm_error_text(text)
         if not sanitized:
             return ""
+        sanitized = redact_quoted_credentials(sanitized)
         sanitized = re.sub(
             r"(?i)(bearer\s+)(?:\"[^\"]*\"|'[^']*'|[a-z0-9._\-:+/=]+)",
             r"\1[REDACTED]",
             sanitized,
         )
-        sanitized = redact_quoted_credentials(sanitized)
-        sanitized = re.sub(
-            r"(?i)((?:\\?[\"'])?(?:access_token|token|secret|password|sign|sendkey|api_key)(?:\\?[\"'])?\s*[=:]\s*)"
-            r"[^\s,;&\"'\)\]}]+",
-            r"\1[REDACTED]",
-            sanitized,
-        )
+        sanitized = redact_unquoted_credentials(sanitized)
         sanitized = re.sub(
             r"https?://[^\s\"'\\<>\)\],;]+",
             lambda match: cls._mask_notification_target(match.group(0)),
