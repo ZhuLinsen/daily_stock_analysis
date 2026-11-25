@@ -4,6 +4,23 @@
 
 ---
 
+## 🖥️ 源码安装
+
+### Windows 依赖安装路径过长
+
+如果 `pip install -r requirements.txt` 在写入 `.venv\Lib\site-packages\litellm\` 中的文件时报 `OSError: [Errno 2]`，并提示 Windows 长路径支持，完整安装路径可能超出了 Windows 的路径长度限制。
+
+将源码重新克隆或解压到一个较短且有写入权限的目录（例如 `C:\dsa`），然后在该目录中用 PowerShell 创建新的虚拟环境并重新安装。
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+Windows 长路径支持的适用条件见 [Microsoft Learn](https://learn.microsoft.com/windows/win32/fileio/maximum-file-path-limitation)。
+
+---
+
 ## 📊 数据相关
 
 ### Q1: 美股代码（如 AMD, AAPL）分析时价格显示不正确？
