@@ -238,8 +238,19 @@ class PytdxFetcher(BaseFetcher):
             logger.warning("pytdx is not installed, please run: pip install pytdx")
             return None
     
+    @staticmethod
+    def _handle_fetch_retry_exhausted(retry_state) -> None:
+        """Mark connection cooldown once all transient retry attempts are exhausted and reraise."""
+        fetcher = retry_state.args[0] if retry_state.args else None
+        exc = retry_state.outcome.exception() if retry_state.outcome else None
+        if isinstance(fetcher, PytdxFetcher) and isinstance(exc, (ConnectionError, TimeoutError)):
+            fetcher._mark_connection_cooldown(str(exc) or "Pytdx 无法连接任何服务器")
+        if exc is not None:
+            raise exc
+        raise DataFetchError("Pytdx 无法连接任何服务器")
+
     @contextmanager
-    def _pytdx_session(self) -> Generator:
+    def _pytdx_session(self, *, defer_cooldown_on_transient: bool = False) -> Generator:
         """
         Pytdx 连接上下文管理器
         
@@ -266,6 +277,7 @@ class PytdxFetcher(BaseFetcher):
         except TypeError:
             api = TdxHq_API()
         connected = False
+        last_transient_error: Optional[Exception] = None
         
         try:
             # 尝试连接服务器（自动选择最优）
@@ -281,9 +293,18 @@ class PytdxFetcher(BaseFetcher):
                         break
                 except Exception as e:
                     logger.debug(f"Pytdx connection to {host}:{port} failed: {e}")
+                    transient = _unwrap_transient_network_error(e)
+                    if transient is not None:
+                        last_transient_error = transient
                     continue
             
             if not connected:
+                if defer_cooldown_on_transient and last_transient_error is not None:
+                    detail = str(last_transient_error).strip()
+                    message = f"Pytdx 无法连接任何服务器: {detail}" if detail else "Pytdx 无法连接任何服务器"
+                    if isinstance(last_transient_error, TimeoutError):
+                        raise TimeoutError(message) from last_transient_error
+                    raise ConnectionError(message) from last_transient_error
                 self._mark_connection_cooldown("Pytdx 无法连接任何服务器")
                 raise DataFetchError("Pytdx 无法连接任何服务器")
             
@@ -370,6 +391,7 @@ class PytdxFetcher(BaseFetcher):
         wait=wait_exponential(multiplier=1, min=2, max=30),
         retry=retry_if_exception_type((ConnectionError, TimeoutError)),
         before_sleep=before_sleep_log(logger, logging.WARNING),
+        retry_error_callback=_handle_fetch_retry_exhausted.__func__,
     )
     def _fetch_raw_data(self, stock_code: str, start_date: str, end_date: str) -> pd.DataFrame:
         """
@@ -408,7 +430,7 @@ class PytdxFetcher(BaseFetcher):
         
         logger.debug(f"Calling Pytdx get_security_bars(market={market}, code={code}, count={count})")
         
-        with self._pytdx_session() as api:
+        with self._pytdx_session(defer_cooldown_on_transient=True) as api:
             try:
                 # 获取日 K 线数据
                 # category: 9-日线, 0-5分钟, 1-15分钟, 2-30分钟, 3-1小时

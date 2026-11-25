@@ -137,6 +137,111 @@ class TestPytdxFetcher(unittest.TestCase):
         self.assertEqual(len(df), 1)
         self.assertEqual(df.iloc[0]["close"], 10.1)
 
+    def test_fetch_raw_data_retries_transient_connect_error_and_recovers_without_cooldown(self) -> None:
+        """OR-COR-7c6d5d21: transient connect() TdxConnectionError on single host must trigger @retry."""
+        from pytdx.errors import TdxConnectionError
+
+        fetcher = PytdxFetcher(hosts=[("127.0.0.1", 7709)])
+        valid_bars = [
+            {"datetime": "2026-03-17 15:00", "open": 10.0, "high": 10.2, "low": 9.9, "close": 10.1, "vol": 100, "amount": 1010}
+        ]
+        connect_calls = 0
+
+        class _FlakyConnectApi:
+            def __init__(self, raise_exception: bool = False):
+                self.raise_exception = raise_exception
+
+            def connect(self, host, port, time_out=5):
+                nonlocal connect_calls
+                connect_calls += 1
+                if connect_calls == 1:
+                    raise TdxConnectionError("connection reset by peer")
+                return True
+
+            def disconnect(self):
+                return None
+
+            def get_security_bars(self, **_kwargs):
+                return valid_bars
+
+            def to_df(self, data):
+                return pd.DataFrame(data)
+
+        with patch.object(fetcher, "_get_pytdx", return_value=_FlakyConnectApi), patch.object(
+            PytdxFetcher._fetch_raw_data.retry, "sleep", side_effect=lambda _s: None
+        ):
+            df = fetcher._fetch_raw_data("600519", "2026-03-16", "2026-03-17")
+
+        self.assertEqual(connect_calls, 2)
+        self.assertEqual(len(df), 1)
+        self.assertEqual(df.iloc[0]["close"], 10.1)
+        self.assertTrue(fetcher.is_available_for_request("daily"))
+        self.assertFalse(fetcher._is_in_connection_cooldown())
+
+    def test_fetch_raw_data_marks_cooldown_once_after_connect_retries_exhausted(self) -> None:
+        """OR-COR-7c6d5d21: persistent connect() outage retries 3 times, then enters cooldown."""
+        from data_provider.base import DataSourceUnavailableError
+        from pytdx.errors import TdxConnectionError
+
+        fetcher = PytdxFetcher(hosts=[("127.0.0.1", 7709)])
+        connect_calls = 0
+
+        class _AlwaysFailConnectApi:
+            def __init__(self, raise_exception: bool = False):
+                self.raise_exception = raise_exception
+
+            def connect(self, host, port, time_out=5):
+                nonlocal connect_calls
+                connect_calls += 1
+                raise TdxConnectionError("host unreachable")
+
+            def disconnect(self):
+                return None
+
+        with patch.object(fetcher, "_get_pytdx", return_value=_AlwaysFailConnectApi), patch.object(
+            PytdxFetcher._fetch_raw_data.retry, "sleep", side_effect=lambda _s: None
+        ), patch.object(
+            fetcher, "_mark_connection_cooldown", wraps=fetcher._mark_connection_cooldown
+        ) as mark_cooldown:
+            with self.assertRaises(DataFetchError):
+                fetcher.get_daily_data("600519", start_date="2026-03-16", end_date="2026-03-17")
+
+            self.assertEqual(connect_calls, 3)
+            self.assertEqual(mark_cooldown.call_count, 1)
+            self.assertFalse(fetcher.is_available_for_request("daily"))
+            self.assertTrue(fetcher._is_in_connection_cooldown())
+
+            # Subsequent call during cooldown fails fast without retrying or re-connecting.
+            with self.assertRaises(DataSourceUnavailableError):
+                fetcher._fetch_raw_data("600519", "2026-03-16", "2026-03-17")
+            self.assertEqual(connect_calls, 3)
+
+    def test_non_retried_callers_still_enter_cooldown_immediately_on_connect_error(self) -> None:
+        """Non-retried callers like get_realtime_quote keep immediate cooldown on connect failure."""
+        from pytdx.errors import TdxConnectionError
+
+        fetcher = PytdxFetcher(hosts=[("127.0.0.1", 7709)])
+        connect_calls = 0
+
+        class _AlwaysFailConnectApi:
+            def __init__(self, raise_exception: bool = False):
+                self.raise_exception = raise_exception
+
+            def connect(self, host, port, time_out=5):
+                nonlocal connect_calls
+                connect_calls += 1
+                raise TdxConnectionError("host unreachable")
+
+            def disconnect(self):
+                return None
+
+        with patch.object(fetcher, "_get_pytdx", return_value=_AlwaysFailConnectApi):
+            self.assertIsNone(fetcher.get_realtime_quote("000001"))
+            self.assertEqual(connect_calls, 1)
+            self.assertTrue(fetcher._is_in_connection_cooldown())
+            self.assertIsNone(fetcher.get_realtime_quote("000001"))
+            self.assertEqual(connect_calls, 1)
+
     def test_normalize_data_sorts_chronologically_coerces_numeric_and_computes_pct_chg(self) -> None:
         fetcher = PytdxFetcher(hosts=[])
         raw = pd.DataFrame(
