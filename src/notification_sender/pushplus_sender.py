@@ -7,7 +7,7 @@ PushPlus 发送提醒服务
 """
 import logging
 import time
-from typing import Optional
+from typing import Any, Optional
 from datetime import datetime
 import requests
 
@@ -29,7 +29,19 @@ class PushplusSender:
         """
         self._pushplus_token = getattr(config, 'pushplus_token', None)
         self._pushplus_topic = getattr(config, 'pushplus_topic', None)
-        self._pushplus_max_bytes = getattr(config, 'pushplus_max_bytes', 20000)
+        self._pushplus_max_bytes = self._normalize_max_bytes(
+            getattr(config, 'pushplus_max_bytes', 20000)
+        )
+
+    @staticmethod
+    def _normalize_max_bytes(value: Any, default: int = 20000) -> int:
+        if isinstance(value, bool):
+            return default
+        try:
+            configured = int(value)
+        except (TypeError, ValueError):
+            configured = default
+        return max(2500, configured)
         
     def send_to_pushplus(
         self,
@@ -72,6 +84,9 @@ class PushplusSender:
             date_str = datetime.now().strftime('%Y-%m-%d')
             title = f"📈 股票分析报告 - {date_str}"
         sanitized_content = strip_hidden_markdown_metadata(content).strip()
+        if not sanitized_content:
+            logger.warning("PushPlus message content is empty, skipping notification")
+            return False
 
         try:
             content_bytes = len(sanitized_content.encode('utf-8'))
@@ -86,6 +101,7 @@ class PushplusSender:
                     sanitized_content,
                     title,
                     self._pushplus_max_bytes,
+                    timeout_seconds=timeout_seconds,
                 )
 
             return self._send_pushplus_message(
@@ -116,25 +132,39 @@ class PushplusSender:
         if self._pushplus_topic:
             payload["topic"] = self._pushplus_topic
 
-        response = requests.post(api_url, json=payload, timeout=timeout_seconds or 10)
+        try:
+            response = requests.post(api_url, json=payload, timeout=timeout_seconds or 10)
 
-        if response.status_code == 200:
-            result = response.json()
-            if result.get('code') == 200:
-                logger.info("PushPlus message sent successfully")
-                return True
+            if response.status_code == 200:
+                result = response.json()
+                if isinstance(result, dict) and result.get('code') == 200:
+                    logger.info("PushPlus message sent successfully")
+                    return True
 
-            error_msg = result.get('msg', 'unknown error')
-            logger.error(f"PushPlus returned error: {error_msg}")
+                error_msg = result.get('msg', 'unknown error') if isinstance(result, dict) else 'invalid JSON response'
+                logger.error(f"PushPlus returned error: {error_msg}")
+                return False
+
+            logger.error(f"PushPlus request failed: HTTP {response.status_code}")
+            return False
+        except Exception as e:
+            logger.error("Failed to send PushPlus message: %s", e)
             return False
 
-        logger.error(f"PushPlus request failed: HTTP {response.status_code}")
-        return False
-
-    def _send_pushplus_chunked(self, api_url: str, content: str, title: str, max_bytes: int) -> bool:
+    def _send_pushplus_chunked(
+        self,
+        api_url: str,
+        content: str,
+        title: str,
+        max_bytes: int,
+        *,
+        timeout_seconds: Optional[float] = None,
+    ) -> bool:
         """分批发送长 PushPlus 消息，给 JSON payload 预留空间。"""
         budget = max(1000, max_bytes - 1500)
         chunks = chunk_content_by_max_bytes(content, budget, add_page_marker=True)
+        if not chunks:
+            return False
         total_chunks = len(chunks)
         success_count = 0
 
@@ -142,7 +172,12 @@ class PushplusSender:
 
         for i, chunk in enumerate(chunks):
             chunk_title = f"{title} ({i+1}/{total_chunks})" if total_chunks > 1 else title
-            if self._send_pushplus_message(api_url, chunk, chunk_title):
+            if self._send_pushplus_message(
+                api_url,
+                chunk,
+                chunk_title,
+                timeout_seconds=timeout_seconds,
+            ):
                 success_count += 1
                 logger.info(f"PushPlus chunk {i+1}/{total_chunks} sent successfully")
             else:

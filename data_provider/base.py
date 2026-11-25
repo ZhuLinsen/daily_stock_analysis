@@ -19,7 +19,7 @@ import random
 import time
 from threading import BoundedSemaphore, Event, RLock, Thread
 from abc import ABC, abstractmethod
-from contextvars import copy_context
+from contextvars import ContextVar, copy_context
 from datetime import datetime, timezone
 from typing import Callable, Optional, List, Tuple, Dict, Any
 
@@ -32,7 +32,7 @@ from src.core.stock_execution_context import (
     track_stock_worker_abandonment,
 )
 from src.data.stock_index_loader import get_index_stock_name
-from src.data.stock_mapping import STOCK_NAME_MAP, is_meaningful_stock_name
+from src.data.stock_mapping import STOCK_NAME_MAP, is_meaningful_stock_name, lookup_static_stock_name
 from src.services.market_symbol_utils import is_suffix_market_symbol
 from src.services.run_diagnostics import record_provider_run, record_provider_run_started
 from src.services.stock_list_parser import AnalysisTarget, ParseStatus, parse_analysis_target
@@ -42,6 +42,12 @@ from .realtime_types import CircuitBreaker
 
 # 配置日志
 logger = logging.getLogger(__name__)
+_IN_STOCK_NAME_PREFETCH: ContextVar[bool] = ContextVar("_in_stock_name_prefetch", default=False)
+
+
+def is_stock_name_prefetch_active() -> bool:
+    """Return True while batch prefetch_stock_names is warming names."""
+    return _IN_STOCK_NAME_PREFETCH.get()
 
 # Omitted means standalone fetching; explicit None means already attempted.
 _REALTIME_QUOTE_UNSET = object()
@@ -265,7 +271,7 @@ def _market_tag(code: str) -> str:
     return "cn"
 
 
-_US_EXCHANGE_SUFFIXES = (".US", ".N", ".O")  # _market_tag 目前不识别的美股交易所后缀
+_US_EXCHANGE_SUFFIXES = (".NASDAQ", ".NYSE", ".AMEX", ".ARCA", ".US", ".N", ".O", ".A")  # _market_tag 目前不识别的美股交易所后缀
 
 
 def _is_non_cn_request(stock_code: str) -> bool:
@@ -3178,7 +3184,7 @@ class DataFetcherManager:
 
         # Normalize code (strip SH/SZ prefix etc.)
         stock_code = normalize_stock_code(stock_code)
-        static_name = STOCK_NAME_MAP.get(stock_code)
+        static_name = lookup_static_stock_name(stock_code, STOCK_NAME_MAP)
 
         # 1. 先检查缓存
         cached_name = self._get_cached_stock_name(stock_code)
@@ -3203,14 +3209,19 @@ class DataFetcherManager:
                 return name
 
         # 3. 依次尝试各个数据源
-        from .akshare_fetcher import _is_us_code
-        is_us = _is_us_code(stock_code)
+        upper_code = stock_code.strip().upper()
+        market = "us" if upper_code.endswith(_US_EXCHANGE_SUFFIXES) else _market_tag(upper_code)
         _US_CAPABLE_FETCHERS = {"YfinanceFetcher", "LongbridgeFetcher", "FinnhubFetcher", "AlphaVantageFetcher"}
         for fetcher in self._get_fetchers_snapshot():
             if not hasattr(fetcher, 'get_stock_name'):
                 continue
-            if is_us and fetcher.name not in _US_CAPABLE_FETCHERS:
-                continue
+            if market == "us":
+                if fetcher.name not in _US_CAPABLE_FETCHERS:
+                    continue
+            elif market != "cn":
+                supported_markets = self._DAILY_MARKET_FETCHER_SUPPORT.get(fetcher.name)
+                if supported_markets is not None and market not in supported_markets:
+                    continue
             if not self._is_fetcher_available(fetcher, capability="stock_name"):
                 continue
             try:
@@ -3328,12 +3339,16 @@ class DataFetcherManager:
         if use_bulk:
             self.batch_get_stock_names(stock_codes)
             return
-        for code in stock_codes:
-            if is_current_stock_cancelled():
-                return
-            # Skip realtime lookup to avoid triggering expensive full-market quote
-            # requests during the prefetch phase.
-            self.get_stock_name(code, allow_realtime=False)
+        token = _IN_STOCK_NAME_PREFETCH.set(True)
+        try:
+            for code in stock_codes:
+                if is_current_stock_cancelled():
+                    return
+                # Skip realtime lookup to avoid triggering expensive full-market quote
+                # requests during the prefetch phase.
+                self.get_stock_name(code, allow_realtime=False)
+        finally:
+            _IN_STOCK_NAME_PREFETCH.reset(token)
 
     def batch_get_stock_names(self, stock_codes: List[str]) -> Dict[str, str]:
         """

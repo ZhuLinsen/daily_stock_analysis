@@ -1,10 +1,14 @@
 # -*- coding: utf-8 -*-
 """Offline tests for how analyze_pattern names long-shadow candles."""
 
+import json
+
 import pandas as pd
 import pytest
 
 from src.agent.tools import analysis_tools
+from src.config import Config
+from src.mcp_server import McpReadOnlySurface, _mcp_tool_result_is_error
 from src.services import history_loader
 
 LONG_SHADOW_NAMES = {"锤子线 (Hammer)", "上吊线 (Hanging Man)", "倒锤子", "流星线 (Shooting Star)"}
@@ -29,11 +33,15 @@ def _candles(closes):
     return rows
 
 
-def _patterns(monkeypatch, rows, days=60):
+def _serve_history(monkeypatch, rows):
     df = pd.DataFrame(rows, columns=["open", "high", "low", "close"])
     df["date"] = pd.date_range("2026-01-05", periods=len(df), freq="B").date
     df["volume"] = 1_000_000.0
     monkeypatch.setattr(history_loader, "load_history_df", lambda stock_code, days=60, target_date=None: (df, "x"))
+
+
+def _patterns(monkeypatch, rows, days=60):
+    _serve_history(monkeypatch, rows)
     return {p["pattern"]: p for p in analysis_tools._handle_analyze_pattern("600519", days=days)["patterns"]}
 
 
@@ -187,3 +195,23 @@ def test_a_candle_one_bar_back_is_named_by_the_trend_before_it(monkeypatch, cand
     rows += _trend(1, rows[-1][3], 0.012)
     found = _patterns(monkeypatch, rows)
     assert found[name]["day_offset"] == -1
+
+
+# The handler tests above already pin these types. This one pins them where the read-only MCP server
+# hands them over: allowlist, stock scope, redaction and serialisation all sit in between.
+@pytest.mark.parametrize("step, candle, name, type_", [
+    (-0.012, _long_lower_shadow, "锤子线 (Hammer)", "reversal_signal"),
+    (0.012, _long_lower_shadow, "上吊线 (Hanging Man)", "reversal_signal"),
+    (-0.012, _long_upper_shadow, "倒锤子", "reversal_signal"),
+    (0.012, _long_upper_shadow, "流星线 (Shooting Star)", "bearish_signal"),
+], ids=["hammer", "hanging_man", "inverted_hammer", "shooting_star"])
+def test_the_read_only_mcp_surface_returns_each_long_shadow_type(monkeypatch, step, candle, name, type_):
+    rows = _trend(20, 20.0, step)
+    _serve_history(monkeypatch, rows + [candle(rows[-1][3], 1.25 * step)])
+    response = McpReadOnlySurface(config=Config(stock_list=["600519"])).call_tool(
+        "analyze_pattern", {"stock_code": "600519"}
+    )
+    assert response["ok"] is True and not _mcp_tool_result_is_error(response)
+    for result in (response["result"], json.loads(response["result_text"])):  # the client gets both
+        named = [(p["pattern"], p["type"]) for p in result["patterns"] if p["pattern"] in LONG_SHADOW_NAMES]
+        assert named == [(name, type_)]

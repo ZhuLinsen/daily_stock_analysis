@@ -100,6 +100,20 @@ def test_backend_build_collects_fxmacrodata_data_and_probes_tool_registry(filena
         assert 'DSA_PACKAGED_IMPORT_PROBE="src.agent.factory"' in script
 
 
+@pytest.mark.parametrize("filename", ["build-backend.ps1", "build-backend-macos.sh"])
+def test_backend_build_collects_and_probes_fin_primitives(filename: str) -> None:
+    script = _read_text(REPO_ROOT / "scripts" / filename)
+    assert "import fin_primitives" in script
+    assert "--collect-all" in script
+    assert "fin_primitives" in script
+    if filename.endswith(".ps1"):
+        assert "'--collect-all', 'fin_primitives'" in script
+        assert "'fin_primitives'" in script
+    else:
+        assert 'cmd+=("--collect-all" "fin_primitives")' in script
+        assert 'DSA_PACKAGED_IMPORT_PROBE="fin_primitives"' in script
+
+
 def _run_packaged_probe(monkeypatch, module, probe_name="py_mini_racer") -> None:
     """Execute the actual early-exit block without importing the business stack."""
     import importlib

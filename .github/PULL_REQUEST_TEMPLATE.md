@@ -24,7 +24,7 @@ For English contributors: please fill in English.
 - 文件总数 / 变更行数：
 - 新增文件：
 - 修改的既有运行时文件：
-- 文档更新（`docs/*` / `docs/CHANGELOG.md`）：
+- 文档更新（`docs/*`）：
 
 ## Behavior Changes (Before vs After)
 
@@ -76,4 +76,4 @@ For English contributors: please fill in English.
 - [ ] 已说明行为变化与配置/API/UI/报告/通知影响面
 - [ ] 已提供可复现的验证命令与当前 Head CI 结论
 - [ ] 若修改报告/通知/Web UI，已附截图或可复现替代可视证据，且未将临时截图提交入库
-- [ ] 若涉及用户可见变更，已同步相关 `docs/*.md` 与 `docs/CHANGELOG.md`（`[Unreleased]` 扁平格式）
+- [ ] 若涉及用户可见变更，已同步相关 `docs/*.md`
