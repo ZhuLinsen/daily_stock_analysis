@@ -824,6 +824,33 @@ class TestStructuredTextSanitizing:
 
 
 class TestBackwardCompatibility:
+    def test_concepts_only_payload_render_does_not_duplicate_concept_table(self):
+        """OR-COR-9bf864ce：行业排行为空、概念排行可用时，正文已含概念表；
+        渲染层缺失检测未识别概念标记，会把同一份概念表再追加一遍导致重复。"""
+        concept_table = (
+            "#### 概念板块领涨 Top 5\n"
+            "| 排名 | 概念板块 | 涨跌幅 |\n|------|------|--------|\n| 1 | AI算力 | +5.40% |"
+        )
+        market_payload = {
+            "title": "复盘报告",
+            "region": "cn",
+            "sectors": {},
+            "concepts": {"top": [{"name": "AI算力", "change_pct": 5.4}]},
+            "markdown_report": "## 复盘报告\n\n### 板块主线\n\n" + concept_table,
+        }
+        combined = {
+            "region": "cn",
+            "language": "zh",
+            "markets": {"cn": market_payload},
+            "markdown_report": market_payload["markdown_report"],
+        }
+
+        rendered = _render_market_review_payload_markdown(combined, wrapper_title="🎯 大盘复盘")
+
+        # 正文概念表保留一份；兜底块不得把同一份数据再追加成第二张表
+        assert rendered.count("AI算力") == 1
+        assert rendered.count("领涨概念 Top 5") == 0
+
     def test_render_ignores_new_fields_zero_diff(self):
         ma = _make_analyzer(report_text="复盘")
         overview = _cn_overview()

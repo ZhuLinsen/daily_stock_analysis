@@ -727,6 +727,18 @@ def _markdown_contains_sector_markers(text: str) -> bool:
         "| 排名 | 板块 |",
         "| 排名 | 行业板块 |",
         "| Rank | Sector |",
+        # OR-COR-9bf864ce：概念表也算板块主线已存在，行业空+概念有时不得重复追加
+        "#### 概念板块领涨",
+        "#### 概念板块领跌",
+        "#### 领涨概念",
+        "#### 领跌概念",
+        "#### Leading Concept Themes",
+        "#### Lagging Concept Themes",
+        "#### Leading Concepts",
+        "#### Lagging Concepts",
+        "| 排名 | 概念板块 |",
+        "| 排名 | 概念 |",
+        "| Rank | Concept |",
     )
     return any(marker in text for marker in markers)
 
