@@ -66,6 +66,29 @@ class TestUSRoutingByPriority:
         assert order == ["YfinanceFetcher", "FinnhubFetcher"]
 
 
+class TestUSRoutingWithFutu:
+    """Futu joins the US chain by numeric priority instead of stealing the pinned slot."""
+
+    def test_default_futu_priority_sits_after_equal_priority_sources(self):
+        manager = _manager(_defaults() + [_F("FutuFetcher", 2)])
+        order = manager._order_us_sources_by_priority(DEFAULT_US_ORDER + ["FutuFetcher"], pin_first=False)
+        assert order == ["FinnhubFetcher", "FutuFetcher", "AlphaVantageFetcher", "YfinanceFetcher", "LongbridgeFetcher"]
+
+    def test_longbridge_preferred_keeps_futu_out_of_first_slot(self):
+        manager = _manager(_defaults() + [_F("FutuFetcher", 2)])
+        order = manager._order_us_sources_by_priority(
+            ["LongbridgeFetcher", "FinnhubFetcher", "AlphaVantageFetcher", "YfinanceFetcher", "FutuFetcher"],
+            pin_first=True,
+        )
+        assert order[0] == "LongbridgeFetcher"
+        assert "FutuFetcher" in order[1:]
+
+    def test_high_futu_priority_moves_it_last(self):
+        manager = _manager(_defaults() + [_F("FutuFetcher", 99)])
+        order = manager._order_us_sources_by_priority(DEFAULT_US_ORDER + ["FutuFetcher"], pin_first=False)
+        assert order[-1] == "FutuFetcher"
+
+
 def test_env_example_has_no_conflict_markers() -> None:
     """配置模板不得包含未解决的 git 冲突标记。"""
     content = Path(".env.example").read_text(encoding="utf-8")

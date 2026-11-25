@@ -499,17 +499,23 @@ class DataCapabilityService:
 
     def _us_realtime_priority(self, fetchers: Sequence[Any]) -> List[str]:
         fetcher_map = {str(getattr(fetcher, "name", "")): fetcher for fetcher in fetchers}
+        longbridge = fetcher_map.get("LongbridgeFetcher")
+        longbridge_available = longbridge is not None and self._fetcher_available_for_capability(
+            longbridge,
+            capability="realtime_quote",
+        )
         futu = fetcher_map.get("FutuFetcher")
         if futu is not None and self._fetcher_available_for_capability(
             futu,
             capability="realtime_quote",
         ):
-            return ["futu", "longbridge", "yfinance"]
-        longbridge = fetcher_map.get("LongbridgeFetcher")
-        if longbridge is not None and self._fetcher_available_for_capability(
-            longbridge,
-            capability="realtime_quote",
-        ):
+            # Mirror the runtime chain: Futu first, then the Longbridge/YFinance
+            # primary, then the remaining source. Do not claim Longbridge as the
+            # next source when it is not configured.
+            if longbridge_available:
+                return ["futu", "longbridge", "yfinance"]
+            return ["futu", "yfinance"]
+        if longbridge_available:
             return ["longbridge", "yfinance"]
         return ["yfinance", "longbridge"]
 
@@ -856,14 +862,15 @@ class DataCapabilityService:
             provider
             for fetcher in fetchers
             if (provider := _FETCHER_TO_PROVIDER.get(str(getattr(fetcher, "name", ""))))
-            in {"longbridge", "finnhub", "alphavantage", "yfinance"}
+            in {"futu", "longbridge", "finnhub", "alphavantage", "yfinance"}
             and self._fetcher_available_for_capability(fetcher, capability="daily_data")
         }
-        preferred = (
-            ["longbridge", "finnhub", "alphavantage", "yfinance"]
-            if "longbridge" in available
-            else ["finnhub", "alphavantage", "yfinance", "longbridge"]
-        )
+        if "longbridge" in available:
+            # Longbridge keeps the pinned primary slot it owns in the runtime
+            # chain; Futu follows it instead of being reported as unavailable.
+            preferred = ["longbridge", "futu", "finnhub", "alphavantage", "yfinance"]
+        else:
+            preferred = ["futu", "finnhub", "alphavantage", "yfinance", "longbridge"]
         return [provider for provider in preferred if provider in available]
 
     @staticmethod

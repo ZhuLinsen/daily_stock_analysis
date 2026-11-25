@@ -96,7 +96,9 @@ def _futu_market(stock_code: str) -> Optional[str]:
         return "hk"
     if code.endswith(".US") or code.startswith("US."):
         return "us"
-    if code.endswith((".SH", ".SZ")) or code.startswith(("SH.", "SZ.")):
+    if code.endswith((".SH", ".SZ", ".SS")) or code.startswith(("SH.", "SZ.")):
+        return "cn"
+    if code.startswith(("SH", "SZ")) and code[2:].isdigit():
         return "cn"
     if code.isdigit() and len(code) == 6:
         return "cn"
@@ -120,26 +122,34 @@ def _is_letter_ticker(code: str) -> bool:
 
 
 def _cn_symbol(stock_code: str) -> Optional[str]:
+    """Map an A-share code to Futu form, accepting every alias DSA normalizes.
+
+    Supported inputs: SH.600519 / SZ.300750, SH600519 / SZ300750, 600519.SH /
+    600519.SS / 300750.SZ, and bare 6-digit codes.
+    """
     code = (stock_code or "").strip().upper()
-    if code.startswith("SH."):
-        digits = code[3:]
-        return f"SH.{digits}" if digits.isdigit() and len(digits) == 6 else None
-    if code.startswith("SZ."):
-        digits = code[3:]
-        return f"SZ.{digits}" if digits.isdigit() and len(digits) == 6 else None
-    if code.endswith(".SH"):
-        digits = code[:-3]
-        return f"SH.{digits}" if digits.isdigit() and len(digits) == 6 else None
-    if code.endswith(".SZ"):
-        digits = code[:-3]
-        return f"SZ.{digits}" if digits.isdigit() and len(digits) == 6 else None
-    if not code.isdigit() or len(code) != 6:
+    exchange = None
+    digits = ""
+    if code.startswith(("SH.", "SZ.")):
+        exchange, digits = code[:2], code[3:]
+    elif code.startswith(("SH", "SZ")) and code[2:].isdigit():
+        exchange, digits = code[:2], code[2:]
+    elif code.endswith((".SH", ".SS", ".SZ")):
+        suffix = code.rsplit(".", 1)[1]
+        exchange = "SH" if suffix in {"SH", "SS"} else "SZ"
+        digits = code[: -(len(suffix) + 1)]
+    else:
+        digits = code
+    if not digits.isdigit() or len(digits) != 6:
         return None
-    if code.startswith(_SH_CN_PREFIXES):
-        return f"SH.{code}"
-    if code.startswith(_SZ_CN_PREFIXES):
-        return f"SZ.{code}"
-    return None
+    if exchange is None:
+        if digits.startswith(_SH_CN_PREFIXES):
+            exchange = "SH"
+        elif digits.startswith(_SZ_CN_PREFIXES):
+            exchange = "SZ"
+        else:
+            return None
+    return f"{exchange}.{digits}"
 
 
 def _us_symbol(stock_code: str) -> Optional[str]:
@@ -481,9 +491,12 @@ class FutuFetcher(BaseFetcher):
         try:
             import futu as ft
             market = _futu_market(stock_code)
-            # A-share daily candles are adjusted (front-adjusted) to match the
-            # convention used by AkShare/Tushare routes; HK/US stay raw.
-            autype = ft.AuType.QFQ if market == "cn" else ft.AuType.NONE
+            # Daily candles follow the repository-wide convention: A-shares and
+            # US stocks use front-adjusted prices (AkShare/Tushare/Longbridge/
+            # YFinance all adjust), otherwise a split shows up as a -75% crash
+            # and poisons MAs, alerts and the stored daily window. HK keeps the
+            # unadjusted series to stay consistent with the HK routes.
+            autype = ft.AuType.NONE if market == "hk" else ft.AuType.QFQ
             ret, data, _ = ctx.request_history_kline(
                 symbol,
                 start=start_date,

@@ -2067,9 +2067,14 @@ class DataFetcherManager:
                 # 指数始终 YFinance 首选（Longbridge 不提供指数K线）
                 source_order = ["YfinanceFetcher", "FinnhubFetcher"]
             elif prefer_lb:
-                source_order = ["FutuFetcher", "LongbridgeFetcher", "FinnhubFetcher", "AlphaVantageFetcher", "YfinanceFetcher"]
+                source_order = ["LongbridgeFetcher", "FinnhubFetcher", "AlphaVantageFetcher", "YfinanceFetcher"]
             else:
-                source_order = ["FutuFetcher", "FinnhubFetcher", "AlphaVantageFetcher", "YfinanceFetcher", "LongbridgeFetcher"]
+                source_order = ["FinnhubFetcher", "AlphaVantageFetcher", "YfinanceFetcher", "LongbridgeFetcher"]
+            # Futu(OpenD) 只在已配置 endpoint 时进入美股日 K 链路，且不占用锚定首位：
+            # 它的位置由 FUTU_PRIORITY(默认 2) 与其它源的数值优先级共同决定，
+            # 未配置 OpenD 的存量用户(如仅 Longbridge+YFinance)链路完全不变。
+            if not is_us_index and self._futu_realtime_enabled():
+                source_order.append("FutuFetcher")
             # 消费各数据源当前优先级(含 *_PRIORITY 环境变量):默认优先级与内置链路一致,
             # 单项调整(如 YFINANCE_PRIORITY=0)即时生效;指数/Longbridge preferred 的锚定首选不被普通优先级覆盖
             pin_first = bool(is_us_index or prefer_lb)
@@ -2592,23 +2597,33 @@ class DataFetcherManager:
 
         if is_us or is_hk:
             prefer_lb = self._longbridge_preferred() and not is_us_index
+            pre_quote = None
+            futu_failed_token = None
             if is_us:
-                # Futu OpenD covers US stocks (US.AAPL) via a broker quote feed;
-                # when configured it is tried first, otherwise keep the
-                # YFinance/Longbridge route untouched.
+                # Futu OpenD covers US stocks (US.AAPL) via a broker quote feed.
+                # When configured it is tried before the YFinance/Longbridge
+                # chain, but a stale Futu snapshot (or a failed request) must not
+                # mask a fresher quote from those sources: it falls through and
+                # is recorded as the actual fallback source.
                 if not is_us_index and self._futu_realtime_enabled():
-                    quote = self._try_fetcher_quote(stock_code, "FutuFetcher", **target_kwargs)
-                    if quote is not None:
-                        logger.info(
-                            "[realtime quote] US %s fetched (source: FutuFetcher)", stock_code
-                        )
-                        return self._enrich_realtime_quote(
-                            quote,
+                    pre_quote = self._try_fetcher_quote(stock_code, "FutuFetcher", **target_kwargs)
+                    if pre_quote is not None:
+                        probe = self._enrich_realtime_quote(
+                            pre_quote,
                             realtime_cache_ttl=getattr(config, "realtime_cache_ttl", None),
                         )
-                    logger.info(
-                        "[realtime quote] US %s futu source failed, falling back", stock_code
-                    )
+                        if getattr(probe, "is_stale", False):
+                            logger.info(
+                                "[realtime quote] US %s futu snapshot stale (%ss), falling back",
+                                stock_code,
+                                getattr(probe, "stale_seconds", None),
+                            )
+                            pre_quote = None
+                    if pre_quote is None:
+                        logger.info(
+                            "[realtime quote] US %s futu source unusable, falling back", stock_code
+                        )
+                        futu_failed_token = self._realtime_fetcher_token("FutuFetcher")
                 primary_src = "LongbridgeFetcher" if prefer_lb else "YfinanceFetcher"
                 secondary_src = "YfinanceFetcher" if prefer_lb else "LongbridgeFetcher"
                 market_label = "US index" if is_us_index else "US"
@@ -2687,10 +2702,20 @@ class DataFetcherManager:
                     logger.info("[realtime quote] HK %s no available data source", stock_code)
                 return None
             primary_token = self._realtime_fetcher_token(primary_src, **primary_kw)
-            primary_quote = self._try_fetcher_quote(stock_code, primary_src, **primary_kw, **target_kwargs)
-            fallback_from = primary_token if primary_quote is None else None
-            if primary_quote is not None:
-                logger.info(f"[realtime quote] {market_label} {stock_code} fetched (source: {primary_src})")
+            if pre_quote is not None:
+                # Futu already returned a fresh quote; the primary/secondary
+                # sources are still used below to supplement missing fields.
+                primary_quote = pre_quote
+                fallback_from = None
+                logger.info(f"[realtime quote] {market_label} {stock_code} fetched (source: FutuFetcher)")
+            else:
+                primary_quote = self._try_fetcher_quote(stock_code, primary_src, **primary_kw, **target_kwargs)
+                if primary_quote is None:
+                    fallback_from = futu_failed_token or primary_token
+                else:
+                    fallback_from = futu_failed_token
+                if primary_quote is not None:
+                    logger.info(f"[realtime quote] {market_label} {stock_code} fetched (source: {primary_src})")
             # US index quotes are YFinance-only. Longbridge accepts index-like
             # symbols syntactically, but does not provide the index quote
             # contract used by this manager, so it must not be used as either
@@ -2804,7 +2829,10 @@ class DataFetcherManager:
                             provider=fetcher.name,
                             operation="get_realtime_quote",
                         )
-                        quote = self._call_fetcher_method(fetcher, 'get_realtime_quote', raw_stock_code or stock_code)
+                        # Pass the normalized code (bare 6 digits) so a request for
+                        # SH600519 / 600519.SS hits the same Futu symbol as 600519,
+                        # matching the daily-K path.
+                        quote = self._call_fetcher_method(fetcher, 'get_realtime_quote', stock_code)
 
                 provider_name = fetcher.name if fetcher is not None else source
                 if analysis_target is not None and quote is not None and not self._quote_matches_target(quote, analysis_target):

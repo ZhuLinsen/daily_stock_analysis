@@ -203,6 +203,60 @@ class TestFutuMultiMarketSymbolMapping(unittest.TestCase):
         self.assertIsNone(futu_fetcher._futu_market(""))
         self.assertIsNone(futu_fetcher._futu_symbol("   "))
 
+    def test_cn_alias_symbols_match_daily_path(self):
+        for code in ("600519", "SH600519", "sh600519", "600519.SH", "600519.SS", "600519.ss"):
+            self.assertEqual(futu_fetcher._futu_market(code), "cn", code)
+            self.assertEqual(futu_fetcher._futu_symbol(code), "SH.600519", code)
+        for code in ("300750", "SZ300750", "300750.SZ"):
+            self.assertEqual(futu_fetcher._futu_market(code), "cn", code)
+            self.assertEqual(futu_fetcher._futu_symbol(code), "SZ.300750", code)
+
+
+class TestFutuDailyAdjustmentType(unittest.TestCase):
+    """US/A daily candles must be front-adjusted; HK stays unadjusted."""
+
+    def _fetch(self, stock_code):
+        captured = {}
+
+        class _Ctx:
+            def request_history_kline(self, symbol, **kwargs):
+                captured["symbol"] = symbol
+                captured["autype"] = kwargs.get("autype")
+                frame = pd.DataFrame({
+                    "time_key": ["2026-11-20"],
+                    "open": [1.0], "high": [1.0], "low": [1.0], "close": [1.0],
+                    "volume": [10], "turnover": [10.0],
+                })
+                return 0, frame, None
+
+        fake_futu = types.SimpleNamespace(
+            RET_OK=0,
+            AuType=types.SimpleNamespace(NONE="none", QFQ="qfq"),
+            KLType=types.SimpleNamespace(K_DAY="k_day"),
+        )
+        fetcher = FutuFetcher.__new__(FutuFetcher)
+        with patch.dict(sys.modules, {"futu": fake_futu}), patch.object(
+            FutuFetcher, "_get_ctx", return_value=_Ctx()
+        ):
+            data = fetcher._fetch_raw_data(stock_code, "2026-09-01", "2026-11-20")
+        return captured, data
+
+    def test_us_daily_uses_front_adjustment(self):
+        captured, data = self._fetch("AAPL")
+        self.assertEqual(captured["symbol"], "US.AAPL")
+        self.assertEqual(captured["autype"], "qfq")
+        self.assertFalse(data.empty)
+
+    def test_cn_alias_daily_uses_front_adjustment(self):
+        captured, _ = self._fetch("SH600519")
+        self.assertEqual(captured["symbol"], "SH.600519")
+        self.assertEqual(captured["autype"], "qfq")
+
+    def test_hk_daily_keeps_unadjusted(self):
+        captured, _ = self._fetch("00700")
+        self.assertEqual(captured["symbol"], "HK.00700")
+        self.assertEqual(captured["autype"], "none")
+
 
 class TestFutuMarketAwareTimestamp(unittest.TestCase):
     def test_us_quote_uses_new_york_time(self):
