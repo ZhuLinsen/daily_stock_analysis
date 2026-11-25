@@ -17,7 +17,7 @@ description: 基于 Issue 分析结论实施最小化修复，按 AGENTS.md 验�
 - 优先复用现有模块、配置入口、脚本和测试，不新增平行实现。
 - 保持默认行为向后兼容，避免破坏 fallback / fail-open。
 - 检查同语义涉及的所有入口（CLI / API / Bot / Web / Desktop / Docs / Tests），不打局部补丁。
-- 若涉及用户可见能力、配置项、CLI/API、通知或报告变化，按 `AGENTS.md` §1 同步 `.env.example`、相关 `docs/*.md` 与 `docs/CHANGELOG.md`（`[Unreleased]` 扁平格式）。
+- 若涉及用户可见能力、配置项、CLI/API、通知或报告变化，按 `AGENTS.md` §1 同步 `.env.example` 与相关 `docs/*.md`。
 
 ## Step 3: 按改动面验证
 
