@@ -757,8 +757,6 @@ describe('DecisionSignalsPage', () => {
     const recentCreatedAt = new Date(Date.now() - 60 * 60 * 1000).toISOString();
     const refreshedItem = makeSignal({
       id: 90,
-      // Keep this refreshed signal inside the active timeline window on any date.
-      createdAt: new Date(Date.now() - 60_000).toISOString(),
       decisionProfile: 'balanced',
       sourceAgent: null,
       triggerSource: 'api',
