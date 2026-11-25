@@ -647,6 +647,84 @@ class HistoryDailyApiTestCase(unittest.TestCase):
         self.assertEqual(requery.status_code, 200)
         self.assertEqual(requery.json(), payload)
 
+    def test_alias_group_day_count_refreshed_on_cross_alias_deletion(self) -> None:
+        """OR-COR-afa444c6 扩展场景：002460 与 002460.SZ 各有两份当日报告，聚合
+        SELECT 与按主键点查代表报告之间，另一连接批量删除「裸码代表报告 + 带后缀
+        别名的一份较早报告」。两别名归组后是同一行：代表 = 带后缀别名剩余的最新
+        一份，analysis_count 必须恒等于实际剩余份数（1 + 1 = 2）且与事后重查逐
+        字段一致。修复前只重查 missing_codes（002460），带后缀别名保留过期计数
+        2，合并出 3 份，与实际剩余报告数不一致。"""
+        day_start, _day_end = HistoryService.shanghai_day_bounds_local(QUERY_DATE)
+        self._add_history("002460", day_start + timedelta(hours=1), name="赣锋锂业")
+        bare_rep = self._add_history("002460", day_start + timedelta(hours=9), name="赣锋锂业")
+        sz_old = self._add_history("002460.SZ", day_start + timedelta(hours=2), name="赣锋锂业")
+        sz_rep = self._add_history("002460.SZ", day_start + timedelta(hours=10), name="赣锋锂业")
+
+        original_session_local = self.db._SessionLocal
+        interleaved = {"armed": True, "delete_response": None}
+
+        def _interleaved_session_local():
+            session = original_session_local()
+            if not interleaved["armed"]:
+                # 删除请求自己的会话：普通会话（即「第二个连接」）
+                return session
+            interleaved["armed"] = False
+            original_execute = session.execute
+            fired = {"done": False}
+
+            def _execute(statement, *args, **kwargs):
+                result = original_execute(statement, *args, **kwargs)
+                if not fired["done"]:
+                    # 聚合 SELECT 已返回（两别名 day_count 均为 2），按主键读
+                    # 代表报告尚未发生：此时批量删除裸码代表 + 带后缀别名的较早一份
+                    fired["done"] = True
+                    interleaved["delete_response"] = self.client.delete(
+                        "/api/v1/history",
+                        json={"record_ids": [bare_rep, sz_old]},
+                    )
+                return result
+
+            session.execute = _execute  # type: ignore[method-assign]
+            return session
+
+        with patch.object(self.db, "_SessionLocal", side_effect=_interleaved_session_local):
+            response = self._get_daily()
+
+        delete_response = interleaved["delete_response"]
+        self.assertIsNotNone(delete_response, "并发删除应在两条 SELECT 之间触发")
+        self.assertEqual(delete_response.status_code, 200)
+        self.assertEqual(delete_response.json()["deleted"], 2)
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["total"], 1, "两别名必须归组为一行")
+        self.assertEqual([item["id"] for item in payload["items"]], [sz_rep])
+        # 剩余 bare_old(002460) + sz_rep(002460.SZ) = 2 份；过期聚合会给出 3
+        self.assertEqual(payload["items"][0]["analysis_count"], 2)
+        self.assertTrue(payload["items"][0]["is_latest"])
+        # 与事后重查结果逐字段一致
+        requery = self._get_daily()
+        self.assertEqual(requery.status_code, 200)
+        self.assertEqual(requery.json(), payload)
+
+    def test_us_class_share_spellings_merge_into_one_group(self) -> None:
+        """OR-COR-e330eb05：同日 BRK-B 与 BRK.B 是同一只伯克希尔的两种写法，必须
+        归为一行——与既有历史查询的双拼写候选契约一致
+        （tests/test_analysis_history.py::test_history_lookup_matches_both_class_share_spellings）。
+        修复前展示码归一化保留连字符/点号差异：同日两份分析拆成两行、各自份数 1，
+        且 BRK.B 行误判 is_latest。"""
+        day_start, _day_end = HistoryService.shanghai_day_bounds_local(QUERY_DATE)
+        self._add_history("BRK-B", day_start + timedelta(hours=2), name="伯克希尔")
+        dotted_id = self._add_history("BRK.B", day_start + timedelta(hours=9), name="伯克希尔")
+
+        response = self._get_daily()
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["total"], 1, "类别股双拼写必须归组为一行")
+        self.assertEqual([item["id"] for item in payload["items"]], [dotted_id])
+        self.assertEqual(payload["items"][0]["analysis_count"], 2)
+        self.assertTrue(payload["items"][0]["is_latest"])
+
 
 if __name__ == "__main__":
     unittest.main()

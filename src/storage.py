@@ -3489,9 +3489,10 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         report_type=market_review；当日行按 (created_at desc, id desc) 排序。
 
         代表报告实体仍需按主键点查，与聚合不在同一个读快照：若某 raw code 的
-        当日最新一份在两条 SELECT 之间被并发删除，则对该 raw code 重新聚合（最多
-        ``_DAILY_SNAPSHOT_REREAD_ATTEMPTS`` 次），退回为当日次新一份，而不是把
-        整只股票从当日列表里漏掉（OR-COR-afa444c6）。
+        当日最新一份在两条 SELECT 之间被并发删除，则全量重新聚合（最多
+        ``_DAILY_SNAPSHOT_REREAD_ATTEMPTS`` 次；别名组其余成员的 day_count 也在
+        同一删除窗口内失效，只重查缺失代码会保留过期份数），退回为当日次新一份，
+        而不是把整只股票从当日列表里漏掉（OR-COR-afa444c6）。
         """
         in_day = and_(
             AnalysisHistory.created_at >= day_start,
@@ -3548,18 +3549,17 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             day_rows, missing_codes = _resolve_day_rows(session, aggregated)
 
             # 代表行被并发删除时不得跳过整只股票（OR-COR-afa444c6）：当天可能仍有
-            # 更早的报告，应退回为该 raw code 的当日次新一份。对受影响的 raw code
-            # 重新聚合（代表行、当日份数、全局最新 id 一并取删除后的视图，与事后
+            # 更早的报告，应退回为该 raw code 的当日次新一份。别名归组（
+            # 002460/002460.SZ 合并为一行）是服务层口径，存储层无从只重查「受影响
+            # 的别名组」；且同一删除窗口可能同时命中一个别名的代表行与另一别名的
+            # 更早报告——仅重查 missing_codes 会保留未缺失别名的过期 day_count，
+            # 合并后 analysis_count ≠ 实际剩余份数。故任一代表行缺失即对全量重新
+            # 聚合，一次性拿到删除后视图的代表行、当日份数与全局最新 id（与事后
             # 重查一致）；有界重试，避免删除持续发生时无限循环。
             rereads = 0
             while missing_codes and rereads < _DAILY_SNAPSHOT_REREAD_ATTEMPTS:
                 rereads += 1
-                stale_codes = set(missing_codes)
-                reread_rows = session.execute(
-                    snapshot_query.where(AnalysisHistory.code.in_(missing_codes))
-                ).all()
-                aggregated = [row for row in aggregated if str(row.code) not in stale_codes]
-                aggregated.extend(reread_rows)
+                aggregated = session.execute(snapshot_query).all()
                 day_rows, missing_codes = _resolve_day_rows(session, aggregated)
 
             daily: List[Tuple[AnalysisHistory, int]] = []

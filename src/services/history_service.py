@@ -424,6 +424,11 @@ class HistoryService:
     # parser 的港股股票 canonical（``hk00700``，OR-COR-22ed4583）
     _HK_STOCK_CANONICAL_RE = re.compile(r"^hk\d{5}$")
 
+    # 美股类别股拼写：字母-分隔符-字母（``BRK-B``/``BRK.B``/``BAC-PL``，
+    # OR-COR-e330eb05）。两侧都必须是字母——带数字的 A 股市场标记（``002460.SZ``）
+    # 不属于类别股，仍走展示码归一化。
+    _US_CLASS_SHARE_CODE_RE = re.compile(r"^[A-Z]{1,5}[-.][A-Z]{1,5}$")
+
     @staticmethod
     def shanghai_day_bounds_local(query_date: date) -> Tuple[datetime, datetime]:
         """北京日历日 ``[00:00, +1d)`` 折算为服务器本地 naive 半开区间。
@@ -450,15 +455,26 @@ class HistoryService:
         例外（OR-COR-22ed4583）：港股股票同样取 parser canonical。展示码归一化
         只会给带市场标记的写法补 ``HK`` 前缀，裸码 ``00700`` 原样保留，于是同一只
         腾讯被拆成 ``00700`` 与 ``HK00700`` 两行、各自判「最新分析」。parser 对
-        ``00700`` / ``HK00700`` / ``00700.HK`` 一律给出 ``hk00700``。这一收敛仅限
-        港股：parser 对其余股票的 canonical 不能直接当归组键——裸 ``005930`` 会被
-        判成深市 ``sz005930``（与 ``005930.KS`` 重新拆开）、``USAPPL`` 被截成
-        ``APPL``，所以其它股票仍走展示码归一化。
+        ``00700`` / ``HK00700`` / ``00700.HK`` 一律给出 ``hk00700``。
+
+        例外（OR-COR-e330eb05）：美股类别股同样取 parser canonical——``BRK-B``/
+        ``BRK.B`` 是同一只伯克希尔的两种写法，既有历史查询对两类拼写都生成双候选
+        （``normalize_us_hyphen_symbol``），parser 对两者给出同一 canonical；
+        展示码归一化保留连字符/点号差异，同日两份分析被拆成两行、各自份数 1，
+        且 ``BRK.B`` 行误判 is_latest。收敛仅限「字母-分隔符-字母」的类别股拼写
+        （``BRK-B``/``BAC-PL``）：带数字的 A 股写法（``002460.SZ``）与纯字母普通
+        代码不适用——parser 对其余股票的 canonical 不能直接当归组键（裸 ``005930``
+        会被判成深市 ``sz005930``、``USAPPL`` 被截成 ``APPL``），这些仍走展示码
+        归一化。
         """
         from data_provider.base import normalize_stock_code
         from src.services.stock_list_parser import ParseStatus, parse_analysis_target
 
         code = str(raw_code or "").strip()
+        upper_code = code.upper()
+        is_us_class_share = bool(
+            code and HistoryService._US_CLASS_SHARE_CODE_RE.match(upper_code)
+        )
         if code:
             try:
                 target = parse_analysis_target(code)
@@ -473,6 +489,16 @@ class HistoryService:
                     and HistoryService._HK_STOCK_CANONICAL_RE.match(canonical)
                 ):
                     return canonical
+                if target.asset_type == ParseStatus.STOCK and is_us_class_share:
+                    return str(target.canonical_id)
+            elif is_us_class_share:
+                # parser 未能解析该拼写时仍按类别股契约折叠（BRK-B → BRK.B），
+                # 与解析成功的兄弟拼写保持同组（OR-COR-e330eb05）
+                from data_provider.us_index_mapping import normalize_us_hyphen_symbol
+
+                folded = normalize_us_hyphen_symbol(code)
+                if folded:
+                    return folded
         return normalize_stock_code(display_code or "")
 
     def get_daily_history(

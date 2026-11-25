@@ -115,12 +115,14 @@ describe('DailyHistoryPanel', () => {
 
     render(<DailyHistoryPanel selectedRecordId={null} onSelectRecord={vi.fn()} />);
 
-    // 第 21 只起的报告此前不可达：修复后须自动翻页直到取满 total
+    // 第 21 只起的报告此前不可达：修复后须自动翻页直到取满 total。
+    // 多页加载完成前有一次首页快照重校验（OR-COR-e9d99614 总数恒定的替换竞态），
+    // 静态 mock 下签名一致直接通过：2 页翻页 + 1 次重校验 = 3 次请求。
     expect(await screen.findByTestId('daily-history-row-101')).toBeInTheDocument();
-    expect(getDaily).toHaveBeenCalledTimes(2);
+    expect(getDaily).toHaveBeenCalledTimes(3);
     expect(getDaily).toHaveBeenLastCalledWith(
       expect.any(String),
-      expect.objectContaining({ page: 2, limit: 100 }),
+      expect.objectContaining({ page: 1, limit: 100 }),
     );
   });
 
@@ -268,8 +270,10 @@ describe('DailyHistoryPanel', () => {
     const rowIds = screen.getAllByTestId(/^daily-history-row-/).map((row) => row.getAttribute('data-testid'));
     expect(rowIds).toHaveLength(102);
     expect(new Set(rowIds).size).toBe(102);
-    // 页边界移动后从第 1 页重取，而不是把偏移过的第 2 页直接拼上去
-    expect(requestedPages).toEqual([1, 2, 1, 2]);
+    // 页边界移动后从第 1 页重取，而不是把偏移过的第 2 页直接拼上去；
+    // 重取后的成功拼装在完成前还有一次首页快照重校验（OR-COR-e9d99614，
+    // 静态响应下签名一致即通过）
+    expect(requestedPages).toEqual([1, 2, 1, 2, 1]);
     expect(screen.getByText('102只')).toBeInTheDocument();
   });
 
@@ -296,6 +300,53 @@ describe('DailyHistoryPanel', () => {
     expect(new Set(rowIds).size).toBe(100);
     // 有界重取后收尾，计数标签与实际展示的行数一致
     expect(screen.getByText('100只')).toBeInTheDocument();
+    expect(getDaily.mock.calls.length).toBeLessThanOrEqual(6);
+  });
+
+  it('resyncs when a delete+add swap keeps the total unchanged (OR-COR-e9d99614)', async () => {
+    // 当天 101 只股票（id 101 最新排首位），总数恒定的替换：删一只 + 新增一只
+    const baseRows = Array.from({ length: 101 }, (_, index) => ({
+      ...latestOfStockA,
+      id: 101 - index,
+      code: `6005${String(index).padStart(2, '0')}`,
+      name: `股票${101 - index}`,
+    }));
+    let swap: { deletedId: number; added: unknown | null } = { deletedId: 0, added: null };
+    const requestedPages: number[] = [];
+    let releasePage2: () => void = () => {};
+    const page2Gate = new Promise<void>((resolve) => {
+      releasePage2 = resolve;
+    });
+    getDaily.mockImplementation((_date: string, options: { page?: number } = {}) => {
+      const page = options.page ?? 1;
+      requestedPages.push(page);
+      const respond = () => {
+        const all = baseRows.filter((row) => row.id !== swap.deletedId);
+        if (swap.added) all.unshift(swap.added);
+        const offset = (page - 1) * 100;
+        return { total: all.length, page, limit: 100, items: all.slice(offset, offset + 100) };
+      };
+      // 第 2 页的响应被门住：等第 1 页处理完、第 2 页已请求后再做替换
+      return page === 2 ? page2Gate.then(respond) : Promise.resolve(respond());
+    });
+
+    render(<DailyHistoryPanel selectedRecordId={null} onSelectRecord={vi.fn()} />);
+    await waitFor(() => expect(requestedPages).toEqual([1, 2]));
+
+    // 第 1 页已取回、第 2 页尚未返回：删除一只仍在第 1 页里的股票 + 新增一只
+    //（新报告按时间倒序排到首位，落在已取过的第 1 页区间，不会再被请求）
+    swap = { deletedId: 51, added: { ...latestOfStockA, id: 102, code: '000002', name: '当日新增' } };
+    releasePage2();
+
+    // total 始终是 101，去重后恰好凑满——但拼出的必须是同一快照：
+    // 新增必须有入口、已删不得仍可点击、无重复行
+    expect(await screen.findByTestId('daily-history-row-102')).toBeInTheDocument();
+    expect(screen.queryByTestId('daily-history-row-51')).not.toBeInTheDocument();
+    const rowIds = screen.getAllByTestId(/^daily-history-row-/).map((row) => row.getAttribute('data-testid'));
+    expect(rowIds).toHaveLength(101);
+    expect(new Set(rowIds).size).toBe(101);
+    expect(screen.getByText('101只')).toBeInTheDocument();
+    // 首页签名重校验保证收敛终止，不得无限重取
     expect(getDaily.mock.calls.length).toBeLessThanOrEqual(6);
   });
 

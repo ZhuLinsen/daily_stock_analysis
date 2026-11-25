@@ -52,6 +52,14 @@ const DAILY_MAX_PAGES = 50;
 const DAILY_MAX_RESYNC_ATTEMPTS = 2;
 
 /**
+ * 第 1 页快照令牌（OR-COR-e9d99614 总数恒定的替换竞态）：按序拼接的记录 ID 串。
+ * 翻页期间「删一条 + 新增一条」不改变 total，只有首页内容（ID 序列）能证明
+ * 各页是否取自同一快照。
+ */
+const dailyFirstPageToken = (items: DailyHistoryItem[]): string =>
+  items.map((item) => item.id).join(',');
+
+/**
  * 首页历史区「日期回看」面板（issue #1661，G1a 方案一）。
  * 日期口径 = 北京时间（Asia/Shanghai）的分析生成日期；同股同日多份取最新一份
  * （analysis_count 标注份数，逐份下钻留待下期）；列表按日期 key 重挂载 +
@@ -162,9 +170,17 @@ const DailyHistoryList: React.FC<{
         // 有界重取（OR-COR-e9d99614）：后端按偏移量切页，翻页期间有新报告写入/删除
         // 会让页边界移动。各页 total 不一致、或按记录去重后不足 total，都说明拼起来
         // 的不是同一快照——从第 1 页重取，而不是把偏移过的页直接拼上去。
+        // 总数恒定的替换（OR-COR-e9d99614）：翻页期间「删一条 + 新增一条」不改变
+        // total——新报告按时间倒序排到首位，落在已取过的第 1 页区间（不会再被
+        // 请求），第 2 页顺移补上一条旧记录，去重后恰好凑满 total，拼出的却是
+        // 撕裂快照：已删记录仍可点击、新股票无入口。因此多页加载在完成前重取第
+        // 1 页比对快照令牌（首页 ID 序列签名）：内容漂移即从第 1 页重取（有界，
+        // 与 boundaryMoved 同一重试上限）；首页一致即通过——稳态只多一次首页
+        // 请求且仅发生在多页加载，单页响应本身原子一致无需校验，不会无限重取。
         for (let attempt = 0; ; attempt += 1) {
           const collectedById = new Map<number, DailyHistoryItem>();
           let snapshotTotal: number | null = null;
+          let firstPageToken: string | null = null;
           let boundaryMoved = false;
           let page = 1;
           while (true) {
@@ -176,6 +192,7 @@ const DailyHistoryList: React.FC<{
             if (!active || seq !== requestSeqRef.current) return;
             if (snapshotTotal === null) {
               snapshotTotal = response.total;
+              firstPageToken = dailyFirstPageToken(response.items);
             } else if (response.total !== snapshotTotal) {
               boundaryMoved = true;
               break;
@@ -192,9 +209,20 @@ const DailyHistoryList: React.FC<{
             page += 1;
           }
           const collected = Array.from(collectedById.values());
-          const complete = !boundaryMoved && (
+          let complete = !boundaryMoved && (
             page >= DAILY_MAX_PAGES || collected.length >= (snapshotTotal ?? 0)
           );
+          if (complete && page > 1 && attempt < DAILY_MAX_RESYNC_ATTEMPTS && firstPageToken !== null) {
+            const recheck = await historyApi.getDaily(dateKey, {
+              signal: controller.signal,
+              page: 1,
+              limit: DAILY_PAGE_SIZE,
+            });
+            if (!active || seq !== requestSeqRef.current) return;
+            if (recheck.total !== snapshotTotal || dailyFirstPageToken(recheck.items) !== firstPageToken) {
+              complete = false;
+            }
+          }
           if (complete || attempt >= DAILY_MAX_RESYNC_ATTEMPTS) {
             setItems(collected);
             // 计数标签与实际展示的行数一致（去重后不足 total 时不虚报）
