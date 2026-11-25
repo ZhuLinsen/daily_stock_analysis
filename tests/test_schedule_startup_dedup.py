@@ -339,6 +339,24 @@ class AnalysisRunMarkerUnitTestCase(unittest.TestCase):
         decision = should_skip_startup_immediate_run(self.config)
         self.assertTrue(decision.skip, decision.reason)
 
+    def test_due_market_review_requires_marker_review_requested(self):
+        # A covered (or empty) stock list must not skip a market review that
+        # today's marker run never requested (e.g. --no-market-review).
+        self._record(market_review_requested=False, market_review_completed=None)
+        decision = should_skip_startup_immediate_run(
+            self.config, expected_stock_codes=[], market_review_due=True
+        )
+        self.assertFalse(decision.skip, decision.reason)
+        self.assertIn("market review", decision.reason)
+
+        # A requested-but-failed review still skips: completeness never
+        # gates, so a failing review cannot resurrect the restart loop.
+        self._record(market_review_requested=True, market_review_completed=False)
+        decision = should_skip_startup_immediate_run(
+            self.config, expected_stock_codes=[], market_review_due=True
+        )
+        self.assertTrue(decision.skip, decision.reason)
+
     def test_gate_requires_covered_superset(self):
         # Blocker OR-COR-9a7cb728: the marker's covered ``stock_codes`` being
         # a strict subset of the currently expected list (e.g. only the CN
@@ -772,6 +790,50 @@ class ScheduleStartupDedupIntegrationTestCase(unittest.TestCase):
                 )
                 self.assertIn("Startup immediate-run dedup check passed", self._joined_logs())
                 self.assertNotIn("Startup immediate run skipped", self._joined_logs())
+
+    def _run_filtered_out_review_scenario(self, *, marker_review_requested):
+        # Blocker OR-COR-9af49d45: on a CN holiday the trading-day filter
+        # drops 600519.SH, leaving an empty expected list, while the US
+        # market review is still due. Today's marker comes from an earlier
+        # AAPL run.
+        config = self._make_config(
+            stock_list=["600519.SH"],
+            trading_day_check_enabled=True,
+            market_review_enabled=True,
+            market_review_region="us",
+        )
+        record_analysis_run_marker(
+            SimpleNamespace(database_path=config.database_path, stock_list=["AAPL"]),
+            scope="full",
+            stock_codes=["AAPL"],
+            market_review_requested=marker_review_requested,
+            market_review_completed=None if not marker_review_requested else True,
+        )
+        with patch(
+            "src.core.trading_calendar.get_open_markets_today",
+            return_value={"us"},
+        ):
+            with self._patched_schedule_main(
+                config, self._make_args()
+            ) as (task, run_immediately, fake_analysis):
+                self.assertTrue(run_immediately)
+                task()
+                return fake_analysis.call_count
+
+    def test_filtered_out_targets_do_not_skip_unrequested_market_review(self):
+        call_count = self._run_filtered_out_review_scenario(
+            marker_review_requested=False
+        )
+        self.assertEqual(call_count, 1)
+        self.assertIn("Startup immediate-run dedup check passed", self._joined_logs())
+        self.assertNotIn("Startup immediate run skipped", self._joined_logs())
+
+    def test_filtered_out_targets_skip_when_marker_requested_review(self):
+        call_count = self._run_filtered_out_review_scenario(
+            marker_review_requested=True
+        )
+        self.assertEqual(call_count, 0)
+        self.assertIn("Startup immediate run skipped", self._joined_logs())
 
     def _real_config_from_env(self):
         """Build a REAL Config through the production resolution chain.

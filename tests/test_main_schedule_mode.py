@@ -278,6 +278,27 @@ class MainScheduleModeTestCase(unittest.TestCase):
         self.assertEqual(cn_only_codes, [])
         self.assertTrue(cn_only_skip_all)
 
+    def test_compute_trading_day_filter_keeps_invalid_exchange_markers(self) -> None:
+        """Invalid markers (00700.SH, 600519.BJ) are rejected by the strict
+        parser; they stay fail-open instead of being read as HK/CN codes, so
+        a holiday cannot hide the configuration error."""
+        args = self._make_args()
+        config = self._make_config(
+            trading_day_check_enabled=True,
+            market_review_enabled=False,
+            database_path=str(Path(self.temp_dir.name) / "stock_analysis.db"),
+        )
+
+        with patch("src.core.trading_calendar.get_open_markets_today", return_value={"us"}):
+            filtered_codes, _, should_skip_all = main._compute_trading_day_filter(
+                config,
+                args,
+                ["00700.SH", "600519.BJ"],
+            )
+
+        self.assertEqual(filtered_codes, ["00700.SH", "600519.BJ"])
+        self.assertFalse(should_skip_all)
+
     def test_public_webui_bind_warns_when_auth_is_disabled(self) -> None:
         with patch("src.auth.is_auth_enabled", return_value=False), \
              patch("main.logger.warning") as warning_log:

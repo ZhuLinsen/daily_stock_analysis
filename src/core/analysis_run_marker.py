@@ -35,7 +35,11 @@ Design rules (see docs/CHANGELOG.md):
 - Market-review completeness is recorded for observability but does NOT
   gate the dedup decision: otherwise a persistently failing review would
   resurrect the very restart-loop bug this gate fixes. The daily scheduled
-  run covers review backfill.
+  run covers review backfill. Whether the marker run *requested* a review
+  does gate it: when this startup would run a market review and today's
+  marker run did not request one (e.g. ``--no-market-review``), the gate
+  executes, so an empty or fully covered stock list cannot skip a review
+  that never ran.
 - scope=subset runs never overwrite today's existing full marker.
 """
 
@@ -127,6 +131,7 @@ def _load_marker(marker_path: Path) -> Optional[dict]:
 def should_skip_startup_immediate_run(
     config: Any,
     expected_stock_codes: Optional[Iterable[Any]] = None,
+    market_review_due: bool = False,
 ) -> StartupRunDecision:
     """Decide whether the startup-immediate schedule run may be skipped.
 
@@ -134,9 +139,10 @@ def should_skip_startup_immediate_run(
     ``expected_stock_codes`` (the list this startup would analyze after the
     trading-day filter; falls back to ``config.stock_list``) must be a
     subset of the marker's covered ``stock_codes``. The stock-list
-    fingerprint is observability only and never decides. A missing or
-    non-list ``stock_codes`` field, and any other error, is fail-open
-    (execute).
+    fingerprint is observability only and never decides. When
+    ``market_review_due`` is True (this startup would run a market review),
+    the marker run must also have requested one. A missing or non-list
+    ``stock_codes`` field, and any other error, is fail-open (execute).
     """
     try:
         if not getattr(config, "schedule_startup_dedup", True):
@@ -211,6 +217,19 @@ def should_skip_startup_immediate_run(
                 reason=(
                     "marker does not cover the expected stock list: missing "
                     f"{sorted(missing)} (covered={sorted(covered)})"
+                ),
+            )
+
+        market_review = payload.get("market_review")
+        if market_review_due and not (
+            isinstance(market_review, dict)
+            and market_review.get("requested") is True
+        ):
+            return StartupRunDecision(
+                skip=False,
+                reason=(
+                    "this startup would run a market review that today's "
+                    "marker run did not request"
                 ),
             )
 
