@@ -425,6 +425,20 @@ For the notification baseline, diagnostics, and deployment notes, see [Notificat
 > - `FUNDAMENTAL_STAGE_TIMEOUT_SECONDS=8.0` indicates the target budget for the newly added fundamental stage, not a strict hard SLA; Windows, Docker, or rate-limited free data sources can raise it to `12-15s`.
 > - For a hard SLA, please upgrade to isolated child process execution in future versions to forcefully terminate timeout tasks.
 
+#### Market Review Structured Fields (Issue #1584)
+
+While keeping the existing Markdown report and history records fully compatible, the market review now carries the following optional structured fields (legacy consumers ignore unknown keys; when a field is absent, Web/history/push rendering is byte-identical to the previous behavior):
+
+- `summary`: market temperature (0-100; falls back to the market-light score when the LLM omits it), market status (weak pullback / choppy divergence / broad strength / index-strong-stock-weak, etc.), position advice (e.g. 0-30%), and a one-line core conclusion naming the structure (broad rally / broad selloff / heavyweight support / growth selloff / risk-appetite pullback).
+- `indices[].comment`: a one-line index comment. US reviews can flag heavyweight-driven moves; CN reviews can flag heavyweight support / growth selloff / small-cap broadening. There is deliberately no MA-status field: index quotes carry no historical closes or moving-average values, so a model-provided standing would be unverifiable (it will be added only once real moving-average input exists). The prompt lists the internal code after each index and asks the appendix to echo it verbatim; the consumer tolerates common quote-symbol aliases (`^N225`, `000001.SH`, `^GSPC`, ...) and falls back to the index name, attaching nothing when the match is ambiguous.
+- `breadth.divergence_diagnosis`: breadth/divergence diagnosis combining advancers/decliners, limit up/down counts, turnover and index structure; when the LLM omits it, a deterministic fallback is assembled from the divergence between index moves and the advancers ratio (only when breadth data is available). When index quotes are entirely unavailable, the fallback reports only the advancers/decliners reading and states explicitly that it is based on advancers/decliners alone with no index comparison; it never claims that breadth matches the index.
+- `style_rotation`: style-switch signal (`signal`, e.g. growth -> defensives) and note (`comment`).
+- `catalysts[]`: news catalysts classified by `direction` (bullish/bearish/neutral; Chinese inputs are normalized), `scope`, `persistence` (one-off / short-term / mid-term), and `digested` (whether the market has priced it in); items without a `title` are dropped, at most 8 kept.
+- `next_day_plan`: next-day watchlist (`watchlist`), position adjustment advice (`position_advice`), and the invalidation trigger (`invalidation`).
+- `cross_market_note` (optional P3): cross-market reference from US/JP/KR sessions; introduces no new external data-source dependency.
+
+Implementation: the review prompt asks the LLM to append one ```json structured appendix at the very end of the report; the backend extracts it, strips it from the Markdown, and merges the validated fields into the payload. Parse failures or missing fields degrade per-field to null/omission and never interrupt report generation; text fields drop unpaired UTF-16 surrogate code points so a single stray character cannot fail the history snapshot write; no new environment configuration keys are introduced. The Web market-review view renders these fields optionally (identical to the legacy rendering when absent).
+
 ### Other Configuration
 
 | Variable | Description | Default |

@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createParsedApiError, getParsedApiError, type ParsedApiError } from '../api/error';
 import { systemConfigApi, SystemConfigConflictError, SystemConfigValidationError } from '../api/systemConfig';
 import type {
@@ -89,6 +89,24 @@ export function useSystemConfig() {
   const [saveError, setSaveError] = useState<ParsedApiError | null>(null);
   const [retryAction, setRetryAction] = useState<RetryAction>(null);
   const serverItemByKeyRef = useRef<Record<string, SystemConfigItem>>({});
+  const mountedRef = useRef(true);
+  const nextConfigRequestSeqRef = useRef(0);
+  const committedConfigSeqRef = useRef(0);
+  const loadRequestIdRef = useRef(0);
+  const saveInFlightRef = useRef(false);
+  const lastFailedSaveItemsRef = useRef<SystemConfigUpdateItem[] | null>(null);
+  const lastFailedSaveVersionRef = useRef<string | null>(null);
+  const pendingCommittedKeysRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      nextConfigRequestSeqRef.current += 1;
+      committedConfigSeqRef.current = nextConfigRequestSeqRef.current;
+      loadRequestIdRef.current += 1;
+    };
+  }, []);
 
   const mergedItems = useMemo(() => {
     return sortItemsByOrder(
@@ -222,27 +240,54 @@ export function useSystemConfig() {
   );
 
   const load = useCallback(async (): Promise<boolean> => {
+    const reqSeq = ++nextConfigRequestSeqRef.current;
+    const loadId = ++loadRequestIdRef.current;
+    lastFailedSaveItemsRef.current = null;
+    lastFailedSaveVersionRef.current = null;
     setIsLoading(true);
     setLoadError(null);
     setRetryAction(null);
 
     try {
       const config = await systemConfigApi.getConfig(true);
+      if (!mountedRef.current) {
+        return false;
+      }
+      if (reqSeq < committedConfigSeqRef.current) {
+        // A newer read already succeeded and committed fresher server state.
+        return true;
+      }
+      committedConfigSeqRef.current = reqSeq;
+      pendingCommittedKeysRef.current.clear();
+      setSaveError(null);
       setLlmModelProviders(config.llmModelProviders || []);
       setLlmYamlActive(config.llmYamlActive);
       applyServerPayload(config.items, config.configVersion, config.maskToken);
       setToast(null);
       return true;
     } catch (error: unknown) {
-      setLoadError(getParsedApiError(error));
-      setRetryAction('load');
+      if (!mountedRef.current) {
+        return false;
+      }
+      if (reqSeq < committedConfigSeqRef.current) {
+        return true;
+      }
+      if (reqSeq === nextConfigRequestSeqRef.current) {
+        setLoadError(getParsedApiError(error));
+        setRetryAction('load');
+      }
       return false;
     } finally {
-      setIsLoading(false);
+      if (mountedRef.current && loadId === loadRequestIdRef.current) {
+        setIsLoading(false);
+      }
     }
   }, [applyServerPayload]);
 
   const resetDraft = useCallback(() => {
+    lastFailedSaveItemsRef.current = null;
+    lastFailedSaveVersionRef.current = null;
+    pendingCommittedKeysRef.current.clear();
     const next: Record<string, string> = {};
     for (const item of serverItems) {
       next[item.key] = item.value;
@@ -253,6 +298,11 @@ export function useSystemConfig() {
   }, [serverItems]);
 
   const applyPartialUpdate = useCallback((updatedItems: Array<{ key: string; value: string }>) => {
+    lastFailedSaveItemsRef.current = null;
+    lastFailedSaveVersionRef.current = null;
+    for (const item of updatedItems) {
+      pendingCommittedKeysRef.current.delete(item.key);
+    }
     setDraftValues((prevDraft) => {
       const nextDraft = { ...prevDraft };
       for (const item of updatedItems) {
@@ -264,18 +314,35 @@ export function useSystemConfig() {
 
   const refreshAfterExternalSave = useCallback(
     async (committedKeys: string[]) => {
+      for (const key of committedKeys) {
+        pendingCommittedKeysRef.current.add(key);
+      }
+      const reqSeq = ++nextConfigRequestSeqRef.current;
       const config = await systemConfigApi.getConfig(true);
+      if (!mountedRef.current || reqSeq < committedConfigSeqRef.current) {
+        return;
+      }
+      committedConfigSeqRef.current = reqSeq;
+      const mergedCommittedKeys = Array.from(pendingCommittedKeysRef.current);
+      pendingCommittedKeysRef.current.clear();
+      lastFailedSaveItemsRef.current = null;
+      lastFailedSaveVersionRef.current = null;
+      setSaveError(null);
+      setRetryAction((prev) => (prev === 'save' ? null : prev));
       setLlmModelProviders(config.llmModelProviders || []);
       setLlmYamlActive(config.llmYamlActive);
       applyServerPayload(config.items, config.configVersion, config.maskToken, {
         preserveDirty: true,
-        committedKeys,
+        committedKeys: mergedCommittedKeys,
       });
     },
     [applyServerPayload],
   );
 
   const setDraftValue = useCallback((key: string, value: string) => {
+    lastFailedSaveItemsRef.current = null;
+    lastFailedSaveVersionRef.current = null;
+    pendingCommittedKeysRef.current.delete(key);
     setDraftValues((previous) => ({
       ...previous,
       [key]: value,
@@ -300,6 +367,10 @@ export function useSystemConfig() {
   }, [dirtyKeys, draftValues, serverItemByKey]);
 
   const save = useCallback(async (changedItems?: SystemConfigUpdateItem[]): Promise<SaveResult> => {
+    if (saveInFlightRef.current) {
+      return { success: false, message: '配置保存进行中' };
+    }
+
     const explicitItems = changedItems ?? [];
     const resolvedChangedItems = explicitItems.length > 0 ? explicitItems : getChangedItems();
 
@@ -313,12 +384,18 @@ export function useSystemConfig() {
       return { success: true, message: '当前没有可保存的修改' };
     }
 
+    lastFailedSaveItemsRef.current = explicitItems.length > 0 ? [...explicitItems] : null;
+    lastFailedSaveVersionRef.current = configVersion;
+    saveInFlightRef.current = true;
     setIsSaving(true);
     setSaveError(null);
     setRetryAction(null);
 
     try {
       const validateResult = await systemConfigApi.validate({ items: resolvedChangedItems });
+      if (!mountedRef.current) {
+        return { success: false };
+      }
       setValidationIssues(validateResult.issues || []);
 
       if (!validateResult.valid) {
@@ -343,10 +420,27 @@ export function useSystemConfig() {
         items: resolvedChangedItems,
       });
 
+      for (const item of resolvedChangedItems) {
+        pendingCommittedKeysRef.current.add(item.key);
+      }
+      lastFailedSaveItemsRef.current = null;
+      lastFailedSaveVersionRef.current = null;
+      if (!mountedRef.current) {
+        return { success: true };
+      }
+
+      const refreshSeq = ++nextConfigRequestSeqRef.current;
       const refreshed = await systemConfigApi.getConfig(true);
-      setLlmModelProviders(refreshed.llmModelProviders || []);
-      setLlmYamlActive(refreshed.llmYamlActive);
-      applyServerPayload(refreshed.items, refreshed.configVersion, refreshed.maskToken);
+      if (!mountedRef.current) {
+        return { success: true };
+      }
+      if (refreshSeq >= committedConfigSeqRef.current) {
+        committedConfigSeqRef.current = refreshSeq;
+        pendingCommittedKeysRef.current.clear();
+        setLlmModelProviders(refreshed.llmModelProviders || []);
+        setLlmYamlActive(refreshed.llmYamlActive);
+        applyServerPayload(refreshed.items, refreshed.configVersion, refreshed.maskToken);
+      }
 
       const warningText = updateResult.warnings?.length
         ? `；警告：${updateResult.warnings.join('；')}`
@@ -354,26 +448,36 @@ export function useSystemConfig() {
       setToast({ type: 'success', message: `配置已更新${warningText}` });
       return { success: true };
     } catch (error: unknown) {
-      if (error instanceof SystemConfigValidationError) {
-        setValidationIssues(error.issues);
-        setSaveError(error.parsedError);
-      } else if (error instanceof SystemConfigConflictError) {
-        setSaveError(createParsedApiError({
-          title: '配置版本冲突',
-          message: `${error.message}，请先重新加载配置。`,
-          rawMessage: error.parsedError.rawMessage,
-          status: error.parsedError.status,
-          category: error.parsedError.category,
-        }));
-      } else {
-        setSaveError(getParsedApiError(error));
+      if (!mountedRef.current) {
+        return { success: false, message: '保存失败' };
       }
 
-      setToast({ type: 'error', error: getParsedApiError(error) });
+      let resolvedError: ParsedApiError;
+      if (error instanceof SystemConfigValidationError) {
+        setValidationIssues(error.issues);
+        resolvedError = error.parsedError ?? getParsedApiError(error);
+      } else if (error instanceof SystemConfigConflictError) {
+        const baseParsedError = error.parsedError ?? getParsedApiError(error);
+        resolvedError = createParsedApiError({
+          title: '配置版本冲突',
+          message: `${error.message}，请先重新加载配置。`,
+          rawMessage: baseParsedError.rawMessage,
+          status: baseParsedError.status,
+          category: baseParsedError.category,
+        });
+      } else {
+        resolvedError = getParsedApiError(error);
+      }
+
+      setSaveError(resolvedError);
+      setToast({ type: 'error', error: resolvedError });
       setRetryAction('save');
       return { success: false, message: '保存失败' };
     } finally {
-      setIsSaving(false);
+      saveInFlightRef.current = false;
+      if (mountedRef.current) {
+        setIsSaving(false);
+      }
     }
   }, [
     applyServerPayload,
@@ -389,9 +493,13 @@ export function useSystemConfig() {
       return;
     }
     if (retryAction === 'save') {
-      await save();
+      const itemsToReplay =
+        lastFailedSaveItemsRef.current && lastFailedSaveVersionRef.current === configVersion
+          ? lastFailedSaveItemsRef.current
+          : undefined;
+      await save(itemsToReplay);
     }
-  }, [load, retryAction, save]);
+  }, [configVersion, load, retryAction, save]);
 
   const clearToast = useCallback(() => {
     setToast(null);

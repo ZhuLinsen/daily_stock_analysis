@@ -1,5 +1,5 @@
 import type React from 'react';
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ReportLanguage } from '../../types/analysis';
 import { Drawer } from '../common/Drawer';
 import { ReportMarkdownPanel } from './ReportMarkdownPanel';
@@ -24,11 +24,31 @@ export const ReportMarkdown: React.FC<ReportMarkdownProps> = ({
   reportLanguage = 'zh',
 }) => {
   const [isOpen, setIsOpen] = useState(true);
+  const closeTimerRef = useRef<number | null>(null);
+  const isClosingRef = useRef(false);
+  const onCloseRef = useRef(onClose);
+
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
+
+  useEffect(() => () => {
+    if (closeTimerRef.current !== null) {
+      window.clearTimeout(closeTimerRef.current);
+      closeTimerRef.current = null;
+      onCloseRef.current();
+    }
+  }, []);
 
   const handleClose = useCallback(() => {
+    if (isClosingRef.current) return;
+    isClosingRef.current = true;
     setIsOpen(false);
-    setTimeout(onClose, 300);
-  }, [onClose]);
+    closeTimerRef.current = window.setTimeout(() => {
+      closeTimerRef.current = null;
+      onCloseRef.current();
+    }, 300);
+  }, []);
 
   return (
     <Drawer
