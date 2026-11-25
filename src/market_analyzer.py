@@ -1280,7 +1280,9 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
     def _parse_market_review_json_candidate(raw: Any) -> Optional[Dict[str, Any]]:
         try:
             data = json.loads(raw)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, RecursionError):
+            # RecursionError：超深嵌套附录 JSON 解码超限，按畸形附录 fail-open，
+            # 保留已生成的 Markdown 正文，绝不让附录解析打断复盘主流程。
             return None
         return data if isinstance(data, dict) else None
 

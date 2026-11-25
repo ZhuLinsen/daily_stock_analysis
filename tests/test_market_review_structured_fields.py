@@ -189,6 +189,26 @@ class TestStructuredAppendixExtraction:
         assert cleaned == report
         assert data is None
 
+    def test_deeply_nested_appendix_json_keeps_markdown_body(self):
+        """超深嵌套附录 JSON 触发 RecursionError 时，已生成的 Markdown 正文必须保留。
+
+        修复前 json.loads 抛出的 RecursionError 未被 _parse_market_review_json_candidate
+        捕获，会从附录提取一路抛到 _run_daily_review_parts，整份复盘崩溃。
+        """
+        deep = "null"
+        for _ in range(5000):
+            deep = "[" + deep + "]"
+        report = (
+            "## 2026-06-05 A股大盘复盘\n\n### 一、盘面总览\n市场震荡分化。\n\n"
+            "```json\n{\"summary\": " + deep + "}\n```\n"
+        )
+        ma = _make_analyzer(report_text="复盘")
+
+        cleaned, data = ma._extract_structured_market_review_appendix(report)
+
+        assert "### 一、盘面总览" in cleaned, cleaned[:200]
+        assert data is None
+
 
 class TestPayloadStructuredFields:
     def test_full_appendix_populates_all_new_payload_fields(self):
