@@ -9,6 +9,8 @@ import type {
   NewsIntelItem,
   RunDiagnosticSummary,
   StockBarResponse,
+  DailyHistoryListResponse,
+  DailyHistoryItem,
 } from '../types/analysis';
 import type { RunFlowSnapshot } from '../types/runFlow';
 
@@ -162,5 +164,27 @@ export const historyApi = {
       total: data.total,
       items: data.items.map(item => toCamelCase<Record<string, unknown>>(item) as unknown as typeof data.items[0]),
     } as StockBarResponse;
+  },
+
+  /**
+   * 按日期获取各股当日最新分析（issue #1661 首页历史区日期回看）
+   * @param date 北京时间（Asia/Shanghai）的分析生成日期 YYYY-MM-DD
+   */
+  getDaily: async (
+    date: string,
+    options: { signal?: AbortSignal; language?: string; page?: number; limit?: number } = {},
+  ): Promise<DailyHistoryListResponse> => {
+    const response = await apiClient.get<Record<string, unknown>>('/api/v1/history/daily', {
+      params: {
+        date,
+        language: options.language ?? 'zh',
+        page: options.page ?? 1,
+        limit: options.limit ?? 20,
+      },
+      signal: options.signal,
+    });
+
+    const data = toCamelCase<{ total: number; page: number; limit: number; items: DailyHistoryItem[] }>(response.data);
+    return { total: data.total, page: data.page, limit: data.limit, items: data.items.map(item => toCamelCase<DailyHistoryItem>(item)) };
   },
 };

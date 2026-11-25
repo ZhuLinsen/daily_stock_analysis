@@ -15,7 +15,7 @@ import {
 } from 'lucide-react';
 import { Badge, Button, InlineAlert, Input, ScrollArea, StatusDot } from '../common';
 import { DashboardPanelHeader, DashboardStateBlock } from '../dashboard';
-import { StockBar } from '../history';
+import { DailyHistoryPanel } from '../history';
 import type { StockBarItem, TaskInfo } from '../../types/analysis';
 import { getSentimentColor } from '../../types/analysis';
 import { buildDecisionActionLabelMap, getDecisionActionLabel } from '../../utils/decisionAction';
@@ -93,14 +93,17 @@ interface HomeStockWorkspaceProps {
   isLoadingTodayItems: boolean;
   todayLoadError: boolean;
   watchlistAnalyzedTodayCount: number;
-  historyItems: StockBarItem[];
-  isLoadingHistory: boolean;
   selectedStockCode?: string;
   selectedAssetType?: AssetAwareAssetType | null;
   selectedRecordId?: number;
   onHistoryItemClick: (recordId: number) => void;
-  onDeleteStock?: (stockCode: string) => Promise<void> | void;
-  isDeleting?: boolean;
+  /** issue #1661 OR-COR-278fd558：日期状态寄存在 HomePage，抽屉卸载重开不回跳今天 */
+  dailyHistoryDate?: string;
+  onDailyHistoryDateChange?: (dateKey: string) => void;
+  /** issue #1661 OR-COR-278fd558：各日期滚动位置同样寄存在 HomePage，抽屉重开回到原位置 */
+  dailyHistoryScrollMemory?: { current: Record<string, number> };
+  /** issue #1661 OR-COM-91cc3feb：最近一份大盘复盘入口（替代旧 MARKET 历史行） */
+  marketReviewEntry?: { id: number; name: string; createdAt?: string } | null;
   className?: string;
 }
 
@@ -402,14 +405,14 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
   isLoadingTodayItems,
   todayLoadError,
   watchlistAnalyzedTodayCount,
-  historyItems,
-  isLoadingHistory,
   selectedStockCode,
   selectedAssetType,
   selectedRecordId,
   onHistoryItemClick,
-  onDeleteStock,
-  isDeleting = false,
+  dailyHistoryDate,
+  onDailyHistoryDateChange,
+  dailyHistoryScrollMemory,
+  marketReviewEntry = null,
   className = '',
 }) => {
   const { t } = useUiLanguage();
@@ -505,14 +508,18 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
         className={`home-stock-scroll-shell flex min-h-0 flex-1 flex-col gap-2 ${className}`}
       >
         {renderTabs}
-        <StockBar
-          items={historyItems}
-          isLoading={isLoadingHistory}
-          selectedStockCode={selectedStockCode}
+        {/*
+          issue #1661（G1a 方案一）：历史区 = 日期选择器 + 当日每股最新结果轻量列表 +
+          行内下钻。只读视图（不复用「删除该股票全部历史」操作），选中高亮与完整报告
+          下钻复用既有选中/报告加载链路。
+        */}
+        <DailyHistoryPanel
           selectedRecordId={selectedRecordId}
-          onItemClick={onHistoryItemClick}
-          onDeleteStock={onDeleteStock}
-          isDeleting={isDeleting}
+          onSelectRecord={onHistoryItemClick}
+          dateKey={dailyHistoryDate}
+          onDateKeyChange={onDailyHistoryDateChange}
+          scrollMemory={dailyHistoryScrollMemory}
+          marketReviewEntry={marketReviewEntry}
           className="flex-1"
         />
       </div>

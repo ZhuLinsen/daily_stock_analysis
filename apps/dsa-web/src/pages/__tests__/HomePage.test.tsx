@@ -32,6 +32,8 @@ vi.mock('../../api/history', () => ({
     getDiagnostics: vi.fn(),
     getRecordFlow: vi.fn(),
     getStockBarList: vi.fn().mockResolvedValue({ total: 0, items: [] }),
+    // issue #1661：历史区日期回看面板的当日列表接口
+    getDaily: vi.fn().mockResolvedValue({ total: 0, page: 1, limit: 20, items: [] }),
     deleteByCode: vi.fn(),
   },
 }));
@@ -254,6 +256,9 @@ describe('HomePage', () => {
       copyText: 'data_status: unknown',
     });
     vi.mocked(historyApi.getRecordFlow).mockResolvedValue(runFlowSnapshot);
+    // issue #1661：vi.clearAllMocks 不重置 mockResolvedValue，按日列表的共享 mock
+    // 需在每个用例前回到空列表，避免上一用例设置的当日行泄漏到后续用例。
+    vi.mocked(historyApi.getDaily).mockResolvedValue({ total: 0, page: 1, limit: 20, items: [] });
     vi.mocked(analysisApi.getTaskFlow).mockResolvedValue(runFlowSnapshot);
     vi.mocked(systemConfigApi.getSetupStatus).mockResolvedValue({
       isComplete: true,
@@ -346,7 +351,8 @@ describe('HomePage', () => {
     expect(await screen.findByText('开始分析')).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: '开始分析', level: 3 })).toBeInTheDocument();
     expect(screen.getByText('输入股票代码进行分析，或从左侧选择历史报告查看。')).toBeInTheDocument();
-    expect(screen.getByText('暂无个股记录')).toBeInTheDocument();
+    // issue #1661：历史区空态来自日期回看面板（该日期无记录引导）
+    expect(screen.getByText('该日期没有分析记录')).toBeInTheDocument();
   });
 
   it('opens the run-flow drawer from an active task in TaskPanel', async () => {
@@ -415,20 +421,8 @@ describe('HomePage', () => {
     expect(screen.getByText('贵州茅台 历史运行流')).toBeInTheDocument();
   });
 
-  it('shows market review history in the stock bar', async () => {
-    vi.mocked(historyApi.getStockBarList).mockResolvedValue({
-      total: 1,
-      items: [{
-        id: 11,
-        stockCode: 'AAPL',
-        stockName: 'Apple',
-        reportType: 'detailed',
-        sentimentScore: 72,
-        operationAdvice: '观察',
-        analysisCount: 2,
-        lastAnalysisTime: '2026-03-19T08:00:00Z',
-      }],
-    });
+  it('opens a daily history report by record id from the date view (issue #1661)', async () => {
+    vi.mocked(historyApi.getStockBarList).mockResolvedValue({ total: 0, items: [] });
     vi.mocked(historyApi.getList).mockImplementation((params: { reportType?: string } = {}) => {
       if (params.reportType === 'market_review') {
         return Promise.resolve({
@@ -445,6 +439,63 @@ describe('HomePage', () => {
         items: [],
       });
     });
+    vi.mocked(historyApi.getDaily).mockResolvedValue({
+      total: 1,
+      page: 1,
+      limit: 20,
+      items: [{
+        id: 11,
+        code: '600519',
+        name: '贵州茅台',
+        reportType: 'detailed',
+        sentimentScore: 82,
+        sentimentLabel: '极度乐观',
+        operationAdvice: '持有',
+        action: 'hold' as const,
+        actionLabel: '持有',
+        trendPrediction: null,
+        isLatest: true,
+        analysisCount: 1,
+        createdAt: '2026-03-18T08:00:00Z',
+      }],
+    });
+    vi.mocked(historyApi.getDetail).mockResolvedValue(historyReport);
+
+    render(
+      <MemoryRouter>
+        <HomePage />
+      </MemoryRouter>,
+    );
+
+    // 日期回看列表展示当日每股最新结果
+    const row = await screen.findByTestId('daily-history-row-11');
+    expect(row.textContent).toContain('贵州茅台');
+
+    // 点击行 → 按记录 ID 加载当时那份报告（spec 2）
+    fireEvent.click(row);
+    expect(await screen.findByText('趋势维持强势')).toBeInTheDocument();
+    expect(historyApi.getDetail).toHaveBeenCalledWith(11);
+  });
+
+  it('keeps the saved market review reachable from the daily history view (issue #1661)', async () => {
+    vi.mocked(historyApi.getStockBarList).mockResolvedValue({ total: 0, items: [] });
+    vi.mocked(historyApi.getList).mockImplementation((params: { reportType?: string } = {}) => {
+      if (params.reportType === 'market_review') {
+        return Promise.resolve({
+          total: 1,
+          page: 1,
+          limit: 10,
+          items: [marketReviewHistoryItem],
+        });
+      }
+      return Promise.resolve({
+        total: 0,
+        page: 1,
+        limit: 20,
+        items: [],
+      });
+    });
+    vi.mocked(historyApi.getDaily).mockResolvedValue({ total: 0, page: 1, limit: 20, items: [] });
     vi.mocked(historyApi.getDetail).mockResolvedValue(marketReviewHistoryReport);
 
     render(
@@ -453,21 +504,135 @@ describe('HomePage', () => {
       </MemoryRouter>,
     );
 
-    expect(await screen.findByRole('button', { name: /MARKET/ })).toBeInTheDocument();
-    const newerStockButton = await screen.findByRole('button', { name: /AAPL/ });
-    const marketButton = await screen.findByRole('button', { name: /MARKET/ });
-    expect(newerStockButton.compareDocumentPosition(marketButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(screen.queryByText('大盘复盘历史')).not.toBeInTheDocument();
-    expect(historyApi.getList).toHaveBeenCalledWith({
-      stockCode: 'MARKET',
-      reportType: 'market_review',
-      page: 1,
-      limit: 10,
-    });
-
-    fireEvent.click(await screen.findByRole('button', { name: /MARKET/ }));
-
+    // OR-COM-91cc3feb：首页历史区不再注入 MARKET 行后，大盘复盘入口必须
+    // 迁移到日期回看面板，最近一份复盘仍可一键打开
+    const entry = await screen.findByTestId('daily-history-market-entry-2');
+    fireEvent.click(entry);
     expect(await screen.findByText('大盘复盘摘要')).toBeInTheDocument();
+    expect(historyApi.getDetail).toHaveBeenCalledWith(2);
+  });
+
+  it('preserves the selected daily date across mobile drawer close/reopen (issue #1661)', async () => {
+    vi.mocked(historyApi.getStockBarList).mockResolvedValue({ total: 0, items: [] });
+    vi.mocked(historyApi.getList).mockResolvedValue({ total: 0, page: 1, limit: 20, items: [] });
+    vi.mocked(historyApi.getDaily).mockResolvedValue({
+      total: 1,
+      page: 1,
+      limit: 20,
+      items: [{
+        id: 11,
+        code: '600519',
+        name: '贵州茅台',
+        reportType: 'detailed',
+        sentimentScore: 82,
+        sentimentLabel: '极度乐观',
+        operationAdvice: '持有',
+        action: 'hold' as const,
+        actionLabel: '持有',
+        trendPrediction: null,
+        isLatest: true,
+        analysisCount: 1,
+        createdAt: '2026-03-18T08:00:00Z',
+      }],
+    });
+    vi.mocked(historyApi.getDetail).mockResolvedValue(historyReport);
+
+    render(
+      <MemoryRouter>
+        <HomePage />
+      </MemoryRouter>,
+    );
+
+    // 选择昨天并等待列表加载
+    fireEvent.change(screen.getAllByTestId('daily-history-date-input')[0], { target: { value: '2026-05-18' } });
+    await screen.findByTestId('daily-history-row-11');
+
+    // 打开手机抽屉：第二实例受控同步同一日期
+    fireEvent.click(screen.getByRole('button', { name: '历史记录' }));
+    const inputsWhileOpen = screen.getAllByTestId('daily-history-date-input');
+    expect(inputsWhileOpen).toHaveLength(2);
+    expect(inputsWhileOpen.every((input) => (input as HTMLInputElement).value === '2026-05-18')).toBe(true);
+
+    // 点击抽屉中的行打开报告 → 抽屉关闭卸载
+    const drawerRows = screen.getAllByTestId('daily-history-row-11');
+    fireEvent.click(drawerRows[drawerRows.length - 1]);
+    await waitFor(() => expect(screen.getAllByTestId('daily-history-date-input')).toHaveLength(1));
+
+    // 重新打开抽屉：日期必须仍是所选日期（修复前回到今天，OR-COR-278fd558）
+    fireEvent.click(screen.getByRole('button', { name: '历史记录' }));
+    const inputsAfterReopen = screen.getAllByTestId('daily-history-date-input');
+    expect(inputsAfterReopen.every((input) => (input as HTMLInputElement).value === '2026-05-18')).toBe(true);
+  });
+
+  it('restores the daily list scroll position and scrolls the drawer own row on mobile reopen (issue #1661)', async () => {
+    vi.mocked(historyApi.getStockBarList).mockResolvedValue({ total: 0, items: [] });
+    vi.mocked(historyApi.getList).mockResolvedValue({ total: 0, page: 1, limit: 20, items: [] });
+    vi.mocked(historyApi.getDaily).mockResolvedValue({
+      total: 1,
+      page: 1,
+      limit: 20,
+      items: [{
+        id: 11,
+        code: '600519',
+        name: '贵州茅台',
+        reportType: 'detailed',
+        sentimentScore: 82,
+        sentimentLabel: '极度乐观',
+        operationAdvice: '持有',
+        action: 'hold' as const,
+        actionLabel: '持有',
+        trendPrediction: null,
+        isLatest: true,
+        analysisCount: 1,
+        createdAt: '2026-03-18T08:00:00Z',
+      }],
+    });
+    // 报告详情的 id 与当日行一致，抽屉重开后才有「当前报告行」可定位
+    vi.mocked(historyApi.getDetail).mockResolvedValue({ ...historyReport, meta: { ...historyReport.meta, id: 11 } });
+
+    // 记录每次 scrollIntoView 的调用目标（this），不依赖 mock.instances 的版本语义
+    const scrolledTargets: Element[] = [];
+    Element.prototype.scrollIntoView = function scrollIntoView(this: Element) {
+      scrolledTargets.push(this);
+    };
+
+    try {
+      render(
+        <MemoryRouter>
+          <HomePage />
+        </MemoryRouter>,
+      );
+
+      // 选择昨天并等待列表加载，然后打开手机抽屉（DOM 中桌面实例在前、抽屉实例在后）
+      fireEvent.change(screen.getAllByTestId('daily-history-date-input')[0], { target: { value: '2026-05-18' } });
+      await screen.findByTestId('daily-history-row-11');
+      fireEvent.click(screen.getByRole('button', { name: '历史记录' }));
+      await waitFor(() => expect(screen.getAllByTestId('daily-history-list')).toHaveLength(2));
+      const drawerList = screen.getAllByTestId('daily-history-list')[1];
+
+      // 在抽屉里滚到首屏之外
+      drawerList.scrollTop = 480;
+      fireEvent.scroll(drawerList);
+
+      // 点行打开报告 → 抽屉关闭卸载
+      fireEvent.click(drawerList.querySelector('[data-testid="daily-history-row-11"]') as Element);
+      expect(await screen.findByText('趋势维持强势')).toBeInTheDocument();
+      await waitFor(() => expect(screen.getAllByTestId('daily-history-date-input')).toHaveLength(1));
+      scrolledTargets.length = 0;
+
+      // 重新打开历史抽屉：可见列表回到原滚动位置（OR-COR-278fd558，修复前回到顶部）
+      fireEvent.click(screen.getByRole('button', { name: '历史记录' }));
+      await waitFor(() => expect(screen.getAllByTestId('daily-history-list')).toHaveLength(2));
+      const reopenedDrawerList = screen.getAllByTestId('daily-history-list')[1];
+      await waitFor(() => expect(reopenedDrawerList.scrollTop).toBe(480));
+
+      // 滚动定位命中抽屉内的选中行，而不是 DOM 中排在前面的隐藏桌面列表那一行
+      const reopenedRow = reopenedDrawerList.querySelector('[data-testid="daily-history-row-11"]');
+      await waitFor(() => expect(scrolledTargets.length).toBeGreaterThan(0));
+      expect(scrolledTargets[scrolledTargets.length - 1]).toBe(reopenedRow);
+    } finally {
+      delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView;
+    }
   });
 
   it('treats timezone-less stock-bar timestamps as Shanghai local time for watchlist pending state', async () => {
@@ -2498,31 +2663,27 @@ describe('HomePage', () => {
     expect(vi.mocked(analysisApi.getTasks).mock.calls.length).toBeGreaterThan(taskRefreshCallsBeforeSubmit);
   });
 
-  it('removes the MARKET stock bar item after deleting market review history', async () => {
-    let isMarketReviewDeleted = false;
-    vi.mocked(historyApi.getStockBarList).mockResolvedValue({
-      total: 0,
-      items: [],
-    });
-    vi.mocked(historyApi.getList).mockImplementation((params: { reportType?: string } = {}) => {
-      if (params.reportType === 'market_review') {
-        return Promise.resolve({
-          total: isMarketReviewDeleted ? 0 : 1,
-          page: 1,
-          limit: 10,
-          items: isMarketReviewDeleted ? [] : [marketReviewHistoryItem],
-        });
-      }
-      return Promise.resolve({
-        total: 0,
-        page: 1,
-        limit: 20,
-        items: [],
-      });
-    });
-    vi.mocked(historyApi.deleteByCode).mockImplementation(async () => {
-      isMarketReviewDeleted = true;
-      return { deleted: 1 };
+  it('keeps the daily date view read-only without delete entries (issue #1661)', async () => {
+    vi.mocked(historyApi.getStockBarList).mockResolvedValue({ total: 0, items: [] });
+    vi.mocked(historyApi.getDaily).mockResolvedValue({
+      total: 1,
+      page: 1,
+      limit: 20,
+      items: [{
+        id: 11,
+        code: '600519',
+        name: '贵州茅台',
+        reportType: 'detailed',
+        sentimentScore: 82,
+        sentimentLabel: '极度乐观',
+        operationAdvice: '持有',
+        action: 'hold' as const,
+        actionLabel: '持有',
+        trendPrediction: null,
+        isLatest: true,
+        analysisCount: 1,
+        createdAt: '2026-03-18T08:00:00Z',
+      }],
     });
 
     render(
@@ -2531,14 +2692,10 @@ describe('HomePage', () => {
       </MemoryRouter>,
     );
 
-    expect(await screen.findByRole('button', { name: /MARKET/ })).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole('button', { name: '删除 大盘复盘 历史记录' }));
-
-    await waitFor(() => {
-      expect(screen.queryByRole('button', { name: /MARKET/ })).not.toBeInTheDocument();
-    });
-    expect(historyApi.deleteByCode).toHaveBeenCalledWith('MARKET');
+    await screen.findByTestId('daily-history-row-11');
+    // 维护者 spec 2：按日回看只读，不提供「删除该股票全部历史」等写操作入口
+    expect(screen.queryByRole('button', { name: /删除 .* 历史记录/ })).not.toBeInTheDocument();
+    expect(historyApi.deleteByCode).not.toHaveBeenCalled();
   });
 
   it('surfaces duplicate task warnings from dashboard submission', async () => {
@@ -3178,8 +3335,8 @@ describe('HomePage', () => {
     await waitFor(() => {
       expect(screen.queryByText('暂无更多同股历史分析')).not.toBeInTheDocument();
     });
-    expect(screen.getAllByRole('button', { name: /贵州茅台/ }).length).toBeGreaterThanOrEqual(1);
-    expect(screen.getByText(/2次/)).toBeInTheDocument();
+    // issue #1661：历史区已由日期回看面板承载（StockBar 行内“2次”计数不再渲染）
+    expect(screen.getByTestId('daily-history-panel')).toBeInTheDocument();
 
     const historyCalls = vi.mocked(historyApi.getList).mock.calls.filter((call) => call[0]?.stockCode === '600519');
     expect(historyCalls).toHaveLength(3);
@@ -3487,20 +3644,26 @@ describe('HomePage', () => {
         items: [historyItem],
       });
     });
-    vi.mocked(historyApi.getStockBarList).mockResolvedValue({
+    vi.mocked(historyApi.getStockBarList).mockResolvedValue({ total: 0, items: [] });
+    vi.mocked(historyApi.getDaily).mockResolvedValue({
       total: 1,
-      items: [
-        {
-          id: 1,
-          stockCode: '600519',
-          stockName: '贵州茅台',
-          sentimentScore: 82,
-          operationAdvice: '买入',
-          analysisCount: 1,
-          lastAnalysisTime: '2026-03-18T08:00:00Z',
-          reportType: 'detailed',
-        },
-      ],
+      page: 1,
+      limit: 20,
+      items: [{
+        id: 1,
+        code: '600519',
+        name: '贵州茅台',
+        reportType: 'detailed',
+        sentimentScore: 82,
+        sentimentLabel: '极度乐观',
+        operationAdvice: '买入',
+        action: 'buy' as const,
+        actionLabel: '买入',
+        trendPrediction: null,
+        isLatest: true,
+        analysisCount: 1,
+        createdAt: '2026-03-18T08:00:00Z',
+      }],
     });
     vi.mocked(historyApi.getDetail).mockImplementation((recordId: number) => {
       if (recordId === 2) {
@@ -3549,16 +3712,16 @@ describe('HomePage', () => {
       expect(screen.getByText('市场复盘报告示例文本')).toBeInTheDocument();
     });
 
-    const marketHistoryButton = await screen.findByRole('button', { name: /MARKET/ });
-    fireEvent.click(marketHistoryButton);
+    // issue #1661：从日期回看行切换到个股历史报告，实时大盘复盘输出被清除
+    const dailyRow = await screen.findByTestId('daily-history-row-1');
+    fireEvent.click(dailyRow);
 
     await waitFor(() => {
       expect(screen.queryByText('市场复盘报告示例文本')).not.toBeInTheDocument();
       expect(screen.queryByText('大盘复盘已完成')).not.toBeInTheDocument();
     });
-    expect(await screen.findByText('大盘复盘摘要')).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: '市场情绪与赚钱效应' })).toBeInTheDocument();
-    expect(vi.mocked(historyApi.getDetail)).toHaveBeenCalledWith(2);
+    expect(await screen.findByText('趋势维持强势')).toBeInTheDocument();
+    expect(vi.mocked(historyApi.getDetail)).toHaveBeenCalledWith(1);
   });
 
   it('shows sample preview when setup is incomplete and hides quick-try chips', async () => {

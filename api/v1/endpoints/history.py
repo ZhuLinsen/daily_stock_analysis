@@ -10,6 +10,7 @@
 """
 
 import logging
+from datetime import date as date_type
 from typing import Any, Mapping, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Depends, Body
@@ -19,6 +20,8 @@ from api.deps import get_database_manager
 from api.v1.schemas.history import (
     HistoryListResponse,
     HistoryItem,
+    DailyHistoryItem,
+    DailyHistoryListResponse,
     DeleteHistoryRequest,
     DeleteHistoryResponse,
     NewsIntelItem,
@@ -514,6 +517,56 @@ def get_stock_bar(
             detail={
                 "error": "internal_error",
                 "message": f"查询个股栏失败: {str(e)}",
+            },
+        )
+
+
+@router.get(
+    "/daily",
+    response_model=DailyHistoryListResponse,
+    responses={
+        200: {"description": "当日各股最新分析列表"},
+        500: {"description": "服务器错误", "model": ErrorResponse},
+    },
+    summary="按日期获取各股当日最新分析",
+    description=(
+        "按北京时间（Asia/Shanghai）的分析生成日期返回每股当日最新一条分析"
+        "（代码变体合并为一行，analysis_count 标注当日份数），并标注时效性 is_latest"
+        "（False = 已被更新分析取代）。只读接口，价位字段在按 ID 的报告详情里。"
+    ),
+)
+def get_daily_history(
+    date: date_type = Query(..., description="北京时间分析生成日期 (YYYY-MM-DD)，必填"),
+    language: Optional[str] = Query("zh", description="情绪标签语言 (zh/en/ko)，默认 zh"),
+    page: int = Query(1, ge=1, description="页码（从 1 开始）"),
+    limit: int = Query(20, ge=1, le=100, description="每页数量"),
+    db_manager: DatabaseManager = Depends(get_database_manager),
+) -> DailyHistoryListResponse:
+    """按日期获取各股当日最新分析（issue #1661，首页历史区日期回看）。"""
+    try:
+        service = HistoryService(db_manager)
+        result = service.get_daily_history(
+            query_date=date,
+            language=language or "zh",
+            page=page,
+            limit=limit,
+        )
+        items = [DailyHistoryItem(**item) for item in result.get("items", [])]
+        return DailyHistoryListResponse(
+            total=result.get("total", 0),
+            page=result.get("page", page),
+            limit=result.get("limit", limit),
+            items=items,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to query daily history list: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "internal_error",
+                "message": f"查询当日历史列表失败: {str(e)}",
             },
         )
 

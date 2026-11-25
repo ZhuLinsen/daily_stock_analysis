@@ -37,6 +37,7 @@ from sqlalchemy import (
     Index,
     UniqueConstraint,
     CheckConstraint,
+    case,
     Text,
     text,
     select,
@@ -70,6 +71,9 @@ T = TypeVar("T")
 CURRENT_SCHEMA_VERSION = "2026-06-05-create-all-baseline"
 CHAT_STATE_SCHEMA_VERSION = "2026-10-06-chat-active-stock"
 INTELLIGENCE_ITEM_NULL_SCOPE_VALUE = "__dsa_null_scope__"
+# 按日历史快照：代表报告在聚合与点查之间被并发删除时，对该 raw code 重新聚合的
+# 最大次数（OR-COR-afa444c6）
+_DAILY_SNAPSHOT_REREAD_ATTEMPTS = 3
 
 # SQLAlchemy ORM 基类
 Base = declarative_base()
@@ -3466,6 +3470,118 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                 .all()
             )
             return list(results)
+
+    def get_daily_history_snapshot(
+        self,
+        day_start: datetime,
+        day_end: datetime,
+    ) -> Tuple[List[Tuple[AnalysisHistory, int]], Dict[str, int]]:
+        """
+        单次读取当日与全局两个聚合快照（issue #1661，OR-COR-afa444c6）。
+
+        返回 ``([([AnalysisHistory, 当日份数], ...), ...], {raw code: 全局最新 id})``：
+        前者为窗口 ``[day_start, day_end)`` 内每股（raw code 维度）最新一条分析及
+        其当日份数；后者为每股全局最新一条分析的主键 ID（供服务层判断 is_latest）。
+
+        当日聚合与全局聚合以条件聚合放进同一条 SELECT（SQLite 读自动提交语义下
+        两次独立查询可能读到不同快照：其间提交的新报告会产生「当日列表给旧记录
+        + 时效标记按新记录」的撕裂组合）。排除谓词 code=MARKET 与
+        report_type=market_review；当日行按 (created_at desc, id desc) 排序。
+
+        代表报告实体仍需按主键点查，与聚合不在同一个读快照：若某 raw code 的
+        当日最新一份在两条 SELECT 之间被并发删除，则全量重新聚合（最多
+        ``_DAILY_SNAPSHOT_REREAD_ATTEMPTS`` 次；别名组其余成员的 day_count 也在
+        同一删除窗口内失效，只重查缺失代码会保留过期份数），退回为当日次新一份，
+        而不是把整只股票从当日列表里漏掉（OR-COR-afa444c6）。
+        """
+        in_day = and_(
+            AnalysisHistory.created_at >= day_start,
+            AnalysisHistory.created_at < day_end,
+        )
+        day_max_id_expr = case((in_day, AnalysisHistory.id), else_=None)
+        day_count_expr = case((in_day, 1), else_=0)
+        snapshot_query = (
+            select(
+                AnalysisHistory.code,
+                func.max(day_max_id_expr).label("day_max_id"),
+                func.sum(day_count_expr).label("day_count"),
+                func.max(AnalysisHistory.id).label("global_max_id"),
+            )
+            .where(
+                and_(
+                    AnalysisHistory.code != "MARKET",
+                    or_(
+                        AnalysisHistory.report_type.is_(None),
+                        AnalysisHistory.report_type != "market_review",
+                    ),
+                )
+            )
+            .group_by(AnalysisHistory.code)
+        )
+
+        def _resolve_day_rows(
+            reader: Session, rows: List[Any]
+        ) -> Tuple[Dict[int, AnalysisHistory], List[str]]:
+            """按主键点查 ``rows`` 聚合出的当日代表行。
+
+            返回 ``({id: record}, 代表行已不存在的 raw code 列表)``。默认 SQLite 连接
+            的两次读取没有共同快照：聚合与点查之间，代表报告可能已被并发请求经
+            按记录 ID 删除接口删掉（OR-COR-afa444c6）。
+            """
+            wanted_ids = sorted({
+                int(row.day_max_id) for row in rows if row.day_max_id is not None
+            })
+            found: Dict[int, AnalysisHistory] = {}
+            if wanted_ids:
+                for record in reader.execute(
+                    select(AnalysisHistory).where(AnalysisHistory.id.in_(wanted_ids))
+                ).scalars().all():
+                    found[int(record.id)] = record
+            missing = sorted({
+                str(row.code)
+                for row in rows
+                if row.day_max_id is not None and int(row.day_max_id) not in found
+            })
+            return found, missing
+
+        with self.get_session() as session:
+            aggregated = session.execute(snapshot_query).all()
+            day_rows, missing_codes = _resolve_day_rows(session, aggregated)
+
+            # 代表行被并发删除时不得跳过整只股票（OR-COR-afa444c6）：当天可能仍有
+            # 更早的报告，应退回为该 raw code 的当日次新一份。别名归组（
+            # 002460/002460.SZ 合并为一行）是服务层口径，存储层无从只重查「受影响
+            # 的别名组」；且同一删除窗口可能同时命中一个别名的代表行与另一别名的
+            # 更早报告——仅重查 missing_codes 会保留未缺失别名的过期 day_count，
+            # 合并后 analysis_count ≠ 实际剩余份数。故任一代表行缺失即对全量重新
+            # 聚合，一次性拿到删除后视图的代表行、当日份数与全局最新 id（与事后
+            # 重查一致）；有界重试，避免删除持续发生时无限循环。
+            rereads = 0
+            while missing_codes and rereads < _DAILY_SNAPSHOT_REREAD_ATTEMPTS:
+                rereads += 1
+                aggregated = session.execute(snapshot_query).all()
+                day_rows, missing_codes = _resolve_day_rows(session, aggregated)
+
+            daily: List[Tuple[AnalysisHistory, int]] = []
+            global_latest: Dict[str, int] = {}
+            for row in aggregated:
+                if not row.code:
+                    continue
+                global_latest[str(row.code)] = int(row.global_max_id)
+                if row.day_max_id is None:
+                    continue
+                record = day_rows.get(int(row.day_max_id))
+                if record is not None:
+                    daily.append((record, int(row.day_count or 0)))
+
+            daily.sort(
+                key=lambda item: (
+                    getattr(item[0], "created_at", None) or datetime.min,
+                    int(getattr(item[0], "id", 0) or 0),
+                ),
+                reverse=True,
+            )
+            return daily, global_latest
 
     def get_latest_analysis_by_query_id(
         self,

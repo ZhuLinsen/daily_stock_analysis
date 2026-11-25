@@ -13,8 +13,10 @@ from __future__ import annotations
 import json
 import logging
 import re
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from typing import Optional, Dict, Any, List, Tuple, TYPE_CHECKING
+
+from zoneinfo import ZoneInfo
 
 from data_provider.us_index_mapping import get_us_stock_yf_symbol, normalize_us_hyphen_symbol
 from src.config import get_config, resolve_news_window_days
@@ -25,6 +27,7 @@ from src.report_language import (
     get_bias_status_emoji,
     get_localized_stock_name,
     get_report_labels,
+    get_sentiment_label,
     get_signal_level,
     get_chip_unavailable_reason,
     is_chip_structure_unavailable,
@@ -415,6 +418,259 @@ class HistoryService:
             self._display_stock_code(stock_code),
             context_snapshot,
         )
+
+    _SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
+
+    # parser 的港股股票 canonical（``hk00700``，OR-COR-22ed4583）
+    _HK_STOCK_CANONICAL_RE = re.compile(r"^hk\d{5}$")
+
+    # 美股类别股拼写：字母-分隔符-字母（``BRK-B``/``BRK.B``/``BAC-PL``，
+    # OR-COR-e330eb05）。两侧都必须是字母——带数字的 A 股市场标记（``002460.SZ``）
+    # 不属于类别股，仍走展示码归一化。
+    _US_CLASS_SHARE_CODE_RE = re.compile(r"^[A-Z]{1,5}[-.][A-Z]{1,5}$")
+
+    @staticmethod
+    def shanghai_day_bounds_local(query_date: date) -> Tuple[datetime, datetime]:
+        """北京日历日 ``[00:00, +1d)`` 折算为服务器本地 naive 半开区间。
+
+        issue #1661 spec 3：归组/筛选口径 = 北京时间（Asia/Shanghai）的分析
+        生成日期。存储层 created_at 为服务器本地 naive 时间，边界需显式换算。
+        """
+        start_bj = datetime.combine(query_date, time.min, tzinfo=HistoryService._SHANGHAI_TZ)
+        end_bj = start_bj + timedelta(days=1)
+        start_local = start_bj.astimezone().replace(tzinfo=None)
+        end_local = end_bj.astimezone().replace(tzinfo=None)
+        return start_local, end_local
+
+    @staticmethod
+    def _daily_group_key(raw_code: Any, display_code: str) -> str:
+        """按日回看归组 key（与个股栏 ``_stock_bar_group_key`` 同口径）。
+
+        仅注册指数按 parser canonical 收敛显式变体（``SH000016``/``000016.CSI`` →
+        ``sh000016``），且绝不与同号裸码股票折叠（``sz399001`` 指数 ≠ ``399001``
+        股票，OR-COR-a911f1cb）；股票沿用展示代码归一化——旧日韩裸码 ``005930``
+        经股票索引解析为 ``005930.KS`` 后与现行写法合并、``002460``/``002460.SZ``
+        合并（OR-COR-c9984f4e）。parser 失败时回退既有展示归一化。
+
+        例外（OR-COR-22ed4583）：港股股票同样取 parser canonical。展示码归一化
+        只会给带市场标记的写法补 ``HK`` 前缀，裸码 ``00700`` 原样保留，于是同一只
+        腾讯被拆成 ``00700`` 与 ``HK00700`` 两行、各自判「最新分析」。parser 对
+        ``00700`` / ``HK00700`` / ``00700.HK`` 一律给出 ``hk00700``。
+
+        例外（OR-COR-e330eb05）：美股类别股同样取 parser canonical——``BRK-B``/
+        ``BRK.B`` 是同一只伯克希尔的两种写法，既有历史查询对两类拼写都生成双候选
+        （``normalize_us_hyphen_symbol``），parser 对两者给出同一 canonical；
+        展示码归一化保留连字符/点号差异，同日两份分析被拆成两行、各自份数 1，
+        且 ``BRK.B`` 行误判 is_latest。收敛仅限「字母-分隔符-字母」的类别股拼写
+        （``BRK-B``/``BAC-PL``）：带数字的 A 股写法（``002460.SZ``）与纯字母普通
+        代码不适用——parser 对其余股票的 canonical 不能直接当归组键（裸 ``005930``
+        会被判成深市 ``sz005930``、``USAPPL`` 被截成 ``APPL``），这些仍走展示码
+        归一化。
+        """
+        from data_provider.base import normalize_stock_code
+        from src.services.stock_list_parser import ParseStatus, parse_analysis_target
+
+        code = str(raw_code or "").strip()
+        upper_code = code.upper()
+        is_us_class_share = bool(
+            code and HistoryService._US_CLASS_SHARE_CODE_RE.match(upper_code)
+        )
+        if code:
+            try:
+                target = parse_analysis_target(code)
+            except Exception:
+                target = None
+            if target is not None and target.canonical_id:
+                if target.asset_type == ParseStatus.INDEX:
+                    return target.canonical_id
+                canonical = str(target.canonical_id).lower()
+                if (
+                    target.asset_type == ParseStatus.STOCK
+                    and HistoryService._HK_STOCK_CANONICAL_RE.match(canonical)
+                ):
+                    return canonical
+                if target.asset_type == ParseStatus.STOCK and is_us_class_share:
+                    return str(target.canonical_id)
+            elif is_us_class_share:
+                # parser 未能解析该拼写时仍按类别股契约折叠（BRK-B → BRK.B），
+                # 与解析成功的兄弟拼写保持同组（OR-COR-e330eb05）
+                from data_provider.us_index_mapping import normalize_us_hyphen_symbol
+
+                folded = normalize_us_hyphen_symbol(code)
+                if folded:
+                    return folded
+        return normalize_stock_code(display_code or "")
+
+    def get_daily_history(
+        self,
+        query_date: date,
+        language: str = "zh",
+        page: int = 1,
+        limit: int = 20,
+    ) -> Dict[str, Any]:
+        """按北京时间分析生成日期获取每股当日最新分析（issue #1661）。
+
+        存储层单次快照（``get_daily_history_snapshot``）按上海时区边界取当日
+        per-raw-code 最新全集 + 当日份数 + 全局 per-code 最新 id → 按
+        ``_daily_group_key`` 合并代码变体（取 id 最大，份数求和）→ 排序分页 →
+        is_latest 按规范化 code 与全局 MAX(id) 比对（被任一写法的更新分析取代
+        即过期）。轻量行不含价位字段（spec 1：价位放报告详情）。
+        """
+        page = max(int(page or 1), 1)
+        limit = max(int(limit or 20), 1)
+
+        day_start, day_end = self.shanghai_day_bounds_local(query_date)
+        records, global_latest_by_raw_code = self.db.get_daily_history_snapshot(
+            day_start=day_start, day_end=day_end,
+        )
+
+        # 规范化合并：同一 group key 只保留 id 最大的一条，当日份数求和
+        merged: Dict[str, Any] = {}
+        for record, day_count in records:
+            raw_code = str(getattr(record, "code", "") or "")
+            display_code = self._display_stock_code(raw_code)
+            group_key = self._daily_group_key(raw_code, display_code)
+            current = merged.get(group_key)
+            if current is None:
+                merged[group_key] = {"record": record, "day_count": day_count}
+            else:
+                current["day_count"] += day_count
+                if int(getattr(record, "id", 0) or 0) > int(getattr(current["record"], "id", 0) or 0):
+                    current["record"] = record
+
+        ordered = sorted(
+            merged.values(),
+            key=lambda entry: (
+                getattr(entry["record"], "created_at", None) or datetime.min,
+                int(getattr(entry["record"], "id", 0) or 0),
+            ),
+            reverse=True,
+        )
+
+        total = len(ordered)
+        start = (page - 1) * limit
+        page_entries = ordered[start:start + limit]
+
+        # is_latest：与当日列表同一次读取快照的全局聚合（OR-COR-afa444c6），
+        # 按规范化 code 归组取全局最大 id
+        global_latest_by_group: Dict[str, int] = {}
+        if page_entries:
+            for raw_code, max_id in (global_latest_by_raw_code or {}).items():
+                display = self._display_stock_code(str(raw_code or ""))
+                group_key = self._daily_group_key(str(raw_code or ""), display)
+                if group_key not in global_latest_by_group or int(max_id) > global_latest_by_group[group_key]:
+                    global_latest_by_group[group_key] = int(max_id)
+
+        items: List[Dict[str, Any]] = []
+        for entry in page_entries:
+            record = entry["record"]
+            raw_code = str(getattr(record, "code", "") or "")
+            display_code = self._display_stock_code(raw_code)
+            group_key = self._daily_group_key(raw_code, display_code)
+            record_id = int(getattr(record, "id", 0) or 0)
+            raw_result = parse_json_field(getattr(record, "raw_result", None))
+            # 摘要列缺失时回退 raw_result（与 /history/stocks 个股栏同语义，
+            # OR-COM-cb90db57），动作计算使用补齐后的评分/建议。
+            score = self._coalesce_int(
+                getattr(record, "sentiment_score", None),
+                self._raw_result_fallback_value(raw_result, "sentiment_score"),
+            )
+            operation_advice = self._coalesce_text(
+                getattr(record, "operation_advice", None),
+                self._raw_result_fallback_value(raw_result, "operation_advice"),
+            )
+            # 明确动作与语言同个股栏一样从 raw_result 顶层 + summary/dashboard 容器
+            # 提取（OR-COM-cb90db57）：旧记录的 action=avoid 可能只存于嵌套字段，
+            # 只读顶层会退化成按评分推断的「买入」。
+            action_fields = self._decision_action_fields_for_record(
+                record,
+                raw_result,
+                sentiment_score=score,
+                operation_advice=operation_advice,
+                explicit_action=self._raw_result_fallback_value(raw_result, "action"),
+                report_language=normalize_report_language(
+                    self._raw_result_fallback_value(raw_result, "report_language")
+                ),
+            )
+            items.append(
+                {
+                    "id": record_id,
+                    "code": display_code,
+                    "name": str(getattr(record, "name", None) or ""),
+                    "report_type": str(getattr(record, "report_type", None) or ""),
+                    "sentiment_score": score,
+                    # score 补齐后仍缺失（NULL）保持 label 缺失，不落回 0 分的"极度悲观"。
+                    "sentiment_label": (
+                        get_sentiment_label(int(score), language)
+                        if score is not None
+                        else None
+                    ),
+                    "operation_advice": operation_advice,
+                    "action": action_fields["action"],
+                    "action_label": action_fields["action_label"],
+                    "trend_prediction": getattr(record, "trend_prediction", None),
+                    "is_latest": global_latest_by_group.get(group_key) == record_id,
+                    "analysis_count": int(entry["day_count"]),
+                    # 列表按北京日归组，行内钟点同样以北京时区呈现（OR-COR-71b5736f）
+                    "created_at": self._serialize_created_at_shanghai(
+                        getattr(record, "created_at", None)
+                    ) or "",
+                }
+            )
+
+        return {"total": total, "page": page, "limit": limit, "items": items}
+
+    @staticmethod
+    def _serialize_created_at_shanghai(value: Optional[datetime]) -> Optional[str]:
+        """Serialize stored timestamps in Beijing time with an explicit offset.
+
+        存储为服务器本地 naive 时间（tz-aware 值按原时区折算）。列表按北京日
+        归组，行内钟点必须同口径（OR-COR-71b5736f），不得暴露服务器本地钟点。
+        """
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            value = value.astimezone()
+        return value.astimezone(HistoryService._SHANGHAI_TZ).isoformat()
+
+    @staticmethod
+    def _raw_result_fallback_value(raw_result: Any, key: str) -> Any:
+        """Mirror ``/history/stocks`` 的 ``_raw_result_value``：顶层 + summary/dashboard 容器。"""
+        if not isinstance(raw_result, dict):
+            return None
+        value = raw_result.get(key)
+        if value is not None and value != "":
+            return value
+        for container_key in ("summary", "dashboard"):
+            container = raw_result.get(container_key)
+            if isinstance(container, dict):
+                nested_value = container.get(key)
+                if nested_value is not None and nested_value != "":
+                    return nested_value
+        return None
+
+    @staticmethod
+    def _coalesce_int(*values: Any) -> Optional[int]:
+        for value in values:
+            if value is None or isinstance(value, bool):
+                continue
+            if isinstance(value, str) and not value.strip():
+                continue
+            try:
+                return int(float(value))
+            except (TypeError, ValueError):
+                continue
+        return None
+
+    @staticmethod
+    def _coalesce_text(*values: Any) -> Optional[str]:
+        for value in values:
+            if value is None:
+                continue
+            text = str(value).strip()
+            if text:
+                return text
+        return None
 
     @staticmethod
     def _extract_market_review_region(context_snapshot: Any) -> Optional[str]:
@@ -809,15 +1065,40 @@ class HistoryService:
             "market_phase_summary": market_phase_summary,
         }
 
-    def _decision_action_fields_for_record(self, record, raw_result: Any) -> Dict[str, Any]:
+    def _decision_action_fields_for_record(
+        self,
+        record,
+        raw_result: Any,
+        *,
+        sentiment_score: Any = None,
+        operation_advice: Any = None,
+        explicit_action: Any = None,
+        report_language: Any = None,
+    ) -> Dict[str, Any]:
+        """Compute display action fields; overrides take precedence when not None.
+
+        ``sentiment_score``/``operation_advice`` 由调用方显式补齐（如列表服务把
+        raw_result 回退值并入，OR-COM-cb90db57）后传入，保证动作与展示口径一致；
+        缺省时保持既有行为（raw_result → record 列）。
+
+        ``explicit_action``/``report_language`` 同理（OR-COM-cb90db57）：按日列表像
+        /history/stocks 个股栏一样，从 raw_result 顶层与 summary/dashboard 容器提取
+        这两个字段后传入；缺省时只读顶层，其余调用方行为不变。
+        """
         raw = raw_result if isinstance(raw_result, dict) else {}
+        advice = operation_advice or raw.get("operation_advice") or getattr(record, "operation_advice", None)
+        score = sentiment_score if sentiment_score is not None else getattr(record, "sentiment_score", None)
         return display_action_fields(
-            operation_advice=raw.get("operation_advice") or getattr(record, "operation_advice", None),
-            explicit_action=raw.get("action"),
+            operation_advice=advice,
+            explicit_action=explicit_action if explicit_action is not None else raw.get("action"),
             action_label=raw.get("action_label"),
             report_type=getattr(record, "report_type", None),
-            report_language=normalize_report_language(raw.get("report_language")),
-            sentiment_score=getattr(record, "sentiment_score", None),
+            report_language=(
+                report_language
+                if report_language is not None
+                else normalize_report_language(raw.get("report_language"))
+            ),
+            sentiment_score=score,
             guardrail_reason=extract_decision_guardrail_reason(raw),
         )
 
