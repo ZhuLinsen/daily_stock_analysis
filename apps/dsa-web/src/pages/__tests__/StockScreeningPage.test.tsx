@@ -196,6 +196,41 @@ describe('StockScreeningPage', () => {
     expect(screen.queryByText('选股结果')).not.toBeInTheDocument();
   });
 
+  it('renders localized AlphaSift header link and tooltip for zh and en', async () => {
+    localStorage.setItem('dsa.uiLanguage', 'zh');
+    getScreeningStatus.mockResolvedValue({ enabled: true, available: true });
+
+    try {
+      render(
+        <UiLanguageProvider>
+          <UiLanguageToggle />
+          <StockScreeningPage />
+        </UiLanguageProvider>,
+      );
+
+      const zhLink = await screen.findByRole('link', {
+        name: '访问 AlphaSift 每日选股与公开 T+N 纸面跟踪榜单（新窗口打开）',
+      });
+      expect(zhLink).toHaveAttribute('href', 'https://alphasift.zhulinsen.tech/?lang=zh&utm_source=dsa_web_screening');
+      expect(zhLink).toHaveAttribute('target', '_blank');
+      expect(zhLink).toHaveAttribute('rel', 'noopener noreferrer');
+      expect(zhLink).toHaveTextContent('AlphaSift 今日榜单');
+
+      fireEvent.mouseEnter(zhLink.parentElement!);
+      expect(await screen.findByRole('tooltip')).toHaveTextContent('AlphaSift：多市场每日自动选股与公开 T+N 纸面跟踪');
+      fireEvent.mouseLeave(zhLink.parentElement!);
+
+      fireEvent.click(screen.getByRole('button', { name: /切换界面语言|Switch UI language/ }));
+      const enLink = await screen.findByRole('link', {
+        name: 'Open AlphaSift daily stock screener (opens in a new tab)',
+      });
+      expect(enLink).toHaveAttribute('href', 'https://alphasift.zhulinsen.tech/?lang=en&utm_source=dsa_web_screening');
+      expect(enLink).toHaveTextContent('AlphaSift Daily Picks');
+    } finally {
+      localStorage.removeItem('dsa.uiLanguage');
+    }
+  });
+
   it('re-syncs enabled state when Screening availability check fails after config is enabled', async () => {
     getScreeningStatus
       .mockResolvedValueOnce({
