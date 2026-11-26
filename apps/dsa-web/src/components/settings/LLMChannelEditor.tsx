@@ -2025,8 +2025,8 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
           [currentChannel.id]: {
             ...current,
             status: 'idle',
-            text: undefined,
-            hint: undefined,
+            resolveText: undefined,
+            resolveHint: undefined,
             results: {},
           },
         };

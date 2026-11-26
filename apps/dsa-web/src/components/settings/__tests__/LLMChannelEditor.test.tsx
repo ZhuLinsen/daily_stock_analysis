@@ -3392,4 +3392,140 @@ describe('LLMChannelEditor', () => {
       expect(screen.getByText('AI 配置已保存')).toBeInTheDocument();
     });
   });
+
+  it('clears settled capability summary, hint, and badges when editing Base URL', async () => {
+    testLLMChannel.mockResolvedValueOnce({
+      success: true,
+      message: 'LLM channel test succeeded',
+      error: null,
+      errorCode: null,
+      stage: 'chat_completion',
+      retryable: false,
+      details: {},
+      resolvedProtocol: 'openai',
+      resolvedModel: 'openai/gpt-4o-mini',
+      latencyMs: 80,
+      capabilityResults: {
+        json: {
+          status: 'passed',
+          message: 'JSON output capability check passed',
+          errorCode: null,
+          stage: 'capability_json',
+          retryable: false,
+          details: { reason: 'json_valid' },
+        },
+        tools: {
+          status: 'failed',
+          message: 'LLM channel does not support tools capability',
+          errorCode: 'capability_unsupported',
+          stage: 'capability_tools',
+          retryable: false,
+          details: { reason: 'capability_unsupported' },
+        },
+      },
+    });
+
+    render(
+      <LLMChannelEditor
+        items={[
+          { key: 'LLM_CHANNELS', value: 'openai' },
+          { key: 'LLM_OPENAI_PROTOCOL', value: 'openai' },
+          { key: 'LLM_OPENAI_BASE_URL', value: 'https://api.openai.com/v1' },
+          { key: 'LLM_OPENAI_ENABLED', value: 'true' },
+          { key: 'LLM_OPENAI_API_KEY', value: 'secret-key' },
+          { key: 'LLM_OPENAI_MODELS', value: 'gpt-4o-mini' },
+        ]}
+        configVersion="v1"
+        maskToken="******"
+        onSaved={() => {}}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /OpenAI 官方/i }));
+    fireEvent.click(screen.getByLabelText('JSON'));
+    fireEvent.click(screen.getByLabelText('Tools'));
+    fireEvent.click(screen.getByRole('button', { name: '检测能力' }));
+
+    expect(await screen.findByText(/能力检测完成：1 通过 \/ 1 失败 \/ 0 跳过/i)).toBeInTheDocument();
+    expect(screen.getByText('JSON 通过')).toBeInTheDocument();
+    expect(screen.getByText('Tools 失败')).toBeInTheDocument();
+    expect(screen.getByText(/当前模型或兼容层不支持该能力/i)).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('Base URL'), {
+      target: { value: 'https://proxy.example.com/v1' },
+    });
+
+    expect(screen.queryByText(/能力检测完成：/i)).not.toBeInTheDocument();
+    expect(screen.queryByText('JSON 通过')).not.toBeInTheDocument();
+    expect(screen.queryByText('Tools 失败')).not.toBeInTheDocument();
+    expect(screen.queryByText(/当前模型或兼容层不支持该能力/i)).not.toBeInTheDocument();
+    expect(screen.getByLabelText('JSON')).toBeChecked();
+    expect(screen.getByLabelText('Tools')).toBeChecked();
+  });
+
+  it('clears in-flight capability check loading text and ignores late response when editing models', async () => {
+    let resolveCheck!: (value: Awaited<ReturnType<typeof testLLMChannel>>) => void;
+    testLLMChannel.mockImplementationOnce(
+      () => new Promise<Awaited<ReturnType<typeof testLLMChannel>>>((resolve) => {
+        resolveCheck = resolve;
+      }),
+    );
+
+    render(
+      <LLMChannelEditor
+        items={[
+          { key: 'LLM_CHANNELS', value: 'openai' },
+          { key: 'LLM_OPENAI_PROTOCOL', value: 'openai' },
+          { key: 'LLM_OPENAI_BASE_URL', value: 'https://api.openai.com/v1' },
+          { key: 'LLM_OPENAI_ENABLED', value: 'true' },
+          { key: 'LLM_OPENAI_API_KEY', value: 'secret-key' },
+          { key: 'LLM_OPENAI_MODELS', value: 'gpt-4o-mini' },
+        ]}
+        configVersion="v1"
+        maskToken="******"
+        onSaved={() => {}}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /OpenAI 官方/i }));
+    fireEvent.click(screen.getByLabelText('JSON'));
+    fireEvent.click(screen.getByRole('button', { name: '检测能力' }));
+
+    expect(screen.getByText('正在检测运行时能力...')).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('模型（逗号分隔）'), {
+      target: { value: 'gpt-4o-mini,gpt-4.1-mini' },
+    });
+
+    expect(screen.queryByText('正在检测运行时能力...')).not.toBeInTheDocument();
+
+    await act(async () => {
+      resolveCheck({
+        success: true,
+        message: 'LLM channel test succeeded',
+        error: null,
+        errorCode: null,
+        stage: 'chat_completion',
+        retryable: false,
+        details: {},
+        resolvedProtocol: 'openai',
+        resolvedModel: 'openai/gpt-4o-mini',
+        latencyMs: 50,
+        capabilityResults: {
+          json: {
+            status: 'passed',
+            message: 'JSON output capability check passed',
+            errorCode: null,
+            stage: 'capability_json',
+            retryable: false,
+            details: { reason: 'json_valid' },
+          },
+        },
+      });
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByText(/能力检测完成：/i)).not.toBeInTheDocument();
+    expect(screen.queryByText('JSON 通过')).not.toBeInTheDocument();
+  });
 });
