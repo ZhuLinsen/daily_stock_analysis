@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import math
 from types import SimpleNamespace
+import tracemalloc
 import warnings
 
 import numpy as np
@@ -425,3 +426,156 @@ def test_duplicate_risk_assets_and_custom_combo_comparison_and_rules():
         names={},
     )
     assert "波动率窗口 25 日" in vol_adj_report.markdown
+
+
+def _next_bday(day):
+    return (pd.Timestamp(day) + pd.offsets.BDay(1)).date()
+
+
+def test_missing_quotes_do_not_fabricate_volatility_for_inverse_vol_or_vol_adjusted():
+    # 25 business days from Mon 2024-01-01 ends on Fri 2024-02-02 (rebalance day).
+    idx = _dates(25, "2024-01-01")
+    a_ret = np.full(25, 0.004)
+    b_ret = np.tile([0.009, -0.004], 13)[:25]
+    closes = pd.DataFrame({"A": _path(a_ret), "B": _path(b_ret)}, index=idx)
+    # Remove 5 consecutive trading days before Friday so A recovers on idx[-1] via ffill for momentum only.
+    closes.iloc[-6:-1, closes.columns.get_loc("A")] = np.nan
+
+    inv_vol_params = RotationParams(
+        lookback_days=10,
+        vol_lookback_days=6,
+        top_n=2,
+        cost_bps=0,
+        scoring_mode="return",
+        weighting="inverse_vol",
+    )
+    _, snap = factor_snapshot(closes, ["A", "B"], inv_vol_params)
+    assert pd.isna(snap.loc["A", "ann_vol"])
+    assert pd.notna(snap.loc["B", "ann_vol"])
+
+    report = build_report(closes, ["A", "B"], None, inv_vol_params, names={}, next_session=_next_bday)
+    assert report.target_weights == {"A": pytest.approx(0.5), "B": pytest.approx(0.5)}
+
+    extended = pd.concat(
+        [closes, pd.DataFrame({"A": [closes.iloc[-1, 0] * 1.001], "B": [closes.iloc[-1, 1] * 1.001]}, index=[idx[-1] + pd.offsets.BDay(1)])]
+    )
+    bt = run_backtest(extended, ["A", "B"], None, inv_vol_params)
+    assert bt.trades[-1].to_weights == {"A": pytest.approx(0.5), "B": pytest.approx(0.5)}
+
+    vol_adj_params = RotationParams(
+        lookback_days=10,
+        vol_lookback_days=6,
+        top_n=2,
+        scoring_mode="vol_adjusted",
+        weighting="equal",
+    )
+    _, vol_adj_snap = factor_snapshot(closes, ["A", "B"], vol_adj_params)
+    assert pd.isna(vol_adj_snap.loc["A", "score"])
+    assert bool(vol_adj_snap.loc["A", "eligible"]) is False
+
+
+def test_safe_asset_in_risk_pool_triggers_inverse_vol_rebalance_and_updates_holdings():
+    # 20 business days = 4 Mon..Fri weeks (Fri indexes: 4, 9, 14, 19).
+    idx = _dates(20, "2024-01-01")
+    a_ret = np.tile([0.025, -0.012], 10)
+    safe_ret = np.r_[
+        np.tile([-0.0006, -0.0004], 8)[:15],  # weeks 1..3: slightly negative 5d momentum -> defensive only
+        np.tile([0.0006, 0.0004], 3)[:5],     # week 4: positive 5d momentum with ultra-low volatility
+    ]
+    closes = pd.DataFrame({"A": _path(a_ret), "SAFE": _path(safe_ret)}, index=idx)
+    params = RotationParams(
+        lookback_days=5,
+        vol_lookback_days=5,
+        top_n=2,
+        cost_bps=0,
+        scoring_mode="return",
+        weighting="inverse_vol",
+    )
+
+    report = build_report(closes, ["A", "SAFE"], "SAFE", params, names={}, next_session=_next_bday)
+    assert "**需要调仓**" in report.markdown
+    assert report.target_weights["SAFE"] > 0.7
+    assert report.target_weights["A"] < 0.3
+
+    extended = pd.concat(
+        [closes, pd.DataFrame({"A": [closes.iloc[-1, 0]], "SAFE": [closes.iloc[-1, 1]]}, index=[idx[-1] + pd.offsets.BDay(1)])]
+    )
+    bt = run_backtest(extended, ["A", "SAFE"], "SAFE", params)
+    assert set(bt.final_holdings) == {"A", "SAFE"}
+    assert bt.final_weights["SAFE"] > 0.7
+    assert len(bt.trades) >= 2
+
+
+def test_tied_momentum_report_matches_backtest_with_17_etfs():
+    codes = [f"5103{i:02d}" for i in range(1, 18)]
+    idx = _dates(16, "2024-01-01")  # idx[14] = Fri 2024-01-19, idx[15] = Mon 2024-01-22
+    ret = np.full(16, -0.002)
+    ret[14] = 0.05  # Exact tie across all 17 ETFs turns 5d return positive on rebalance Friday.
+    ret[15] = 0.001
+    closes = pd.DataFrame({code: _path(ret) for code in codes}, index=idx)
+    params = RotationParams(lookback_days=5, top_n=2, cost_bps=0, scoring_mode="return", weighting="equal")
+
+    report = build_report(closes.iloc[:15], codes, None, params, names={})
+    bt = run_backtest(closes, codes, None, params)
+    assert tuple(report.target_weights.keys()) == ("510301", "510302")
+    assert set(report.target_weights) == set(bt.trades[-1].to_weights)
+
+
+def test_compare_strategies_treats_common_start_trades_symmetrically_under_high_cost():
+    n = 400
+    idx = _dates(n, "2020-01-06")
+    rebal = rebalance_dates(idx, "weekly")
+    switch_sig = rebal[8]  # Fri 2020-03-06 (bar 44 > 40) -> exec Mon 2020-03-09 (common_start)
+    s_pos = idx.get_loc(switch_sig)
+
+    r_a = np.full(n, 0.005)
+    r_a[s_pos:] = -0.02
+    r_a[s_pos] = -0.35
+
+    r_b = np.full(n, -0.002)
+    r_b[s_pos] = 0.35  # Flips both return_equal (A->B) and composite_equal (CASH->B) at common_start
+    r_b[s_pos + 1 :] = 0.003
+
+    closes = pd.DataFrame({"A": _path(r_a), "B": _path(r_b)}, index=idx)
+    params = RotationParams(lookback_days=20, top_n=1, cost_bps=500, scoring_mode="return", weighting="equal")
+
+    rows = dict(compare_strategies(closes, ["A", "B"], None, params, min_years=1.0))
+    assert "return_equal" in rows and "composite_equal" in rows
+    ret_m = rows["return_equal"]
+    comp_m = rows["composite_equal"]
+    assert ret_m["trade_count"] == pytest.approx(0.0)
+    assert comp_m["trade_count"] == pytest.approx(0.0)
+    assert ret_m["annual_turnover"] == pytest.approx(0.0)
+    assert comp_m["annual_turnover"] == pytest.approx(0.0)
+    assert ret_m["total_return"] == pytest.approx(comp_m["total_return"], rel=1e-9)
+    assert ret_m["cagr"] == pytest.approx(comp_m["cagr"], rel=1e-9)
+
+
+def test_trend_regression_stats_and_factor_snapshot_stay_low_memory_on_large_panel():
+    n_rows, n_cols, window = 2000, 80, 500
+    idx = _dates(n_rows, "2018-01-01")
+    cols = [f"ETF{i:02d}" for i in range(n_cols)]
+    t = np.arange(n_rows, dtype=float)
+    data = {col: np.exp(0.0005 * t + 0.02 * np.sin(0.05 * t + i * 0.1)) for i, col in enumerate(cols)}
+    closes = pd.DataFrame(data, index=idx)
+
+    tracemalloc.start()
+    try:
+        _, r2_df = trend_regression_stats(closes, window=window)
+        _, snap = factor_snapshot(
+            closes,
+            cols,
+            RotationParams(lookback_days=window, scoring_mode="return", weighting="equal"),
+        )
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert peak < 64 * 1024 * 1024
+    # Check exact R^2 value on trailing 500 bars of ETF00.
+    y = np.log(closes["ETF00"].iloc[-window:].to_numpy(dtype=float))
+    x_c = np.arange(window, dtype=float) - (window - 1) / 2.0
+    y_c = y - y.mean()
+    expected_r2 = float((y_c @ x_c) ** 2 / ((x_c @ x_c) * (y_c @ y_c)))
+    assert r2_df.iloc[-1]["ETF00"] == pytest.approx(expected_r2, abs=1e-9)
+    assert snap.loc["ETF00", "trend_r2"] == pytest.approx(expected_r2, abs=1e-9)

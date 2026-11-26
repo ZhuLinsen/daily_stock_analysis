@@ -137,34 +137,42 @@ def trend_regression_stats(
 
     arr = closes.to_numpy(dtype=float)
     valid_pos = np.isfinite(arr) & (arr > 0)
-    safe = np.where(valid_pos, arr, 1.0)
-    logs = np.where(valid_pos, np.log(safe), np.nan)
-
-    win = np.lib.stride_tricks.sliding_window_view(logs, window_shape=w, axis=0)
-    win_valid = np.isfinite(win).all(axis=-1)
-    win_clean = np.where(win_valid[..., None], win, 0.0)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        logs = np.where(valid_pos, np.log(np.where(valid_pos, arr, 1.0)), np.nan)
 
     x_c = np.arange(w, dtype=float) - (w - 1) / 2.0
     s_xx = float(np.dot(x_c, x_c))
-    s_xy = np.einsum("ncw,w->nc", win_clean, x_c)
-    y_c = win_clean - win_clean.mean(axis=-1, keepdims=True)
-    s_yy = np.sum(y_c * y_c, axis=-1)
-
-    denom = s_xx * s_yy
-    valid_denom = denom > 1e-18
-    raw_r2 = np.where(valid_denom, (s_xy * s_xy) / np.where(valid_denom, denom, 1.0), 0.0)
-    r2_tail = np.where(win_valid, np.clip(raw_r2, 0.0, 1.0), np.nan)
-    slope_tail = s_xy / s_xx
-    ann_slope_tail = np.where(
-        win_valid,
-        np.expm1(np.clip(slope_tail * TRADING_DAYS_PER_YEAR, -20.0, 20.0)),
-        np.nan,
-    )
+    max_elems = 262_144
+    chunk_rows = max(1, max_elems // w)
 
     ann_slope_full = np.full(arr.shape, np.nan, dtype=float)
     r2_full = np.full(arr.shape, np.nan, dtype=float)
-    ann_slope_full[w - 1 :] = ann_slope_tail
-    r2_full[w - 1 :] = r2_tail
+    n_win = arr.shape[0] - w + 1
+
+    for col_idx in range(arr.shape[1]):
+        col_win = np.lib.stride_tricks.sliding_window_view(logs[:, col_idx], window_shape=w)
+        for start in range(0, n_win, chunk_rows):
+            end = min(start + chunk_rows, n_win)
+            chunk = col_win[start:end]
+            valid_mask = np.isfinite(chunk).all(axis=-1)
+            if not valid_mask.any():
+                continue
+            valid_chunk = chunk[valid_mask]
+            y_c = valid_chunk - valid_chunk.mean(axis=-1, keepdims=True)
+            s_xy = y_c @ x_c
+            s_yy = np.sum(y_c * y_c, axis=-1)
+
+            denom = s_xx * s_yy
+            valid_denom = denom > 1e-18
+            raw_r2 = np.where(valid_denom, (s_xy * s_xy) / np.where(valid_denom, denom, 1.0), 0.0)
+            r2_vals = np.clip(raw_r2, 0.0, 1.0)
+            slope_vals = s_xy / s_xx
+            ann_vals = np.expm1(np.clip(slope_vals * TRADING_DAYS_PER_YEAR, -20.0, 20.0))
+
+            dest_rows = np.flatnonzero(valid_mask) + (w - 1 + start)
+            r2_full[dest_rows, col_idx] = r2_vals
+            ann_slope_full[dest_rows, col_idx] = ann_vals
+
     return (
         pd.DataFrame(ann_slope_full, index=closes.index, columns=closes.columns),
         pd.DataFrame(r2_full, index=closes.index, columns=closes.columns),
@@ -193,13 +201,19 @@ def composite_momentum_scores(closes: pd.DataFrame, lookback_days: int) -> pd.Da
     return total.where(valid)
 
 
-def compute_factor_scores(closes: pd.DataFrame, params: RotationParams) -> pd.DataFrame:
+def compute_factor_scores(
+    closes: pd.DataFrame,
+    params: RotationParams,
+    *,
+    raw_closes: Optional[pd.DataFrame] = None,
+) -> pd.DataFrame:
     """Compute causal ranking scores according to ``params.scoring_mode``."""
     if params.scoring_mode == "return":
         return momentum_scores(closes, params.lookback_days)
     if params.scoring_mode == "vol_adjusted":
         raw = momentum_scores(closes, params.lookback_days)
-        vol = annualized_volatility(closes, params.vol_lookback_days)
+        vol_source = raw_closes if raw_closes is not None else closes
+        vol = annualized_volatility(vol_source, params.vol_lookback_days)
         return raw.where(raw.notna() & vol.notna()) / vol.clip(lower=MIN_VOL_FLOOR)
     if params.scoring_mode == "composite":
         return composite_momentum_scores(closes, params.lookback_days)
@@ -243,7 +257,7 @@ def select_holdings(
 ) -> Tuple[str, ...]:
     """Pick up to ``top_n`` risk assets; an empty tuple means fully defensive."""
     eligible = scores.replace([math.inf, -math.inf], math.nan).dropna()
-    eligible = eligible[eligible > 0].sort_values(ascending=False)
+    eligible = eligible[eligible > 0].sort_values(ascending=False, kind="mergesort")
     if eligible.empty:
         return ()
 
@@ -306,6 +320,20 @@ def _turnover(old: Weights, new: Weights) -> float:
     return sum(abs(new.get(c, 0.0) - old.get(c, 0.0)) for c in codes)
 
 
+def is_rebalance_needed(
+    current_weights: Weights,
+    target_weights: Weights,
+    current_holdings: Sequence[str],
+    target_holdings: Sequence[str],
+) -> bool:
+    """Return True when target composition or risk holdings change with nonzero trade."""
+    composition_changed = (
+        set(target_weights) != set(current_weights)
+        or set(target_holdings) != set(current_holdings)
+    )
+    return composition_changed and _turnover(current_weights, target_weights) > 1e-9
+
+
 def _drift(weights: Weights, returns: Dict[str, float]) -> Tuple[Weights, float]:
     """Apply one day of returns; return drifted weights and portfolio return."""
     grown = {c: w * (1.0 + returns.get(c, 0.0)) for c, w in weights.items()}
@@ -337,9 +365,9 @@ def run_backtest(
 
     frame = prepare_closes(closes)
     quoted = _valid_closes(closes)
-    scores = compute_factor_scores(frame[risk], params).where(quoted[risk].notna())
+    scores = compute_factor_scores(frame[risk], params, raw_closes=quoted[risk]).where(quoted[risk].notna())
     vols = (
-        annualized_volatility(frame[risk], params.vol_lookback_days).where(quoted[risk].notna())
+        annualized_volatility(quoted[risk], params.vol_lookback_days).where(quoted[risk].notna())
         if params.weighting == "inverse_vol"
         else None
     )
@@ -396,8 +424,12 @@ def run_backtest(
             # the current portfolio until a later scheduled signal can trade.
             involved = (set(weights) | set(target)) - {CASH}
             can_trade = all(pd.notna(quoted.loc[day, code]) for code in involved)
-            # Same holdings -> no trade; drifted weights are not re-equalised.
-            if can_trade and (entry is None or set(target) != set(weights)):
+            # Same composition (neither asset weights set nor risk holdings changed) -> no trade.
+            composition_changed = (
+                set(target) != set(weights)
+                or set(new_holdings) != set(holdings)
+            )
+            if can_trade and (entry is None or composition_changed):
                 if entry is None:
                     entry = i
                 turnover = _turnover(weights, target)
@@ -600,11 +632,12 @@ def latest_ranking(
 ) -> Tuple[pd.Timestamp, pd.Series]:
     """Factor scores on the latest bar, sorted high to low (NaN last)."""
     frame = prepare_closes(closes)
+    quoted = _valid_closes(closes)
     risk = _unique_risk_assets(frame, risk_assets)
-    scores = compute_factor_scores(frame[risk], params)
-    scores = scores.where(_valid_closes(closes)[risk].notna())
+    scores = compute_factor_scores(frame[risk], params, raw_closes=quoted[risk])
+    scores = scores.where(quoted[risk].notna())
     as_of = frame.index[-1]
-    return as_of, scores.loc[as_of].sort_values(ascending=False, na_position="last")
+    return as_of, scores.loc[as_of].sort_values(ascending=False, na_position="last", kind="mergesort")
 
 
 def factor_snapshot(
@@ -622,12 +655,17 @@ def factor_snapshot(
     as_of = frame.index[-1]
     latest_valid = quoted[risk].loc[as_of].notna()
 
-    scores = compute_factor_scores(frame[risk], params).loc[as_of].where(latest_valid)
-    ret_20d = momentum_scores(frame[risk], 20).loc[as_of].where(latest_valid)
-    ret_lookback = momentum_scores(frame[risk], params.lookback_days).loc[as_of].where(latest_valid)
-    ret_120d = momentum_scores(frame[risk], 120).loc[as_of].where(latest_valid)
-    ann_vol = annualized_volatility(frame[risk], params.vol_lookback_days).loc[as_of].where(latest_valid)
-    _, trend_r2_df = trend_regression_stats(frame[risk], params.lookback_days)
+    tail_rows = max(params.lookback_days * 2, 120, params.vol_lookback_days, MIN_TREND_R2_WINDOW) + 2
+    frame_tail = frame[risk].iloc[-tail_rows:]
+    quoted_tail = quoted[risk].iloc[-tail_rows:]
+    trend_w = max(int(params.lookback_days), MIN_TREND_R2_WINDOW)
+
+    scores = compute_factor_scores(frame_tail, params, raw_closes=quoted_tail).loc[as_of].where(latest_valid)
+    ret_20d = momentum_scores(frame_tail, 20).loc[as_of].where(latest_valid)
+    ret_lookback = momentum_scores(frame_tail, params.lookback_days).loc[as_of].where(latest_valid)
+    ret_120d = momentum_scores(frame_tail, 120).loc[as_of].where(latest_valid)
+    ann_vol = annualized_volatility(quoted_tail, params.vol_lookback_days).loc[as_of].where(latest_valid)
+    _, trend_r2_df = trend_regression_stats(frame[risk].iloc[-trend_w:], params.lookback_days)
     trend_r2 = trend_r2_df.loc[as_of].where(latest_valid)
     vol_adj_score = (ret_lookback / ann_vol.clip(lower=MIN_VOL_FLOOR)).where(
         ret_lookback.notna() & ann_vol.notna()
@@ -694,16 +732,23 @@ def compare_strategies(
         return []
 
     common_start = max(result.equity.index[0] for _, result in runs)
+    cost_rate = params.cost_bps / 10000.0
     results: List[Tuple[str, Dict[str, float]]] = []
     for preset_key, result in runs:
-        sub_equity = result.equity.loc[common_start:]
+        sub_equity = result.equity.loc[common_start:].copy()
         if sub_equity.empty or float(sub_equity.iloc[0]) <= 0:
             continue
+        if result.equity.index[0] == common_start:
+            entry_turnover = sum(t.turnover for t in result.trades if t.exec_date == common_start)
+            post_cost_start = 1.0 - entry_turnover * cost_rate
+            if post_cost_start <= 0:
+                continue
+            sub_equity.iloc[0] = post_cost_start
         sub_equity = sub_equity / float(sub_equity.iloc[0])
         sub_bench = result.benchmark_equity.loc[common_start:]
         if not sub_bench.empty and float(sub_bench.iloc[0]) > 0:
             sub_bench = sub_bench / float(sub_bench.iloc[0])
-        sub_trades = [t for t in result.trades if t.exec_date >= common_start]
+        sub_trades = [t for t in result.trades if t.exec_date > common_start]
         results.append(
             (preset_key, compute_extended_metrics(sub_equity, sub_bench, sub_trades))
         )

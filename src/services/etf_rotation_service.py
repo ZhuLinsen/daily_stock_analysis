@@ -32,6 +32,7 @@ from src.core.etf_rotation import (
     factor_snapshot,
     holdings_to_weights,
     is_rebalance_day,
+    is_rebalance_needed,
     parameter_sweep,
     run_backtest,
     select_holdings,
@@ -503,8 +504,7 @@ def build_report(
         weighting=params.weighting,
         vols=latest_vols,
     )
-    # Compare holdings, not weights: live weights drift away from the initial split.
-    changed = set(target) != set(result.final_weights)
+    changed = is_rebalance_needed(result.final_weights, target, result.final_holdings, target_holdings)
     following = next_session(as_of.date()) if next_session else None
     rebalance_day = is_rebalance_day(as_of, pd.Timestamp(following), params.rebalance) if following else None
 
