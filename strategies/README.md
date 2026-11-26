@@ -35,7 +35,7 @@ category: trend
 core_rules: [1, 2]
 
 # 策略需要使用的工具列表，可选
-# 可用工具：get_daily_history, analyze_trend, compute_quant_factors, get_realtime_quote,
+# 可用工具：get_daily_history, analyze_trend, calculate_quant_factors, get_realtime_quote,
 #           get_sector_rankings, search_stock_news, get_stock_info
 required_tools:
   - get_daily_history
