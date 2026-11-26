@@ -34,6 +34,7 @@ const {
   mockRemoveFromWatchlist,
   mockDownloadSession,
   mockFormatSessionAsMarkdown,
+  mockFormatSessionForNotification,
   mockStockIndex,
   mockStockIndexState,
 } = vi.hoisted(() => {
@@ -61,6 +62,7 @@ const {
     mockRemoveFromWatchlist: vi.fn(),
     mockDownloadSession: vi.fn(),
     mockFormatSessionAsMarkdown: vi.fn(),
+    mockFormatSessionForNotification: vi.fn(),
     mockStockIndex,
     // Mutable registry-load state for the async window shared by every backend.
     mockStockIndexState: {
@@ -133,6 +135,7 @@ vi.mock('../../api/systemConfig', () => ({
 vi.mock('../../utils/chatExport', () => ({
   downloadSession: mockDownloadSession,
   formatSessionAsMarkdown: mockFormatSessionAsMarkdown,
+  formatSessionForNotification: mockFormatSessionForNotification,
 }));
 
 vi.mock('../../api/history', () => ({
@@ -279,6 +282,7 @@ beforeEach(() => {
   });
   mockDownloadSession.mockImplementation(() => {});
   mockFormatSessionAsMarkdown.mockReturnValue('# exported session');
+  mockFormatSessionForNotification.mockReturnValue('# exported session');
   mockStockIndexState.index = mockStockIndex;
   mockStockIndexState.loading = false;
   mockStockIndexState.error = null;
@@ -724,8 +728,9 @@ describe('ChatPage', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: '导出会话为 Markdown 文件' }));
 
-    expect(mockDownloadSession).toHaveBeenCalledWith(mockStoreState.messages, 'zh');
+    expect(mockDownloadSession).toHaveBeenCalledWith(mockStoreState.messages, 'zh', expect.any(Array));
     expect(mockFormatSessionAsMarkdown).not.toHaveBeenCalled();
+    expect(mockFormatSessionForNotification).not.toHaveBeenCalled();
   });
 
   it('renders assistant skill labels with shared badge semantics', async () => {
@@ -1303,7 +1308,7 @@ describe('ChatPage', () => {
       errorCode: 'backend_removed',
       message: 'Codex App Server has been removed',
     });
-    mockFormatSessionAsMarkdown.mockReturnValue('# exported markdown');
+    mockFormatSessionForNotification.mockReturnValue('# exported markdown');
 
     render(
       <MemoryRouter initialEntries={['/chat']}>
@@ -1314,7 +1319,7 @@ describe('ChatPage', () => {
     fireEvent.click(await screen.findByRole('button', { name: '发送到已配置的通知机器人/邮箱' }));
 
     await waitFor(() => {
-      expect(mockFormatSessionAsMarkdown).toHaveBeenCalledWith(mockStoreState.messages, 'zh');
+      expect(mockFormatSessionForNotification).toHaveBeenCalledWith(mockStoreState.messages, 'zh', expect.any(Array));
       expect(mockSendChat).toHaveBeenCalledWith('# exported markdown');
     });
 
@@ -2599,7 +2604,8 @@ describe('ChatPage English UI localization', () => {
         id: 'assistant-1',
         role: 'assistant',
         content: 'Bullish alignment',
-        skillNames: ['缠论', 'ma_golden_cross'],
+        skills: ['chan_theory', 'ma_golden_cross'],
+        skillNames: ['缠论', '均线金叉'],
       },
     ];
     mockStoreState.activeStockContext = {
@@ -2609,7 +2615,7 @@ describe('ChatPage English UI localization', () => {
       asset_type: 'stock',
     };
     mockAddToWatchlist.mockResolvedValue(['600519']);
-    mockFormatSessionAsMarkdown.mockReturnValue('# Ask AI Session');
+    mockFormatSessionForNotification.mockReturnValue('# Ask AI Session');
 
     const capturedBlobs: Blob[] = [];
     const originalCreateObjectURL = URL.createObjectURL;
@@ -2643,11 +2649,11 @@ describe('ChatPage English UI localization', () => {
       expect(screen.getByLabelText('Skill Chan Theory, MA Golden Cross')).toBeInTheDocument();
 
       fireEvent.click(screen.getByRole('button', { name: 'Export session as Markdown' }));
-      expect(mockDownloadSession).toHaveBeenCalledWith(mockStoreState.messages, 'en');
+      expect(mockDownloadSession).toHaveBeenCalledWith(mockStoreState.messages, 'en', expect.any(Array));
 
       fireEvent.click(screen.getByRole('button', { name: 'Send to configured notification bot/email' }));
       await waitFor(() => {
-        expect(mockFormatSessionAsMarkdown).toHaveBeenCalledWith(mockStoreState.messages, 'en');
+        expect(mockFormatSessionForNotification).toHaveBeenCalledWith(mockStoreState.messages, 'en', expect.any(Array));
       });
       expect(await screen.findByText('Sent to notification channels')).toBeInTheDocument();
 
@@ -2666,6 +2672,96 @@ describe('ChatPage English UI localization', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Switch to ZH' }));
       expect(await screen.findByText('已发送到通知渠道')).toBeInTheDocument();
       expect(screen.getByText('已加入自选 600519')).toBeInTheDocument();
+    } finally {
+      clickSpy.mockRestore();
+      Object.defineProperty(URL, 'createObjectURL', {
+        configurable: true,
+        writable: true,
+        value: originalCreateObjectURL,
+      });
+      Object.defineProperty(URL, 'revokeObjectURL', {
+        configurable: true,
+        writable: true,
+        value: originalRevokeObjectURL,
+      });
+    }
+  });
+
+  it('preserves custom skill names matching built-in IDs and caps EN notification length within 50000 chars', async () => {
+    window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'en');
+    mockGetSkills.mockResolvedValue({
+      skills: [
+        { id: 'ma_golden_cross', name: '均线金叉', description: 'Built-in' },
+        { id: 'volume_custom', name: 'ma_golden_cross', description: 'Custom volume rule' },
+      ],
+      default_skill_id: 'ma_golden_cross',
+      default_skill_ids: ['ma_golden_cross'],
+    });
+    const bodyChunk = 'a'.repeat(1239);
+    const longMessages: Message[] = [];
+    for (let i = 0; i < 20; i += 1) {
+      longMessages.push({ id: `u-${i}`, role: 'user', content: `Q${i}:${bodyChunk.slice(0, 1239 - (`Q${i}:`).length)}` });
+      longMessages.push({
+        id: `a-${i}`,
+        role: 'assistant',
+        content: `A${i}:${bodyChunk.slice(0, 1239 - (`A${i}:`).length)}`,
+        ...(i === 0 ? { skills: ['volume_custom'], skillNames: ['ma_golden_cross'] } : {}),
+      });
+    }
+    mockStoreState.messages = longMessages;
+
+    const actualExport = await vi.importActual<typeof import('../../utils/chatExport')>('../../utils/chatExport');
+    mockFormatSessionForNotification.mockImplementation((msgs, lang, sks) =>
+      actualExport.formatSessionForNotification(msgs, lang, sks),
+    );
+
+    const capturedBlobs: Blob[] = [];
+    const originalCreateObjectURL = URL.createObjectURL;
+    const originalRevokeObjectURL = URL.revokeObjectURL;
+    Object.defineProperty(URL, 'createObjectURL', {
+      configurable: true,
+      writable: true,
+      value: vi.fn((blob: Blob) => {
+        capturedBlobs.push(blob);
+        return 'blob:custom-skill-test';
+      }),
+    });
+    Object.defineProperty(URL, 'revokeObjectURL', {
+      configurable: true,
+      writable: true,
+      value: vi.fn(),
+    });
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+
+    try {
+      render(
+        <UiLanguageProvider>
+          <MemoryRouter initialEntries={['/chat']}>
+            <ChatPage />
+          </MemoryRouter>
+        </UiLanguageProvider>,
+      );
+
+      expect(await screen.findByLabelText('Skill ma_golden_cross')).toBeInTheDocument();
+      expect(screen.queryByLabelText('Skill MA Golden Cross')).not.toBeInTheDocument();
+
+      fireEvent.click(screen.getAllByRole('button', { name: 'Export message as Markdown' })[0]);
+      const exportedMessage = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result));
+        reader.onerror = () => reject(reader.error);
+        reader.readAsText(capturedBlobs[0]);
+      });
+      expect(exportedMessage).toContain('# AI Response · ma_golden_cross');
+      expect(exportedMessage).not.toContain('MA Golden Cross');
+
+      fireEvent.click(screen.getByRole('button', { name: 'Send to configured notification bot/email' }));
+      await waitFor(() => {
+        expect(mockSendChat).toHaveBeenCalledTimes(1);
+      });
+      const sentMarkdown = String(mockSendChat.mock.calls[0][0]);
+      expect(sentMarkdown.length).toBeLessThanOrEqual(50_000);
+      expect(sentMarkdown).not.toContain('MA Golden Cross');
     } finally {
       clickSpy.mockRestore();
       Object.defineProperty(URL, 'createObjectURL', {

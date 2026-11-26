@@ -15,7 +15,7 @@ import {
   type Message,
   type ProgressStep,
 } from '../stores/agentChatStore';
-import { downloadSession, formatSessionAsMarkdown } from '../utils/chatExport';
+import { downloadSession, formatSessionForNotification } from '../utils/chatExport';
 import type { ChatFollowUpContext } from '../utils/chatFollowUp';
 import {
   buildFollowUpPrompt,
@@ -34,7 +34,7 @@ import {
 } from '../utils/stockCode';
 import { useStockIndex } from '../hooks/useStockIndex';
 import { useUiLanguage } from '../contexts/UiLanguageContext';
-import { localizeSkill, localizeSkillLabel } from '../locales/strategyText';
+import { localizeSkill, resolveMessageSkillLabels } from '../locales/strategyText';
 
 // Quick question examples shown on empty state
 type ActiveStockContext = Pick<ChatFollowUpContext, 'stock_code' | 'stock_name'>;
@@ -57,13 +57,6 @@ const QUICK_QUESTIONS: Array<{
 
 const MAX_SELECTED_SKILLS = 3;
 const CONTEXT_COMPRESSION_CONFIG_KEY = 'AGENT_CONTEXT_COMPRESSION_ENABLED';
-const getMessageSkillNames = (msg: Message): string[] => {
-  if (msg.skillNames?.length) return msg.skillNames;
-  if (msg.skillName) return [msg.skillName];
-  if (msg.skills?.length) return msg.skills;
-  if (msg.skill) return [msg.skill];
-  return [];
-};
 
 const isStageDoneSuccessful = (status?: string): boolean => {
   if (!status) return true;
@@ -144,10 +137,9 @@ const ChatPage: React.FC = () => {
 
   const getMessageSkillLabel = useCallback(
     (msg: Message): string =>
-      getMessageSkillNames(msg)
-        .map((item) => localizeSkillLabel(item, language))
+      resolveMessageSkillLabels(msg, language, skills)
         .join(language === 'en' ? ', ' : '、'),
-    [language],
+    [language, skills],
   );
 
   // Cleanup timers on unmount
@@ -1074,7 +1066,7 @@ const ChatPage: React.FC = () => {
                     <Button
                       variant="action-primary"
                       size="sm"
-                      onClick={() => downloadSession(messages, language)}
+                      onClick={() => downloadSession(messages, language, skills)}
                       aria-label={t('chat.exportSessionTooltip')}
                     >
                       <svg
@@ -1105,7 +1097,7 @@ const ChatPage: React.FC = () => {
                         setSending(true);
                         setSendToast(null);
                         try {
-                          const content = formatSessionAsMarkdown(messages, language);
+                          const content = formatSessionForNotification(messages, language, skills);
                           await agentApi.sendChat(content);
                           showSendFeedback({ type: 'success', messageKey: 'chat.sendSuccessMessage' }, 3000);
                         } catch (err) {

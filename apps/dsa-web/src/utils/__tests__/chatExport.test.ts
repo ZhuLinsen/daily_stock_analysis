@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Message } from '../../stores/agentChatStore';
 import { UI_LANGUAGE_STORAGE_KEY } from '../uiLanguage';
-import { downloadSession, formatSessionAsMarkdown } from '../chatExport';
+import { downloadSession, formatSessionAsMarkdown, formatSessionForNotification, MAX_CHAT_NOTIFICATION_CHARS } from '../chatExport';
 
 const sampleMessages: Message[] = [
   { id: 'u1', role: 'user', content: 'Analyze AAPL' },
@@ -84,14 +84,15 @@ describe('chatExport', () => {
     expect(revokeObjectUrlSpy).toHaveBeenCalledTimes(2);
   });
 
-  it('localizes built-in strategy names and multi-skill delimiters when exporting in EN mode', () => {
+  it('localizes built-in strategy names and preserves custom skill names even when colliding with built-in IDs', () => {
     const multiSkillMessages: Message[] = [
       { id: 'u1', role: 'user', content: 'Analyze 600519' },
       {
         id: 'a1',
         role: 'assistant',
         content: 'Structure looks constructive',
-        skillNames: ['缠论', 'ma_golden_cross'],
+        skills: ['chan_theory', 'ma_golden_cross'],
+        skillNames: ['缠论', '均线金叉'],
       },
     ];
 
@@ -100,6 +101,55 @@ describe('chatExport', () => {
     expect(enMd).not.toContain('、');
 
     const zhMd = formatSessionAsMarkdown(multiSkillMessages, 'zh');
-    expect(zhMd).toContain('## AI (缠论、ma_golden_cross)');
+    expect(zhMd).toContain('## AI (缠论、均线金叉)');
+
+    // A custom skill whose display name happens to equal a built-in strategy ID
+    // (e.g. id="volume_custom", name="ma_golden_cross") must keep its literal name.
+    const customCollidingMessages: Message[] = [
+      { id: 'u2', role: 'user', content: 'Analyze 300750' },
+      {
+        id: 'a2',
+        role: 'assistant',
+        content: 'Volume expansion confirmed',
+        skills: ['volume_custom'],
+        skillNames: ['ma_golden_cross'],
+      },
+    ];
+    const customEnMd = formatSessionAsMarkdown(customCollidingMessages, 'en', {
+      skills: [{ id: 'volume_custom', name: 'ma_golden_cross', description: 'Custom volume rule' }],
+    });
+    expect(customEnMd).toContain('## AI (ma_golden_cross)');
+    expect(customEnMd).not.toContain('MA Golden Cross');
+
+    const customEnWithoutList = formatSessionAsMarkdown(customCollidingMessages, 'en');
+    expect(customEnWithoutList).toContain('## AI (ma_golden_cross)');
+    expect(customEnWithoutList).not.toContain('MA Golden Cross');
+  });
+
+  it('keeps borderline long sessions within the 50,000-character notification limit in EN mode without dropping message bodies', () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-11-26T16:00:00Z'));
+      const longBody = 'x'.repeat(1239);
+      const longMessages: Message[] = [];
+      for (let i = 0; i < 20; i += 1) {
+        longMessages.push({ id: `u-${i}`, role: 'user', content: `Q${i}:${longBody.slice(0, 1239 - (`Q${i}:`).length)}` });
+        longMessages.push({ id: `a-${i}`, role: 'assistant', content: `A${i}:${longBody.slice(0, 1239 - (`A${i}:`).length)}` });
+      }
+
+      const zhMd = formatSessionAsMarkdown(longMessages, 'zh');
+      const verboseEnMd = formatSessionAsMarkdown(longMessages, 'en');
+      const notifyEnMd = formatSessionForNotification(longMessages, 'en');
+
+      expect(zhMd.length).toBeLessThanOrEqual(MAX_CHAT_NOTIFICATION_CHARS);
+      expect(verboseEnMd.length).toBeGreaterThan(MAX_CHAT_NOTIFICATION_CHARS);
+      expect(notifyEnMd.length).toBeLessThanOrEqual(MAX_CHAT_NOTIFICATION_CHARS);
+      expect(notifyEnMd).toContain('# Chat');
+      expect(notifyEnMd).toContain('## Q');
+      expect(notifyEnMd).toContain('Q0:');
+      expect(notifyEnMd).toContain('A19:');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
