@@ -57,7 +57,7 @@ class DiscordPlatform(BotPlatform):
             签名是否有效
         """
         if not self._interactions_public_key:
-            logger.warning("[Discord] 未配置 interactions public key，拒绝请求")
+            logger.warning("[Discord] interactions public key not configured, rejecting request")
             return False
 
         normalized_headers = {str(k).lower(): v for k, v in headers.items()}
@@ -65,26 +65,27 @@ class DiscordPlatform(BotPlatform):
         timestamp = normalized_headers.get("x-signature-timestamp", "")
 
         if not signature or not timestamp:
-            logger.warning("[Discord] 缺少签名头，拒绝请求")
+            logger.warning("[Discord] Missing signature headers, rejecting request")
             return False
 
         # 校验 timestamp 格式与时效性，防止重放攻击
         try:
             ts_int = int(timestamp)
         except (TypeError, ValueError):
-            logger.warning("[Discord] 非法的 timestamp：必须为 Unix 秒整数，拒绝请求")
+            logger.warning("[Discord] Invalid timestamp: must be Unix integer seconds, rejecting request")
             return False
 
         try:
             now_ts = int(time.time())
         except Exception as exc:
-            logger.warning("[Discord] 获取当前时间失败: %s，拒绝请求", exc)
+            logger.warning("[Discord] Failed to get current time: %s, rejecting request", exc)
             return False
 
         # 允许的时间窗口：±5 分钟
         if abs(now_ts - ts_int) > 300:
             logger.warning(
-                "[Discord] 请求 timestamp 超出允许窗口，可能为重放攻击：timestamp=%s, now=%s",
+                "[Discord] Request timestamp outside allowed window, possible "
+                "replay attack: timestamp=%s, now=%s",
                 ts_int,
                 now_ts,
             )
@@ -94,19 +95,19 @@ class DiscordPlatform(BotPlatform):
             verify_key = VerifyKey(bytes.fromhex(self._interactions_public_key))
             signature_bytes = bytes.fromhex(signature)
         except ValueError:
-            logger.warning("[Discord] 公钥或签名不是合法十六进制，拒绝请求")
+            logger.warning("[Discord] Public key or signature is not valid hex, rejecting request")
             return False
         except Exception as exc:
-            logger.warning("[Discord] 无法加载签名公钥: %s", exc)
+            logger.warning("[Discord] Failed to load signing public key: %s", exc)
             return False
 
         try:
             verify_key.verify(timestamp.encode("utf-8") + body, signature_bytes)
         except BadSignatureError:
-            logger.warning("[Discord] 签名验证失败")
+            logger.warning("[Discord] Signature verification failed")
             return False
         except Exception as exc:
-            logger.warning("[Discord] 签名校验异常: %s", exc)
+            logger.warning("[Discord] Signature verification exception: %s", exc)
             return False
 
         return True
@@ -239,7 +240,7 @@ class DiscordPlatform(BotPlatform):
         interaction_token = raw.get("token", "")
         if not application_id or not interaction_token:
             logger.warning(
-                "[Discord] 缺少 application_id 或 interaction token，无法发送 follow-up"
+                "[Discord] Missing application_id or interaction token, cannot send follow-up"
             )
             return False
 
@@ -252,7 +253,7 @@ class DiscordPlatform(BotPlatform):
                 content, self.DISCORD_MAX_CONTENT_LENGTH
             )
         except (ValueError, Exception) as exc:
-            logger.warning("[Discord] 消息分块失败: %s，尝试整段发送", exc)
+            logger.warning("[Discord] Message chunking failed: %s, attempting to send as single message", exc)
             chunks = [content]
 
         base_url = (
@@ -279,7 +280,7 @@ class DiscordPlatform(BotPlatform):
                     )
                 if resp.status_code >= 300:
                     logger.error(
-                        "[Discord] follow-up chunk %d/%d 发送失败: %s %s",
+                        "[Discord] follow-up chunk %d/%d send failed: %s %s",
                         idx + 1,
                         len(chunks),
                         resp.status_code,
@@ -288,7 +289,7 @@ class DiscordPlatform(BotPlatform):
                     success = False
             except Exception as exc:
                 logger.error(
-                    "[Discord] follow-up chunk %d/%d 请求异常: %s",
+                    "[Discord] follow-up chunk %d/%d request exception: %s",
                     idx + 1,
                     len(chunks),
                     exc,
@@ -296,7 +297,7 @@ class DiscordPlatform(BotPlatform):
                 success = False
 
         if success:
-            logger.info("[Discord] follow-up 消息发送成功 (%d 块)", len(chunks))
+            logger.info("[Discord] follow-up message sent successfully (%d chunks)", len(chunks))
         return success
 
     def handle_challenge(self, data: Dict[str, Any]) -> Optional[WebhookResponse]:

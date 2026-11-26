@@ -102,7 +102,7 @@ def test_sina_realtime_success_logs_endpoint(caplog, monkeypatch, akshare_fetche
     assert quote.price == 5.19
     assert breaker.successes == ["akshare_sina"]
     assert f"endpoint={SINA_REALTIME_ENDPOINT}" in caplog.text
-    assert "[实时行情-新浪] 601006 大秦铁路:" in caplog.text
+    assert "[Realtime-Sina] 601006 大秦铁路:" in caplog.text
 
 
 def test_sina_realtime_remote_disconnect_logs_category(caplog, monkeypatch, akshare_fetcher):
@@ -123,7 +123,7 @@ def test_sina_realtime_remote_disconnect_logs_category(caplog, monkeypatch, aksh
     assert source_key == "akshare_sina"
     assert "category=remote_disconnect" in message
     assert f"endpoint={SINA_REALTIME_ENDPOINT}" in caplog.text
-    assert "新浪 实时行情接口失败:" in caplog.text
+    assert "Sina realtime quote request failed:" in caplog.text
 
 
 def test_tencent_realtime_http_status_logs_endpoint(caplog, monkeypatch, akshare_fetcher):
@@ -164,7 +164,7 @@ def test_tencent_realtime_success_logs_endpoint(caplog, monkeypatch, akshare_fet
     assert quote.amount == 6404500
     assert breaker.successes == ["akshare_tencent"]
     assert f"endpoint={TENCENT_REALTIME_ENDPOINT}" in caplog.text
-    assert "[实时行情-腾讯] 601006 大秦铁路:" in caplog.text
+    assert "[Realtime-Tencent] 601006 大秦铁路:" in caplog.text
 
 
 def test_tencent_realtime_volume_keeps_share_unit_when_turnover_matches(monkeypatch, akshare_fetcher):

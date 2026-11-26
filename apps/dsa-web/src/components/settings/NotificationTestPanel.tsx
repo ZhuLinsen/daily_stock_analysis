@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type React from 'react';
 import { Send } from 'lucide-react';
 import { useUiLanguage } from '../../contexts/UiLanguageContext';
@@ -38,7 +38,9 @@ interface NotificationTestPanelProps {
 }
 
 function clampTimeout(value: string): number {
-  const parsed = Number(value);
+  const trimmed = value.trim();
+  if (!trimmed) return 20;
+  const parsed = Number(trimmed);
   if (!Number.isFinite(parsed)) return 20;
   return Math.min(120, Math.max(1, parsed));
 }
@@ -58,6 +60,16 @@ export const NotificationTestPanel: React.FC<NotificationTestPanelProps> = ({
   const [isTesting, setIsTesting] = useState(false);
   const [isTitleEdited, setIsTitleEdited] = useState(false);
   const [isContentEdited, setIsContentEdited] = useState(false);
+  const mountedRef = useRef(true);
+  const testRequestIdRef = useRef(0);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      testRequestIdRef.current += 1;
+    };
+  }, []);
 
   const normalizedItems = useMemo(
     () => items.map((item) => ({ key: item.key, value: String(item.value ?? '') })),
@@ -74,6 +86,7 @@ export const NotificationTestPanel: React.FC<NotificationTestPanelProps> = ({
   }, [isTitleEdited, isContentEdited, t]);
 
   const runTest = async () => {
+    const requestId = ++testRequestIdRef.current;
     setError(null);
     setResult(null);
     setIsTesting(true);
@@ -86,11 +99,15 @@ export const NotificationTestPanel: React.FC<NotificationTestPanelProps> = ({
         content: content.trim() || t('settings.notificationTestContent'),
         timeoutSeconds: clampTimeout(timeoutSeconds),
       });
+      if (!mountedRef.current || requestId !== testRequestIdRef.current) return;
       setResult(payload);
     } catch (requestError: unknown) {
+      if (!mountedRef.current || requestId !== testRequestIdRef.current) return;
       setError(getParsedApiError(requestError));
     } finally {
-      setIsTesting(false);
+      if (mountedRef.current && requestId === testRequestIdRef.current) {
+        setIsTesting(false);
+      }
     }
   };
 
@@ -119,7 +136,13 @@ export const NotificationTestPanel: React.FC<NotificationTestPanelProps> = ({
           value={channel}
           options={getChannelOptions(language)}
           disabled={disabled || isTesting}
-          onChange={(value) => setChannel(value as NotificationTestChannel)}
+          onChange={(value) => {
+            testRequestIdRef.current += 1;
+            setChannel(value as NotificationTestChannel);
+            setResult(null);
+            setError(null);
+            setIsTesting(false);
+          }}
         />
         <Input
           label={t('settings.notificationTestTitle')}

@@ -29,7 +29,7 @@ test('x6.ai gateway model selection and sponsor links', async ({ page }, testInf
   const providerSelect = page.getByRole('combobox', { name: '', exact: true });
   await providerSelect.selectOption('x6ai');
   await expect(page.getByRole('link', { name: '注册 x6.ai', exact: true })).toHaveAttribute('href', 'https://console.x6pro.io/register?code=zJ2qSdns');
-  expect((await providerSelect.locator('option').allTextContents()).slice(1, 4)).toEqual(['Modelflare（聚合平台）', 'x6.ai（聚合平台）', 'AIHubmix（聚合平台）']);
+  expect((await providerSelect.locator('option').allTextContents()).slice(1, 4)).toEqual(['Modelflare（聚合平台）', 'x6.ai（聚合平台）', 'DeepSeek 官方']);
   await page.getByRole('button', { name: /x6.ai/i }).click();
   await expect(page.getByRole('link', { name: 'x6.ai 专属注册' })).toHaveAttribute('href', 'https://console.x6pro.io/register?code=zJ2qSdns');
   await page.getByRole('button', { name: '获取模型', exact: true }).click();

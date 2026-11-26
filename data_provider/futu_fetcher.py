@@ -108,7 +108,7 @@ class FutuFetcher(BaseFetcher):
             self._available = self.has_configured_endpoint()
         except ImportError:
             self._available = False
-            logger.warning("[Futu] futu-api 未安装")
+            logger.warning("[Futu] futu-api is not installed")
         return self._available
 
     def _in_connect_cooldown(self) -> bool:
@@ -142,7 +142,7 @@ class FutuFetcher(BaseFetcher):
                         f"OpenD 未在 {_CONNECT_TIMEOUT_SECONDS:g}s 内就绪 (status={ctx.status})"
                     )
                 time.sleep(_CONNECT_POLL_SECONDS)
-            logger.info("[Futu] OpenQuoteContext 初始化成功: %s:%s", self._host, self._port)
+            logger.info("[Futu] OpenQuoteContext initialized successfully: %s:%s", self._host, self._port)
             return ctx
         except Exception as exc:
             # close() turns off the SDK's background auto-reconnect.
@@ -150,7 +150,8 @@ class FutuFetcher(BaseFetcher):
                 self._close_ctx(ctx)
             self._retry_after = time.monotonic() + _CONNECT_RETRY_COOLDOWN_SECONDS
             logger.warning(
-                "[Futu] 连接 OpenD %s:%s 失败，%d 分钟内跳过 Futu 并回退其他数据源: %s",
+                "[Futu] Failed to connect to OpenD %s:%s; skipping Futu for %d min "
+                "and falling back to other data sources: %s",
                 self._host,
                 self._port,
                 _CONNECT_RETRY_COOLDOWN_SECONDS // 60,

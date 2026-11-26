@@ -59,12 +59,12 @@ Go to your forked repo → `Settings` → `Secrets and variables` → `Actions` 
 |------------|------|:----:|
 | `MODELFLARE_KEY` | [Modelflare](https://modelflare.dev/sign-up?utm_source=github&utm_campaign=daily_stock_analysis) API key; supplies the default endpoint and model automatically | Recommended |
 | `LLM_X6AI_API_KEY` | [x6.ai](https://console.x6pro.io/register?code=zJ2qSdns) API key for affordable access to 100+ models, including Claude and GPT | Recommended |
-| `AIHUBMIX_KEY` | AIHubMix API key, one key for multiple model families and a 10% top-up discount for this project | Optional |
 | `GEMINI_API_KEY` | Get free key from [Google AI Studio](https://aistudio.google.com/) | Optional |
 | `ANTHROPIC_API_KEY` | Anthropic Claude API Key | Optional |
 | `OPENAI_API_KEY` | OpenAI-compatible API Key (supports DeepSeek, Qwen, etc.) | Optional |
 | `OPENAI_BASE_URL` | OpenAI-compatible API endpoint (e.g., `https://api.deepseek.com`) | Optional |
 | `OPENAI_MODEL` | Model name (e.g., `deepseek-v4-flash`) | Optional |
+| `AIHUBMIX_KEY` | [AIHubMix](https://inferera.com/?aff=CfMq) API key (auto-sets Base URL) | Optional |
 | `ANSPIRE_API_KEYS` | [Anspire](https://open.anspire.cn/dsa?share_code=QFBC0FYC) API key (optional; shared by LLM and search; availability depends on account permissions) | Optional |
 
 > *Note: Configure at least one model key or channel. For Modelflare, set only `MODELFLARE_KEY`, with an optional `LITELLM_MODEL` override (single-channel default: `openai/gpt-6.1-sol`); the endpoint defaults to `https://modelflare.dev/v1`; see the complete [LLM Config Guide example](LLM_CONFIG_GUIDE_EN.md#example-modelflare). Available models depend on your account. Startup validation reports a clear error when no usable AI model key or model channel is configured.
@@ -182,10 +182,10 @@ MiaoXiang capital flow uses explicit main net-inflow amount metrics only; closin
 
 To get started quickly, you need at minimum:
 
-1. **AI Model**: Follow the [Modelflare Channels example](LLM_CONFIG_GUIDE_EN.md#example-modelflare), or use `AIHUBMIX_KEY` (one key for multiple model families), `GEMINI_API_KEY`, or `OPENAI_API_KEY`
+1. **AI Model**: Follow the [Modelflare Channels example](LLM_CONFIG_GUIDE_EN.md#example-modelflare), or use `GEMINI_API_KEY`, `OPENAI_API_KEY`, or `AIHUBMIX_KEY`
 2. **Notification Channel**: At least one, e.g., `WECHAT_WEBHOOK_URL` or `EMAIL_SENDER` + `EMAIL_PASSWORD`
 3. **Stock List**: `STOCK_LIST` (required)
-4. **Search API**: `SERPAPI_API_KEYS` or `TAVILY_API_KEYS`; `ANSPIRE_API_KEYS` remains optional
+4. **Search API**: `SERPAPI_API_KEYS`, `TAVILY_API_KEYS`, or `ANSPIRE_API_KEYS`
 
 > Configure these 4 items and you're ready to go!
 
@@ -253,7 +253,6 @@ Default schedule: Every weekday at **18:00 (Beijing Time)** automatic execution.
 | `LITELLM_CONFIG` | Advanced model routing YAML path (expert use) | - | No |
 | `LLM_USAGE_HMAC_SECRET` | Secret for LLM usage telemetry message HMACs; leave empty to use a generated local data-dir secret file | - | No |
 | `LLM_USAGE_HMAC_KEY_VERSION` | Version label for the LLM usage HMAC key; update it when rotating the secret | `local-v1` | No |
-| `AIHUBMIX_KEY` | AIHubMix API key, one key for multiple model families | - | Optional |
 | `GEMINI_API_KEY` | Google Gemini API Key | - | Optional |
 | `GEMINI_MODEL` | Primary model name (legacy, `LITELLM_MODEL` preferred) | `gemini-3.6-flash` | No |
 | `GEMINI_MODEL_FALLBACK` | Fallback model (legacy) | `gemini-3.5-flash-lite` | No |
@@ -262,6 +261,7 @@ Default schedule: Every weekday at **18:00 (Beijing Time)** automatic execution.
 | `OPENAI_BASE_URL` | OpenAI-compatible API endpoint | - | Optional |
 | `OLLAMA_API_BASE` | Ollama local service address (e.g. `http://localhost:11434`), see [LLM Config Guide](LLM_CONFIG_GUIDE_EN.md) | - | Optional |
 | `OPENAI_MODEL` | OpenAI model name (legacy) | `gpt-6.1-sol` | Optional |
+| `AIHUBMIX_KEY` | [AIHubMix](https://inferera.com/?aff=CfMq) API key (auto-sets `https://aihubmix.com/v1`) | - | Optional |
 | `ANSPIRE_API_KEYS` | [Anspire](https://open.anspire.cn/dsa?share_code=QFBC0FYC) API key (optional; shared by LLM and search; availability depends on account permissions) | - | Optional |
 
 > GitHub Actions note: the bundled `00-daily-analysis.yml` explicitly uses `litellm` when `GENERATION_FALLBACK_BACKEND` is not configured, so an unset Secret/Variable is not exported as an empty value that disables backend fallback. To disable backend fallback in Actions, set the fallback to the primary backend and let the resolver treat it as self no-op.
@@ -424,6 +424,20 @@ For the notification baseline, diagnostics, and deployment notes, see [Notificat
 > - **Timeout control** is a `best-effort` soft timeout: the stage will quickly degrade and continue execution based on the budget, but does not guarantee a hard interrupt of underlying third-party network calls.
 > - `FUNDAMENTAL_STAGE_TIMEOUT_SECONDS=8.0` indicates the target budget for the newly added fundamental stage, not a strict hard SLA; Windows, Docker, or rate-limited free data sources can raise it to `12-15s`.
 > - For a hard SLA, please upgrade to isolated child process execution in future versions to forcefully terminate timeout tasks.
+
+#### Market Review Structured Fields (Issue #1584)
+
+While keeping the existing Markdown report and history records fully compatible, the market review now carries the following optional structured fields (legacy consumers ignore unknown keys; when a field is absent, Web/history/push rendering is byte-identical to the previous behavior):
+
+- `summary`: market temperature (0-100; falls back to the market-light score when the LLM omits it), market status (weak pullback / choppy divergence / broad strength / index-strong-stock-weak, etc.), position advice (e.g. 0-30%), and a one-line core conclusion naming the structure (broad rally / broad selloff / heavyweight support / growth selloff / risk-appetite pullback).
+- `indices[].comment`: a one-line index comment. US reviews can flag heavyweight-driven moves; CN reviews can flag heavyweight support / growth selloff / small-cap broadening. There is deliberately no MA-status field: index quotes carry no historical closes or moving-average values, so a model-provided standing would be unverifiable (it will be added only once real moving-average input exists). The prompt lists the internal code after each index and asks the appendix to echo it verbatim; the consumer tolerates common quote-symbol aliases (`^N225`, `000001.SH`, `^GSPC`, ...) and falls back to the index name, attaching nothing when the match is ambiguous.
+- `breadth.divergence_diagnosis`: breadth/divergence diagnosis combining advancers/decliners, limit up/down counts, turnover and index structure; when the LLM omits it, a deterministic fallback is assembled from the divergence between index moves and the advancers ratio (only when breadth data is available). When index quotes are entirely unavailable, the fallback reports only the advancers/decliners reading and states explicitly that it is based on advancers/decliners alone with no index comparison; it never claims that breadth matches the index.
+- `style_rotation`: style-switch signal (`signal`, e.g. growth -> defensives) and note (`comment`).
+- `catalysts[]`: news catalysts classified by `direction` (bullish/bearish/neutral; Chinese inputs are normalized), `scope`, `persistence` (one-off / short-term / mid-term), and `digested` (whether the market has priced it in); items without a `title` are dropped, at most 8 kept.
+- `next_day_plan`: next-day watchlist (`watchlist`), position adjustment advice (`position_advice`), and the invalidation trigger (`invalidation`).
+- `cross_market_note` (optional P3): cross-market reference from US/JP/KR sessions; introduces no new external data-source dependency.
+
+Implementation: the review prompt asks the LLM to append one ```json structured appendix at the very end of the report; the backend extracts it, strips it from the Markdown, and merges the validated fields into the payload. Parse failures or missing fields degrade per-field to null/omission and never interrupt report generation; text fields drop unpaired UTF-16 surrogate code points so a single stray character cannot fail the history snapshot write; no new environment configuration keys are introduced. The Web market-review view renders these fields optionally (identical to the legacy rendering when absent).
 
 ### Other Configuration
 
@@ -1565,7 +1579,7 @@ FastAPI provides RESTful API service for configuration management and triggering
 - **Configuration Management** - View/modify watchlist
 - **Home workspace tri-view** - Home has History / Watchlist / Today tabs, with History as the default view; on mobile, each list's inner viewport owns vertical touch scrolling without an outer card clipping the gesture, while desktop cards keep their visual clipping boundary; a watchlist row opens its confirmed latest report with mouse or keyboard, and its notice always follows the current lookup-in-progress, lookup-failed, or confirmed-no-detail state; every stock-bar request and the data refresh after task completion enter the unsettled state immediately, so stale stock-bar and fallback reports stay unavailable while status is being reconfirmed or is unknown; Refresh retries both the watchlist and detail status, with per-stock fallback lookups using a fixed concurrency bound and obsolete batches cancelled on refresh or page-state changes; Watchlist supports batch submission for all stocks or only those not analyzed today
 - **Collapsible task panel** - The Home task panel can be collapsed or expanded; the collapsed state keeps pending/processing summaries visible, gives more sidebar space to the watchlist, and persists for the current page session
-- **UI Language Switch** - Toggle UI language (`zh`/`en`) on login page, shell/navigation, settings page, and shared controls; this switch is independent of `REPORT_LANGUAGE`. Stock Screening uses this setting for controls, task status, history and amount units. Company names, custom strategies and provider-written analysis retain their original text.
+- **UI Language Switch** - Toggle UI language (`zh`/`en`) on login page, shell/navigation, settings page, and shared controls; this switch is independent of `REPORT_LANGUAGE`. Stock Screening uses this setting for controls, task status, history and amount units. Company names, custom strategies and provider-written analysis retain their original text. The home strategy picker and the Ask AI strategy selector show built-in strategy names and descriptions in English; for a strategy with a built-in id, the name and the description are each translated only while they still match the bundled text, otherwise the API text is kept. Ask AI quick questions are sent verbatim as the chat message and are not translated with the UI language.
 - **Quick Analysis** - Trigger stock analysis via API; the Home page also provides a one-run market selector next to Market Review, so Docker/server mode can use the server default or a temporary single/multi-market scope
 - **Strategy selection** - The Home page supports explicitly selecting analysis strategy skills; when `skills` is omitted, analysis uses the server default strategy so legacy clients keep existing behavior
 - **Session-level Skill selection** - Ask Stock sessions persist their current Skill selection; refresh and session switching restore each session independently, while new sessions keep the server default

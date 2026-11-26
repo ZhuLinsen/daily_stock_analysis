@@ -87,7 +87,7 @@ def _close_series(code: str, df: Optional[pd.DataFrame], end_day: date) -> pd.Se
     closes = closes[~closes.index.duplicated(keep="last")].sort_index()
     kept = closes.loc[: pd.Timestamp(end_day)]
     if len(kept) < len(closes):
-        logger.info("[ETF轮动] %s 丢弃 %s 之后的 %d 根未收盘 K 线", code, end_day, len(closes) - len(kept))
+        logger.info("[ETFRotation] %s dropped bars after %s (%d unclosed)", code, end_day, len(closes) - len(kept))
     if not kept.notna().any():
         raise ValueError("no valid close prices")
     return kept
@@ -151,10 +151,10 @@ def load_closes(
             series[code] = close_series
         except Exception as exc:  # fetch errors and malformed frames alike
             failed[code] = str(exc) or type(exc).__name__
-            logger.warning("[ETF轮动] %s 日线不可用: %s", code, failed[code])
+            logger.warning("[ETFRotation] %s daily data unavailable: %s", code, failed[code])
             continue
         sources[code] = source
-        logger.info("[ETF轮动] %s 获取 %d 条日线 (来源: %s)", code, len(series[code]), source)
+        logger.info("[ETFRotation] %s fetched %d daily bars (source: %s)", code, len(series[code]), source)
 
     frame = pd.DataFrame(series).sort_index() if series else pd.DataFrame()
     if not frame.empty:
@@ -212,7 +212,7 @@ def _resolve_names(fetcher_manager, codes: Sequence[str]) -> Dict[str, str]:
         try:
             name = fetcher_manager.get_stock_name(code, allow_realtime=False)
         except Exception as exc:
-            logger.debug("[ETF轮动] %s 名称获取失败: %s", code, exc)
+            logger.debug("[ETFRotation] %s failed to resolve name: %s", code, exc)
             name = None
         names[code] = name or code
     return names
@@ -421,25 +421,29 @@ def _deliver(report: RotationReport, send_notification: bool, notifier) -> None:
 
             notifier = NotificationService()
     except Exception as exc:
-        logger.warning("[ETF轮动] 通知服务初始化失败，报告未保存也未推送: %s\n%s", exc, report.markdown)
+        logger.warning(
+            "[ETFRotation] NotificationService init failed; report not saved or sent: %s\n%s",
+            exc,
+            report.markdown,
+        )
         return
 
     filename = f"etf_rotation_{report.as_of:%Y%m%d}.md"
     try:
         path = notifier.save_report_to_file(report.markdown, filename)
-        logger.info("[ETF轮动] 报告已保存: %s", path)
+        logger.info("[ETFRotation] Report saved: %s", path)
     except Exception as exc:
-        logger.warning("[ETF轮动] 报告保存失败: %s\n%s", exc, report.markdown)
+        logger.warning("[ETFRotation] Failed to save report: %s\n%s", exc, report.markdown)
 
     if not send_notification:
         return
     try:
         if not notifier.is_available():
-            logger.info("[ETF轮动] 未配置通知渠道，跳过推送")
+            logger.info("[ETFRotation] No notification channel configured; skipping send")
         elif not notifier.send(report.markdown, route_type="report"):
-            logger.warning("[ETF轮动] 通知推送失败")
+            logger.warning("[ETFRotation] Notification send failed")
     except Exception as exc:
-        logger.warning("[ETF轮动] 通知推送异常: %s", exc)
+        logger.warning("[ETFRotation] Notification send error: %s", exc)
 
 
 def run_etf_rotation(
@@ -482,7 +486,7 @@ def run_etf_rotation(
     names = _resolve_names(fetcher_manager, codes)
     warnings = data_quality_warnings(loaded)
     for warning in warnings:
-        logger.warning("[ETF轮动] %s", warning)
+        logger.warning("[ETFRotation] %s", warning)
     report = replace(
         build_report(loaded.closes, risk, safe_asset, params, names, warnings, next_session=next_session),
         failed_codes=dict(loaded.failed),

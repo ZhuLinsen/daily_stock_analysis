@@ -304,7 +304,7 @@ def get_history_list(
         )
         
     except Exception as e:
-        logger.error(f"查询历史列表失败: {e}", exc_info=True)
+        logger.error(f"Failed to query history list: {e}", exc_info=True)
         raise HTTPException(
             status_code=500,
             detail={
@@ -360,7 +360,7 @@ def delete_history_by_code(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"按股票代码删除历史记录失败: {e}", exc_info=True)
+        logger.error(f"Failed to delete history records by stock code: {e}", exc_info=True)
         raise HTTPException(
             status_code=500,
             detail={"error": "internal_error", "message": f"删除失败: {str(e)}"},
@@ -402,7 +402,7 @@ def delete_history_records(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"删除历史记录失败: {e}", exc_info=True)
+        logger.error(f"Failed to delete history records: {e}", exc_info=True)
         raise HTTPException(
             status_code=500,
             detail={
@@ -508,7 +508,7 @@ def get_stock_bar(
         return StockBarResponse(total=len(items), items=items)
 
     except Exception as e:
-        logger.error(f"查询个股栏失败: {e}", exc_info=True)
+        logger.error(f"Failed to query stock bar: {e}", exc_info=True)
         raise HTTPException(
             status_code=500,
             detail={
@@ -681,7 +681,7 @@ def get_history_detail(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"查询历史详情失败: {e}", exc_info=True)
+        logger.error(f"Failed to query history details: {e}", exc_info=True)
         raise HTTPException(
             status_code=500,
             detail={
@@ -724,7 +724,7 @@ def get_history_diagnostics(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"查询运行诊断摘要失败: {e}", exc_info=True)
+        logger.error(f"Failed to query run diagnostic summary: {e}", exc_info=True)
         raise HTTPException(
             status_code=500,
             detail={
@@ -767,7 +767,7 @@ def get_history_run_flow(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"查询运行流快照失败: {e}", exc_info=True)
+        logger.error(f"Failed to query run flow snapshot: {e}", exc_info=True)
         raise HTTPException(
             status_code=500,
             detail={
@@ -825,7 +825,7 @@ def get_history_news(
         )
 
     except Exception as e:
-        logger.error(f"查询新闻情报失败: {e}", exc_info=True)
+        logger.error(f"Failed to query news intelligence: {e}", exc_info=True)
         raise HTTPException(
             status_code=500,
             detail={
@@ -980,7 +980,7 @@ def get_history_markdown(
             }
         )
     except Exception as e:
-        logger.error(f"获取 Markdown 报告失败: {e}", exc_info=True)
+        logger.error(f"Failed to get Markdown report: {e}", exc_info=True)
         raise HTTPException(
             status_code=500,
             detail={

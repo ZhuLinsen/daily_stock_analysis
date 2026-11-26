@@ -66,6 +66,11 @@ if (-not (Test-PythonCode -Python $pythonBin -Code "import orjson")) {
   throw 'orjson is not importable after installing requirements.'
 }
 
+Write-Host 'Checking fin_primitives availability...'
+if (-not (Test-PythonCode -Python $pythonBin -Code "import fin_primitives")) {
+  throw 'fin_primitives is not importable after installing requirements.'
+}
+
 Write-Host 'Checking MiniRacer JavaScript runtime...'
 if (-not (Test-PythonCode -Python $pythonBin -Code "from py_mini_racer import MiniRacer; assert MiniRacer().eval('1 + 1') == 2")) {
   throw 'MiniRacer cannot execute JavaScript in the build environment.'
@@ -89,6 +94,7 @@ $hiddenImports = @(
   'multipart.multipart',
   'json_repair',
   'orjson',
+  'fin_primitives',
   'tiktoken',
   'tiktoken_ext',
   'tiktoken_ext.openai_public',
@@ -146,6 +152,7 @@ $pyInstallerArgs = @(
   '--collect-data', 'akshare',
   '--collect-data', 'fxmacrodata_public',
   '--collect-all', 'py_mini_racer',
+  '--collect-all', 'fin_primitives',
   '--collect-all', 'src.services.screening',
   '--collect-all', 'futu'
 )
@@ -171,7 +178,7 @@ if (-not (Test-Path $packagedEntry)) {
 }
 $previousProbe = $env:DSA_PACKAGED_IMPORT_PROBE
 try {
-  foreach ($module in @('src.services.screening.pipeline', 'futu', 'orjson', 'py_mini_racer', 'src.agent.factory')) {
+  foreach ($module in @('src.services.screening.pipeline', 'futu', 'orjson', 'py_mini_racer', 'src.agent.factory', 'fin_primitives')) {
     $env:DSA_PACKAGED_IMPORT_PROBE = $module
     $probeProcess = Start-Process -FilePath $packagedEntry -Wait -PassThru -WindowStyle Hidden
     if ($probeProcess.ExitCode -ne 0) {

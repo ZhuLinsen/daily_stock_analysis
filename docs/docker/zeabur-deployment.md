@@ -154,9 +154,9 @@ Zeabur 服务建议从 `1G` 内存起步；`512M` 仅适合轻量 Web/API、单�
 
 | 变量名 | 说明 |
 |--------|------|
-| `AIHUBMIX_KEY` | AIHubMix API 密钥（一 Key 多模型） |
 | `GEMINI_API_KEY` | Gemini API 密钥 |
 | `OPENAI_API_KEY` | OpenAI 兼容 API 密钥 |
+| `AIHUBMIX_KEY` | AIHubMix API 密钥 |
 | `SERPAPI_API_KEYS` | SerpAPI 密钥（推荐） |
 | `ANSPIRE_API_KEYS` | [Anspire](https://open.anspire.cn/dsa?share_code=QFBC0FYC) API Key（可选，模型与搜索共用；可用性以账号权限为准） |
 | `TAVILY_API_KEYS` | Tavily API 密钥（用逗号分隔） |

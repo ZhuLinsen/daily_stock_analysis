@@ -1,5 +1,5 @@
 import type React from 'react';
-import { createContext, useCallback, useContext, useEffect, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { createParsedApiError, getParsedApiError, type ParsedApiError } from '../api/error';
 import { authApi } from '../api/auth';
 import { useStockPoolStore } from '../stores';
@@ -46,12 +46,31 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [setupState, setSetupState] = useState<'enabled' | 'password_retained' | 'no_password'>('no_password');
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<ParsedApiError | null>(null);
+  const mountedRef = useRef(true);
+  const statusRequestIdRef = useRef(0);
+  const loginPromiseRef = useRef<Promise<{ success: boolean; error?: ParsedApiError }> | null>(null);
+  const loginCredentialsKeyRef = useRef<string | null>(null);
+  const loginRequestIdRef = useRef(0);
+  const logoutPromiseRef = useRef<Promise<void> | null>(null);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      statusRequestIdRef.current += 1;
+      loginRequestIdRef.current += 1;
+    };
+  }, []);
 
   const fetchStatus = useCallback(async () => {
+    const requestId = statusRequestIdRef.current + 1;
+    statusRequestIdRef.current = requestId;
+    const isLatestRequest = () => mountedRef.current && statusRequestIdRef.current === requestId;
     setIsLoading(true);
     setLoadError(null);
     try {
       const status = await authApi.getStatus();
+      if (!isLatestRequest()) return;
       setAuthEnabled(status.authEnabled);
       setLoggedIn(status.loggedIn);
       setPasswordSet(status.passwordSet ?? false);
@@ -61,6 +80,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         useStockPoolStore.getState().resetDashboardState();
       }
     } catch (err) {
+      if (!isLatestRequest()) return;
       setLoadError(getParsedApiError(err));
       setAuthEnabled(false);
       setLoggedIn(false);
@@ -69,7 +89,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setSetupState('no_password');
       useStockPoolStore.getState().resetDashboardState();
     } finally {
-      setIsLoading(false);
+      if (isLatestRequest()) {
+        setIsLoading(false);
+      }
     }
   }, []);
 
@@ -82,13 +104,30 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       password: string,
       passwordConfirm?: string
     ): Promise<{ success: boolean; error?: ParsedApiError }> => {
-      try {
-        await authApi.login(password, passwordConfirm);
-        await fetchStatus();
-        return { success: true };
-      } catch (err: unknown) {
-        return { success: false, error: extractLoginError(err) };
+      const credentialsKey = JSON.stringify([password, passwordConfirm ?? null]);
+      if (loginPromiseRef.current && loginCredentialsKeyRef.current === credentialsKey) {
+        return loginPromiseRef.current;
       }
+      const requestId = ++loginRequestIdRef.current;
+      const pending = (async () => {
+        try {
+          await authApi.login(password, passwordConfirm);
+          if (mountedRef.current) {
+            await fetchStatus();
+          }
+          return { success: true };
+        } catch (err: unknown) {
+          return { success: false, error: extractLoginError(err) };
+        } finally {
+          if (loginRequestIdRef.current === requestId) {
+            loginPromiseRef.current = null;
+            loginCredentialsKeyRef.current = null;
+          }
+        }
+      })();
+      loginPromiseRef.current = pending;
+      loginCredentialsKeyRef.current = credentialsKey;
+      return pending;
     },
     [fetchStatus]
   );
@@ -110,18 +149,31 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   );
 
   const logout = useCallback(async () => {
-    let logoutError: unknown = null;
-    try {
-      await authApi.logout();
-    } catch (err) {
-      logoutError = err;
-    } finally {
-      await fetchStatus();
+    if (logoutPromiseRef.current) {
+      return logoutPromiseRef.current;
     }
+    const pending = (async () => {
+      let logoutError: unknown = null;
+      try {
+        try {
+          await authApi.logout();
+        } catch (err) {
+          logoutError = err;
+        } finally {
+          if (mountedRef.current) {
+            await fetchStatus();
+          }
+        }
 
-    if (logoutError && getParsedApiError(logoutError).status !== 401) {
-      throw logoutError;
-    }
+        if (logoutError && getParsedApiError(logoutError).status !== 401) {
+          throw logoutError;
+        }
+      } finally {
+        logoutPromiseRef.current = null;
+      }
+    })();
+    logoutPromiseRef.current = pending;
+    return pending;
   }, [fetchStatus]);
 
   return (

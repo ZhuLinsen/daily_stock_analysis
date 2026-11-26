@@ -115,7 +115,8 @@ def test_manager_does_not_warn_when_fallback_source_succeeds(mock_get_config, ca
     assert quote.fetched_at is not None
     assert quote.fallback_from == "efinance"
     assert not [record for record in caplog.records if record.levelno >= logging.WARNING]
-    assert "所有数据源均不可用" not in caplog.text
+    assert "no available data source" not in caplog.text
+    assert "all sources failed" not in caplog.text
 
 
 @patch("src.config.get_config")
@@ -202,9 +203,11 @@ def test_pipeline_warns_once_when_all_realtime_sources_fail(caplog):
     downgrade_logs = [
         record.message
         for record in caplog.records
-        if "历史收盘价继续分析" in record.message
+        if "falling back to historical closing price" in record.message
     ]
-    assert downgrade_logs == ["贵州茅台(600519) 所有实时行情数据源均不可用，已降级为历史收盘价继续分析"]
+    assert downgrade_logs == [
+        "贵州茅台(600519) all realtime quote sources unavailable, falling back to historical closing price"
+    ]
 
 
 @patch("src.config.get_config")
@@ -232,7 +235,7 @@ def test_event_monitor_keeps_manager_failure_summary_for_direct_quote_call(mock_
         result = asyncio.run(monitor._check_price(rule))
 
     assert result is None
-    assert "[实时行情] 600519 所有数据源均失败: [efinance] 失败: efinance timeout" in caplog.text
+    assert "[realtime quote] 600519 all sources failed: [efinance] failed: efinance timeout" in caplog.text
 
 
 def test_pipeline_logs_disabled_realtime_once_without_fetching_quote(caplog):
@@ -247,6 +250,6 @@ def test_pipeline_logs_disabled_realtime_once_without_fetching_quote(caplog):
     downgrade_logs = [
         record.message
         for record in caplog.records
-        if "历史收盘价继续分析" in record.message
+        if "using historical closing price" in record.message
     ]
-    assert downgrade_logs == ["贵州茅台(600519) 实时行情已禁用，使用历史收盘价继续分析"]
+    assert downgrade_logs == ["贵州茅台(600519) realtime quote disabled, using historical closing price"]

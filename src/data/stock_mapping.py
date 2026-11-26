@@ -198,6 +198,54 @@ def _assert_foreign_english_map_invariant() -> None:
 _assert_foreign_english_map_invariant()
 
 
+_US_BASE_TICKER_RE = re.compile(r"^[A-Z]{1,5}(?:[.-][A-Z]{1,2})?$")
+_US_EXCHANGE_SUFFIXES = (".NASDAQ", ".NYSE", ".AMEX", ".ARCA", ".US", ".N", ".O", ".A")
+_CONTAINS_CJK_RE = re.compile(r"[\u4e00-\u9fff]")
+
+
+def _canonical_code_identity(value: str) -> tuple[str, str] | None:
+    """Return market-scoped canonical identity for stock code alias comparisons."""
+    upper = (value or "").strip().upper()
+    if not upper:
+        return None
+    if upper.startswith("HK") and not upper.startswith("HK.") and upper[2:].isdigit() and 1 <= len(upper[2:]) <= 5:
+        return ("hk", upper[2:].zfill(5))
+    if upper.endswith(".HK") and upper[:-3].isdigit() and 1 <= len(upper[:-3]) <= 5:
+        return ("hk", upper[:-3].zfill(5))
+    for prefix in ("SH", "SZ", "BJ"):
+        if upper.startswith(prefix) and len(upper) == 8 and upper[2:].isdigit():
+            return ("cn", upper[2:])
+    for suffix in (".SH", ".SZ", ".BJ", ".SS"):
+        if upper.endswith(suffix) and len(upper) == 6 + len(suffix) and upper[:-len(suffix)].isdigit():
+            return ("cn", upper[:-len(suffix)])
+    if upper.isdigit() and len(upper) == 6:
+        return ("cn", upper)
+    for suffix in _US_EXCHANGE_SUFFIXES:
+        if upper.endswith(suffix):
+            base = upper[: -len(suffix)]
+            if _US_BASE_TICKER_RE.fullmatch(base):
+                return ("us", base.replace(".", "-"))
+    if _US_BASE_TICKER_RE.fullmatch(upper):
+        return ("us", upper.replace(".", "-"))
+    return None
+
+
+def _is_equivalent_code_alias(candidate: str, stock_code: str) -> bool:
+    """Detect whether a returned label is merely another spelling of the same ticker."""
+    cand_upper = (candidate or "").strip().upper()
+    code_upper = (stock_code or "").strip().upper()
+    if not cand_upper or not code_upper:
+        return False
+    cand_id = _canonical_code_identity(cand_upper)
+    code_id = _canonical_code_identity(code_upper)
+    if cand_id and code_id and cand_id == code_id:
+        return True
+    # Bare 4-5 digit string echoing an HK numeric code (e.g. "02142" for HK02142).
+    if code_id and code_id[0] == "hk" and cand_upper.isdigit() and 1 <= len(cand_upper) <= 5:
+        return cand_upper.zfill(5) == code_id[1]
+    return False
+
+
 def canonicalize_foreign_stock_code(stock_code: str) -> str:
     """Canonicalize a foreign ticker to the form used as keys in
     STOCK_NAME_MAP / STOCK_ENGLISH_NAME_MAP.
@@ -221,10 +269,13 @@ def canonicalize_foreign_stock_code(stock_code: str) -> str:
     code = (stock_code or "").strip().upper()
     if not code:
         return ""
-    # US exchange suffixes: .US / .N (NYSE) / .O (NASDAQ) / .A (AMEX)
-    for suffix in (".US", ".N", ".O", ".A"):
+    # US exchange suffixes: .NASDAQ / .NYSE / .AMEX / .ARCA / .US / .N / .O / .A on non-numeric US bases
+    for suffix in _US_EXCHANGE_SUFFIXES:
         if code.endswith(suffix):
-            return code[: -len(suffix)]
+            base = code[: -len(suffix)]
+            if _US_BASE_TICKER_RE.fullmatch(base):
+                return base
+            return code
     # HK prefix: ``HK00700`` (7 chars: HK + 5 digits)
     if code.startswith("HK") and len(code) == 7 and code[2:].isdigit():
         return code[2:]
@@ -263,9 +314,6 @@ def foreign_stock_english_aliases(stock_code: str, stock_name: str) -> Tuple[str
     return tuple(aliases) if aliases else ()
 
 
-_CONTAINS_CJK_RE = re.compile(r"[\u4e00-\u9fff]")
-
-
 def is_meaningful_stock_name(name: str | None, stock_code: str) -> bool:
     """Return whether a stock name is useful for display or caching."""
     if not name:
@@ -276,7 +324,7 @@ def is_meaningful_stock_name(name: str | None, stock_code: str) -> bool:
         return False
 
     normalized_code = (stock_code or "").strip().upper()
-    if normalized_name.upper() == normalized_code:
+    if normalized_name.upper() == normalized_code or _is_equivalent_code_alias(normalized_name, normalized_code):
         return False
 
     if normalized_name.startswith("股票"):
@@ -296,3 +344,42 @@ def is_meaningful_stock_name(name: str | None, stock_code: str) -> bool:
         return False
 
     return True
+
+
+def lookup_static_stock_name(
+    stock_code: str,
+    stock_name_map: Dict[str, str] | None = None,
+) -> str | None:
+    """Look up a stock name in ``STOCK_NAME_MAP`` across raw and foreign-canonical keys."""
+    mapping = STOCK_NAME_MAP if stock_name_map is None else stock_name_map
+    raw = (stock_code or "").strip()
+    if not raw:
+        return None
+
+    upper = raw.upper()
+    candidates: list[str] = [raw]
+    if upper != raw:
+        candidates.append(upper)
+
+    canonical = canonicalize_foreign_stock_code(upper)
+    if canonical and canonical not in candidates:
+        candidates.append(canonical)
+
+    # Normalize HK forms (HK700, HK00700, 700.HK, 0700.HK, bare 4-digit 0700) to 5-digit keys
+    hk_digits = ""
+    if upper.startswith("HK") and not upper.startswith("HK.") and upper[2:].isdigit() and 1 <= len(upper[2:]) <= 5:
+        hk_digits = upper[2:]
+    elif upper.endswith(".HK") and upper[:-3].isdigit() and 1 <= len(upper[:-3]) <= 5:
+        hk_digits = upper[:-3]
+    elif upper.isdigit() and len(upper) == 4:
+        hk_digits = upper
+    if hk_digits:
+        padded = hk_digits.zfill(5)
+        if padded not in candidates:
+            candidates.append(padded)
+
+    for key in candidates:
+        name = mapping.get(key)
+        if is_meaningful_stock_name(name, raw) and is_meaningful_stock_name(name, key):
+            return str(name).strip()
+    return None

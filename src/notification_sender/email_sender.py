@@ -151,7 +151,7 @@ class EmailSender:
             是否发送成功
         """
         if not self._is_email_configured():
-            logger.warning("邮件配置不完整，跳过推送")
+            logger.warning("Email configuration incomplete, skipping notification")
             return False
         
         sender = self._email_config['sender']
@@ -190,13 +190,13 @@ class EmailSender:
                 smtp_server = smtp_config['server']
                 smtp_port = smtp_config['port']
                 use_ssl = smtp_config['ssl']
-                logger.info(f"自动识别邮箱类型: {domain} -> {smtp_server}:{smtp_port}")
+                logger.info(f"Auto-detected email provider: {domain} -> {smtp_server}:{smtp_port}")
             else:
                 # 未知邮箱，尝试通用配置
                 smtp_server = f"smtp.{domain}"
                 smtp_port = 465
                 use_ssl = True
-                logger.warning(f"未知邮箱类型 {domain}，尝试通用配置: {smtp_server}:{smtp_port}")
+                logger.warning(f"Unknown email provider {domain}, trying generic config: {smtp_server}:{smtp_port}")
             
             # 根据配置选择连接方式
             if use_ssl:
@@ -210,17 +210,17 @@ class EmailSender:
             server.login(sender, password)
             server.send_message(msg)
             
-            logger.info(f"邮件发送成功，收件人: {receivers}")
+            logger.info(f"Email sent successfully to recipients: {receivers}")
             return True
             
         except smtplib.SMTPAuthenticationError:
-            logger.error("邮件发送失败：认证错误，请检查邮箱和授权码是否正确")
+            logger.error("Email send failed: authentication error, please check email and auth code")
             return False
         except smtplib.SMTPConnectError as e:
-            logger.error(f"邮件发送失败：无法连接 SMTP 服务器 - {e}")
+            logger.error(f"Email send failed: unable to connect to SMTP server - {e}")
             return False
         except Exception as e:
-            logger.error(f"发送邮件失败: {e}")
+            logger.error(f"Failed to send email: {e}")
             return False
         finally:
             self._close_server(server)
@@ -273,10 +273,10 @@ class EmailSender:
                 server.starttls()
             server.login(sender, password)
             server.send_message(msg)
-            logger.info("邮件（内联图片）发送成功，收件人: %s", receivers)
+            logger.info("Email (inline image) sent successfully to recipients: %s", receivers)
             return True
         except Exception as e:
-            logger.error("邮件（内联图片）发送失败: %s", e)
+            logger.error("Email (inline image) send failed: %s", e)
             return False
         finally:
             self._close_server(server)

@@ -16,7 +16,7 @@ YfinanceFetcher - 兜底数据源 (Priority 4)
 
 import csv
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from io import StringIO
 from typing import Optional, List, Dict, Any
 from urllib.error import HTTPError, URLError
@@ -39,7 +39,7 @@ from src.services.market_symbol_utils import get_suffix_market, is_suffix_market
 
 # 可选导入本地股票映射补丁，若缺失则使用空字典兜底
 try:
-    from src.data.stock_mapping import STOCK_NAME_MAP, is_meaningful_stock_name
+    from src.data.stock_mapping import STOCK_NAME_MAP, is_meaningful_stock_name, lookup_static_stock_name
 except (ImportError, ModuleNotFoundError):
     STOCK_NAME_MAP = {}
 
@@ -49,6 +49,15 @@ except (ImportError, ModuleNotFoundError):
             return False
         n = str(name).strip()
         return bool(n and n.upper() != str(stock_code).strip().upper())
+
+    def lookup_static_stock_name(
+        stock_code: str,
+        stock_name_map: Optional[Dict[str, str]] = None,
+    ) -> Optional[str]:
+        """Minimal fallback static lookup when src.data.stock_mapping is absent."""
+        mapping = STOCK_NAME_MAP if stock_name_map is None else stock_name_map
+        name = mapping.get(stock_code)
+        return str(name).strip() if is_meaningful_stock_name(name, stock_code) else None
 
 import os
 
@@ -123,7 +132,7 @@ class YfinanceFetcher(BaseFetcher):
         # 美股指数：映射到 Yahoo Finance 符号（如 SPX -> ^GSPC）
         yf_symbol, _ = get_us_index_yf_symbol(code)
         if yf_symbol:
-            logger.debug(f"识别为美股指数: {code} -> {yf_symbol}")
+            logger.debug(f"Identified as US index: {code} -> {yf_symbol}")
             return yf_symbol
 
         # 美股类别股在 Yahoo 使用连字符，例如 BRK.B -> BRK-B。
@@ -133,14 +142,14 @@ class YfinanceFetcher(BaseFetcher):
 
         # 日股/韩股/台股 MVP：显式 Yahoo Finance suffix-only 代码，原样传给 Yahoo。
         if self._is_jp_kr_suffix_stock(code) or self._is_tw_suffix_stock(code):
-            logger.debug(f"识别为日韩台 Yahoo suffix 代码: {code}")
+            logger.debug(f"Identified as JP/KR/TW Yahoo suffix symbol: {code}")
             return code
 
         # 港股：hk前缀 -> .HK后缀
         if code.startswith('HK'):
             hk_code = code[2:].lstrip('0') or '0'  # 去除前导0，但保留至少一个0
             hk_code = hk_code.zfill(4)  # 补齐到4位
-            logger.debug(f"转换港股代码: {stock_code} -> {hk_code}.HK")
+            logger.debug(f"Converted HK stock code: {stock_code} -> {hk_code}.HK")
             return f"{hk_code}.HK"
 
         # 港股裸码：4-5 位纯数字（如 00700、02513、0001）按港股处理。
@@ -150,7 +159,7 @@ class YfinanceFetcher(BaseFetcher):
         if code.isdigit() and 4 <= len(code) <= 5:
             hk_code = code.lstrip('0') or '0'
             hk_code = hk_code.zfill(4)
-            logger.debug(f"识别裸港股代码: {stock_code} -> {hk_code}.HK")
+            logger.debug(f"Identified bare HK stock code: {stock_code} -> {hk_code}.HK")
             return f"{hk_code}.HK"
 
         # 已经包含后缀的情况
@@ -178,8 +187,41 @@ class YfinanceFetcher(BaseFetcher):
         elif code.startswith(('000', '002', '300')):
             return f"{code}.SZ"
         else:
-            logger.warning(f"无法确定股票 {code} 的市场，默认使用深市")
+            logger.warning(f"Cannot determine market for stock {code}, defaulting to SZ")
             return f"{code}.SZ"
+
+    @staticmethod
+    def _exclusive_end_date(end_date: str) -> str:
+        """Convert inclusive YYYY-MM-DD *end_date* to yfinance's exclusive *end*."""
+        try:
+            end_dt = datetime.strptime(end_date[:10], "%Y-%m-%d")
+            return (end_dt + timedelta(days=1)).strftime("%Y-%m-%d")
+        except (TypeError, ValueError):
+            return end_date
+
+    @staticmethod
+    def _clamp_to_end_date(df: pd.DataFrame, end_date: str) -> pd.DataFrame:
+        """Drop bars strictly after *end_date* after fetching with exclusive end+1."""
+        if df is None or df.empty:
+            return df
+        try:
+            end_ts = pd.Timestamp(end_date[:10]).normalize()
+        except (TypeError, ValueError):
+            return df
+        if isinstance(df.index, pd.DatetimeIndex):
+            idx_dates = df.index
+            if idx_dates.tz is not None:
+                idx_dates = idx_dates.tz_localize(None)
+            mask = idx_dates.normalize() <= end_ts
+            return df.loc[mask].copy()
+        for col in ("Date", "Datetime", "date", "datetime"):
+            if col in df.columns:
+                parsed = pd.to_datetime(df[col], errors="coerce")
+                if getattr(parsed.dt, "tz", None) is not None:
+                    parsed = parsed.dt.tz_localize(None)
+                mask = parsed.isna() | (parsed.dt.normalize() <= end_ts)
+                return df.loc[mask].copy()
+        return df
 
     @retry(
         stop=stop_after_attempt(3),
@@ -195,22 +237,23 @@ class YfinanceFetcher(BaseFetcher):
 
         流程：
         1. 转换股票代码格式
-        2. 调用 yfinance API
-        3. 处理返回数据
+        2. 将闭区间 end_date 转为 yfinance 开区间 end (+1 天) 后调用 API
+        3. 过滤超出 end_date 的数据并处理返回结构
         """
         import yfinance as yf
 
         # 转换代码格式
         yf_code = self._convert_stock_code(stock_code)
+        yf_end_date = self._exclusive_end_date(end_date)
 
-        logger.debug(f"调用 yfinance.download({yf_code}, {start_date}, {end_date})")
+        logger.debug(f"Calling yfinance.download({yf_code}, {start_date}, {yf_end_date}) [requested end={end_date}]")
 
         try:
-            # 使用 yfinance 下载数据
+            # 使用 yfinance 下载数据（yfinance 的 end 为左闭右开，不 +1 会丢失 end_date 当日 K 线）
             df = yf.download(
                 tickers=yf_code,
                 start=start_date,
-                end=end_date,
+                end=yf_end_date,
                 progress=False,  # 禁止进度条
                 auto_adjust=True,  # 自动调整价格（复权）
                 multi_level_index=True
@@ -222,6 +265,8 @@ class YfinanceFetcher(BaseFetcher):
                 mask = ticker_level == yf_code
                 if mask.any():
                     df = df.loc[:, mask].copy()
+
+            df = self._clamp_to_end_date(df, end_date)
 
             if df.empty:
                 raise DataFetchError(f"Yahoo Finance 未查询到 {stock_code} 的数据")
@@ -251,7 +296,7 @@ class YfinanceFetcher(BaseFetcher):
         # 处理 MultiIndex 列名（新版 yfinance 返回格式）
         # 例如: ('Close', 'AMD') -> 'Close'
         if isinstance(df.columns, pd.MultiIndex):
-            logger.debug("检测到 MultiIndex 列名，进行扁平化处理")
+            logger.debug("Detected MultiIndex columns, flattening")
             # 取第一级列名（Price level: Close, High, Low, etc.）
             df.columns = df.columns.get_level_values(0)
 
@@ -385,16 +430,16 @@ class YfinanceFetcher(BaseFetcher):
                     item = self._fetch_yf_ticker_data(yf, yf_code, name, ak_code)
                     if item:
                         results.append(item)
-                        logger.debug(f"[Yfinance] 获取指数 {name} 成功")
+                        logger.debug(f"[Yfinance] Fetched index {name} succeeded")
                 except Exception as e:
-                    logger.warning(f"[Yfinance] 获取指数 {name} 失败: {e}")
+                    logger.warning(f"[Yfinance] Failed to fetch index {name}: {e}")
 
             if results:
-                logger.info(f"[Yfinance] 成功获取 {len(results)} 个 A 股指数行情")
+                logger.info(f"[Yfinance] Fetched {len(results)} A-share index quotes")
                 return results
 
         except Exception as e:
-            logger.error(f"[Yfinance] 获取 A 股指数行情失败: {e}")
+            logger.error(f"[Yfinance] Failed to fetch A-share index quotes: {e}")
 
         return None
 
@@ -412,16 +457,16 @@ class YfinanceFetcher(BaseFetcher):
                     item = self._fetch_yf_ticker_data(yf, yf_symbol, name, code)
                     if item:
                         results.append(item)
-                        logger.debug(f"[Yfinance] 获取美股指数 {name} 成功")
+                        logger.debug(f"[Yfinance] Fetched US index {name} succeeded")
                 except Exception as e:
-                    logger.warning(f"[Yfinance] 获取美股指数 {name} 失败: {e}")
+                    logger.warning(f"[Yfinance] Failed to fetch US index {name}: {e}")
 
             if results:
-                logger.info(f"[Yfinance] 成功获取 {len(results)} 个美股指数行情")
+                logger.info(f"[Yfinance] Fetched {len(results)} US index quotes")
                 return results
 
         except Exception as e:
-            logger.error(f"[Yfinance] 获取美股指数行情失败: {e}")
+            logger.error(f"[Yfinance] Failed to fetch US index quotes: {e}")
 
         return None
 
@@ -444,16 +489,16 @@ class YfinanceFetcher(BaseFetcher):
                     item = self._fetch_yf_ticker_data(yf, yf_symbol, name, code)
                     if item:
                         results.append(item)
-                        logger.debug(f"[Yfinance] 获取港股指数 {name} 成功")
+                        logger.debug(f"[Yfinance] Fetched HK index {name} succeeded")
                 except Exception as e:
-                    logger.warning(f"[Yfinance] 获取港股指数 {name} 失败: {e}")
+                    logger.warning(f"[Yfinance] Failed to fetch HK index {name}: {e}")
 
             if results:
-                logger.info(f"[Yfinance] 成功获取 {len(results)} 个港股指数行情")
+                logger.info(f"[Yfinance] Fetched {len(results)} HK index quotes")
                 return results
 
         except Exception as e:
-            logger.error(f"[Yfinance] 获取港股指数行情失败: {e}")
+            logger.error(f"[Yfinance] Failed to fetch HK index quotes: {e}")
 
         return None
 
@@ -470,14 +515,14 @@ class YfinanceFetcher(BaseFetcher):
                     item = self._fetch_yf_ticker_data(yf, yf_symbol, name, code)
                     if item:
                         results.append(item)
-                        logger.debug(f"[Yfinance] 获取日本指数 {name} 成功")
+                        logger.debug(f"[Yfinance] Fetched JP index {name} succeeded")
                 except Exception as e:
-                    logger.warning(f"[Yfinance] 获取日本指数 {name} 失败: {e}")
+                    logger.warning(f"[Yfinance] Failed to fetch JP index {name}: {e}")
             if results:
-                logger.info(f"[Yfinance] 成功获取 {len(results)} 个日本指数行情")
+                logger.info(f"[Yfinance] Fetched {len(results)} JP index quotes")
                 return results
         except Exception as e:
-            logger.error(f"[Yfinance] 获取日本指数行情失败: {e}")
+            logger.error(f"[Yfinance] Failed to fetch JP index quotes: {e}")
         return None
 
     def _get_kr_main_indices(self, yf) -> Optional[List[Dict[str, Any]]]:
@@ -493,14 +538,14 @@ class YfinanceFetcher(BaseFetcher):
                     item = self._fetch_yf_ticker_data(yf, yf_symbol, name, code)
                     if item:
                         results.append(item)
-                        logger.debug(f"[Yfinance] 获取韩国指数 {name} 成功")
+                        logger.debug(f"[Yfinance] Fetched KR index {name} succeeded")
                 except Exception as e:
-                    logger.warning(f"[Yfinance] 获取韩国指数 {name} 失败: {e}")
+                    logger.warning(f"[Yfinance] Failed to fetch KR index {name}: {e}")
             if results:
-                logger.info(f"[Yfinance] 成功获取 {len(results)} 个韩国指数行情")
+                logger.info(f"[Yfinance] Fetched {len(results)} KR index quotes")
                 return results
         except Exception as e:
-            logger.error(f"[Yfinance] 获取韩国指数行情失败: {e}")
+            logger.error(f"[Yfinance] Failed to fetch KR index quotes: {e}")
         return None
 
     def _get_tw_main_indices(self, yf) -> Optional[List[Dict[str, Any]]]:
@@ -516,14 +561,14 @@ class YfinanceFetcher(BaseFetcher):
                     item = self._fetch_yf_ticker_data(yf, yf_symbol, name, code)
                     if item:
                         results.append(item)
-                        logger.debug(f"[Yfinance] 获取台湾指数 {name} 成功")
+                        logger.debug(f"[Yfinance] Fetched TW index {name} succeeded")
                 except Exception as e:
-                    logger.warning(f"[Yfinance] 获取台湾指数 {name} 失败: {e}")
+                    logger.warning(f"[Yfinance] Failed to fetch TW index {name}: {e}")
             if results:
-                logger.info(f"[Yfinance] 成功获取 {len(results)} 个台湾指数行情")
+                logger.info(f"[Yfinance] Fetched {len(results)} TW index quotes")
                 return results
         except Exception as e:
-            logger.error(f"[Yfinance] 获取台湾指数行情失败: {e}")
+            logger.error(f"[Yfinance] Failed to fetch TW index quotes: {e}")
         return None
 
     def _is_us_stock(self, stock_code: str) -> bool:
@@ -556,11 +601,11 @@ class YfinanceFetcher(BaseFetcher):
             with urlopen(request, timeout=15) as response:
                 payload = response.read().decode("utf-8", "ignore").strip()
         except (HTTPError, URLError, TimeoutError) as exc:
-            logger.warning(f"[Stooq] 获取美股 {symbol} 实时行情失败: {exc}")
+            logger.warning(f"[Stooq] Failed to fetch US stock {symbol} realtime quote: {exc}")
             return None
 
         if not payload or payload.upper().startswith("NO DATA"):
-            logger.warning(f"[Stooq] 无法获取 {symbol} 的行情数据")
+            logger.warning(f"[Stooq] No quote data available for {symbol}")
             return None
 
         def _fetch_prev_close() -> Optional[float]:
@@ -576,7 +621,7 @@ class YfinanceFetcher(BaseFetcher):
                 with urlopen(history_request, timeout=15) as response:
                     history_payload = response.read().decode("utf-8", "ignore").strip()
             except (HTTPError, URLError, TimeoutError) as exc:
-                logger.debug(f"[Stooq] 获取美股 {symbol} 日线历史失败: {exc}")
+                logger.debug(f"[Stooq] Failed to fetch US stock {symbol} daily history: {exc}")
                 return None
 
             if not history_payload or history_payload.upper().startswith("NO DATA"):
@@ -660,7 +705,7 @@ class YfinanceFetcher(BaseFetcher):
 
             quote = UnifiedRealtimeQuote(
                 code=symbol,
-                name=STOCK_NAME_MAP.get(symbol, ''),
+                name=lookup_static_stock_name(symbol, STOCK_NAME_MAP) or '',
                 source=RealtimeSource.STOOQ,
                 price=price,
                 change_pct=round(change_pct, 2) if change_pct is not None else None,
@@ -679,10 +724,10 @@ class YfinanceFetcher(BaseFetcher):
                 total_mv=None,
                 circ_mv=None,
             )
-            logger.info(f"[Stooq] 获取美股 {symbol} 兜底行情成功: 价格={price}")
+            logger.info(f"[Stooq] Fetched US stock {symbol} fallback quote: price={price}")
             return quote
         except Exception as exc:
-            logger.warning(f"[Stooq] 解析美股 {symbol} 行情失败: {exc}")
+            logger.warning(f"[Stooq] Failed to parse US stock {symbol} quote: {exc}")
             return None
 
     def _get_us_index_realtime_quote(
@@ -705,7 +750,7 @@ class YfinanceFetcher(BaseFetcher):
         import yfinance as yf
 
         try:
-            logger.debug(f"[Yfinance] 获取美股指数 {user_code} ({yf_symbol}) 实时行情")
+            logger.debug(f"[Yfinance] Fetching US index {user_code} ({yf_symbol}) realtime quote")
             ticker = yf.Ticker(yf_symbol)
 
             try:
@@ -719,10 +764,10 @@ class YfinanceFetcher(BaseFetcher):
                 low = getattr(info, 'dayLow', None) or getattr(info, 'day_low', None)
                 volume = getattr(info, 'lastVolume', None) or getattr(info, 'last_volume', None)
             except Exception:
-                logger.debug("[Yfinance] fast_info 失败，尝试 history 方法")
+                logger.debug("[Yfinance] fast_info failed, trying history method")
                 hist = ticker.history(period='2d', auto_adjust=False)
                 if hist.empty:
-                    logger.warning(f"[Yfinance] 无法获取 {yf_symbol} 的数据")
+                    logger.warning(f"[Yfinance] Unable to fetch data for {yf_symbol}")
                     return None
                 today = hist.iloc[-1]
                 prev = hist.iloc[-2] if len(hist) > 1 else today
@@ -785,10 +830,10 @@ class YfinanceFetcher(BaseFetcher):
                 total_mv=None,
                 circ_mv=None,
             )
-            logger.info(f"[Yfinance] 获取美股指数 {user_code} 实时行情成功: 价格={price}")
+            logger.info(f"[Yfinance] Fetched US index {user_code} realtime quote: price={price}")
             return quote
         except Exception as e:
-            logger.warning(f"[Yfinance] 获取美股指数 {user_code} 实时行情失败: {e}")
+            logger.warning(f"[Yfinance] Failed to fetch US index {user_code} realtime quote: {e}")
             return None
 
     def get_realtime_quote(self, stock_code: str) -> Optional[UnifiedRealtimeQuote]:
@@ -822,7 +867,7 @@ class YfinanceFetcher(BaseFetcher):
             or self._is_jp_kr_suffix_stock(stock_code)
             or self._is_tw_suffix_stock(stock_code)
         ):
-            logger.debug(f"[Yfinance] {stock_code} 不是支持的美股、港股或日韩台代码，跳过")
+            logger.debug(f"[Yfinance] {stock_code} is not a supported US, HK, or JP/KR/TW symbol, skipping")
             return None
 
         try:
@@ -830,7 +875,7 @@ class YfinanceFetcher(BaseFetcher):
             is_us_symbol = self._is_us_stock(stock_code)
             quote_code = stock_code.strip().upper() if is_us_symbol else symbol
             suffix_market = get_suffix_market(symbol)
-            logger.debug(f"[Yfinance] 获取 {symbol} 实时行情")
+            logger.debug(f"[Yfinance] Fetching {symbol} realtime quote")
 
             ticker = yf.Ticker(symbol)
             provider_timestamp = None
@@ -854,13 +899,13 @@ class YfinanceFetcher(BaseFetcher):
 
             except Exception:
                 # 回退到 history 方法获取最新数据
-                logger.debug("[Yfinance] fast_info 失败，尝试 history 方法")
+                logger.debug("[Yfinance] fast_info failed, trying history method")
                 hist = ticker.history(period='2d', auto_adjust=False)
                 if hist.empty:
                     if is_us_symbol:
-                        logger.warning(f"[Yfinance] 无法获取 {symbol} 的数据，尝试 Stooq 兜底")
+                        logger.warning(f"[Yfinance] Unable to fetch data for {symbol}, trying Stooq fallback")
                         return self._get_us_stock_quote_from_stooq(quote_code)
-                    logger.warning(f"[Yfinance] 无法获取 {symbol} 的数据")
+                    logger.warning(f"[Yfinance] Unable to fetch data for {symbol}")
                     return None
 
                 today = hist.iloc[-1]
@@ -907,7 +952,7 @@ class YfinanceFetcher(BaseFetcher):
                             volume = int(today['Volume'])
                             quote_date = pd.Timestamp(quote_history.index[-1]).date().isoformat()
                 except Exception:
-                    logger.debug("[Yfinance] 无法读取 %s 的行情日期", symbol, exc_info=True)
+                    logger.debug("[Yfinance] Failed to read quote date for %s", symbol, exc_info=True)
 
             # 计算最终行情字段对应的派生指标。fast_info 之后可能被 history
             # 覆盖，不能复用覆盖前的结果。
@@ -922,14 +967,31 @@ class YfinanceFetcher(BaseFetcher):
                 amplitude = ((high - low) / prev_close) * 100
 
             try:
-                info_name = ticker_info.get('shortName', '') or ticker_info.get('longName', '') or ''
-                name = (
-                    info_name
-                    if is_meaningful_stock_name(info_name, symbol)
-                    else STOCK_NAME_MAP.get(quote_code, '')
+                candidates = [
+                    ticker_info.get('shortName', ''),
+                    ticker_info.get('longName', ''),
+                ]
+                name = next(
+                    (
+                        str(candidate).strip()
+                        for candidate in candidates
+                        if is_meaningful_stock_name(candidate, symbol)
+                        and is_meaningful_stock_name(candidate, stock_code)
+                    ),
+                    '',
                 )
+                if not name:
+                    name = (
+                        lookup_static_stock_name(quote_code, STOCK_NAME_MAP)
+                        or lookup_static_stock_name(stock_code, STOCK_NAME_MAP)
+                        or ''
+                    )
             except Exception:
-                name = STOCK_NAME_MAP.get(quote_code, '')
+                name = (
+                    lookup_static_stock_name(quote_code, STOCK_NAME_MAP)
+                    or lookup_static_stock_name(stock_code, STOCK_NAME_MAP)
+                    or ''
+                )
 
             # 复用上方已获取的 ticker_info，无额外请求
             pe_ratio = _safe_float(ticker_info.get('trailingPE'))
@@ -975,15 +1037,81 @@ class YfinanceFetcher(BaseFetcher):
                 quote_date=quote_date,
             )
 
-            logger.info(f"[Yfinance] 获取 {symbol} 实时行情成功: 价格={price}")
+            logger.info(f"[Yfinance] Fetched {symbol} realtime quote: price={price}")
             return quote
 
         except Exception as e:
             if self._is_us_stock(stock_code):
-                logger.warning(f"[Yfinance] 获取美股 {stock_code} 实时行情失败: {e}，尝试 Stooq 兜底")
+                logger.warning(
+                    f"[Yfinance] Failed to fetch US stock {stock_code} realtime quote: {e}, trying Stooq fallback"
+                )
                 return self._get_us_stock_quote_from_stooq(stock_code)
-            logger.warning(f"[Yfinance] 获取 {stock_code} 实时行情失败: {e}")
+            logger.warning(f"[Yfinance] Failed to fetch {stock_code} realtime quote: {e}")
             return None
+
+    def get_stock_name(self, stock_code: str, *, allow_network: bool = True) -> Optional[str]:
+        """Resolve display name for supported US, HK, and JP/KR/TW symbols via Yahoo Finance."""
+        cache_key = (stock_code or "").strip().upper()
+        if not cache_key:
+            return None
+
+        if not hasattr(self, "_stock_name_cache") or self._stock_name_cache is None:
+            self._stock_name_cache = {}
+        if cache_key in self._stock_name_cache:
+            return self._stock_name_cache[cache_key]
+
+        yf_symbol, index_name = get_us_index_yf_symbol(cache_key)
+        if yf_symbol:
+            if is_meaningful_stock_name(index_name, cache_key):
+                resolved = str(index_name).strip()
+                self._stock_name_cache[cache_key] = resolved
+                return resolved
+            return None
+
+        lookup_code = cache_key
+        # Exclude single-letter '.A' here so class-A shares like 'BRK.A' map to 'BRK-A' rather than 'BRK'.
+        for suffix in (".NASDAQ", ".NYSE", ".AMEX", ".ARCA", ".US", ".N", ".O"):
+            if cache_key.endswith(suffix):
+                candidate_base = cache_key[: -len(suffix)]
+                if self._is_us_stock(candidate_base):
+                    lookup_code = candidate_base
+                break
+
+        if not (
+            self._is_us_stock(lookup_code)
+            or _is_hk_market(lookup_code)
+            or self._is_jp_kr_suffix_stock(lookup_code)
+            or self._is_tw_suffix_stock(lookup_code)
+        ):
+            return None
+
+        from data_provider.base import is_stock_name_prefetch_active
+        from src.core.stock_execution_context import is_current_stock_cancelled
+
+        if not allow_network or is_stock_name_prefetch_active() or is_current_stock_cancelled():
+            return None
+
+        try:
+            import yfinance as yf
+
+            symbol = self._convert_stock_code(lookup_code)
+            ticker_info = yf.Ticker(symbol).info or {}
+            if not isinstance(ticker_info, dict):
+                return None
+
+            for field in ("shortName", "longName"):
+                candidate = ticker_info.get(field)
+                if (
+                    is_meaningful_stock_name(candidate, cache_key)
+                    and is_meaningful_stock_name(candidate, symbol)
+                ):
+                    resolved = str(candidate).strip()
+                    self._stock_name_cache[cache_key] = resolved
+                    return resolved
+        except Exception as e:
+            logger.debug(f"[Yfinance] Failed to fetch stock name for {stock_code}: {e}")
+
+        return None
 
 
 if __name__ == "__main__":

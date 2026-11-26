@@ -100,4 +100,4 @@ def test_invalid_litellm_log_level_falls_back_to_warning(tmp_path, monkeypatch):
     assert "invalid level debug should be filtered" not in debug_log_text
     assert "invalid level warning should remain" in debug_log_text
     assert "LITELLM_LOG_LEVEL" in debug_log_text
-    assert "已回退为 WARNING" in debug_log_text
+    assert "falling back to WARNING" in debug_log_text

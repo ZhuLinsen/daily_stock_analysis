@@ -54,7 +54,7 @@ class AstrbotSender:
         if self._astrbot_config['astrbot_url']:
             return self._send_astrbot(content, timeout_seconds=timeout_seconds)
 
-        logger.warning("AstrBot 配置不完整，跳过推送")
+        logger.warning("AstrBot configuration incomplete, skipping notification")
         return False
 
 
@@ -101,11 +101,11 @@ class AstrbotSender:
             )
 
             if response.status_code == 200:
-                logger.info("AstrBot 消息发送成功")
+                logger.info("AstrBot message sent successfully")
                 return True
             else:
-                logger.error(f"AstrBot 发送失败: {response.status_code} {response.text}")
+                logger.error(f"AstrBot send failed: {response.status_code} {response.text}")
                 return False
         except Exception as e:
-            logger.error(f"AstrBot 发送异常: {e}")
+            logger.error(f"AstrBot send error: {e}")
             return False
