@@ -952,7 +952,6 @@ export const useStockPoolStore = create<StockPoolState>((set, get) => ({
         return;
       }
 
-      if (options?.modelSource) void useChatGPTStore.getState().recheckStatus();
       if (error instanceof DuplicateTaskError) {
         set({
           duplicateError: `股票 ${error.stockCode} 正在分析中，请等待完成`,
@@ -960,6 +959,7 @@ export const useStockPoolStore = create<StockPoolState>((set, get) => ({
         return;
       }
 
+      if (options?.modelSource) void useChatGPTStore.getState().recheckStatus();
       set({ error: getParsedApiError(error) });
     } finally {
       if (requestId === analyzeRequestSeq) {

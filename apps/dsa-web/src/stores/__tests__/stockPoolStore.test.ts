@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { analysisApi, DuplicateTaskError } from '../../api/analysis';
+import { chatgptApi } from '../../api/chatgpt';
 import { historyApi } from '../../api/history';
 import type {
   AnalysisReport,
@@ -501,18 +502,26 @@ describe('stockPoolStore', () => {
     expect(state.selectedReport?.meta.stockCode).toBe('AAPL');
   });
 
-  it('surfaces duplicate task errors without replacing the dashboard error state', async () => {
-    vi.mocked(analysisApi.analyzeAsync).mockRejectedValue(
-      new DuplicateTaskError('600519', 'task-1', '股票 600519 正在分析中'),
-    );
+  it('surfaces a duplicate ChatGPT task without reading connection status', async () => {
+    const status = vi.spyOn(chatgptApi, 'status').mockResolvedValue({ available: true, connected: false });
+    try {
+      vi.mocked(analysisApi.analyzeAsync).mockRejectedValue(
+        new DuplicateTaskError('600519', 'task-1', '股票 600519 正在分析中'),
+      );
 
-    useStockPoolStore.getState().setQuery('600519');
-    await useStockPoolStore.getState().submitAnalysis();
+      useStockPoolStore.getState().setQuery('600519');
+      await useStockPoolStore.getState().submitAnalysis({
+        modelSource: { provider: 'chatgpt_siwc', connection_id: 'local', model: 'selected' },
+      });
 
-    const state = useStockPoolStore.getState();
-    expect(state.duplicateError).toContain('600519');
-    expect(state.error).toBeNull();
-    expect(state.isAnalyzing).toBe(false);
+      const state = useStockPoolStore.getState();
+      expect(state.duplicateError).toContain('600519');
+      expect(state.error).toBeNull();
+      expect(state.isAnalyzing).toBe(false);
+      expect(status).not.toHaveBeenCalled();
+    } finally {
+      status.mockRestore();
+    }
   });
 
   it('rejects obviously invalid mixed alphanumeric input before calling the API', async () => {

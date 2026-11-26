@@ -179,6 +179,7 @@ vi.mock('../../stores/agentChatStore', () => {
 
   useAgentChatStore.getState = () => ({
     startNewChat: mockStartNewChat,
+    chatError: mockStoreState.chatError,
   });
 
   return { useAgentChatStore };
@@ -1226,6 +1227,56 @@ describe('ChatPage', () => {
       status.mockRestore();
       models.mockRestore();
       useChatGPTStore.setState({ status: null, model: '', models: [] });
+    }
+  });
+
+  it.each([
+    { code: 'chatgpt_target_changed', httpStatus: 409, statusReads: 1, catalogReads: 1, sessionReads: 0 },
+    { code: 'session_state_conflict', httpStatus: 409, statusReads: 0, catalogReads: 0, sessionReads: 1 },
+    { code: 'chatgpt_usage_limit_paused', httpStatus: 429, statusReads: 1, catalogReads: 0, sessionReads: 0 },
+  ])('reconciles the correct scope after $code', async ({ code, httpStatus, statusReads, catalogReads, sessionReads }) => {
+    const original = { available: true, connected: true, connection_id: 'A', account_label: 'Account A' };
+    const newCatalog = [{ slug: 'new-model', display_name: 'New model' }];
+    const status = vi.spyOn(chatgptApi, 'status').mockResolvedValue(original);
+    const models = vi.spyOn(chatgptApi, 'models').mockResolvedValue(newCatalog);
+    try {
+      useChatGPTStore.setState({ status: original, models: [{ slug: 'model', display_name: 'Model' }], model: 'model' });
+      await act(async () => { render(<MemoryRouter><ChatPage /></MemoryRouter>); });
+      await act(async () => {
+        fireEvent.change(screen.getByRole('combobox', { name: '模型来源' }), { target: { value: 'chatgpt' } });
+      });
+      const input = await screen.findByPlaceholderText(/分析 600519/);
+      fireEvent.change(input, { target: { value: '风险呢' } });
+      const send = screen.getByRole('button', { name: '确认并发送' });
+      await waitFor(() => expect(send).toBeEnabled());
+
+      status.mockClear();
+      models.mockClear();
+      if (code === 'chatgpt_target_changed') {
+        status.mockResolvedValue({ ...original, connection_id: 'B', account_label: 'Account B' });
+      } else if (code === 'chatgpt_usage_limit_paused') {
+        status.mockResolvedValue({ ...original, usage_pause_id: 'pause' });
+      }
+      mockStartStream.mockImplementationOnce(async () => {
+        mockStoreState.chatError = createParsedApiError({
+          title: 'Fixture error', message: code, category: 'http_error', code, status: httpStatus,
+        });
+      });
+      await act(async () => { fireEvent.click(send); });
+
+      expect(mockStartStream).toHaveBeenCalledTimes(1);
+      expect(input).toHaveValue('风险呢');
+      expect(status).toHaveBeenCalledTimes(statusReads);
+      expect(models).toHaveBeenCalledTimes(catalogReads);
+      expect(mockRefreshSession).toHaveBeenCalledTimes(sessionReads);
+      if (catalogReads) {
+        expect(models).toHaveBeenCalledWith('B', false);
+        expect(useChatGPTStore.getState()).toMatchObject({ models: newCatalog, model: '' });
+      }
+    } finally {
+      status.mockRestore();
+      models.mockRestore();
+      act(() => { useChatGPTStore.setState({ status: null, models: [], model: '' }); });
     }
   });
 

@@ -160,8 +160,6 @@ def _prepare_confirmed_request(request, config, session_id, session_service):
         except ChatGPTError as exc:
             if exc.code == "chatgpt_connection_inactive":
                 raise HTTPException(409, detail={"error": "chatgpt_target_changed", "message": "ChatGPT connection changed"}) from None
-            if exc.code == "chatgpt_store_unavailable":
-                raise HTTPException(503, detail={"error": exc.code, "message": str(exc)}) from None
             raise HTTPException(chatgpt_inference_http_status(exc.code), detail={"error": exc.code, "message": str(exc)}) from None
         try:
             resolved = session_service.prepare_chatgpt_turn(config, request, session_id)

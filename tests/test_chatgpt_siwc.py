@@ -933,10 +933,12 @@ def test_switching_saved_accounts_reuses_registration_and_host(oauth, monkeypatc
         "sub": "account" if attempt["registration"] else "other", "email": "same@example.org",
     })
 
-    def authorize(registration_id, issued):
+    def authorize(registration_id, issued, *, on_started=None):
         started = oauth.connect(None, registration_id=registration_id, mode=None if registration_id else "new")
         params = parse_qs(urlsplit(started["authorization_url"]).query)
         attempt = oauth.pending
+        if on_started is not None:
+            on_started()
         oauth._complete(attempt, {"client_id": [issued], "code": ["fixture"]})
         attempt["thread"].join(2)
         return params
@@ -949,11 +951,20 @@ def test_switching_saved_accounts_reuses_registration_and_host(oauth, monkeypatc
     assert [a["kind"] for a in status["actions"]] == ["disconnect"]
     assert oauth.disconnect(None, connection_id=status["connection_id"])["revocation_confirmed"] is False
     assert oauth._load()["identity"] is None
-    params = authorize("issued", "issued")
+    pause_id = None
+
+    def cap_during_reauthorization():
+        nonlocal pause_id
+        oauth._pause_usage((chatgpt_oauth_service.ISSUER, "issued", REGISTRATION["sub"]))
+        pause_id = oauth._load()["registrations"]["issued"]["usage_pause_id"]
+
+    params = authorize("issued", "issued", on_started=cap_during_reauthorization)
     assert "id_token_hint" not in params
     assert params["prompt"] == ["consent"]
     assert params["client_id"] == ["issued"] and params["ext_agent_host_id"] == ["original-host"]
-    assert oauth.status()["connected"] and oauth.data["current_registration"] == "issued"
+    status = oauth.status()
+    assert status["connected"] and oauth.data["current_registration"] == "issued"
+    assert pause_id and status["usage_pause_id"] == pause_id == oauth._load()["registrations"]["issued"]["usage_pause_id"]
 
 
 def test_signed_in_identity_survives_grant_cleanup_and_can_sign_out(oauth, chatgpt_routes, monkeypatch):
@@ -1466,6 +1477,29 @@ def test_usage_pause_rejects_new_reports_and_chat_until_explicit_resume(oauth, t
         assert client.post("/chatgpt/usage/resume", json=target, headers=headers).status_code == 409
     finally:
         service.close()
+
+
+def test_chatgpt_inference_maps_uncertain_storage_consistently(oauth, monkeypatch):
+    from fastapi import HTTPException
+
+    from api import deps
+    from api.v1.endpoints import agent
+
+    oauth._unconfirmed_digest = "fixture"
+    config = Config()
+    monkeypatch.setattr(deps, "require_chatgpt_access", Mock())
+    monkeypatch.setattr(chatgpt_oauth_service, "get_chatgpt_service", lambda: oauth)
+    monkeypatch.setattr("src.services.agent_backend_status_service.get_chatgpt_service", lambda: oauth)
+
+    with pytest.raises(HTTPException, match="chatgpt_store_unavailable") as report:
+        deps.validate_chatgpt_source(None, SOURCE)
+    with pytest.raises(HTTPException, match="chatgpt_store_unavailable") as chat:
+        agent._select_agent_chat_backend(config, model_source=SOURCE)
+    monkeypatch.setattr(agent, "_select_agent_chat_backend", Mock(return_value="chatgpt_siwc"))
+    with pytest.raises(HTTPException, match="chatgpt_store_unavailable") as locked_chat:
+        agent._prepare_confirmed_request(SimpleNamespace(model_source=SOURCE), config, "fixture", Mock())
+
+    assert (report.value.status_code, chat.value.status_code, locked_chat.value.status_code) == (503, 503, 503)
 
 
 def test_usage_pause_wins_over_late_readback_of_resume(oauth, monkeypatch):

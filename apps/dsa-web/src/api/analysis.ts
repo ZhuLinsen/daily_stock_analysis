@@ -1,5 +1,4 @@
 import apiClient from './index';
-import { useChatGPTStore } from '../stores/chatgptStore';
 import { toCamelCase } from './utils';
 import type {
   AnalysisRequest,
@@ -43,10 +42,7 @@ export const analysisApi = {
     const response = await apiClient.post<Record<string, unknown>>(
       '/api/v1/analysis/analyze',
       requestData
-    ).catch(error => {
-      if (data.modelSource) void useChatGPTStore.getState().recheckStatus();
-      throw error;
-    });
+    );
 
     const result = toCamelCase<AnalyzeResponse>(response.data);
 

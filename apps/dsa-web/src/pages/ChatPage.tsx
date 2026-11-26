@@ -668,10 +668,11 @@ const ChatPage: React.FC = () => {
       if (useChatGPT) {
         const error = useAgentChatStore.getState().chatError;
         if (error?.code === 'session_state_conflict') await refreshSession();
-        if (error) await recheckChatGPT();
+        else if (error?.status === 409) await refreshChatGPT();
+        else if (error) await recheckChatGPT();
       }
     },
-    [agentAvailable, agentStatus, preview, hint, recheckChatGPT, refreshSession, chatgptModel, chatgptStatus, getSkillNames, input, loading, normalizeSelectedSkillIds, requestScrollToBottom, selectedSkillIds, sessionId, sessionSelectedSkillIds, startStream, t, useChatGPT],
+    [agentAvailable, agentStatus, preview, hint, recheckChatGPT, refreshChatGPT, refreshSession, chatgptModel, chatgptStatus, getSkillNames, input, loading, normalizeSelectedSkillIds, requestScrollToBottom, selectedSkillIds, sessionId, sessionSelectedSkillIds, startStream, t, useChatGPT],
   );
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {

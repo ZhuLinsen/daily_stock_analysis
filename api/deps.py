@@ -118,6 +118,8 @@ def require_chatgpt_access(request: Request):
 def chatgpt_inference_http_status(code: str) -> int:
     from src.services.chatgpt_oauth_service import USAGE_LIMIT_PAUSED
 
+    if code == "chatgpt_store_unavailable":
+        return 503
     return 429 if code == USAGE_LIMIT_PAUSED else 400
 
 
