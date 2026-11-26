@@ -1095,6 +1095,52 @@ describe('ChatPage', () => {
     expect(wave).not.toBeDisabled();
   });
 
+  it('renders built-in strategy names and picker labels in English', async () => {
+    window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'en');
+    mockGetSkills.mockResolvedValue({
+      skills: [
+        { id: 'chan_theory', name: '缠论', description: '基于缠论笔、线段、中枢结构，判断趋势级别、买卖点与背驰信号。' },
+        { id: 'ma_golden_cross', name: '均线金叉', description: '检测均线金叉配合量能确认信号，经典的趋势反转/延续信号。' },
+        { id: 'my_strategy', name: '我的策略', description: '自定义' },
+        { id: 'constructor', name: '原型同名策略', description: '自定义' },
+      ],
+      default_skill_id: 'chan_theory',
+    });
+
+    render(
+      <UiLanguageProvider>
+        <MemoryRouter initialEntries={['/chat']}>
+          <ChatPage />
+        </MemoryRouter>
+      </UiLanguageProvider>,
+    );
+
+    expect(await screen.findByRole('checkbox', { name: 'Chan Theory' })).toBeInTheDocument();
+    expect(screen.getByRole('checkbox', { name: 'MA Golden Cross' })).toBeInTheDocument();
+    expect(screen.getByRole('checkbox', { name: '我的策略' })).toBeInTheDocument();
+    expect(screen.getByRole('checkbox', { name: '原型同名策略' })).toBeInTheDocument();
+    expect(screen.getByRole('checkbox', { name: 'General analysis' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Expand strategy selection' })).toBeInTheDocument();
+    expect(screen.queryByRole('checkbox', { name: '缠论' })).not.toBeInTheDocument();
+    expect(screen.queryByText('通用分析')).not.toBeInTheDocument();
+
+    // Quick questions stay verbatim: the server confirms the target stock from
+    // the Chinese message text, so only the strategy label is translated.
+    fireEvent.click(screen.getByRole('button', { name: '用缠论分析茅台' }));
+
+    await waitFor(() => {
+      expect(mockStartStream).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: '用缠论分析茅台',
+          skills: ['chan_theory'],
+        }),
+        expect.objectContaining({
+          skillNames: ['Chan Theory'],
+        }),
+      );
+    });
+  });
+
   it('quick questions override the current multi-skill selection', async () => {
     mockGetSkills.mockResolvedValue({
       skills: [

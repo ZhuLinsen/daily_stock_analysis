@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import type { TaskInfo } from '../types/analysis';
 import { useTaskStream } from './useTaskStream';
 
@@ -40,6 +40,13 @@ export function useDashboardLifecycle({
   enabled = true,
 }: UseDashboardLifecycleOptions): void {
   const removalTimeoutsRef = useRef<number[]>([]);
+  const mountedRef = useRef(true);
+  const enabledRef = useRef(enabled);
+
+  const clearRemovalTimeouts = useCallback(() => {
+    removalTimeoutsRef.current.forEach((timeoutId) => window.clearTimeout(timeoutId));
+    removalTimeoutsRef.current = [];
+  }, []);
 
   useEffect(() => {
     if (!enabled) {
@@ -88,16 +95,29 @@ export function useDashboardLifecycle({
   }, [enabled, onDashboardDataRefresh, refreshHistory, refreshMarketReviewHistory, refreshStockBar, refreshActiveTasks]);
 
   useEffect(() => {
+    mountedRef.current = true;
     return () => {
-      removalTimeoutsRef.current.forEach((timeoutId) => window.clearTimeout(timeoutId));
-      removalTimeoutsRef.current = [];
+      mountedRef.current = false;
+      clearRemovalTimeouts();
     };
-  }, []);
+  }, [clearRemovalTimeouts]);
+
+  useEffect(() => {
+    enabledRef.current = enabled;
+    if (!enabled) {
+      clearRemovalTimeouts();
+    }
+  }, [clearRemovalTimeouts, enabled]);
 
   const scheduleTaskRemoval = (taskId: string, delayMs: number) => {
+    if (!mountedRef.current || !enabledRef.current) {
+      return;
+    }
     const timeoutId = window.setTimeout(() => {
-      removeTask(taskId);
       removalTimeoutsRef.current = removalTimeoutsRef.current.filter((item) => item !== timeoutId);
+      if (mountedRef.current && enabledRef.current) {
+        removeTask(taskId);
+      }
     }, delayMs);
 
     removalTimeoutsRef.current.push(timeoutId);
@@ -118,7 +138,9 @@ export function useDashboardLifecycle({
         : refreshHistory(true);
       const stockBarRefresh = refreshStockBar();
       void Promise.allSettled([historyRefresh, stockBarRefresh]).then(() => {
-        onCompletedTaskDataRefreshed?.(task);
+        if (mountedRef.current && enabledRef.current) {
+          onCompletedTaskDataRefreshed?.(task);
+        }
       });
       void refreshMarketReviewHistory?.(true);
       scheduleTaskRemoval(task.taskId, 2_000);

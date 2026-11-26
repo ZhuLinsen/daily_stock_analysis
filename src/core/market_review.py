@@ -15,7 +15,7 @@ import inspect
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 import uuid
 
 from src.config import get_config
@@ -610,12 +610,22 @@ def _append_missing_sector_payload_block(
     existing_markdown: Optional[Any] = None,
     segment_title_prefix: str = "",
 ) -> str:
-    sector_block = _render_sector_payload_markdown_block(payload, title_prefix=title_prefix)
-    if not sector_block:
-        return markdown.strip()
     markdown_to_check = markdown if existing_markdown is None else existing_markdown
     check_title_prefix = segment_title_prefix or title_prefix
-    if _markdown_has_sector_table(markdown_to_check, title_prefix=check_title_prefix):
+    # OR-COR-e7c6a2d1：行业与概念分别判定缺失、分别补齐，避免全局判定连坐。
+    has_industry = _markdown_has_sector_table(
+        markdown_to_check, title_prefix=check_title_prefix, part="industry"
+    )
+    has_concept = _markdown_has_sector_table(
+        markdown_to_check, title_prefix=check_title_prefix, part="concept"
+    )
+    sector_block = _render_sector_payload_markdown_block(
+        payload,
+        title_prefix=title_prefix,
+        include_industry=not has_industry,
+        include_concept=not has_concept,
+    )
+    if not sector_block:
         return markdown.strip()
 
     base = markdown.strip()
@@ -633,10 +643,16 @@ def _append_missing_sector_payload_block_to_market_segment(
 ) -> str:
     base = markdown.strip()
     check_title_prefix = segment_title_prefix or title_prefix
-    sector_block = _render_sector_payload_markdown_block(payload, title_prefix=title_prefix)
+    # OR-COR-e7c6a2d1：行业与概念分别判定缺失、分别补齐。
+    has_industry = _markdown_has_sector_table(base, title_prefix=check_title_prefix, part="industry")
+    has_concept = _markdown_has_sector_table(base, title_prefix=check_title_prefix, part="concept")
+    sector_block = _render_sector_payload_markdown_block(
+        payload,
+        title_prefix=title_prefix,
+        include_industry=not has_industry,
+        include_concept=not has_concept,
+    )
     if not sector_block:
-        return base
-    if _markdown_has_sector_table(base, title_prefix=check_title_prefix):
         return base
 
     segment_span = _find_market_markdown_segment_span(base, check_title_prefix)
@@ -662,8 +678,14 @@ def _render_sector_payload_markdown_block(
     payload: Dict[str, Any],
     *,
     title_prefix: str = "",
+    include_industry: bool = True,
+    include_concept: bool = True,
 ) -> str:
-    sector_block = _render_sector_payload_block(payload)
+    sector_block = _render_sector_payload_block(
+        payload,
+        include_industry=include_industry,
+        include_concept=include_concept,
+    )
     if not sector_block:
         return ""
     language = normalize_report_language(payload.get("language"))
@@ -672,7 +694,7 @@ def _render_sector_payload_markdown_block(
     return f"### {heading}\n\n{sector_block}".strip()
 
 
-def _markdown_has_sector_table(markdown: Any, *, title_prefix: str = "") -> bool:
+def _markdown_has_sector_table(markdown: Any, *, title_prefix: str = "", part: str = "all") -> bool:
     text = str(markdown or "")
     if title_prefix:
         title = title_prefix.strip()
@@ -687,6 +709,10 @@ def _markdown_has_sector_table(markdown: Any, *, title_prefix: str = "") -> bool
             return False
         text = segment
 
+    if part == "industry":
+        return _markdown_contains_industry_sector_markers(text)
+    if part == "concept":
+        return _markdown_contains_concept_sector_markers(text)
     return _markdown_contains_sector_markers(text)
 
 
@@ -714,56 +740,105 @@ def _find_market_markdown_segment_span(markdown: str, title: str) -> Optional[tu
     return match.start(), end
 
 
+_INDUSTRY_SECTOR_MARKERS = (
+    "#### 领涨板块",
+    "#### 领跌板块",
+    "#### 行业板块领涨",
+    "#### 行业板块领跌",
+    "#### Leading Sectors",
+    "#### Lagging Sectors",
+    "#### Leading Industry Sectors",
+    "#### Lagging Industry Sectors",
+    "| 排名 | 板块 |",
+    "| 排名 | 行业板块 |",
+    "| Rank | Sector |",
+)
+
+# OR-COR-9bf864ce：两条生成路径（正文 _build_sector_block 与兜底 _render_sector_payload_block）
+# 的概念标题与表头。
+_CONCEPT_SECTOR_MARKERS = (
+    "#### 概念板块领涨",
+    "#### 概念板块领跌",
+    "#### 领涨概念",
+    "#### 领跌概念",
+    "#### Leading Concept Themes",
+    "#### Lagging Concept Themes",
+    "#### Leading Concepts",
+    "#### Lagging Concepts",
+    "| 排名 | 概念板块 |",
+    "| 排名 | 概念 |",
+    "| Rank | Concept |",
+)
+
+
+def _markdown_contains_industry_sector_markers(text: str) -> bool:
+    return any(marker in text for marker in _INDUSTRY_SECTOR_MARKERS)
+
+
+def _markdown_contains_concept_sector_markers(text: str) -> bool:
+    return any(marker in text for marker in _CONCEPT_SECTOR_MARKERS)
+
+
 def _markdown_contains_sector_markers(text: str) -> bool:
-    markers = (
-        "#### 领涨板块",
-        "#### 领跌板块",
-        "#### 行业板块领涨",
-        "#### 行业板块领跌",
-        "#### Leading Sectors",
-        "#### Lagging Sectors",
-        "#### Leading Industry Sectors",
-        "#### Lagging Industry Sectors",
-        "| 排名 | 板块 |",
-        "| 排名 | 行业板块 |",
-        "| Rank | Sector |",
-    )
-    return any(marker in text for marker in markers)
+    return _markdown_contains_industry_sector_markers(
+        text
+    ) or _markdown_contains_concept_sector_markers(text)
 
 
-def _render_sector_payload_block(payload: Dict[str, Any]) -> str:
+def _render_sector_payload_block(
+    payload: Dict[str, Any],
+    *,
+    include_industry: bool = True,
+    include_concept: bool = True,
+) -> str:
     sectors = payload.get("sectors")
+    concepts = payload.get("concepts")
     if not isinstance(sectors, dict):
-        return ""
+        sectors = {}
+    if not isinstance(concepts, dict):
+        concepts = {}
     top = sectors.get("top") if isinstance(sectors.get("top"), list) else []
     bottom = sectors.get("bottom") if isinstance(sectors.get("bottom"), list) else []
-    if not top and not bottom:
+    concept_top = concepts.get("top") if isinstance(concepts.get("top"), list) else []
+    concept_bottom = concepts.get("bottom") if isinstance(concepts.get("bottom"), list) else []
+    # OR-COR-e7c6a2d1：行业与概念按缺失情况分别补齐，只渲染缺失的部分。
+    if not include_industry:
+        top, bottom = [], []
+    if not include_concept:
+        concept_top, concept_bottom = [], []
+    if not top and not bottom and not concept_top and not concept_bottom:
         return ""
 
     language = normalize_report_language(payload.get("language"))
     lines = []
-    if top:
-        if language == "en":
-            lines.extend(["#### Leading Sectors", "| Rank | Sector | Change |", "|------|--------|--------|"])
-        else:
-            lines.extend(["#### 领涨板块 Top 5", "| 排名 | 板块 | 涨跌幅 |", "|------|------|--------|"])
-        for rank, sector in enumerate(top[:5], 1):
-            if not isinstance(sector, dict):
-                continue
-            name = str(sector.get("name") or "-").strip() or "-"
-            lines.append(f"| {rank} | {name} | {_format_sector_change_pct(sector)} |")
-    if bottom:
+
+    def append_ranking_table(
+        rows: List[Dict[str, Any]],
+        heading_zh: str,
+        heading_en: str,
+        name_label: str,
+    ) -> None:
+        if not rows:
+            return
         if lines:
             lines.append("")
         if language == "en":
-            lines.extend(["#### Lagging Sectors", "| Rank | Sector | Change |", "|------|--------|--------|"])
+            lines.extend([f"#### {heading_en}", "| Rank | Sector | Change |", "|------|--------|--------|"])
         else:
-            lines.extend(["#### 领跌板块 Top 5", "| 排名 | 板块 | 涨跌幅 |", "|------|------|--------|"])
-        for rank, sector in enumerate(bottom[:5], 1):
-            if not isinstance(sector, dict):
+            lines.extend([f"#### {heading_zh}", f"| 排名 | {name_label} | 涨跌幅 |", "|------|------|--------|"])
+        for rank, item in enumerate(rows[:5], 1):
+            if not isinstance(item, dict):
                 continue
-            name = str(sector.get("name") or "-").strip() or "-"
-            lines.append(f"| {rank} | {name} | {_format_sector_change_pct(sector)} |")
+            name = str(item.get("name") or "-").strip() or "-"
+            lines.append(f"| {rank} | {name} | {_format_sector_change_pct(item)} |")
+
+    # Issue #1584: 补建块同时渲染行业板块与概念排行，概念不再丢失。
+    if include_industry:
+        append_ranking_table(top, "领涨板块 Top 5", "Leading Sectors", "板块")
+        append_ranking_table(bottom, "领跌板块 Top 5", "Lagging Sectors", "板块")
+    if include_concept:
+        append_ranking_table(concept_top, "领涨概念 Top 5", "Leading Concepts", "概念")
+        append_ranking_table(concept_bottom, "领跌概念 Top 5", "Lagging Concepts", "概念")
     return "\n".join(lines).strip()
 
 

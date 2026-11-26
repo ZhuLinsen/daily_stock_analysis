@@ -1,5 +1,5 @@
 import type React from 'react';
-import { Component, lazy, Suspense, useCallback, useMemo, useState } from 'react';
+import { Component, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReportLanguage } from '../../types/analysis';
 import { getReportText, normalizeReportLanguage } from '../../utils/reportLanguage';
 import { Drawer } from '../common/Drawer';
@@ -91,15 +91,35 @@ export const ReportMarkdownDrawer: React.FC<ReportMarkdownDrawerProps> = ({
 }) => {
   const [isOpen, setIsOpen] = useState(true);
   const text = getReportText(normalizeReportLanguage(reportLanguage));
+  const closeTimerRef = useRef<number | null>(null);
+  const isClosingRef = useRef(false);
+  const onCloseRef = useRef(onClose);
   const LazyReportMarkdownPanel = useMemo(
     () => lazy(() => import('./ReportMarkdownPanel').then((m) => ({ default: m.ReportMarkdownPanel }))),
     [],
   );
 
-  const handleClose = useCallback(() => {
-    setIsOpen(false);
-    setTimeout(onClose, 300);
+  useEffect(() => {
+    onCloseRef.current = onClose;
   }, [onClose]);
+
+  useEffect(() => () => {
+    if (closeTimerRef.current !== null) {
+      window.clearTimeout(closeTimerRef.current);
+      closeTimerRef.current = null;
+      onCloseRef.current();
+    }
+  }, []);
+
+  const handleClose = useCallback(() => {
+    if (isClosingRef.current) return;
+    isClosingRef.current = true;
+    setIsOpen(false);
+    closeTimerRef.current = window.setTimeout(() => {
+      closeTimerRef.current = null;
+      onCloseRef.current();
+    }, 300);
+  }, []);
 
   return (
     <Drawer

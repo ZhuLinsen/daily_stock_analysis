@@ -69,6 +69,10 @@ from src.core.config_registry import (
     get_field_definition,
     get_registered_field_keys,
 )
+from src.notification_sender.custom_webhook_sender import (
+    redact_quoted_credentials,
+    redact_unquoted_credentials,
+)
 from src.llm.errors import call_litellm_with_param_recovery
 from src.llm.backend_registry import (
     AUTO_AGENT_BACKEND_ID,
@@ -3334,10 +3338,15 @@ class SystemConfigService:
         sanitized = cls._sanitize_llm_error_text(text)
         if not sanitized:
             return ""
-        sanitized = re.sub(r"(?i)(bearer\s+)[a-z0-9._\-:]+", r"\1[REDACTED]", sanitized)
-        sanitized = re.sub(r"(?i)(token|secret|password|sendkey)([=:]\s*)[^\s,;&]+", r"\1\2[REDACTED]", sanitized)
+        sanitized = redact_quoted_credentials(sanitized)
         sanitized = re.sub(
-            r"https?://[^\s]+",
+            r"(?i)(bearer\s+)(?:\"[^\"]*\"|'[^']*'|[a-z0-9._\-:+/=]+)",
+            r"\1[REDACTED]",
+            sanitized,
+        )
+        sanitized = redact_unquoted_credentials(sanitized)
+        sanitized = re.sub(
+            r"https?://[^\s\"'\\<>\)\],;]+",
             lambda match: cls._mask_notification_target(match.group(0)),
             sanitized,
         )
@@ -3353,7 +3362,12 @@ class SystemConfigService:
             marker in source_key_upper
             for marker in ("TOKEN", "PASSWORD", "SECRET", "SENDKEY", "USER_KEY", "API_KEY")
         )
-        parsed = urlparse(value)
+        try:
+            parsed = urlparse(value)
+        except ValueError:
+            if re.match(r"(?i)^https?://", value):
+                return "[REDACTED_URL]"
+            return "***"
         if not parsed.scheme or not parsed.netloc:
             if sensitive_source:
                 return "***"

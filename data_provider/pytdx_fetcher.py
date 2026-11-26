@@ -14,11 +14,14 @@ PytdxFetcher - 通达信数据源 (Priority 2)
 3. 失败后指数退避重试
 """
 
+import errno
 import logging
 import re
+import socket
 import time
 from contextlib import contextmanager
-from typing import Optional, Generator, List, Tuple
+from threading import RLock
+from typing import Dict, Generator, List, Optional, Tuple
 
 import pandas as pd
 from tenacity import (
@@ -43,6 +46,59 @@ import os
 logger = logging.getLogger(__name__)
 
 _PYTDX_CONNECTION_COOLDOWN_SECONDS = 15.0
+
+_TRANSIENT_SOCKET_ERRNOS = frozenset(
+    err
+    for err in (
+        errno.ETIMEDOUT,
+        errno.ECONNRESET,
+        errno.ECONNREFUSED,
+        errno.ECONNABORTED,
+        errno.EPIPE,
+        errno.EHOSTUNREACH,
+        errno.ENETUNREACH,
+        errno.ENETDOWN,
+        errno.EHOSTDOWN,
+        errno.ENOTCONN,
+    )
+    if err is not None
+)
+
+_TRANSIENT_PYTDX_ERROR_NAMES = frozenset(
+    {
+        "TdxConnectionError",
+        "SendRequestPkgFails",
+        "ResponseRecvFails",
+        "ResponseHeaderRecvFails",
+    }
+)
+
+
+def _unwrap_transient_network_error(exc: BaseException) -> Optional[Exception]:
+    """Extract a retryable ConnectionError/TimeoutError from pytdx wrapper errors."""
+    seen: set[int] = set()
+    stack: list[Optional[BaseException]] = [exc]
+    while stack:
+        current = stack.pop()
+        if current is None or id(current) in seen:
+            continue
+        seen.add(id(current))
+
+        if isinstance(current, TimeoutError):
+            return current
+        if isinstance(current, ConnectionError):
+            return current
+        if isinstance(current, (socket.gaierror, socket.herror)):
+            return ConnectionError(str(current))
+        if isinstance(current, OSError) and getattr(current, "errno", None) in _TRANSIENT_SOCKET_ERRNOS:
+            return ConnectionError(str(current))
+        if current.__class__.__name__ in _TRANSIENT_PYTDX_ERROR_NAMES:
+            return ConnectionError(str(current))
+
+        stack.append(getattr(current, "original_exception", None))
+        stack.append(current.__cause__)
+        stack.append(current.__context__)
+    return None
 
 
 def _parse_hosts_from_env() -> Optional[List[Tuple[str, int]]]:
@@ -150,6 +206,7 @@ class PytdxFetcher(BaseFetcher):
         self._current_host_idx = 0
         self._stock_list_cache = None  # 股票列表缓存
         self._stock_name_cache = {}    # 股票名称缓存 {code: name}
+        self._cache_lock = RLock()
         self._unavailable_until = 0.0
         self._last_unavailable_reason = ""
 
@@ -181,8 +238,19 @@ class PytdxFetcher(BaseFetcher):
             logger.warning("pytdx is not installed, please run: pip install pytdx")
             return None
     
+    @staticmethod
+    def _handle_fetch_retry_exhausted(retry_state) -> None:
+        """Mark connection cooldown once all transient retry attempts are exhausted and reraise."""
+        fetcher = retry_state.args[0] if retry_state.args else None
+        exc = retry_state.outcome.exception() if retry_state.outcome else None
+        if isinstance(fetcher, PytdxFetcher) and isinstance(exc, (ConnectionError, TimeoutError)):
+            fetcher._mark_connection_cooldown(str(exc) or "Pytdx 无法连接任何服务器")
+        if exc is not None:
+            raise exc
+        raise DataFetchError("Pytdx 无法连接任何服务器")
+
     @contextmanager
-    def _pytdx_session(self) -> Generator:
+    def _pytdx_session(self, *, defer_cooldown_on_transient: bool = False) -> Generator:
         """
         Pytdx 连接上下文管理器
         
@@ -204,8 +272,12 @@ class PytdxFetcher(BaseFetcher):
         if TdxHq_API is None:
             raise DataFetchError("pytdx 库未安装")
         
-        api = TdxHq_API()
+        try:
+            api = TdxHq_API(raise_exception=True)
+        except TypeError:
+            api = TdxHq_API()
         connected = False
+        last_transient_error: Optional[Exception] = None
         
         try:
             # 尝试连接服务器（自动选择最优）
@@ -221,9 +293,18 @@ class PytdxFetcher(BaseFetcher):
                         break
                 except Exception as e:
                     logger.debug(f"Pytdx connection to {host}:{port} failed: {e}")
+                    transient = _unwrap_transient_network_error(e)
+                    if transient is not None:
+                        last_transient_error = transient
                     continue
             
             if not connected:
+                if defer_cooldown_on_transient and last_transient_error is not None:
+                    detail = str(last_transient_error).strip()
+                    message = f"Pytdx 无法连接任何服务器: {detail}" if detail else "Pytdx 无法连接任何服务器"
+                    if isinstance(last_transient_error, TimeoutError):
+                        raise TimeoutError(message) from last_transient_error
+                    raise ConnectionError(message) from last_transient_error
                 self._mark_connection_cooldown("Pytdx 无法连接任何服务器")
                 raise DataFetchError("Pytdx 无法连接任何服务器")
             
@@ -273,39 +354,44 @@ class PytdxFetcher(BaseFetcher):
             return 0, code
         
         # 根据代码前缀判断市场
-        # 上海：60xxxx, 68xxxx（科创板）
-        # 深圳：00xxxx, 30xxxx（创业板）, 002xxx（中小板）
-        if code.startswith(('60', '68')):
+        # 上海：60xxxx, 68xxxx（科创板）, 51/52/56/58xxxx（上交所 ETF）
+        # 深圳：00xxxx, 30xxxx（创业板）, 002xxx（中小板）, 15/16/18xxxx（深交所 ETF）
+        if code.startswith(('60', '68', '51', '52', '56', '58')):
             return 1, code  # 上海
         else:
             return 0, code  # 深圳
 
-    def _build_stock_list_cache(self, api) -> None:
+    def _build_stock_list_cache(self, api) -> Dict[str, str]:
         """
         Build a full stock code -> name cache from paginated security lists.
         """
-        self._stock_list_cache = {}
+        stock_list: Dict[str, str] = {}
 
         for market in (0, 1):
             start = 0
             while True:
                 stocks = api.get_security_list(market, start) or []
                 for stock in stocks:
-                    code = stock.get('code')
-                    name = stock.get('name')
+                    code = str(stock.get('code') or '').strip()
+                    name = str(stock.get('name') or '').strip()
                     if code and name:
-                        self._stock_list_cache[code] = name
+                        stock_list[code] = name
 
                 if len(stocks) < self.SECURITY_LIST_PAGE_SIZE:
                     break
 
                 start += self.SECURITY_LIST_PAGE_SIZE
+
+        with self._cache_lock:
+            self._stock_list_cache = stock_list
+        return stock_list
     
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=2, max=30),
         retry=retry_if_exception_type((ConnectionError, TimeoutError)),
         before_sleep=before_sleep_log(logger, logging.WARNING),
+        retry_error_callback=_handle_fetch_retry_exhausted.__func__,
     )
     def _fetch_raw_data(self, stock_code: str, start_date: str, end_date: str) -> pd.DataFrame:
         """
@@ -344,7 +430,7 @@ class PytdxFetcher(BaseFetcher):
         
         logger.debug(f"Calling Pytdx get_security_bars(market={market}, code={code}, count={count})")
         
-        with self._pytdx_session() as api:
+        with self._pytdx_session(defer_cooldown_on_transient=True) as api:
             try:
                 # 获取日 K 线数据
                 # category: 9-日线, 0-5分钟, 1-15分钟, 2-30分钟, 3-1小时
@@ -361,16 +447,33 @@ class PytdxFetcher(BaseFetcher):
                 
                 # 转换为 DataFrame
                 df = api.to_df(data)
+                if df is None or df.empty or 'datetime' not in df.columns:
+                    raise DataFetchError(f"Pytdx 未查询到 {stock_code} 的有效数据")
                 
-                # 过滤日期范围
-                df['datetime'] = pd.to_datetime(df['datetime'])
-                df = df[(df['datetime'] >= start_date) & (df['datetime'] <= end_date)]
+                # 过滤日期范围（pytdx 日线 datetime 常含 15:00，按自然日闭区间比较以免漏掉 end_date 当天；
+                # 若批次含缺失或非法日历日期，拒绝整批以便数据源管理器故障转移，避免静默缺行）
+                if df['datetime'].isna().any():
+                    raise DataFetchError(f"Pytdx returned missing datetime values for {stock_code}")
+                try:
+                    parsed_dt = pd.to_datetime(df['datetime'], errors='raise')
+                except Exception as e:
+                    raise DataFetchError(f"Pytdx returned invalid datetime values for {stock_code}: {e}") from e
+                if parsed_dt.isna().any():
+                    raise DataFetchError(f"Pytdx returned invalid datetime values for {stock_code}")
+                df['datetime'] = parsed_dt
+                date_only = df['datetime'].dt.normalize()
+                start_ts = pd.Timestamp(start_date).normalize()
+                end_ts = pd.Timestamp(end_date).normalize()
+                df = df[(date_only >= start_ts) & (date_only <= end_ts)].copy()
                 
                 return df
                 
+            except (DataFetchError, DataSourceUnavailableError, ConnectionError, TimeoutError):
+                raise
             except Exception as e:
-                if isinstance(e, DataFetchError):
-                    raise
+                transient = _unwrap_transient_network_error(e)
+                if transient is not None:
+                    raise transient from e
                 raise DataFetchError(f"Pytdx 获取数据失败: {e}") from e
     
     def _normalize_data(self, df: pd.DataFrame, stock_code: str) -> pd.DataFrame:
@@ -392,11 +495,17 @@ class PytdxFetcher(BaseFetcher):
         }
         
         df = df.rename(columns=column_mapping)
+
+        if 'date' in df.columns:
+            df = df.sort_values('date', ascending=True).reset_index(drop=True)
+
+        for col in ('open', 'high', 'low', 'close', 'volume', 'amount'):
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
         
         # 计算涨跌幅（pytdx 不返回涨跌幅，需要自己计算）
         if 'pct_chg' not in df.columns and 'close' in df.columns:
-            df['pct_chg'] = df['close'].pct_change() * 100
-            df['pct_chg'] = df['pct_chg'].fillna(0).round(2)
+            df['pct_chg'] = (df['close'].pct_change() * 100).fillna(0.0).round(2)
         
         # 添加股票代码列
         df['code'] = stock_code
@@ -418,34 +527,46 @@ class PytdxFetcher(BaseFetcher):
         Returns:
             股票名称，失败返回 None
         """
-        # 港股不支持（pytdx 不含港股数据）
-        if _is_hk_market(stock_code):
+        # 港股、美股、北交所不支持
+        if _is_hk_market(stock_code) or _is_us_code(stock_code) or is_bse_code(stock_code):
             return None
 
+        market, code = self._get_market_code(stock_code)
+
         # 先检查缓存
-        if stock_code in self._stock_name_cache:
-            return self._stock_name_cache[stock_code]
+        with self._cache_lock:
+            if stock_code in self._stock_name_cache:
+                return self._stock_name_cache[stock_code]
+            if code in self._stock_name_cache:
+                cached_name = self._stock_name_cache[code]
+                self._stock_name_cache[stock_code] = cached_name
+                return cached_name
         
         try:
-            market, code = self._get_market_code(stock_code)
-            
             with self._pytdx_session() as api:
                 # 获取股票列表（缓存）
-                if self._stock_list_cache is None:
-                    self._build_stock_list_cache(api)
+                with self._cache_lock:
+                    stock_list = self._stock_list_cache
+                if stock_list is None:
+                    stock_list = self._build_stock_list_cache(api)
                 
                 # 查找股票名称
-                name = self._stock_list_cache.get(code)
+                name = str((stock_list or {}).get(code) or '').strip()
                 if name:
-                    self._stock_name_cache[stock_code] = name
+                    with self._cache_lock:
+                        self._stock_name_cache[code] = name
+                        self._stock_name_cache[stock_code] = name
                     return name
                 
                 # 尝试使用 get_finance_info
                 finance_info = api.get_finance_info(market, code)
-                if finance_info and 'name' in finance_info:
-                    name = finance_info['name']
-                    self._stock_name_cache[stock_code] = name
-                    return name
+                if isinstance(finance_info, dict) and 'name' in finance_info:
+                    fin_name = str(finance_info.get('name') or '').strip()
+                    if fin_name:
+                        with self._cache_lock:
+                            self._stock_name_cache[code] = fin_name
+                            self._stock_name_cache[stock_code] = fin_name
+                        return fin_name
                 
         except Exception as e:
             logger.debug(f"Pytdx failed to fetch stock name for {stock_code}: {e}")
@@ -462,6 +583,8 @@ class PytdxFetcher(BaseFetcher):
         Returns:
             实时行情数据字典，失败返回 None
         """
+        if _is_hk_market(stock_code) or _is_us_code(stock_code):
+            return None
         if is_bse_code(stock_code):
             raise DataFetchError(
                 f"PytdxFetcher 不支持北交所 {stock_code}，将自动切换其他数据源"
@@ -476,7 +599,7 @@ class PytdxFetcher(BaseFetcher):
                     quote = data[0]
                     return {
                         'code': stock_code,
-                        'name': quote.get('name', ''),
+                        'name': str(quote.get('name') or '').strip(),
                         'price': quote.get('price', 0),
                         'open': quote.get('open', 0),
                         'high': quote.get('high', 0),
