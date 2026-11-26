@@ -1270,4 +1270,79 @@ describe('BacktestPage', () => {
       expect(screen.queryByText('单笔回测执行与波动回放')).not.toBeInTheDocument();
     });
   });
+
+  it('filters by simulatedReturnPct instead of directional outcome and omits fabricated replay prices', async () => {
+    mockGetResults.mockResolvedValueOnce({
+      total: 3,
+      page: 1,
+      limit: 20,
+      items: [
+        {
+          // Stopped out at -4% even though directional outcome is win (+10% window close)
+          ...baseResultItem,
+          analysisHistoryId: 801,
+          code: '600519',
+          stockName: '贵州茅台',
+          outcome: 'win',
+          startPrice: 100.0,
+          endClose: 110.0,
+          simulatedEntryPrice: 100.0,
+          simulatedExitPrice: 96.0,
+          simulatedExitReason: 'stop_loss',
+          simulatedReturnPct: -4.0,
+        },
+        {
+          // Cash / stand aside row: no simulated fills
+          ...baseResultItem,
+          analysisHistoryId: 802,
+          code: '000001',
+          stockName: '平安银行',
+          outcome: 'win',
+          startPrice: 100.0,
+          endClose: 110.0,
+          simulatedEntryPrice: null,
+          simulatedExitPrice: null,
+          simulatedExitReason: 'cash',
+          simulatedReturnPct: 0.0,
+        },
+        {
+          // Invalid targets row: missing simulatedExitPrice and simulatedReturnPct
+          ...baseResultItem,
+          analysisHistoryId: 803,
+          code: '00700',
+          stockName: '腾讯控股',
+          outcome: 'win',
+          startPrice: 100.0,
+          endClose: 110.0,
+          simulatedEntryPrice: 100.0,
+          simulatedExitPrice: null,
+          simulatedExitReason: 'invalid_targets',
+          simulatedReturnPct: null,
+        },
+      ],
+    });
+
+    render(<BacktestPage />);
+
+    expect(await screen.findByText('600519')).toBeInTheDocument();
+    // P&L summary counts based on simulatedReturnPct: 0 wins, 1 loss (600519), 1 neutral (000001)
+    expect(screen.getByText('(0/1/1)')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '仅盈利' }));
+    expect(screen.getByText('当前页没有匹配筛选条件的回测记录')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '仅亏损' }));
+    expect(screen.getByText('600519')).toBeInTheDocument();
+    expect(screen.queryByText('000001')).not.toBeInTheDocument();
+    expect(screen.queryByText('00700')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '全部' }));
+    const expandButtons = await screen.findAllByLabelText('展开回测交易回放详情');
+    // Expand cash row (index 1: 000001) and invalid_targets row (index 2: 00700)
+    fireEvent.click(expandButtons[1]);
+    fireEvent.click(expandButtons[2]);
+
+    expect(await screen.findByText('100.00 → --')).toBeInTheDocument();
+    expect(screen.queryByText('100.00 → 110.00')).not.toBeInTheDocument();
+  });
 });

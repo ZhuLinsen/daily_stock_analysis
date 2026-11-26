@@ -256,15 +256,9 @@ class BacktestService:
         if results_to_save:
             saved = self.repo.save_results_batch(results_to_save, replace_existing=force)
 
-        if saved:
-            self._recompute_summaries(
-                touched_codes=sorted(touched_codes),
-                eval_window_days=int(eval_window_days),
-                engine_version=str(engine_version),
-            )
-
         has_matching_analysis = False
         aligned_existing_result_dates = 0
+        aligned_codes: set[str] = set()
         has_analysis_date_filter = analysis_date_from is not None or analysis_date_to is not None
         if not force and has_analysis_date_filter:
             aligned_existing_result_dates = self.repo.align_existing_result_dates(
@@ -274,6 +268,17 @@ class BacktestService:
                 engine_version=str(engine_version),
                 analysis_date_from=analysis_date_from,
                 analysis_date_to=analysis_date_to,
+                aligned_codes_out=aligned_codes,
+            )
+
+        if saved or aligned_existing_result_dates:
+            summary_codes = set(touched_codes) | aligned_codes
+            if aligned_existing_result_dates and query_code:
+                summary_codes.add(query_code)
+            self._recompute_summaries(
+                touched_codes=sorted(summary_codes),
+                eval_window_days=int(eval_window_days),
+                engine_version=str(engine_version),
             )
         if not force and processed == 0:
             has_matching_analysis = self._has_matching_analysis_for_run(

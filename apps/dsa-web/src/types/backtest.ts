@@ -65,10 +65,10 @@ export interface BacktestResultItem {
   firstHit?: string;
   firstHitDate?: string;
   firstHitTradingDays?: number;
-  simulatedEntryPrice?: number;
-  simulatedExitPrice?: number;
-  simulatedExitReason?: string;
-  simulatedReturnPct?: number;
+  simulatedEntryPrice?: number | null;
+  simulatedExitPrice?: number | null;
+  simulatedExitReason?: string | null;
+  simulatedReturnPct?: number | null;
 }
 
 export interface BacktestResultsResponse {
@@ -84,8 +84,8 @@ export interface BacktestEquityPoint {
   index: number;
   date?: string | null;
   code?: string | null;
-  returnPct?: number;
-  equityPct?: number;
+  returnPct?: number | null;
+  equityPct?: number | null;
   outcome?: string | null;
 }
 

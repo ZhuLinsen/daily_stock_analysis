@@ -842,7 +842,7 @@ class BacktestEngine:
         }
 
     @staticmethod
-    def _quant_chronological_sort_key(item: tuple[int, BacktestResultLike]) -> tuple[date, datetime, int, int]:
+    def _quant_chronological_sort_key(item: tuple[int, BacktestResultLike]) -> tuple[date, int, str, int]:
         idx, row = item
         raw_date = getattr(row, "analysis_date", None)
         if isinstance(raw_date, datetime):
@@ -852,12 +852,10 @@ class BacktestEngine:
         else:
             sort_date = date.min
 
-        raw_eval_at = getattr(row, "evaluated_at", None)
-        sort_eval_at = raw_eval_at if isinstance(raw_eval_at, datetime) else datetime.min
-
         raw_hist_id = getattr(row, "analysis_history_id", None)
         sort_hist_id = int(raw_hist_id) if isinstance(raw_hist_id, int) else 0
-        return (sort_date, sort_eval_at, sort_hist_id, idx)
+        sort_code = str(getattr(row, "code", None) or "")
+        return (sort_date, sort_hist_id, sort_code, idx)
 
     @staticmethod
     def _quant_streak_counts(returns: List[float]) -> tuple[int, int]:
@@ -896,15 +894,14 @@ class BacktestEngine:
 
         exit_reason_counts: Dict[str, int] = {}
         active_trade_count = 0
-        has_simulated_returns = any(
-            cls._finite_optional_float(getattr(row, "simulated_return_pct", None)) is not None
-            for row in ordered_rows
-        )
 
         ordered_returns: List[float] = []
-        equity = 1.0
-        peak_equity = 1.0
+        log_equity = 0.0
+        peak_log_equity = 0.0
+        equity_zeroed = False
         max_drawdown_pct = 0.0
+        first_valid_date: Optional[date] = None
+        last_valid_date: Optional[date] = None
         equity_curve: List[Dict[str, Any]] = []
 
         for row in ordered_rows:
@@ -912,9 +909,7 @@ class BacktestEngine:
             if reason:
                 exit_reason_counts[reason] = exit_reason_counts.get(reason, 0) + 1
 
-            sim_ret = cls._finite_optional_float(getattr(row, "simulated_return_pct", None))
-            stock_ret = cls._finite_optional_float(getattr(row, "stock_return_pct", None))
-            trade_ret = sim_ret if has_simulated_returns else stock_ret
+            trade_ret = cls._finite_optional_float(getattr(row, "simulated_return_pct", None))
             if trade_ret is None:
                 continue
 
@@ -923,21 +918,45 @@ class BacktestEngine:
 
             ordered_returns.append(trade_ret)
             step_factor = max(0.0, 1.0 + trade_ret / 100.0)
-            equity *= step_factor
-            if equity > peak_equity:
-                peak_equity = equity
-            if peak_equity > 0:
-                drawdown_pct = ((peak_equity - equity) / peak_equity) * 100.0
-                if drawdown_pct > max_drawdown_pct:
-                    max_drawdown_pct = drawdown_pct
+            if equity_zeroed or step_factor <= 0.0:
+                equity_zeroed = True
+                drawdown_pct = 100.0
+                equity_pct_val: Optional[float] = -100.0
+            else:
+                log_equity += math.log(step_factor)
+                if log_equity > peak_log_equity:
+                    peak_log_equity = log_equity
+                drawdown_pct = (1.0 - math.exp(log_equity - peak_log_equity)) * 100.0
+                if log_equity <= 700.0:
+                    raw_pct = math.expm1(log_equity) * 100.0
+                    equity_pct_val = round(raw_pct, 2) if math.isfinite(raw_pct) else None
+                else:
+                    equity_pct_val = None
+            if drawdown_pct > max_drawdown_pct:
+                max_drawdown_pct = drawdown_pct
 
             raw_date = getattr(row, "analysis_date", None)
-            if isinstance(raw_date, (date, datetime)):
-                date_label: Optional[str] = raw_date.isoformat()[:10]
+            row_date: Optional[date] = None
+            if isinstance(raw_date, datetime):
+                row_date = raw_date.date()
+                date_label: Optional[str] = row_date.isoformat()
+            elif isinstance(raw_date, date):
+                row_date = raw_date
+                date_label = row_date.isoformat()
             elif isinstance(raw_date, str) and raw_date.strip():
                 date_label = raw_date.strip()[:10]
+                try:
+                    row_date = date.fromisoformat(date_label)
+                except ValueError:
+                    row_date = None
             else:
                 date_label = None
+
+            if row_date is not None:
+                if first_valid_date is None or row_date < first_valid_date:
+                    first_valid_date = row_date
+                if last_valid_date is None or row_date > last_valid_date:
+                    last_valid_date = row_date
 
             equity_curve.append(
                 {
@@ -945,7 +964,7 @@ class BacktestEngine:
                     "date": date_label,
                     "code": getattr(row, "code", None),
                     "return_pct": round(trade_ret, 2),
-                    "equity_pct": round((equity - 1.0) * 100.0, 2),
+                    "equity_pct": equity_pct_val,
                     "outcome": getattr(row, "outcome", None),
                 }
             )
@@ -988,7 +1007,13 @@ class BacktestEngine:
 
         mean_ret = sum(ordered_returns) / sample_count
         expectancy_pct = round(mean_ret, 2)
-        cumulative_return_pct = round((equity - 1.0) * 100.0, 2)
+        if equity_zeroed:
+            cumulative_return_pct: Optional[float] = -100.0
+        elif log_equity <= 700.0:
+            raw_cum_pct = math.expm1(log_equity) * 100.0
+            cumulative_return_pct = round(raw_cum_pct, 2) if math.isfinite(raw_cum_pct) else None
+        else:
+            cumulative_return_pct = None
         max_drawdown_rounded = round(max_drawdown_pct, 2)
 
         ann_factor = math.sqrt(252.0 / max(1, int(eval_window_days or 1)))
@@ -1005,11 +1030,23 @@ class BacktestEngine:
             if downside_rms > 1e-9:
                 sortino_ratio = round((mean_ret / downside_rms) * ann_factor, 2)
 
-        calmar_ratio = (
-            round(cumulative_return_pct / max_drawdown_rounded, 2)
-            if max_drawdown_pct >= 0.01 and max_drawdown_rounded > 1e-6
-            else None
-        )
+        calmar_ratio: Optional[float] = None
+        if (
+            not equity_zeroed
+            and max_drawdown_pct >= 0.01
+            and max_drawdown_rounded > 1e-6
+            and first_valid_date is not None
+            and last_valid_date is not None
+        ):
+            span_days = (last_valid_date - first_valid_date).days
+            if span_days >= 30:
+                years = span_days / 365.25
+                ann_log = log_equity / years
+                if math.isfinite(ann_log) and ann_log <= 700.0:
+                    cagr_pct = math.expm1(ann_log) * 100.0
+                    calmar_val = cagr_pct / max_drawdown_pct
+                    if math.isfinite(calmar_val):
+                        calmar_ratio = round(calmar_val, 2)
         max_wins, max_losses = cls._quant_streak_counts(ordered_returns)
 
         return {

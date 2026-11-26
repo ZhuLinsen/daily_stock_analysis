@@ -44,7 +44,7 @@ class BacktestQuantMetricsTestCase(unittest.TestCase):
         rows = [
             # Out of chronological order intentionally; engine must sort by analysis_date
             _QuantRow(
-                analysis_date=date(2026, 3, 10),
+                analysis_date=date(2026, 2, 10),
                 analysis_history_id=3,
                 outcome="win",
                 simulated_return_pct=15.0,
@@ -53,7 +53,7 @@ class BacktestQuantMetricsTestCase(unittest.TestCase):
                 operation_advice="买入",
             ),
             _QuantRow(
-                analysis_date=date(2026, 3, 2),
+                analysis_date=date(2025, 11, 2),
                 analysis_history_id=1,
                 outcome="win",
                 simulated_return_pct=10.0,
@@ -62,7 +62,7 @@ class BacktestQuantMetricsTestCase(unittest.TestCase):
                 operation_advice="买入",
             ),
             _QuantRow(
-                analysis_date=date(2026, 3, 5),
+                analysis_date=date(2025, 12, 5),
                 analysis_history_id=2,
                 outcome="loss",
                 direction_correct=False,
@@ -108,7 +108,8 @@ class BacktestQuantMetricsTestCase(unittest.TestCase):
         self.assertGreater(qm["sharpe_ratio"], 0.0)
         self.assertIsNotNone(qm["sortino_ratio"])
         self.assertGreater(qm["sortino_ratio"], 0.0)
-        self.assertIsNotNone(qm["calmar_ratio"])
+        # 130 calendar days -> CAGR = ((1.20175 ** (365.25 / 130)) - 1) * 100 / 5.0 = 13.52
+        self.assertEqual(qm["calmar_ratio"], 13.52)
         self.assertEqual(qm["best_trade_pct"], 15.0)
         self.assertEqual(qm["worst_trade_pct"], -5.0)
         self.assertEqual(qm["max_consecutive_wins"], 1)
@@ -118,9 +119,9 @@ class BacktestQuantMetricsTestCase(unittest.TestCase):
             {"cash": 1, "stop_loss": 1, "take_profit": 2},
         )
         self.assertEqual([pt["date"] for pt in qm["equity_curve"]], [
-            "2026-03-02",
-            "2026-03-05",
-            "2026-03-10",
+            "2025-11-02",
+            "2025-12-05",
+            "2026-02-10",
             "2026-03-12",
         ])
 
@@ -237,7 +238,7 @@ class BacktestQuantMetricsTestCase(unittest.TestCase):
     def test_sub_001_pct_micro_drawdown_guards_calmar_ratio(self) -> None:
         rows = [
             _QuantRow(
-                analysis_date=date(2026, 3, 1),
+                analysis_date=date(2025, 12, 1),
                 analysis_history_id=1,
                 outcome="win",
                 simulated_return_pct=10.0,
@@ -245,7 +246,7 @@ class BacktestQuantMetricsTestCase(unittest.TestCase):
                 simulated_exit_reason="take_profit",
             ),
             _QuantRow(
-                analysis_date=date(2026, 3, 5),
+                analysis_date=date(2026, 1, 15),
                 analysis_history_id=2,
                 outcome="loss",
                 direction_correct=False,
@@ -316,6 +317,195 @@ class BacktestQuantMetricsTestCase(unittest.TestCase):
         self.assertEqual(summary["quant_metrics"]["profit_factor"], 2.67)
         validated = PerformanceMetrics(**summary)
         self.assertEqual(validated.quant_metrics["profit_factor"], 2.67)
+
+    def test_compound_overflow_stays_json_safe_and_preserves_drawdown(self) -> None:
+        base_day = date(2020, 1, 1)
+        rows = [
+            _QuantRow(
+                analysis_date=base_day + timedelta(days=idx % 365),
+                analysis_history_id=idx + 1,
+                outcome="win",
+                simulated_return_pct=50.0,
+                stock_return_pct=50.0,
+                simulated_exit_reason="take_profit",
+            )
+            for idx in range(1800)
+        ]
+        summary = BacktestEngine.compute_summary(
+            results=rows,
+            scope="overall",
+            code=OVERALL_SENTINEL_CODE,
+            eval_window_days=10,
+            engine_version="v1.1",
+        )
+        json.dumps(summary, allow_nan=False)
+        qm = summary["quant_metrics"]
+        self.assertIsNone(qm["cumulative_return_pct"])
+        self.assertIsNone(qm["calmar_ratio"])
+        self.assertEqual(qm["max_drawdown_pct"], 0.0)
+        self.assertEqual(qm["expectancy_pct"], 50.0)
+        self.assertTrue(all(pt["equity_pct"] is None for pt in qm["equity_curve"]))
+        validated = PerformanceMetrics(**summary)
+        self.assertIsNone(validated.quant_metrics["cumulative_return_pct"])
+
+    def test_invalid_targets_never_fall_back_to_stock_return(self) -> None:
+        invalid_row = _QuantRow(
+            analysis_date=date(2026, 3, 2),
+            analysis_history_id=1,
+            position_recommendation="long",
+            outcome="win",
+            simulated_return_pct=None,
+            stock_return_pct=10.0,
+            simulated_exit_reason="invalid_targets",
+        )
+        only_invalid = BacktestEngine.compute_summary(
+            results=[invalid_row],
+            scope="overall",
+            code=OVERALL_SENTINEL_CODE,
+            eval_window_days=10,
+            engine_version="v1.1",
+        )["quant_metrics"]
+        self.assertEqual(only_invalid["sample_count"], 0)
+        self.assertEqual(only_invalid["active_trade_count"], 0)
+        self.assertIsNone(only_invalid["cumulative_return_pct"])
+        self.assertEqual(only_invalid["exit_reason_breakdown"], {"invalid_targets": 1})
+
+        cash_row = _QuantRow(
+            analysis_date=date(2026, 3, 5),
+            analysis_history_id=2,
+            position_recommendation="cash",
+            outcome="neutral",
+            simulated_return_pct=0.0,
+            stock_return_pct=-2.0,
+            simulated_exit_reason="cash",
+        )
+        with_cash = BacktestEngine.compute_summary(
+            results=[invalid_row, cash_row],
+            scope="overall",
+            code=OVERALL_SENTINEL_CODE,
+            eval_window_days=10,
+            engine_version="v1.1",
+        )["quant_metrics"]
+        self.assertEqual(with_cash["sample_count"], 1)
+        self.assertEqual(with_cash["active_trade_count"], 0)
+        self.assertEqual(with_cash["cumulative_return_pct"], 0.0)
+
+    def test_same_day_rerun_does_not_change_drawdown_or_streaks(self) -> None:
+        day = date(2026, 3, 10)
+        base_time = datetime(2026, 3, 20, 10, 0, 0)
+        returns = [-20.0, -20.0, 25.0, 25.0]
+        rows_initial = [
+            _QuantRow(
+                analysis_date=day,
+                analysis_history_id=idx + 1,
+                evaluated_at=base_time + timedelta(seconds=idx),
+                outcome="loss" if ret < 0 else "win",
+                simulated_return_pct=ret,
+                stock_return_pct=ret,
+            )
+            for idx, ret in enumerate(returns)
+        ]
+        rows_rerun = [
+            _QuantRow(
+                analysis_date=day,
+                analysis_history_id=idx + 1,
+                evaluated_at=base_time + timedelta(days=5) if idx == 1 else base_time + timedelta(seconds=idx),
+                outcome="loss" if ret < 0 else "win",
+                simulated_return_pct=ret,
+                stock_return_pct=ret,
+            )
+            for idx, ret in enumerate(returns)
+        ]
+
+        q_initial = BacktestEngine.compute_summary(
+            results=rows_initial,
+            scope="overall",
+            code=OVERALL_SENTINEL_CODE,
+            eval_window_days=10,
+            engine_version="v1.1",
+        )["quant_metrics"]
+        q_rerun = BacktestEngine.compute_summary(
+            results=rows_rerun,
+            scope="overall",
+            code=OVERALL_SENTINEL_CODE,
+            eval_window_days=10,
+            engine_version="v1.1",
+        )["quant_metrics"]
+        self.assertEqual(q_initial["max_drawdown_pct"], 36.0)
+        self.assertEqual(q_initial["max_consecutive_losses"], 2)
+        self.assertEqual(q_rerun["max_drawdown_pct"], q_initial["max_drawdown_pct"])
+        self.assertEqual(q_rerun["max_consecutive_losses"], q_initial["max_consecutive_losses"])
+
+    def test_calmar_ratio_annualizes_cagr_across_spans_and_omits_short_windows(self) -> None:
+        # 1.20 * 0.90 = 1.08 (+8% cumulative return) with 10% max drawdown over 6 months vs 2 years.
+        six_months = [
+            _QuantRow(analysis_date=date(2025, 1, 1), analysis_history_id=1, simulated_return_pct=20.0),
+            _QuantRow(analysis_date=date(2025, 7, 3), analysis_history_id=2, simulated_return_pct=-10.0),
+        ]
+        two_years = [
+            _QuantRow(analysis_date=date(2024, 1, 1), analysis_history_id=1, simulated_return_pct=20.0),
+            _QuantRow(analysis_date=date(2026, 1, 1), analysis_history_id=2, simulated_return_pct=-10.0),
+        ]
+        short_span = [
+            _QuantRow(analysis_date=date(2026, 3, 1), analysis_history_id=1, simulated_return_pct=20.0),
+            _QuantRow(analysis_date=date(2026, 3, 11), analysis_history_id=2, simulated_return_pct=-10.0),
+        ]
+
+        q_6m = BacktestEngine.compute_summary(
+            results=six_months, scope="overall", code=OVERALL_SENTINEL_CODE, eval_window_days=10, engine_version="v1.1",
+        )["quant_metrics"]
+        q_2y = BacktestEngine.compute_summary(
+            results=two_years, scope="overall", code=OVERALL_SENTINEL_CODE, eval_window_days=10, engine_version="v1.1",
+        )["quant_metrics"]
+        q_short = BacktestEngine.compute_summary(
+            results=short_span, scope="overall", code=OVERALL_SENTINEL_CODE, eval_window_days=10, engine_version="v1.1",
+        )["quant_metrics"]
+
+        self.assertEqual(q_6m["cumulative_return_pct"], 8.0)
+        self.assertEqual(q_2y["cumulative_return_pct"], 8.0)
+        self.assertGreater(q_6m["calmar_ratio"], q_2y["calmar_ratio"])
+        self.assertEqual(q_6m["calmar_ratio"], 1.66)
+        self.assertEqual(q_2y["calmar_ratio"], 0.39)
+        self.assertIsNone(q_short["calmar_ratio"])
+
+    def test_dated_run_aligning_existing_dates_recomputes_cached_summaries(self) -> None:
+        service = BacktestService.__new__(BacktestService)
+        call_order: list[str] = []
+
+        def fake_align(**kwargs):
+            call_order.append("align")
+            codes_out = kwargs.get("aligned_codes_out")
+            if codes_out is not None:
+                codes_out.add("600519")
+            return 1
+
+        def fake_recompute(**kwargs):
+            call_order.append("recompute")
+            self.assertEqual(kwargs["touched_codes"], ["600519"])
+
+        service.repo = MagicMock()
+        service.repo.get_candidates.return_value = []
+        service.repo.align_existing_result_dates.side_effect = fake_align
+        service._recompute_summaries = fake_recompute
+        service._has_matching_analysis_for_run = MagicMock(return_value=True)
+
+        mock_config = SimpleNamespace(
+            backtest_engine_version="v1.1",
+            backtest_eval_window_days=10,
+            backtest_min_age_days=14,
+            backtest_neutral_band_pct=2.0,
+        )
+        with patch("src.services.backtest_service.get_config", return_value=mock_config):
+            res = service.run_backtest(
+                code=None,
+                force=False,
+                eval_window_days=10,
+                analysis_date_from=date(2026, 3, 1),
+                analysis_date_to=date(2026, 3, 15),
+            )
+
+        self.assertEqual(res["saved"], 0)
+        self.assertEqual(call_order, ["align", "recompute"])
 
 
 if __name__ == "__main__":

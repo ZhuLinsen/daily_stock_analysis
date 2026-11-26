@@ -99,6 +99,15 @@ function outcomeBadge(outcome: string | undefined, language: UiLanguage) {
   }
 }
 
+function classifySimulatedPnl(row: BacktestResultItem): 'win' | 'loss' | 'neutral' | null {
+  if (typeof row.simulatedReturnPct !== 'number' || !Number.isFinite(row.simulatedReturnPct)) {
+    return null;
+  }
+  if (row.simulatedReturnPct > 0) return 'win';
+  if (row.simulatedReturnPct < 0) return 'loss';
+  return 'neutral';
+}
+
 function statusBadge(status: string, language: UiLanguage) {
   const labels = BACKTEST_STATUS_LABELS[language];
   switch (status) {
@@ -316,9 +325,10 @@ const BacktestPage: React.FC = () => {
   const outcomeCounts = useMemo(() => {
     const counts = { all: results.length, win: 0, loss: 0, neutral: 0 };
     for (const row of results) {
-      if (row.outcome === 'win') counts.win += 1;
-      else if (row.outcome === 'loss') counts.loss += 1;
-      else if (row.outcome === 'neutral') counts.neutral += 1;
+      const bucket = classifySimulatedPnl(row);
+      if (bucket === 'win') counts.win += 1;
+      else if (bucket === 'loss') counts.loss += 1;
+      else if (bucket === 'neutral') counts.neutral += 1;
     }
     return counts;
   }, [results]);
@@ -326,7 +336,7 @@ const BacktestPage: React.FC = () => {
   const filteredSortedResults = useMemo(() => {
     const filtered = outcomeFilter === 'all'
       ? results
-      : results.filter((row) => row.outcome === outcomeFilter);
+      : results.filter((row) => classifySimulatedPnl(row) === outcomeFilter);
     if (sortBy === 'default') return filtered;
     const copy = [...filtered];
     copy.sort((a, b) => {
@@ -1001,7 +1011,9 @@ const BacktestPage: React.FC = () => {
                                     <div>
                                       <div className="text-[11px] text-muted-text">{qt.simEntryExit}</div>
                                       <div className="mt-0.5 font-mono text-foreground">
-                                        {fmtPrice(row.simulatedEntryPrice ?? row.startPrice)} → {fmtPrice(row.simulatedExitPrice ?? row.endClose)}
+                                        {row.simulatedEntryPrice == null && row.simulatedExitPrice == null
+                                          ? '--'
+                                          : `${fmtPrice(row.simulatedEntryPrice)} → ${fmtPrice(row.simulatedExitPrice)}`}
                                       </div>
                                     </div>
                                     <div>

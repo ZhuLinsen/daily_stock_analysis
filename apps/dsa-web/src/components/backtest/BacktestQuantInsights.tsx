@@ -68,9 +68,14 @@ const EquityCurveChart: React.FC<{
       ? Number(points[points.length - 1].index)
       : null;
     const startsAtOrigin = firstIndex == null || firstIndex <= 1;
-    const values = startsAtOrigin
-      ? [0, ...points.map((pt) => Number(pt.equityPct ?? 0))]
-      : points.map((pt) => Number(pt.equityPct ?? 0));
+    const numericValues: number[] = [];
+    for (const pt of points) {
+      if (typeof pt.equityPct !== 'number' || !Number.isFinite(pt.equityPct)) {
+        return null;
+      }
+      numericValues.push(pt.equityPct);
+    }
+    const values = startsAtOrigin ? [0, ...numericValues] : numericValues;
     const minVal = Math.min(...values);
     const maxVal = Math.max(...values);
     const span = Math.max(1e-3, maxVal - minVal);
@@ -218,6 +223,9 @@ export const BacktestQuantInsights: React.FC<BacktestQuantInsightsProps> = ({
   if (!activePerf) return null;
 
   const hasQuantSamples = Boolean(quant && (quant.sampleCount ?? 0) > 0);
+  const hasRenderableCurve =
+    (quant?.equityCurve?.length ?? 0) >= 2 &&
+    (quant?.equityCurve ?? []).every((pt) => typeof pt.equityPct === 'number' && Number.isFinite(pt.equityPct));
   const exitEntries = Object.entries(quant?.exitReasonBreakdown ?? {}).filter(([, count]) => count > 0);
   const scopeLabel = stockPerf?.code ? `${qt.stockScopePrefix}: ${stockPerf.code}` : qt.portfolioScope;
   const profitFactorDisplay = !quant
@@ -325,13 +333,13 @@ export const BacktestQuantInsights: React.FC<BacktestQuantInsightsProps> = ({
               </div>
 
               <div className="grid grid-cols-1 gap-3 lg:grid-cols-12">
-                {(quant.equityCurve?.length ?? 0) >= 2 && (
+                {hasRenderableCurve && (
                   <div className="lg:col-span-7">
                     <EquityCurveChart points={quant.equityCurve ?? []} language={language} />
                   </div>
                 )}
 
-                <div className={`${(quant.equityCurve?.length ?? 0) >= 2 ? 'lg:col-span-5' : 'lg:col-span-12'} flex flex-col justify-between gap-2 rounded-xl border border-white/10 bg-surface-elevated/40 p-2.5 text-xs`}>
+                <div className={`${hasRenderableCurve ? 'lg:col-span-5' : 'lg:col-span-12'} flex flex-col justify-between gap-2 rounded-xl border border-white/10 bg-surface-elevated/40 p-2.5 text-xs`}>
                   <div className="grid grid-cols-3 gap-2">
                     <div>
                       <div className="text-[11px] text-muted-text">{qt.avgWinLoss}</div>

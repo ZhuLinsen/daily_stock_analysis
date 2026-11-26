@@ -132,4 +132,27 @@ describe('BacktestQuantInsights', () => {
     expect(screen.getByText('Strong Buy')).toBeInTheDocument();
     expect(screen.queryByText('强烈买入')).not.toBeInTheDocument();
   });
+
+  it('omits the equity curve SVG instead of plotting 0% when equityPct contains null overflow points', () => {
+    const perf = makePerf({
+      quantMetrics: {
+        sampleCount: 1800,
+        activeTradeCount: 1800,
+        profitFactor: null,
+        expectancyPct: 50.0,
+        cumulativeReturnPct: null,
+        maxDrawdownPct: 0.0,
+        equityCurve: [
+          { index: 1799, date: '2026-03-01', code: '600519', returnPct: 50.0, equityPct: null, outcome: 'win' },
+          { index: 1800, date: '2026-03-02', code: 'AAPL', returnPct: 50.0, equityPct: null, outcome: 'win' },
+        ],
+      },
+    });
+
+    render(<BacktestQuantInsights overallPerf={perf} stockPerf={null} language="en" />);
+
+    expect(screen.queryByRole('img', { name: 'Chronological Simulated Equity Curve' })).not.toBeInTheDocument();
+    expect(screen.getByText('+50.00%')).toBeInTheDocument();
+    expect(screen.getByText('0.00%')).toBeInTheDocument();
+  });
 });
