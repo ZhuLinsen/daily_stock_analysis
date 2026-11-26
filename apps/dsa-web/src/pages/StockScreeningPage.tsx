@@ -52,8 +52,11 @@ import {
 import {
   exportCandidatesCsv,
   factorBarColorClass,
+  getCandidateExplicitFactorScore,
   getCandidateFactorCompositeScore,
   getCandidateFactorValue,
+  getFactorLabel,
+  lookupOwnString,
   type CandidateRiskFilter,
   type CandidateSortKey,
 } from '../utils/screeningQuant';
@@ -78,7 +81,11 @@ const formatStrategyCategory = (language: UiLanguage, value?: string) => {
   if (!normalized) {
     return SCREENING_TEXT[language].custom;
   }
-  return SCREENING_TEXT[language][STRATEGY_CATEGORY_LABELS[normalized.toLowerCase()]] || normalized;
+  const labelKey = lookupOwnString(STRATEGY_CATEGORY_LABELS, normalized.toLowerCase());
+  if (!labelKey) {
+    return normalized;
+  }
+  return lookupOwnString(SCREENING_TEXT[language], labelKey) ?? normalized;
 };
 
 type PersistedScreenTask = {
@@ -209,20 +216,6 @@ const formatPercent = (value: unknown) => {
     return '-';
   }
   return `${(Number(value) * 100).toFixed(0)}%`;
-};
-
-const FACTOR_LABELS: Record<string, ScreeningTextKey> = {
-  value: 'valuation',
-  liquidity: 'liquidity',
-  momentum: 'momentum',
-  reversal: 'reversal',
-  activity: 'activity',
-  stability: 'stability',
-  size: 'size',
-  themeHeat: 'themeHeat',
-  theme_heat: 'themeHeat',
-  topicAlignment: 'topicAlignment',
-  topic_alignment: 'topicAlignment',
 };
 
 const HOTSPOT_QUALITY_LABELS: Record<string, ScreeningTextKey> = {
@@ -2131,6 +2124,7 @@ const StockScreeningPage: React.FC = () => {
                 {filteredSortedCandidates.map((item) => {
                   const expanded = expandedCode === item.code;
                   const isCompared = comparedCodes.includes(item.code);
+                  const explicitFactorScore = getCandidateExplicitFactorScore(item);
                   const factors = getFactorEntries(item);
                   const selectionExplanations = getSelectionExplanations(language, item);
                   const selectionQuality = item.whySelected?.length
@@ -2149,7 +2143,14 @@ const StockScreeningPage: React.FC = () => {
                         <td className="px-4 py-3 text-secondary-text">{item.industry || '-'}</td>
                         <td className="px-4 py-3 text-secondary-text">{formatNumber(item.price)}</td>
                         <td className="px-4 py-3 text-secondary-text">{formatNumber(item.changePct)}%</td>
-                        <td className="px-4 py-3 font-bold text-cyan">{formatScore(item.score)}</td>
+                        <td className="px-4 py-3 font-bold text-cyan">
+                          <div>{formatScore(item.score)}</div>
+                          {explicitFactorScore != null ? (
+                            <div className="mt-0.5 text-[11px] font-normal text-secondary-text">
+                              {qcopy.compareFactorScore} {formatScore(explicitFactorScore)}
+                            </div>
+                          ) : null}
+                        </td>
                         <td className="px-4 py-3 text-secondary-text">{factorRanking ? copy.factorRanking : formatScore(item.llmScore)}</td>
                         <td className="px-4 py-3">
                           <span className={`rounded-lg px-2.5 py-1 text-xs font-semibold ${getRiskClassName(item.riskLevel)}`}>
@@ -2258,7 +2259,7 @@ const StockScreeningPage: React.FC = () => {
                                         return (
                                           <div key={key} className="rounded-lg border border-border bg-card px-3 py-2">
                                             <div className="flex items-center justify-between gap-2">
-                                              <span className="block text-xs text-secondary-text">{copy[FACTOR_LABELS[key]] || key}</span>
+                                              <span className="block text-xs text-secondary-text">{getFactorLabel(language, key)}</span>
                                               <span className="font-mono text-sm font-semibold text-foreground">{formatNumber(value)}</span>
                                             </div>
                                             <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-surface">

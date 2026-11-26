@@ -366,7 +366,9 @@ describe('StockScreeningPage Quant Factor Explorer', () => {
       });
       rows = screen.getAllByRole('row');
       expect(within(rows[1]).getByText('300750')).toBeInTheDocument();
+      expect(within(rows[1]).getByText('综合因子分 85.00')).toBeInTheDocument();
       expect(within(rows[2]).getByText('600519')).toBeInTheDocument();
+      expect(within(rows[2]).getByText('综合因子分 84.00')).toBeInTheDocument();
 
       fireEvent.click(screen.getByRole('button', { name: '导出 CSV' }));
       await waitFor(() => {
@@ -386,5 +388,108 @@ describe('StockScreeningPage Quant Factor Explorer', () => {
       revokeObjectUrlSpy.mockRestore();
       anchorClickSpy.mockRestore();
     }
+  });
+
+  it('preserves blank Factor Score CSV cell when screenScore is absent without copying blended score', async () => {
+    let capturedBlob: Blob | null = null;
+    const createObjectUrlSpy = vi.spyOn(URL, 'createObjectURL').mockImplementation((obj: Blob | MediaSource) => {
+      capturedBlob = obj as Blob;
+      return 'blob:mock-missing-factor-csv';
+    });
+    const revokeObjectUrlSpy = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+    const anchorClickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+
+    screenStocks.mockResolvedValueOnce({
+      enabled: true,
+      candidateCount: 1,
+      strategy: 'momentum_quality',
+      market: 'cn',
+      rankingMode: 'llm',
+      llmRanked: true,
+      candidates: [
+        {
+          rank: 1,
+          code: '600519',
+          name: '贵州茅台',
+          industry: '白酒',
+          price: 1520.0,
+          changePct: 1.0,
+          score: 90.0,
+          llmScore: 99.0,
+          riskLevel: 'low',
+          reason: '仅含混合终分与AI分',
+          factorScores: { momentum: 84.0 },
+          raw: {},
+        },
+      ],
+    });
+
+    try {
+      render(<StockScreeningPage />);
+      expect(await screen.findByText('策略因子权重与画像蓝图')).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: /运行选股/ }));
+      expect(await screen.findByText('贵州茅台')).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('button', { name: '导出 CSV' }));
+      await waitFor(() => {
+        expect(capturedBlob).not.toBeNull();
+        expect(anchorClickSpy).toHaveBeenCalledTimes(1);
+      });
+
+      const csvText = await (capturedBlob as unknown as Blob).text();
+      const lines = csvText.replace(/^\uFEFF/, '').split('\r\n');
+      expect(lines).toHaveLength(2);
+      expect(lines[1]).toContain('"1","600519","贵州茅台","白酒","1520.00","1.00","90.00","","99.00"');
+    } finally {
+      createObjectUrlSpy.mockRestore();
+      revokeObjectUrlSpy.mockRestore();
+      anchorClickSpy.mockRestore();
+    }
+  });
+
+  it('mounts cleanly in ZH and EN when auto-selected strategy uses Object.prototype collision keys in style and category', async () => {
+    getStrategies.mockResolvedValue(
+      toCamelCase<ScreeningStrategiesResponse>({
+        enabled: true,
+        strategies: [
+          {
+            id: 'proto_style_strategy',
+            name: '原型防护策略',
+            title: '原型防护策略',
+            description: 'custom style prototype collision regression',
+            category: '__proto__',
+            market_scope: ['cn'],
+            requires_daily_features: false,
+            active_filters: [],
+            factor_weights: { constructor: 0.6, toString: 0.4 },
+            style: {
+              risk_profile: '__proto__',
+              holding_period: '__proto__',
+              market_regime: ['__proto__'],
+            },
+          },
+        ],
+        strategy_count: 1,
+      }),
+    );
+
+    window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'zh');
+    const { unmount } = render(
+      <UiLanguageProvider>
+        <StockScreeningPage />
+      </UiLanguageProvider>,
+    );
+    expect(await screen.findByText('策略因子权重与画像蓝图')).toBeInTheDocument();
+    expect(screen.getAllByText('__proto__').length).toBeGreaterThanOrEqual(3);
+
+    unmount();
+    window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'en');
+    render(
+      <UiLanguageProvider>
+        <StockScreeningPage />
+      </UiLanguageProvider>,
+    );
+    expect(await screen.findByText('Strategy Factor Weights & Profile Blueprint')).toBeInTheDocument();
+    expect(screen.getAllByText('__proto__').length).toBeGreaterThanOrEqual(3);
   });
 });

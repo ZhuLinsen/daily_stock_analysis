@@ -34,13 +34,32 @@ const CANONICAL_FACTOR_KEY_MAP: Record<string, string> = {
   topic_alignment: 'topicAlignment',
 };
 
+export function lookupOwnString(
+  record: object,
+  key: string,
+): string | undefined {
+  if (!Object.prototype.hasOwnProperty.call(record, key)) {
+    return undefined;
+  }
+  const value = (record as Record<string, unknown>)[key];
+  return typeof value === 'string' ? value : undefined;
+}
+
 export function normalizeFactorKey(rawKey: string): string {
-  return CANONICAL_FACTOR_KEY_MAP[rawKey] || rawKey;
+  return lookupOwnString(CANONICAL_FACTOR_KEY_MAP, rawKey) ?? rawKey;
 }
 
 export function getFactorLabel(language: UiLanguage, key: string): string {
-  const labelKey = QUANT_FACTOR_LABEL_KEYS[key];
-  return labelKey ? SCREENING_TEXT[language][labelKey] : key;
+  const labelKey = lookupOwnString(QUANT_FACTOR_LABEL_KEYS, key);
+  if (!labelKey) return key;
+  return lookupOwnString(SCREENING_TEXT[language], labelKey) ?? key;
+}
+
+export function getCandidateExplicitFactorScore(candidate: ScreeningCandidate): number | null {
+  if (typeof candidate.screenScore === 'number' && Number.isFinite(candidate.screenScore)) {
+    return candidate.screenScore;
+  }
+  return null;
 }
 
 export function getCandidateFactorCompositeScore(candidate: ScreeningCandidate): number | null {
@@ -124,7 +143,7 @@ export function exportCandidatesCsv(
   ];
 
   const rows = candidates.map((item) => {
-    const factorComposite = getCandidateFactorCompositeScore(item);
+    const factorComposite = getCandidateExplicitFactorScore(item);
     return [
       item.rank,
       item.code,

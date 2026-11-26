@@ -6,8 +6,10 @@ import { SCREENING_TEXT } from '../../locales/screening';
 import { SCREENING_QUANT_TEXT } from '../../locales/screeningQuantText';
 import {
   factorBarColorClass,
+  getCandidateExplicitFactorScore,
   getCandidateFactorValue,
   getFactorLabel,
+  lookupOwnString,
   normalizeFactorKey,
   type CandidateRiskFilter,
   type CandidateSortKey,
@@ -47,10 +49,10 @@ export const StrategyFactorBlueprint: React.FC<{
 
   const totalWeight = weightEntries.reduce((acc, [, w]) => acc + w, 0) || 1;
   const riskLabel = riskProfile
-    ? qcopy.riskProfiles[riskProfile] || riskProfile
+    ? (lookupOwnString(qcopy.riskProfiles, riskProfile) ?? riskProfile)
     : null;
   const periodLabel = holdingPeriod
-    ? qcopy.holdingPeriods[holdingPeriod] || holdingPeriod
+    ? (lookupOwnString(qcopy.holdingPeriods, holdingPeriod) ?? holdingPeriod)
     : null;
   const hasStyle = Boolean(riskLabel || periodLabel || marketRegimes.length > 0);
 
@@ -90,7 +92,7 @@ export const StrategyFactorBlueprint: React.FC<{
             <span className="rounded-md border border-border bg-card px-2 py-0.5 text-secondary-text">
               {qcopy.regimeLabel}:{' '}
               <strong className="text-foreground">
-                {marketRegimes.map((r) => qcopy.marketRegimes[r] || r).join(' / ')}
+                {marketRegimes.map((r) => lookupOwnString(qcopy.marketRegimes, r) ?? r).join(' / ')}
               </strong>
             </span>
           ) : null}
@@ -280,6 +282,12 @@ export const CandidateComparisonMatrix: React.FC<{
     );
   }
 
+  const finiteFactorScores = candidates
+    .map(getCandidateExplicitFactorScore)
+    .filter((v): v is number => v != null);
+  const hasFactorScoreRow = finiteFactorScores.length > 0;
+  const bestFactorScore = hasFactorScoreRow ? Math.max(...finiteFactorScores) : null;
+
   const finiteLlmScores = candidates
     .map((c) => (typeof c.llmScore === 'number' && Number.isFinite(c.llmScore) ? c.llmScore : null))
     .filter((v): v is number => v != null);
@@ -354,6 +362,26 @@ export const CandidateComparisonMatrix: React.FC<{
                 </td>
               ))}
             </tr>
+            {hasFactorScoreRow ? (
+              <tr>
+                <td className="py-2 pr-3 text-secondary-text">{qcopy.compareFactorScore}</td>
+                {candidates.map((c) => {
+                  const factorScore = getCandidateExplicitFactorScore(c);
+                  const isBestFactor =
+                    factorScore != null &&
+                    bestFactorScore != null &&
+                    Math.abs(factorScore - bestFactorScore) < 1e-6;
+                  return (
+                    <td
+                      key={c.code}
+                      className={`px-3 py-2 font-mono ${isBestFactor ? 'font-bold text-cyan' : 'text-foreground'}`}
+                    >
+                      {factorScore != null ? factorScore.toFixed(2) : '-'}
+                    </td>
+                  );
+                })}
+              </tr>
+            ) : null}
             {hasLlmScoreRow ? (
               <tr>
                 <td className="py-2 pr-3 text-secondary-text">{qcopy.compareLlmScore}</td>

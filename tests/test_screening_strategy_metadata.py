@@ -15,8 +15,9 @@ import pytest
 from api.v1.endpoints.screening import router as screening_router
 from src.config import Config
 from src.services.screening.filter import check_hard_filters
-from src.services.screening.models import HardFilterConfig, ScreeningConfig
+from src.services.screening.models import HardFilterConfig, ScreeningConfig, Strategy
 from src.services.screening.scorer import normalized_factor_weights
+from src.services.screening.strategy import list_strategies, load_strategy
 from src.services.screening_service import ScreeningService, _normalize_strategy
 
 
@@ -194,3 +195,123 @@ def test_screening_strategies_endpoint_tolerates_legacy_minimal_strategy_dict() 
     assert item["active_filters"] == []
     assert item["requires_daily_features"] is False
     assert item["style"] == {}
+
+
+def test_invalid_tech_weight_or_factor_weights_are_isolated_per_file_without_blocking_healthy_strategies(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (tmp_path / "healthy_quant.yaml").write_text(
+        """
+name: healthy_quant
+display_name: 正常量化策略
+description: healthy strategy alongside broken sibling configs
+screening:
+  enabled: true
+  market_scope: [cn]
+  tech_weight: 0.4
+  hard_filters:
+    exclude_st: false
+    price_min: 10
+  max_output: 5
+""".strip(),
+        encoding="utf-8",
+    )
+    (tmp_path / "bad_tech_weight.yaml").write_text(
+        """
+name: bad_tech_weight
+display_name: 错误字符串权重
+description: invalid string tech_weight without factor_weights
+screening:
+  enabled: true
+  market_scope: [cn]
+  tech_weight: "0.4"
+  max_output: 5
+""".strip(),
+        encoding="utf-8",
+    )
+    (tmp_path / "bad_factor_weight_str.yaml").write_text(
+        """
+name: bad_factor_weight_str
+display_name: 错误因子权重字符串
+screening:
+  enabled: true
+  market_scope: [cn]
+  factor_weights:
+    value: "bad"
+""".strip(),
+        encoding="utf-8",
+    )
+    (tmp_path / "bad_factor_weight_bool.yaml").write_text(
+        """
+name: bad_factor_weight_bool
+display_name: 错误布尔因子权重
+screening:
+  enabled: true
+  market_scope: [cn]
+  factor_weights:
+    value: true
+""".strip(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="tech_weight"):
+        load_strategy(tmp_path / "bad_tech_weight.yaml")
+    with pytest.raises(ValueError, match="factor weight"):
+        load_strategy(tmp_path / "bad_factor_weight_str.yaml")
+    with pytest.raises(ValueError, match="factor weight"):
+        load_strategy(tmp_path / "bad_factor_weight_bool.yaml")
+
+    monkeypatch.setenv("STRATEGIES_DIR", str(tmp_path))
+    cfg = Config(screening_enabled=True)
+    service = ScreeningService(config=cfg)
+
+    status_payload = service.status()
+    assert status_payload["available"] is True
+    assert status_payload["strategy_count"] == 1
+
+    catalog_payload = service.strategies()
+    assert catalog_payload["strategy_count"] == 1
+    assert [s["id"] for s in catalog_payload["strategies"]] == ["healthy_quant"]
+    assert catalog_payload["strategies"][0]["factor_weights"] == pytest.approx(
+        normalized_factor_weights(ScreeningConfig(tech_weight=0.4))
+    )
+
+    app = FastAPI()
+    app.include_router(screening_router, prefix="/api/v1/screening")
+    from api.deps import get_config_dep
+
+    app.dependency_overrides[get_config_dep] = lambda: cfg
+    client = TestClient(app)
+    check_resp = client.post(
+        "/api/v1/screening/screen/check",
+        json={"strategy": "healthy_quant", "market": "cn", "snapshot": {"price": 15.0, "name": "正常股"}},
+    )
+    assert check_resp.status_code == 200
+    assert check_resp.json()["passed"] is True
+
+    with patch(
+        "src.services.screening_service._call_screening_screen",
+        return_value={"candidates": [], "candidate_count": 0},
+    ):
+        screen_resp = service.screen(strategy="healthy_quant", market="cn", max_results=5)
+    assert screen_resp["strategy"] == "healthy_quant"
+
+    healthy_strategy = Strategy(
+        name="healthy_in_memory",
+        display_name="Healthy",
+        description="valid",
+        screening=ScreeningConfig(enabled=True, tech_weight=0.4),
+    )
+    broken_strategy = Strategy(
+        name="broken_in_memory",
+        display_name="Broken",
+        description="invalid",
+        screening=ScreeningConfig(enabled=True, tech_weight="0.4"),  # type: ignore[arg-type]
+    )
+    with patch(
+        "src.services.screening.strategy.load_all_strategies",
+        return_value={"healthy_in_memory": healthy_strategy, "broken_in_memory": broken_strategy},
+    ):
+        listed = list_strategies(tmp_path)
+    assert [item.name for item in listed] == ["healthy_in_memory"]

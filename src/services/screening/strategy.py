@@ -5,6 +5,7 @@
 
 import hashlib
 import logging
+import math
 from dataclasses import asdict, fields
 from pathlib import Path
 
@@ -212,8 +213,8 @@ def load_strategy(filepath: Path) -> Strategy:
         enabled=screening_data.get("enabled", False),
         market_scope=screening_data.get("market_scope", ["cn"]),
         hard_filters=hard_filters,
-        tech_weight=screening_data.get("tech_weight", 0.35),
-        factor_weights=screening_data.get("factor_weights", {}),
+        tech_weight=_validated_tech_weight(screening_data, filepath),
+        factor_weights=_validated_factor_weights(screening_data, filepath),
         scoring_profile=_optional_mapping(
             screening_data, "scoring_profile", filepath, allowed_keys=_SCORING_PROFILE_KEYS
         ),
@@ -232,6 +233,10 @@ def load_strategy(filepath: Path) -> Strategy:
         ranking_hints=screening_data.get("ranking_hints", ""),
         max_output=screening_data.get("max_output", 5),
     )
+
+    from src.services.screening.scorer import normalized_factor_weights
+
+    normalized_factor_weights(screening)
 
     return Strategy(
         name=data.get("name", filepath.stem),
@@ -296,25 +301,29 @@ def list_strategies(strategies_dir: Path | None = None) -> list[StrategyInfo]:
     strategies = load_all_strategies(strategies_dir)
     infos: list[StrategyInfo] = []
     for s in strategies.values():
-        daily_required = requires_daily_features(s.screening.hard_filters)
-        infos.append(StrategyInfo(
-            name=s.name,
-            display_name=s.display_name,
-            description=s.description,
-            version=s.version,
-            category=s.category,
-            tags=s.tags,
-            analysis_skills=s.analysis_skills,
-            market_scope=s.screening.market_scope,
-            requires_daily_features=daily_required,
-            data_requirements=_strategy_data_requirements(s, daily_required=daily_required),
-            required_snapshot_fields=_required_snapshot_fields(s.screening.hard_filters),
-            required_daily_fields=_required_daily_fields(s.screening.hard_filters),
-            active_filters=_active_hard_filters(s.screening.hard_filters),
-            factor_weights=normalized_factor_weights(s.screening),
-            profile_keys=_strategy_profile_keys(s.screening),
-            style=_style_to_dict(s.style),
-        ))
+        try:
+            daily_required = requires_daily_features(s.screening.hard_filters)
+            infos.append(StrategyInfo(
+                name=s.name,
+                display_name=s.display_name,
+                description=s.description,
+                version=s.version,
+                category=s.category,
+                tags=s.tags,
+                analysis_skills=s.analysis_skills,
+                market_scope=s.screening.market_scope,
+                requires_daily_features=daily_required,
+                data_requirements=_strategy_data_requirements(s, daily_required=daily_required),
+                required_snapshot_fields=_required_snapshot_fields(s.screening.hard_filters),
+                required_daily_fields=_required_daily_fields(s.screening.hard_filters),
+                active_filters=_active_hard_filters(s.screening.hard_filters),
+                factor_weights=normalized_factor_weights(s.screening),
+                profile_keys=_strategy_profile_keys(s.screening),
+                style=_style_to_dict(s.style),
+            ))
+        except Exception as exc:
+            logger.warning("Skipping invalid strategy metadata for %s: %s", s.name, exc)
+            continue
     return infos
 
 
@@ -1016,6 +1025,36 @@ def _raise_unknown_keys(data: dict, allowed_keys: set[str], context: str) -> Non
         raise ValueError(
             f"Unknown keys in {context}: {', '.join(unknown_keys)}"
         )
+
+
+def _validated_tech_weight(screening_data: dict, filepath: Path) -> float:
+    raw = screening_data.get("tech_weight", 0.35)
+    if raw is None:
+        return 0.35
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        raise ValueError(f"Invalid tech_weight in strategy file {filepath.name}: expected finite number")
+    value = float(raw)
+    if not math.isfinite(value):
+        raise ValueError(f"Invalid tech_weight in strategy file {filepath.name}: expected finite number")
+    return value
+
+
+def _validated_factor_weights(screening_data: dict, filepath: Path) -> dict[str, float]:
+    raw = screening_data.get("factor_weights", {})
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ValueError(f"Invalid factor_weights section in strategy file: {filepath}")
+    validated: dict[str, float] = {}
+    for key, weight in raw.items():
+        if not isinstance(key, str) or not key.strip():
+            raise ValueError(f"Invalid factor_weights key in strategy file {filepath.name}: expected non-empty string")
+        if isinstance(weight, bool) or not isinstance(weight, (int, float)) or not math.isfinite(float(weight)):
+            raise ValueError(
+                f"Invalid factor weight '{key}' in strategy file {filepath.name}: expected finite number"
+            )
+        validated[key.strip()] = float(weight)
+    return validated
 
 
 def _optional_mapping(

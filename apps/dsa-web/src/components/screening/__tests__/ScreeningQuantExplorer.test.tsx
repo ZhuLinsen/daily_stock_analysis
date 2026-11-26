@@ -7,6 +7,9 @@ import type {
 } from '../../../api/screening';
 import {
   escapeCsvCell,
+  getFactorLabel,
+  lookupOwnString,
+  normalizeFactorKey,
   sanitizeFilenameSegment,
 } from '../../../utils/screeningQuant';
 import {
@@ -153,5 +156,87 @@ describe('ScreeningQuantExplorer components & helpers', () => {
     render(<StrategyFactorBlueprint strategy={strategy} language="en" />);
     expect(screen.getByText('<1%')).toBeInTheDocument();
     expect(screen.getByText('100%')).toBeInTheDocument();
+  });
+
+  it('guards own-property lookups against Object.prototype keys in style and factor weights', () => {
+    expect(lookupOwnString({ defensive: 'Defensive' }, '__proto__')).toBeUndefined();
+    expect(lookupOwnString({ defensive: 'Defensive' }, 'constructor')).toBeUndefined();
+    expect(normalizeFactorKey('__proto__')).toBe('__proto__');
+    expect(normalizeFactorKey('toString')).toBe('toString');
+    expect(getFactorLabel('en', '__proto__')).toBe('__proto__');
+    expect(getFactorLabel('zh', 'constructor')).toBe('constructor');
+
+    const protoStyle = {
+      risk_profile: '__proto__',
+      holding_period: 'constructor',
+      market_regime: ['toString', 'valueOf'],
+    } as unknown as ScreeningStrategyStyle;
+    const strategy: ScreeningStrategy = {
+      id: 'proto_guard',
+      name: 'Proto Guard',
+      description: 'prototype key fallback test',
+      factorWeights: { constructor: 0.6, toString: 0.4 },
+      style: protoStyle,
+    };
+
+    const { rerender } = render(
+      <StrategyFactorBlueprint strategy={strategy} language="zh" />,
+    );
+    expect(screen.getByText('__proto__')).toBeInTheDocument();
+    expect(screen.getAllByText('constructor').length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByText('toString / valueOf')).toBeInTheDocument();
+
+    rerender(<StrategyFactorBlueprint strategy={strategy} language="en" />);
+    expect(screen.getByText('__proto__')).toBeInTheDocument();
+    expect(screen.getAllByText('constructor').length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByText('toString / valueOf')).toBeInTheDocument();
+  });
+
+  it('renders Factor Score row in CandidateComparisonMatrix only when candidates provide screenScore', () => {
+    const onRemove = vi.fn();
+    const onClear = vi.fn();
+    const cWithScreen = makeCandidate({ code: '600519', score: 90.0, screenScore: 84.5 });
+    const cWithoutScreen = makeCandidate({
+      rank: 2,
+      code: '300750',
+      name: '宁德时代',
+      score: 75.0,
+      screenScore: undefined,
+    });
+
+    const { rerender } = render(
+      <CandidateComparisonMatrix
+        candidates={[cWithScreen, cWithoutScreen]}
+        language="zh"
+        onRemove={onRemove}
+        onClear={onClear}
+      />,
+    );
+    expect(screen.getByText('综合因子分')).toBeInTheDocument();
+    expect(screen.getByText('84.50')).toBeInTheDocument();
+    expect(screen.getByText('-')).toBeInTheDocument();
+
+    rerender(
+      <CandidateComparisonMatrix
+        candidates={[cWithScreen, cWithoutScreen]}
+        language="en"
+        onRemove={onRemove}
+        onClear={onClear}
+      />,
+    );
+    expect(screen.getByText('Factor Score')).toBeInTheDocument();
+    expect(screen.getByText('84.50')).toBeInTheDocument();
+
+    const noScreen1 = makeCandidate({ code: '600519', screenScore: undefined });
+    const noScreen2 = makeCandidate({ rank: 2, code: '300750', name: '宁德时代', screenScore: undefined });
+    rerender(
+      <CandidateComparisonMatrix
+        candidates={[noScreen1, noScreen2]}
+        language="en"
+        onRemove={onRemove}
+        onClear={onClear}
+      />,
+    );
+    expect(screen.queryByText('Factor Score')).not.toBeInTheDocument();
   });
 });
