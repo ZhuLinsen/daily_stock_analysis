@@ -3,7 +3,7 @@ import type { StockKLineItem } from '../api/stocks';
 export interface PriceChartDatum {
   date: string;
   shortDate: string;
-  open?: number;
+  open?: number | null;
   close: number;
   high: number;
   low: number;
@@ -29,7 +29,7 @@ export interface PriceChartDatum {
 }
 
 export type RsiRegime = 'oversold' | 'overbought' | 'neutral';
-export type MacdSignalState = 'bullish_cross' | 'bearish_cross' | 'bullish' | 'bearish';
+export type MacdSignalState = 'bullish_cross' | 'bearish_cross' | 'bullish' | 'bearish' | 'neutral';
 
 export interface QuantTelemetrySummary {
   riskRewardRatio: number | null;
@@ -302,7 +302,7 @@ export function enrichBarsWithMovingAverages(
     const rawLow = Number.isFinite(Number(bar.low)) && Number(bar.low) > 0 ? Number(bar.low) : close;
     const high = Math.max(rawHigh, rawLow, close);
     const low = Math.min(rawHigh, rawLow, close);
-    const open = Number.isFinite(Number(bar.open)) && Number(bar.open) > 0 ? Number(bar.open) : close;
+    const open = bar.open != null && Number.isFinite(Number(bar.open)) && Number(bar.open) > 0 ? Number(bar.open) : null;
     const volume =
       bar.volume != null && Number.isFinite(Number(bar.volume)) && Number(bar.volume) >= 0
         ? Number(bar.volume)
@@ -474,6 +474,7 @@ export function computeQuantTelemetry(
   data: PriceChartDatum[],
   levels?: {
     idealBuy?: number | null;
+    secondaryBuy?: number | null;
     stopLoss?: number | null;
     takeProfit?: number | null;
   },
@@ -498,7 +499,12 @@ export function computeQuantTelemetry(
   }
 
   const latest = data[data.length - 1];
-  const entryRef = levels?.idealBuy != null && levels.idealBuy > 0 ? levels.idealBuy : latest.close;
+  const entryRef =
+    levels?.idealBuy != null && levels.idealBuy > 0
+      ? levels.idealBuy
+      : levels?.secondaryBuy != null && levels.secondaryBuy > 0
+        ? levels.secondaryBuy
+        : latest.close;
   const stopLoss = levels?.stopLoss ?? null;
   const takeProfit = levels?.takeProfit ?? null;
 
@@ -576,18 +582,23 @@ export function computeQuantTelemetry(
   }
 
   let macdSignal: MacdSignalState | null = null;
+  const MACD_EPSILON = 1e-9;
   if (latest.macdDif != null && latest.macdDea != null) {
+    const diff = latest.macdDif - latest.macdDea;
     const prev = data.length >= 2 ? data[data.length - 2] : null;
-    if (prev?.macdDif != null && prev?.macdDea != null) {
-      if (prev.macdDif <= prev.macdDea && latest.macdDif > latest.macdDea) {
+    if (Math.abs(diff) <= MACD_EPSILON) {
+      macdSignal = 'neutral';
+    } else if (prev?.macdDif != null && prev?.macdDea != null) {
+      const prevDiff = prev.macdDif - prev.macdDea;
+      if (prevDiff <= MACD_EPSILON && diff > MACD_EPSILON) {
         macdSignal = 'bullish_cross';
-      } else if (prev.macdDif >= prev.macdDea && latest.macdDif < latest.macdDea) {
+      } else if (prevDiff >= -MACD_EPSILON && diff < -MACD_EPSILON) {
         macdSignal = 'bearish_cross';
       } else {
-        macdSignal = latest.macdDif >= latest.macdDea ? 'bullish' : 'bearish';
+        macdSignal = diff > MACD_EPSILON ? 'bullish' : 'bearish';
       }
     } else {
-      macdSignal = latest.macdDif >= latest.macdDea ? 'bullish' : 'bearish';
+      macdSignal = diff > MACD_EPSILON ? 'bullish' : 'bearish';
     }
   }
 

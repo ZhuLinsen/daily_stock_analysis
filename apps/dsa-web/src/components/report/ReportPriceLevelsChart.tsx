@@ -278,8 +278,8 @@ export const ReportPriceLevelsChart: React.FC<ReportPriceLevelsChartProps> = ({
     : rawLevels;
 
   const telemetry = useMemo(
-    () => computeQuantTelemetry(data, { idealBuy, stopLoss, takeProfit }),
-    [data, idealBuy, stopLoss, takeProfit],
+    () => computeQuantTelemetry(data, { idealBuy, secondaryBuy, stopLoss, takeProfit }),
+    [data, idealBuy, secondaryBuy, stopLoss, takeProfit],
   );
 
   const referenceLines = useMemo<MergedReferenceLine[]>(() => {
@@ -485,12 +485,16 @@ export const ReportPriceLevelsChart: React.FC<ReportPriceLevelsChartProps> = ({
           ? qText.bullish
           : telemetry.macdSignal === 'bearish'
             ? qText.bearish
-            : '';
+            : telemetry.macdSignal === 'neutral'
+              ? qText.neutral
+              : '';
 
   const macdToneClass =
     telemetry.macdSignal === 'bullish_cross' || telemetry.macdSignal === 'bullish'
       ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-400'
-      : 'border-rose-500/25 bg-rose-500/10 text-rose-400';
+      : telemetry.macdSignal === 'bearish_cross' || telemetry.macdSignal === 'bearish'
+        ? 'border-rose-500/25 bg-rose-500/10 text-rose-400'
+        : 'border-border/60 bg-background/40 text-secondary-text';
 
   const syncId = `quant-${gradientId}`;
   const spansMultipleYears =

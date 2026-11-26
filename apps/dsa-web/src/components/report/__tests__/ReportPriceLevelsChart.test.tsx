@@ -575,4 +575,76 @@ describe('ReportPriceLevelsChart helpers & component', () => {
     expect(screen.getByTestId('quant-subpanel-kdj')).toHaveTextContent('KDJ 계산에 최소 9거래일 필요');
     expect(container.querySelectorAll('[title]')).toHaveLength(0);
   });
+
+  it('keeps missing or zero open prices as null instead of substituting close and omits open from Tooltip', () => {
+    const barsWithMissingOpen: StockKLineItem[] = [
+      { date: '2026-05-01', open: 0, high: 101, low: 99, close: 100 },
+      { date: '2026-05-02', open: Number.NaN, high: 103, low: 98, close: 102 },
+      { date: '2026-05-03', high: 102.5, low: 99, close: 101 } as unknown as StockKLineItem,
+      { date: '2026-05-04', open: 101.5, high: 104, low: 100, close: 103 },
+    ];
+    const enriched = enrichBarsWithMovingAverages(barsWithMissingOpen, 60);
+    expect(enriched[0].open).toBeNull();
+    expect(enriched[1].open).toBeNull();
+    expect(enriched[2].open).toBeNull();
+    expect(enriched[3].open).toBe(101.5);
+
+    render(<ReportPriceLevelsChart bars={barsWithMissingOpen} language="zh" />);
+    const tooltip = screen.getByTestId('levels-tooltip');
+    expect(tooltip).toHaveTextContent('收盘');
+    expect(tooltip).not.toHaveTextContent('开盘');
+  });
+
+  it('falls back to secondaryBuy instead of latest close when idealBuy is absent for R:R telemetry', () => {
+    const bars: StockKLineItem[] = Array.from({ length: 20 }, (_, i) => ({
+      date: `2026-04-${String(i + 1).padStart(2, '0')}`,
+      open: 100,
+      high: 102,
+      low: 98,
+      close: 100,
+    }));
+    const enriched = enrichBarsWithMovingAverages(bars, 60);
+    const telemetry = computeQuantTelemetry(enriched, {
+      idealBuy: null,
+      secondaryBuy: 120,
+      stopLoss: 90,
+      takeProfit: 130,
+    });
+    expect(telemetry.riskRewardRatio).toBeCloseTo(1 / 3, 5);
+    expect(telemetry.upsidePct).toBeCloseTo((10 / 120) * 100, 5);
+    expect(telemetry.downsidePct).toBeCloseTo(25, 5);
+
+    render(
+      <ReportPriceLevelsChart
+        bars={bars}
+        strategy={{ secondaryBuy: '120', stopLoss: '90', takeProfit: '130' }}
+        language="zh"
+      />,
+    );
+    const strip = screen.getByTestId('quant-telemetry-strip');
+    expect(strip).toHaveTextContent('1:0.3');
+    expect(strip).toHaveTextContent('+8.3% / -25.0%');
+    expect(strip).not.toHaveTextContent('1:3.0');
+  });
+
+  it('classifies flat-price zero-diff MACD as neutral instead of bullish in both zh and en', () => {
+    const flatBars: StockKLineItem[] = Array.from({ length: 30 }, (_, i) => ({
+      date: `2026-03-${String(i + 1).padStart(2, '0')}`,
+      open: 100,
+      high: 100,
+      low: 100,
+      close: 100,
+    }));
+    const telemetry = computeQuantTelemetry(enrichBarsWithMovingAverages(flatBars, 60));
+    expect(telemetry.macdSignal).toBe('neutral');
+
+    const { rerender } = render(<ReportPriceLevelsChart bars={flatBars} language="zh" />);
+    const strip = screen.getByTestId('quant-telemetry-strip');
+    expect(strip).toHaveTextContent('MACD:中性');
+    expect(strip).not.toHaveTextContent('多头');
+
+    rerender(<ReportPriceLevelsChart bars={flatBars} language="en" />);
+    expect(strip).toHaveTextContent('MACD:Neutral');
+    expect(strip).not.toHaveTextContent('Bullish');
+  });
 });
