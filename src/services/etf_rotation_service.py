@@ -504,7 +504,14 @@ def build_report(
         weighting=params.weighting,
         vols=latest_vols,
     )
-    changed = is_rebalance_needed(result.final_weights, target, result.final_holdings, target_holdings)
+    changed = is_rebalance_needed(
+        result.final_weights,
+        target,
+        result.final_holdings,
+        target_holdings,
+        weighting=params.weighting,
+        reference_weights=result.final_target_weights or None,
+    )
     following = next_session(as_of.date()) if next_session else None
     rebalance_day = is_rebalance_day(as_of, pd.Timestamp(following), params.rebalance) if following else None
 
@@ -515,7 +522,9 @@ def build_report(
     has_backtest = (end - start).days / DAYS_PER_YEAR >= MIN_BACKTEST_YEARS
     if has_backtest:
         sweep = parameter_sweep(closes, risk, safe_asset, params, min_years=MIN_BACKTEST_YEARS)
-        strategy_cmp = compare_strategies(closes, risk, safe_asset, params, min_years=MIN_BACKTEST_YEARS)
+        strategy_cmp = compare_strategies(
+            closes, risk, safe_asset, params, min_years=MIN_BACKTEST_YEARS, precomputed=result
+        )
     else:
         sweep = []
         strategy_cmp = []

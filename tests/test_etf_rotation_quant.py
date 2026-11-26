@@ -121,6 +121,7 @@ def test_trend_regression_stats_identifies_clean_trend_and_penalizes_noise_witho
         scores = compute_factor_scores(closes, RotationParams(lookback_days=40, scoring_mode="trend_r2"))
 
     assert not caught
+    assert ann_slope.iloc[-1]["SMOOTH"] == pytest.approx(0.002 * 244, abs=1e-9)
     assert r2.iloc[-1]["SMOOTH"] == pytest.approx(1.0, abs=1e-9)
     assert r2.iloc[-1]["CHOPPY"] < 0.7
     assert r2.iloc[-1]["FLAT"] == pytest.approx(0.0)
@@ -579,3 +580,112 @@ def test_trend_regression_stats_and_factor_snapshot_stay_low_memory_on_large_pan
     expected_r2 = float((y_c @ x_c) ** 2 / ((x_c @ x_c) * (y_c @ y_c)))
     assert r2_df.iloc[-1]["ETF00"] == pytest.approx(expected_r2, abs=1e-9)
     assert snap.loc["ETF00", "trend_r2"] == pytest.approx(expected_r2, abs=1e-9)
+
+
+def test_equal_weight_safe_asset_promotion_does_not_rebalance_drift():
+    # 25 business days starting Mon 2024-01-01 (Fridays: idx 4, 9, 14, 19, 24).
+    idx = _dates(25, "2024-01-01")
+    a_ret = np.full(25, 0.01)
+    safe_ret = np.r_[
+        np.full(15, -0.0005),  # weeks 1..3: negative 5d return -> SAFE held only as defensive filler
+        np.full(10, 0.003),    # week 4..5: positive 5d return -> SAFE qualifies as formal risk holding
+    ]
+    closes = pd.DataFrame({"A": _path(a_ret), "SAFE": _path(safe_ret)}, index=idx)
+    params = RotationParams(
+        lookback_days=5,
+        top_n=2,
+        cost_bps=10.0,
+        scoring_mode="return",
+        weighting="equal",
+    )
+
+    report = build_report(closes.iloc[:20], ["A", "SAFE"], "SAFE", params, names={}, next_session=_next_bday)
+    assert "**需要调仓**" not in report.markdown
+    assert "维持不变" in report.markdown
+
+    bt = run_backtest(closes, ["A", "SAFE"], "SAFE", params)
+    assert len(bt.trades) == 1
+    assert set(bt.final_weights) == {"A", "SAFE"}
+    assert bt.final_weights["A"] > 0.52
+
+    # Missing vol forces inverse_vol to fall back to 50/50 equal targets; it must not rebalance drift either.
+    inv_fallback = RotationParams(
+        lookback_days=5,
+        vol_lookback_days=50,
+        top_n=2,
+        cost_bps=10.0,
+        scoring_mode="return",
+        weighting="inverse_vol",
+    )
+    bt_fallback = run_backtest(closes, ["A", "SAFE"], "SAFE", inv_fallback)
+    assert len(bt_fallback.trades) == 1
+
+
+def test_trend_r2_uses_linear_annualized_log_slope_without_expm1_inversion():
+    window = 60
+    idx = _dates(window + 1, "2024-01-01")
+    t = np.arange(window, dtype=float)
+    x_c = t - (window - 1) / 2.0
+    s_xx = float(np.dot(x_c, x_c))
+
+    # Asset A: exact daily log slope 0.003, R^2 = 1.0 -> 0.003 * 244 = 0.732
+    log_a = 0.003 * t
+    # Asset B: daily log slope 0.005, orthogonal sinusoidal noise scaled for R^2 = 0.5 -> 0.005 * 244 * 0.5 = 0.610
+    noise = np.sin(2.0 * np.pi * t / window)
+    noise -= noise.mean()
+    noise -= (np.dot(noise, x_c) / s_xx) * x_c
+    target_noise_ss = (0.005 ** 2) * s_xx
+    noise *= math.sqrt(target_noise_ss / float(np.dot(noise, noise)))
+    log_b = 0.005 * x_c + noise
+    log_b -= log_b[0]
+
+    # Append 1 execution bar carrying forward last step safely for run_backtest fill.
+    log_a_full = np.r_[log_a, log_a[-1] + 0.003]
+    log_b_full = np.r_[log_b, log_b[-1] + 0.005]
+    closes = pd.DataFrame({"A": np.exp(log_a_full), "B": np.exp(log_b_full)}, index=idx)
+    assert float(closes.pct_change().abs().max().max()) < 0.045
+
+    params = RotationParams(lookback_days=window, top_n=1, cost_bps=0, scoring_mode="trend_r2", weighting="equal")
+    scores_row = compute_factor_scores(closes.iloc[:window], params).iloc[-1]
+    assert scores_row["A"] == pytest.approx(0.003 * 244, rel=1e-6)
+    assert scores_row["B"] == pytest.approx(0.005 * 244 * 0.5, rel=1e-4)
+    assert scores_row["A"] > scores_row["B"]
+
+    report = build_report(closes.iloc[:window], ["A", "B"], None, params, names={})
+    assert list(report.target_weights.keys()) == ["A"]
+    bt = run_backtest(closes, ["A", "B"], None, params)
+    assert bt.trades[-1].to_weights == {"A": 1.0}
+
+
+def test_identical_strategy_and_benchmark_report_nan_information_ratio():
+    n = 650
+    idx = _dates(n, "2022-01-03")
+    r = 0.0015 + 0.0008 * np.sin(np.arange(n) * 0.25)
+    closes = pd.DataFrame({"A": _path(r)}, index=idx)
+    params = RotationParams(lookback_days=20, top_n=1, cost_bps=0.0, scoring_mode="return", weighting="equal")
+
+    bt = run_backtest(closes, ["A"], None, params)
+    ext = compute_extended_metrics(bt.equity, bt.benchmark_equity, bt.trades)
+    assert len(bt.trades) == 1
+    assert ext["excess_cagr"] == pytest.approx(0.0)
+    assert math.isnan(ext["information_ratio"])
+
+    report = build_report(closes, ["A"], None, params, names={"A": "单一ETF"})
+    assert "| 信息比率 (IR) | - | - |" in report.markdown
+
+
+def test_compare_strategies_with_precomputed_matches_fresh_computation():
+    n = 400
+    idx = _dates(n, "2021-01-01")
+    half = n // 2
+    r_a = np.r_[np.full(half, 0.003), np.full(n - half, -0.002)]
+    r_b = -r_a + 0.0005
+    closes = pd.DataFrame({"A": _path(r_a), "B": _path(r_b), "SAFE": _path(np.full(n, 0.0001))}, index=idx)
+    params = RotationParams(lookback_days=40, top_n=2, scoring_mode="return", weighting="equal")
+
+    bt = run_backtest(closes, ["A", "B"], "SAFE", params)
+    direct = compare_strategies(closes, ["A", "B"], "SAFE", params, min_years=1.0)
+    reused = compare_strategies(closes, ["A", "B"], "SAFE", params, min_years=1.0, precomputed=bt)
+    assert dict(reused).keys() == dict(direct).keys()
+    for key in dict(direct):
+        assert dict(reused)[key] == pytest.approx(dict(direct)[key], nan_ok=True)

@@ -40,6 +40,8 @@ MAX_FORWARD_FILL_DAYS = 5
 DEFAULT_VOL_LOOKBACK_DAYS = 20
 MIN_VOL_FLOOR = 0.05
 MIN_TREND_R2_WINDOW = 5
+MIN_TRACKING_ERROR = 1e-10
+ZERO_TOLERANCE = 1e-12
 DEFAULT_SWEEP_LOOKBACKS = (20, 40, 60, 90, 120, 150, 200)
 STRATEGY_PRESETS = (
     ("return_equal", "return", "equal"),
@@ -95,6 +97,7 @@ class BacktestResult:
     trades: List[Trade] = field(default_factory=list)
     final_weights: Weights = field(default_factory=dict)
     final_holdings: Tuple[str, ...] = ()
+    final_target_weights: Weights = field(default_factory=dict)
 
 
 def prepare_closes(closes: pd.DataFrame) -> pd.DataFrame:
@@ -167,7 +170,7 @@ def trend_regression_stats(
             raw_r2 = np.where(valid_denom, (s_xy * s_xy) / np.where(valid_denom, denom, 1.0), 0.0)
             r2_vals = np.clip(raw_r2, 0.0, 1.0)
             slope_vals = s_xy / s_xx
-            ann_vals = np.expm1(np.clip(slope_vals * TRADING_DAYS_PER_YEAR, -20.0, 20.0))
+            ann_vals = slope_vals * TRADING_DAYS_PER_YEAR
 
             dest_rows = np.flatnonzero(valid_mask) + (w - 1 + start)
             r2_full[dest_rows, col_idx] = r2_vals
@@ -325,13 +328,21 @@ def is_rebalance_needed(
     target_weights: Weights,
     current_holdings: Sequence[str],
     target_holdings: Sequence[str],
+    *,
+    weighting: str = "equal",
+    reference_weights: Optional[Weights] = None,
 ) -> bool:
-    """Return True when target composition or risk holdings change with nonzero trade."""
-    composition_changed = (
-        set(target_weights) != set(current_weights)
-        or set(target_holdings) != set(current_holdings)
-    )
-    return composition_changed and _turnover(current_weights, target_weights) > 1e-9
+    """Return True when asset set changes, or non-equal risk holdings change rule targets."""
+    if set(target_weights) != set(current_weights):
+        return True
+    if weighting == "inverse_vol" and set(target_holdings) != set(current_holdings):
+        rule_changed = (
+            _turnover(reference_weights, target_weights) > 1e-9
+            if reference_weights is not None
+            else True
+        )
+        return rule_changed and _turnover(current_weights, target_weights) > 1e-9
+    return False
 
 
 def _drift(weights: Weights, returns: Dict[str, float]) -> Tuple[Weights, float]:
@@ -393,6 +404,7 @@ def run_backtest(
 
     weights: Weights = {CASH: 1.0}
     holdings: Tuple[str, ...] = ()
+    last_target: Weights = {CASH: 1.0}
     pending: Optional[Tuple[int, pd.Timestamp, Tuple[str, ...], Optional[pd.Series]]] = None
     entry: Optional[int] = None
     trades: List[Trade] = []
@@ -424,19 +436,22 @@ def run_backtest(
             # the current portfolio until a later scheduled signal can trade.
             involved = (set(weights) | set(target)) - {CASH}
             can_trade = all(pd.notna(quoted.loc[day, code]) for code in involved)
-            # Same composition (neither asset weights set nor risk holdings changed) -> no trade.
-            composition_changed = (
-                set(target) != set(weights)
-                or set(new_holdings) != set(holdings)
+            needs_rebalance = is_rebalance_needed(
+                weights,
+                target,
+                holdings,
+                new_holdings,
+                weighting=params.weighting,
+                reference_weights=last_target,
             )
-            if can_trade and (entry is None or composition_changed):
+            if can_trade and (entry is None or needs_rebalance):
                 if entry is None:
                     entry = i
                 turnover = _turnover(weights, target)
                 if turnover > 1e-9:
                     equity *= 1.0 - turnover * cost_rate
                     trades.append(Trade(signal_day, day, dict(weights), target, turnover))
-                weights, holdings = target, new_holdings
+                weights, holdings, last_target = target, new_holdings, dict(target)
 
         if day in rebal and i + EXECUTION_LAG_DAYS < len(dates):
             chosen = select_holdings(scores.loc[day], holdings, params)
@@ -458,6 +473,7 @@ def run_backtest(
         trades=trades,
         final_weights=weights,
         final_holdings=holdings,
+        final_target_weights=last_target,
     )
 
 
@@ -514,7 +530,7 @@ def compute_extended_metrics(
     if len(rets) > 0:
         downside = np.minimum(rets.to_numpy(dtype=float), 0.0)
         downside_vol = float(np.sqrt(np.mean(downside * downside)) * math.sqrt(TRADING_DAYS_PER_YEAR))
-        if math.isfinite(downside_vol) and downside_vol > 0:
+        if math.isfinite(downside_vol) and downside_vol > ZERO_TOLERANCE:
             out["sortino"] = float(rets.mean() * TRADING_DAYS_PER_YEAR / downside_vol)
 
     underwater = (series < series.cummax()).to_numpy(dtype=bool)
@@ -548,7 +564,8 @@ def compute_extended_metrics(
     if benchmark_equity is not None:
         bench_metrics = compute_metrics(benchmark_equity)
         if not math.isnan(base["cagr"]) and not math.isnan(bench_metrics["cagr"]):
-            out["excess_cagr"] = float(base["cagr"] - bench_metrics["cagr"])
+            excess = float(base["cagr"] - bench_metrics["cagr"])
+            out["excess_cagr"] = 0.0 if abs(excess) <= ZERO_TOLERANCE else excess
 
         joined = pd.concat([series, benchmark_equity.dropna()], axis=1).dropna()
         if len(joined) >= 2:
@@ -558,7 +575,7 @@ def compute_extended_metrics(
             active = (s_rets - b_rets).dropna()
             if len(active) > 0:
                 tracking_error = float(active.std(ddof=0) * math.sqrt(TRADING_DAYS_PER_YEAR))
-                if tracking_error > 0:
+                if math.isfinite(tracking_error) and tracking_error > MIN_TRACKING_ERROR:
                     out["information_ratio"] = float(
                         active.mean() * TRADING_DAYS_PER_YEAR / tracking_error
                     )
@@ -693,6 +710,8 @@ def compare_strategies(
     safe_asset: Optional[str],
     params: RotationParams,
     min_years: float = 0.0,
+    *,
+    precomputed: Optional[BacktestResult] = None,
 ) -> List[Tuple[str, Dict[str, float]]]:
     """Compare all built-in factor/weighting presets (plus active custom combo) on a common window."""
     frame = prepare_closes(closes)
@@ -707,6 +726,12 @@ def compare_strategies(
 
     runs: List[Tuple[str, BacktestResult]] = []
     for preset_key, scoring_mode, weighting in specs:
+        if precomputed is not None and (scoring_mode, weighting) == (
+            params.scoring_mode,
+            params.weighting,
+        ):
+            runs.append((preset_key, precomputed))
+            continue
         preset_params = RotationParams(
             lookback_days=params.lookback_days,
             rebalance=params.rebalance,
