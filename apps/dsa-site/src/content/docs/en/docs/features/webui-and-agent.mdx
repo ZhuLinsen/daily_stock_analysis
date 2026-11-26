@@ -11,7 +11,7 @@ DSA ships a FastAPI + React visual workspace (also bundled inside the Electron d
 # Run one analysis batch and keep the Web service running
 python main.py --serve
 
-# Start the Web service and background queue only (default http://127.0.0.1:8000)
+# Start the Web service and background queue without running immediate startup analysis (still restores saved schedules when SCHEDULE_ENABLED=true; default http://127.0.0.1:8000)
 python main.py --serve-only
 ```
 

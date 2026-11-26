@@ -51,7 +51,7 @@ WeChat Work and Slack preserve their existing Markdown conversion and chunking p
 
 Compatibility scope note:
 - `model_used` is strictly display-only (`report_show_llm_model`) and never affects LLM routing, persistence, or config migrations. Related test fixtures live under `tests/fixtures/notification_reports/*.md` and `src/notification.py`.
-- Both `REPORT_SHOW_LLM_MODEL` and `report_renderer_enabled` govern presentation/rendering fallback only; reverting means restoring `true` or removing the override.
+- Both `REPORT_SHOW_LLM_MODEL` (defaults to `true`) and `REPORT_RENDERER_ENABLED` / `report_renderer_enabled` (defaults to `false`) govern presentation/rendering fallback only; reverting means restoring their defaults (`true` / `false`) or removing the override.
 - Correlated sector/concept tables appear only when `fundamental_context.boards.data` / `sector_rankings` or `fundamental_context.concept_boards.data` / `concept_rankings` carry leader/laggard signals (with a "Type" column marking industry vs. concept boards); otherwise, reports keep the compact single-line tag list.
 
 ## GitHub Actions Mapping
@@ -169,7 +169,7 @@ P3 introduces three route filters (comma-separated channels from `wechat,dingtal
 | --- | --- | --- |
 | `report` | `NOTIFICATION_REPORT_CHANNELS` | Single stock, batch daily report, market review, merged email, Feishu doc success links |
 | `alert` | `NOTIFICATION_ALERT_CHANNELS` | `EventMonitor` triggered alert deliveries |
-| `system_error` | `NOTIFICATION_SYSTEM_ERROR_CHANNELS` | Reserved; no automatic producer yet |
+| `system_error` | `NOTIFICATION_SYSTEM_ERROR_CHANNELS` | Analysis timeout partial reports (`runtime_scheduler.py` / `analysis_timeout_partial.py`, controlled by `DSA_TIMEOUT_PARTIAL_NOTIFY`, default `true`); when blank, broadcasts to all configured static channels |
 
 - Blank: preserves legacy behavior (broadcasts to all configured static channels).
 - Non-empty: sends only to the intersection of the route list and configured static channels (never falls back to all channels if empty).
