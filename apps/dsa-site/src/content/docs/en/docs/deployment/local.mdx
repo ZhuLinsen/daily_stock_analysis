@@ -1,0 +1,61 @@
+---
+title: "Local Execution & Offline Diagnostics"
+description: "Run the DSA CLI, local scheduler, WebUI, and --doctor health diagnostics on your machine or development environment."
+---
+
+Best suited for developers, debugging models and data sources locally, or running local `Ollama` models.
+
+## Environment Setup
+
+Requires **Python 3.10+** (Python 3.11 or 3.12 recommended):
+
+```bash
+git clone https://github.com/ZhuLinsen/daily_stock_analysis.git
+cd daily_stock_analysis
+
+python -m venv .venv
+# Linux / macOS:
+source .venv/bin/activate
+# Windows PowerShell:
+# .\.venv\Scripts\Activate.ps1
+
+pip install -r requirements.txt
+cp .env.example .env
+# Edit .env: set STOCK_LIST and at least one AI API key (see Minimal Env Config / LLM Configuration Guide)
+```
+
+Before running your first analysis, configure a valid AI API key following [Minimal Environment Configuration](/en/docs/getting-started/env-config/) or the [LLM Configuration Guide](/en/docs/configuration/llm-guide/) (a blank copy of `.env.example` works for `--doctor`, while analysis runs require a configured model).
+
+## Common CLI Commands
+
+```bash
+# 1. Offline health diagnostics (no LLM calls; checks environment, dependencies, key formats, and source readiness)
+python main.py --doctor
+
+# 2. Run a full analysis and push notifications using STOCK_LIST from .env
+python main.py
+
+# 3. Analyze specific tickers only (supports A/H/US/JP/KR/TW symbols)
+python main.py --stocks 600519,hk00700,AAPL,2330.TW
+
+# 4. Debug mode / dry-run context & log verification
+python main.py --debug
+python main.py --dry-run
+
+# 5. Generate market review only
+python main.py --market-review
+
+# 6. Start the local scheduled daemon mode
+python main.py --schedule
+
+# 7. Start WebUI + API service only (default http://127.0.0.1:8000)
+python main.py --serve-only
+```
+
+## Optional Read-Only MCP Server
+
+DSA provides an experimental read-only stdio MCP server (optional dependency `mcp>=1.0.0,<2`) to expose market quotes, analysis history, and research context to external AI coding or desktop agents:
+
+```bash
+python -m src.mcp_server
+```
