@@ -4,7 +4,7 @@
 
 Use Yahoo ASX symbols with the `.AX` suffix: `A2M.AX`, `NXT.AX`, `BHP.AX`, `GAME.AX`, `A200.AX`.
 
-The shared symbol resolver maps ASCII alphanumeric bases of one to six characters ending `.AX` to market **`au`**, not `us` or `cn`. Recognition is syntactic, not proof of a current listing or Yahoo coverage. Bare symbols keep their existing interpretation: `NXT` and `GAME` can refer to unrelated US companies and are never automatically rewritten to Australian securities.
+The shared symbol resolver maps ASCII alphanumeric bases of one to six characters ending `.AX` to market **`au`**, not `us` or `cn`. Image-import plain-text fallback preserves valid `.AX` symbols and rejects malformed symbol-like tokens instead of extracting bare US fragments; sentence punctuation can delimit tokens. 图片导入纯文本回退保留有效 `.AX` 代码并拒绝格式错误的类符号 token，而非提取裸美股片段；句子标点可分隔 token。 Recognition is syntactic, not proof of a current listing or Yahoo coverage. Bare symbols keep their existing interpretation: `NXT` and `GAME` can refer to unrelated US companies and are never automatically rewritten to Australian securities.
 
 澳股必须带 `.AX`；市场标识为 `au`。支持含数字代码，例如 `A2M.AX` 与 `A200.AX`。裸代码不能自动当作澳股。
 

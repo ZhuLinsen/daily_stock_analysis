@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [修复] 图片导入纯文本回退保留有效 `.AX` 代码并拒绝格式错误的类符号 token，不再提取裸美股片段（OR-COR-45b3d3c1）。
 - [修复] 澳股跨资产上下文风险偏好标题使用“澳股 / Australia ASX”，不再因市场标签缺失回退为“A股 / A-share”；覆盖中英韩提示语、信号不足与 pipeline 到模型提示语路径，默认关闭的配置语义不变（OR-COR-7f0389ac）。
 - [新功能] 新增原生澳股 `au`：显式 `.AX` 代码使用 Yahoo 数据、XASX/悉尼日历和澳洲提示语，保留报价/财报币种及 ETF 类型，拒绝跨市场 fallback 与污染缓存；支持 AU 指数复盘，详见 `docs/asx_support.md`。
 - [修复] 含澳股的多市场复盘分享图可识别澳股/ASX 分段并使用其结构化数据，不再按未识别段落降级。

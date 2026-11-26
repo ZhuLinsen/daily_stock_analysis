@@ -141,9 +141,18 @@ def _parse_codes_from_text(text: str) -> List[str]:
     except json.JSONDecodeError:
         pass
 
-    # 兜底：查找 5-6 位数字及美股代码
-    for m in re.finditer(r"\b([0-9]{5,6}|[A-Z]{1,5}(\.[A-Z])?)\b", text, re.IGNORECASE):
-        c = _normalize_code(m.group(1))
+    # 兜底：按最大整词提取（保留 .AX/.B 等后缀），仅剥离末尾单个句点；
+    # 不修复首尾畸形 token，无效整词整体拒绝，不产生裸片段。
+    # ASCII 守卫：非 ASCII 整词（如 ß/ﬃ/全角数字）整体跳过，
+    # 避免 upper() 将其折叠为 ASCII 假 ticker 或接受全角数字码，
+    # 防止制造子串；仅处理纯 ASCII 候选。
+    for m in re.finditer(r"[\w.\-]+", text):
+        candidate = m.group(0)
+        if not candidate.isascii():
+            continue
+        if candidate.endswith('.') and not candidate.endswith('..'):
+            candidate = candidate[:-1]
+        c = _normalize_code(candidate)
         if c and c not in seen and c not in _FAKE_CODES:
             seen.add(c)
             result.append(c)
