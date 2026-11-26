@@ -26,9 +26,14 @@ export const UiLanguageProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   }, []);
 
   useEffect(() => {
-    if (typeof document !== 'undefined') {
-      document.documentElement.lang = language === 'en' ? 'en' : 'zh-CN';
+    if (typeof document === 'undefined') {
+      return;
     }
+    const previousLang = document.documentElement.lang;
+    document.documentElement.lang = language === 'en' ? 'en' : 'zh-CN';
+    return () => {
+      document.documentElement.lang = previousLang;
+    };
   }, [language]);
 
   const value = useMemo<UiLanguageContextValue>(() => ({

@@ -2,9 +2,11 @@
  * StockAutocomplete component tests.
  */
 
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, render, screen, fireEvent } from '@testing-library/react';
 import { useState } from 'react';
+import { UiLanguageProvider } from '../../../contexts/UiLanguageContext';
+import { UI_LANGUAGE_STORAGE_KEY } from '../../../utils/uiLanguage';
 import { StockAutocomplete } from '../StockAutocomplete';
 import type { UseAutocompleteResult } from '../../../hooks/useAutocomplete';
 import type { StockIndexItem, StockSuggestion } from '../../../types/stockIndex';
@@ -1116,6 +1118,42 @@ describe('StockAutocomplete', () => {
         useRealAutocomplete = false;
         vi.useRealTimers();
       }
+    });
+  });
+
+  describe('localization', () => {
+    afterEach(() => {
+      window.localStorage.removeItem(UI_LANGUAGE_STORAGE_KEY);
+      document.documentElement.lang = '';
+    });
+
+    it('renders English default placeholder in both standard and fallback modes when UI language is en', () => {
+      window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'en');
+
+      const { unmount } = render(
+        <UiLanguageProvider>
+          <StockAutocomplete value="" onChange={mockOnChange} onSubmit={mockOnSubmit} />
+        </UiLanguageProvider>
+      );
+
+      expect(screen.getByPlaceholderText('Enter stock code or name')).toBeInTheDocument();
+      unmount();
+
+      stockIndexHookImpl = () => ({
+        index: [],
+        loading: false,
+        fallback: true,
+        error: new Error('Index load failed'),
+        loaded: false,
+      });
+
+      render(
+        <UiLanguageProvider>
+          <StockAutocomplete value="" onChange={mockOnChange} onSubmit={mockOnSubmit} />
+        </UiLanguageProvider>
+      );
+
+      expect(screen.getByPlaceholderText('Enter stock code or name')).toBeInTheDocument();
     });
   });
 });

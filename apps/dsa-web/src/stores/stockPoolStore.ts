@@ -4,7 +4,7 @@ import type { ParsedApiError } from '../api/error';
 import { getParsedApiError } from '../api/error';
 import { historyApi } from '../api/history';
 import type { AnalysisReport, HistoryItem, HistoryListResponse, ReportLanguage, StockBarItem, StockHistoryFilters, StockHistoryRange, TaskInfo } from '../types/analysis';
-import { getRecentStartDate, getTodayInShanghai } from '../utils/format';
+import { getRecentStartDate, getTodayInShanghai, resolveActiveUiLanguage } from '../utils/format';
 import { toAssetAwareCodeKey, type AssetAwareAssetType } from '../utils/stockCode';
 import { isObviouslyInvalidStockQuery, looksLikeStockCode, validateStockCode } from '../utils/validation';
 
@@ -894,19 +894,25 @@ export const useStockPoolStore = create<StockPoolState>((set, get) => ({
     const forceRefresh = options?.forceRefresh ?? false;
     const skills = options?.skills;
 
+    const language = resolveActiveUiLanguage();
+    const isEnglish = language === 'en';
+
     if (!stockCodeInput) {
-      set({ inputError: '请输入股票代码', duplicateError: null });
+      set({ inputError: isEnglish ? 'Please enter a stock code' : '请输入股票代码', duplicateError: null });
       return;
     }
 
     if (selectionSource !== 'autocomplete' && isObviouslyInvalidStockQuery(stockCodeInput)) {
-      set({ inputError: '请输入有效的股票代码或股票名称', duplicateError: null });
+      set({
+        inputError: isEnglish ? 'Please enter a valid stock code or stock name' : '请输入有效的股票代码或股票名称',
+        duplicateError: null,
+      });
       return;
     }
 
     let normalizedStockCode = stockCodeInput;
     if (selectionSource === 'autocomplete' || looksLikeStockCode(stockCodeInput)) {
-      const { valid, message, normalized } = validateStockCode(stockCodeInput);
+      const { valid, message, normalized } = validateStockCode(stockCodeInput, language);
       if (!valid) {
         set({ inputError: message, duplicateError: null });
         return;
@@ -950,12 +956,14 @@ export const useStockPoolStore = create<StockPoolState>((set, get) => ({
 
       if (error instanceof DuplicateTaskError) {
         set({
-          duplicateError: `股票 ${error.stockCode} 正在分析中，请等待完成`,
+          duplicateError: isEnglish
+            ? `Stock ${error.stockCode} is already being analyzed; please wait for it to finish`
+            : `股票 ${error.stockCode} 正在分析中，请等待完成`,
         });
         return;
       }
 
-      set({ error: getParsedApiError(error) });
+      set({ error: getParsedApiError(error, language) });
     } finally {
       if (requestId === analyzeRequestSeq) {
         set({ isAnalyzing: false });
@@ -989,7 +997,9 @@ export const useStockPoolStore = create<StockPoolState>((set, get) => ({
 
   syncTaskFailed: (task) => {
     get().syncTaskUpdated(task);
-    set({ error: getParsedApiError(task.error || '分析失败') });
+    const language = resolveActiveUiLanguage();
+    const fallbackError = language === 'en' ? 'Analysis failed' : '分析失败';
+    set({ error: getParsedApiError(task.error || fallbackError, language) });
   },
 
   refreshActiveTasks: async () => {

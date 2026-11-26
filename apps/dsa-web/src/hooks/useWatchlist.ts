@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { systemConfigApi } from '../api/systemConfig';
+import { resolveActiveUiLanguage } from '../utils/format';
 import { includesStockCode, toAssetAwareCodeKey } from '../utils/stockCode';
 
 export interface UseWatchlistReturn {
@@ -111,7 +112,9 @@ export function useWatchlist(getCodeKey: (code: string) => string = toAssetAware
           showMessage(successMessage);
         }
       } catch {
-        if (mountedRef.current) showMessage('操作失败');
+        if (mountedRef.current) {
+          showMessage(resolveActiveUiLanguage() === 'en' ? 'Action failed' : '操作失败');
+        }
       } finally {
         actionInFlightRef.current = false;
         if (mountedRef.current) {
@@ -129,7 +132,9 @@ export function useWatchlist(getCodeKey: (code: string) => string = toAssetAware
     async (stockCode: string) => runWatchlistMutation(
       stockCode,
       (code) => systemConfigApi.addToWatchlist(code),
-      `已加入自选 ${stockCode}`,
+      resolveActiveUiLanguage() === 'en'
+        ? `Added ${stockCode} to watchlist`
+        : `已加入自选 ${stockCode}`,
     ),
     [runWatchlistMutation],
   );
@@ -138,7 +143,9 @@ export function useWatchlist(getCodeKey: (code: string) => string = toAssetAware
     async (stockCode: string) => runWatchlistMutation(
       stockCode,
       (code) => systemConfigApi.removeFromWatchlist(code),
-      `已从自选移除 ${stockCode}`,
+      resolveActiveUiLanguage() === 'en'
+        ? `Removed ${stockCode} from watchlist`
+        : `已从自选移除 ${stockCode}`,
     ),
     [runWatchlistMutation],
   );

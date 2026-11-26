@@ -1,8 +1,9 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { StrictMode } from 'react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useWatchlist } from '../useWatchlist';
 import { resolveRegisteredIndexCanonical, toAssetAwareCodeKey } from '../../utils/stockCode';
+import { UI_LANGUAGE_STORAGE_KEY } from '../../utils/uiLanguage';
 
 const {
   mockGetWatchlist,
@@ -25,9 +26,16 @@ vi.mock('../../api/systemConfig', () => ({
 describe('useWatchlist', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    window.localStorage.removeItem(UI_LANGUAGE_STORAGE_KEY);
+    document.documentElement.lang = '';
     mockGetWatchlist.mockResolvedValue([]);
     mockAddToWatchlist.mockResolvedValue([]);
     mockRemoveFromWatchlist.mockResolvedValue([]);
+  });
+
+  afterEach(() => {
+    window.localStorage.removeItem(UI_LANGUAGE_STORAGE_KEY);
+    document.documentElement.lang = '';
   });
 
   it('matches raw HK watchlist entries against prefixed and suffixed variants', async () => {
@@ -470,5 +478,31 @@ describe('useWatchlist', () => {
       await result.current.addToWatchlist('AAPL');
     });
     expect(result.current.watchlistCodes).toEqual(['600519', 'MSFT', 'AAPL']);
+  });
+
+  it('localizes add, remove, and error messages when active UI language is en', async () => {
+    window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'en');
+    mockGetWatchlist.mockResolvedValueOnce([]);
+    mockAddToWatchlist.mockResolvedValueOnce(['600519']);
+    mockRemoveFromWatchlist.mockResolvedValueOnce([]);
+    mockAddToWatchlist.mockRejectedValueOnce(new Error('network error'));
+
+    const { result } = renderHook(() => useWatchlist());
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+    await act(async () => {
+      await result.current.addToWatchlist('600519');
+    });
+    expect(result.current.actionMessage).toBe('Added 600519 to watchlist');
+
+    await act(async () => {
+      await result.current.removeFromWatchlist('600519');
+    });
+    expect(result.current.actionMessage).toBe('Removed 600519 from watchlist');
+
+    await act(async () => {
+      await result.current.addToWatchlist('BAD');
+    });
+    expect(result.current.actionMessage).toBe('Action failed');
   });
 });

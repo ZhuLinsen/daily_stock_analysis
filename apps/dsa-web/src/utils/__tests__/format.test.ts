@@ -1,8 +1,18 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { formatDateInShanghai, getRecentStartDate, getTodayInShanghai, shiftDateKey } from '../format';
+import {
+  formatDate,
+  formatDateInShanghai,
+  formatDateTime,
+  formatReportType,
+  getRecentStartDate,
+  getTodayInShanghai,
+  shiftDateKey,
+} from '../format';
+import { UI_LANGUAGE_STORAGE_KEY } from '../uiLanguage';
 
 describe('Shanghai calendar date helpers', () => {
   afterEach(() => {
+    window.localStorage.removeItem(UI_LANGUAGE_STORAGE_KEY);
     vi.useRealTimers();
     vi.restoreAllMocks();
   });
@@ -54,5 +64,69 @@ describe('Shanghai calendar date helpers', () => {
 
     expect(formatDateInShanghai(new Date('2026-03-05T08:00:00Z'))).toBe('2026-03-05');
     expect(shiftDateKey('2026-03-05', -30)).toBe('2026-02-03');
+  });
+});
+
+describe('UI language-aware formatters', () => {
+  afterEach(() => {
+    window.localStorage.removeItem(UI_LANGUAGE_STORAGE_KEY);
+    document.documentElement.lang = '';
+  });
+
+  it('formats report types in zh, en, and stored UI language', () => {
+    expect(formatReportType('simple')).toBe('普通');
+    expect(formatReportType('detailed', 'zh')).toBe('标准');
+    expect(formatReportType('full', 'zh')).toBe('完整');
+    expect(formatReportType('brief', 'zh')).toBe('简版');
+    expect(formatReportType('market_review', 'zh')).toBe('大盘');
+
+    expect(formatReportType('simple', 'en')).toBe('Simple');
+    expect(formatReportType('detailed', 'en')).toBe('Detailed');
+    expect(formatReportType('full', 'en')).toBe('Full');
+    expect(formatReportType('brief', 'en')).toBe('Brief');
+    expect(formatReportType('market_review', 'en')).toBe('Market Review');
+    expect(formatReportType('custom_mode', 'en')).toBe('custom_mode');
+    expect(formatReportType(undefined, 'en')).toBe('—');
+
+    window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'en');
+    expect(formatReportType('market_review')).toBe('Market Review');
+  });
+
+  it('formats dates and timestamps using active locale', () => {
+    const sampleIso = '2026-05-18T09:30:00Z';
+    const sampleDate = new Date(sampleIso);
+    const expectedZhDateTime = new Intl.DateTimeFormat('zh-CN', {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    }).format(sampleDate);
+    const expectedEnDateTime = new Intl.DateTimeFormat('en-US', {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    }).format(sampleDate);
+    const expectedEnDate = new Intl.DateTimeFormat('en-US', {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).format(sampleDate);
+
+    expect(formatDateTime(sampleIso, 'zh')).toBe(expectedZhDateTime);
+    expect(formatDateTime(sampleIso, 'en')).toBe(expectedEnDateTime);
+    expect(formatDate(sampleIso, 'en')).toBe(expectedEnDate);
+
+    window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'en');
+    expect(formatDateTime(sampleIso)).toBe(expectedEnDateTime);
+    expect(formatDate(sampleIso)).toBe(expectedEnDate);
+    expect(formatDateTime(null)).toBe('—');
+
+    window.localStorage.removeItem(UI_LANGUAGE_STORAGE_KEY);
+    document.documentElement.lang = 'en';
+    expect(formatReportType('market_review')).toBe('Market Review');
+    expect(formatDateTime(sampleIso)).toBe(expectedEnDateTime);
   });
 });

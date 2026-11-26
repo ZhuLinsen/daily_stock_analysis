@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { UiLanguageProvider } from '../../../contexts/UiLanguageContext';
+import { UI_LANGUAGE_STORAGE_KEY } from '../../../utils/uiLanguage';
 import { LLMChannelEditor } from '../LLMChannelEditor';
 
 const {
@@ -3178,5 +3180,136 @@ describe('LLMChannelEditor', () => {
     } finally {
       consoleErrorSpy.mockRestore();
     }
+  });
+
+  describe('localization (EN)', () => {
+    afterEach(() => {
+      window.localStorage.removeItem(UI_LANGUAGE_STORAGE_KEY);
+      document.documentElement.lang = '';
+    });
+
+    it('renders channel manager, expanded provider metadata, runtime parameters, and async results in English without CJK leakage', async () => {
+      window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'en');
+      const cjkPattern = /[\u4e00-\u9fff]/;
+
+      testLLMChannel
+        .mockResolvedValueOnce({
+          success: true,
+          resolvedModel: 'gpt-6.1-sol',
+          latencyMs: 42,
+        })
+        .mockResolvedValueOnce({
+          success: false,
+          stage: 'chat_completion',
+          errorCode: 'model_not_found',
+          message: 'Access denied',
+          details: { reason: 'model_access_denied', model: 'gpt-6.1-sol' },
+        })
+        .mockResolvedValueOnce({
+          success: false,
+          capabilityResults: {
+            json: { status: 'passed', message: 'JSON ok' },
+            tools: { status: 'failed', message: 'Tools unsupported', errorCode: 'capability_unsupported', details: { reason: 'capability_unsupported' } },
+          },
+        });
+      discoverLLMChannelModels
+        .mockResolvedValueOnce({
+          success: true,
+          models: ['gpt-6.1-sol', 'gpt-6.1-terra'],
+          latencyMs: 18,
+        })
+        .mockResolvedValueOnce({
+          success: false,
+          stage: 'model_discovery',
+          errorCode: 'format_error',
+          message: 'Bad JSON payload',
+        });
+
+      const { container } = render(
+        <UiLanguageProvider>
+          <LLMChannelEditor
+            items={[
+              { key: 'LLM_CHANNELS', value: 'modelflare' },
+              { key: 'LLM_MODELFLARE_PROTOCOL', value: 'openai' },
+              { key: 'LLM_MODELFLARE_API_SURFACE', value: 'chat_completions' },
+              { key: 'LLM_MODELFLARE_BASE_URL', value: 'https://modelflare.dev/v1' },
+              { key: 'LLM_MODELFLARE_ENABLED', value: 'true' },
+              { key: 'LLM_MODELFLARE_API_KEY', value: 'sk-mf-test' },
+              { key: 'LLM_MODELFLARE_MODELS', value: 'gpt-6.1-sol' },
+              { key: 'LITELLM_MODEL', value: 'openai/gpt-6.1-sol' },
+            ]}
+            configVersion="v1"
+            maskToken="******"
+            onSaved={() => {}}
+          />
+        </UiLanguageProvider>
+      );
+
+      expect(screen.getByText('AI Model Configuration')).toBeInTheDocument();
+      expect(screen.getByText('Channel Manager')).toBeInTheDocument();
+      expect(screen.getByText('Quick Add Channel')).toBeInTheDocument();
+      expect(screen.getByText('1 channel')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: '+ Add Channel' })).toBeInTheDocument();
+      expect(screen.getByRole('link', { name: 'Sign up for Modelflare' })).toBeInTheDocument();
+      expect(screen.getByText('Channels')).toBeInTheDocument();
+      expect(screen.getByText('1/1 enabled')).toBeInTheDocument();
+      expect(screen.getByText('1 model configured')).toBeInTheDocument();
+      expect(screen.getByText('Runtime Parameters')).toBeInTheDocument();
+      expect(screen.getByLabelText('Primary Model')).toBeInTheDocument();
+      expect(screen.getByLabelText('Agent Primary Model')).toBeInTheDocument();
+      expect(screen.getByText('Fallback Models')).toBeInTheDocument();
+      expect(screen.getByLabelText('Vision Model')).toBeInTheDocument();
+      expect(screen.getByRole('option', { name: 'Auto (use first available model)' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Save AI Config' })).toBeInTheDocument();
+      expect(screen.getByText('No unsaved changes')).toBeInTheDocument();
+      expect(container.textContent).not.toMatch(cjkPattern);
+
+      // Expand Modelflare row
+      fireEvent.click(screen.getByRole('button', { name: /Modelflare \(Aggregator\)/i }));
+      expect(await screen.findByLabelText('Channel Name')).toBeInTheDocument();
+      expect(screen.getByLabelText('Protocol')).toBeInTheDocument();
+      expect(screen.getByLabelText('API Surface')).toBeInTheDocument();
+      expect(screen.getByLabelText('Base URL')).toBeInTheDocument();
+      expect(screen.getByLabelText('API Key')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Fetch Models' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Test Connection' })).toBeInTheDocument();
+      expect(screen.getByText('Runtime Capability Checks (Optional)')).toBeInTheDocument();
+      expect(screen.getByText('Config Reference')).toBeInTheDocument();
+      expect(screen.getByText('Modelflare Exclusive Sign-up')).toBeInTheDocument();
+      expect(container.textContent).not.toMatch(cjkPattern);
+
+      // Test connection success & failure
+      fireEvent.click(screen.getByRole('button', { name: 'Test Connection' }));
+      expect(await screen.findByText('Connected · gpt-6.1-sol · 42 ms')).toBeInTheDocument();
+      expect(screen.getByText('Basic connectivity test uses the first model in the list: gpt-6.1-sol')).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Test Connection' }));
+      expect(await screen.findByText('Chat Completion · Model Unavailable: Access denied')).toBeInTheDocument();
+      expect(screen.getByText(/Tested model: gpt-6\.1-sol\./)).toBeInTheDocument();
+      expect(container.textContent).not.toMatch(cjkPattern);
+
+      // Fetch models success & error
+      fireEvent.click(screen.getByRole('button', { name: 'Fetch Models' }));
+      expect(await screen.findByText('Fetched 2 models · 18 ms')).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Fetch Models' }));
+      expect(await screen.findByText('Model Discovery · Format Error: Bad JSON payload')).toBeInTheDocument();
+      expect(container.textContent).not.toMatch(cjkPattern);
+
+      // Capability check
+      fireEvent.click(screen.getByLabelText('JSON'));
+      fireEvent.click(screen.getByLabelText('Tools'));
+      fireEvent.click(screen.getByRole('button', { name: 'Check Capabilities' }));
+      expect(await screen.findByText('Capability checks complete: 1 passed / 1 failed / 0 skipped')).toBeInTheDocument();
+      expect(screen.getByText('JSON Passed')).toBeInTheDocument();
+      expect(screen.getByText('Tools Failed')).toBeInTheDocument();
+      expect(container.textContent).not.toMatch(cjkPattern);
+
+      // Empty channel name validation error
+      fireEvent.change(screen.getByLabelText('Channel Name'), { target: { value: '' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Save AI Config' }));
+      expect(await screen.findByText('Channel name cannot be empty and may only contain lowercase letters, numbers, or underscores.')).toBeInTheDocument();
+      expect(container.textContent).not.toMatch(cjkPattern);
+    });
   });
 });

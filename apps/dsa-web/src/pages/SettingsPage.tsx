@@ -25,7 +25,7 @@ import {
   SettingsPanelErrorBoundary,
   SettingsSectionCard,
 } from '../components/settings';
-import { WEB_BUILD_INFO } from '../utils/constants';
+import { formatWebBuildTime, WEB_BUILD_INFO } from '../utils/constants';
 import { parseStockListValue } from '../utils/stockList';
 import { getCategoryDescription, getCategoryTitle, getFieldDescriptionZh, getFieldTitleZh } from '../utils/systemConfigI18n';
 import { getSettingsHelpContent } from '../locales/settingsHelp';
@@ -1682,7 +1682,7 @@ const SettingsPage: React.FC = () => {
                       {t('settings.versionBuildTime')}
                     </p>
                     <p className="mt-2 break-all font-mono text-sm text-foreground">
-                      {WEB_BUILD_INFO.buildTime}
+                      {formatWebBuildTime(WEB_BUILD_INFO.buildTime, uiLanguage)}
                     </p>
                   </div>
                   {shouldShowDesktopVersionCard ? (

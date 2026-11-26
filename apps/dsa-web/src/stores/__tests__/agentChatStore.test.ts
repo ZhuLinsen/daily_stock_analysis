@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { UI_LANGUAGE_STORAGE_KEY } from '../../utils/uiLanguage';
 import { useAgentChatStore } from '../agentChatStore';
 import type { ActiveStockContext, ChatSessionDetail } from '../../api/agent';
 
@@ -892,5 +893,71 @@ describe('agentChatStore session Skill state', () => {
     useAgentChatStore.getState().startNewChat();
 
     expect(useAgentChatStore.getState().selectedSkillIds).toBeNull();
+  });
+
+  describe('localization (EN)', () => {
+    afterEach(() => {
+      window.localStorage.removeItem(UI_LANGUAGE_STORAGE_KEY);
+      document.documentElement.lang = '';
+    });
+
+    it('localizes default skill label, separator, interrupted stream, empty content, and protocol error in English', async () => {
+      window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'en');
+
+      vi.mocked(agentApi.chatStream).mockResolvedValueOnce(
+        createStreamResponse([
+          accepted('req-en-empty'),
+          'data: {"type":"done","success":true,"content":""}',
+        ]),
+      );
+      await useAgentChatStore.getState().startStream(
+        { message: 'Analyze AAPL', session_id: 'session-test', request_id: 'req-en-empty' },
+      );
+      expect(useAgentChatStore.getState().messages[0].skillName).toBe('General');
+      expect(useAgentChatStore.getState().messages[1].content).toBe('(No content)');
+
+      vi.mocked(agentApi.chatStream).mockResolvedValueOnce(
+        createStreamResponse([
+          accepted('req-en-multi'),
+          'data: {"type":"done","success":true,"content":"Done"}',
+        ]),
+      );
+      await useAgentChatStore.getState().startStream(
+        { message: 'Analyze AAPL', session_id: 'session-test', request_id: 'req-en-multi', skills: ['bull_trend', 'risk'] },
+        { skillNames: ['Bull Trend', 'Risk Control'] },
+      );
+      expect(useAgentChatStore.getState().messages.at(-1)?.skillName).toBe('Bull Trend, Risk Control');
+
+      vi.mocked(agentApi.chatStream).mockResolvedValueOnce(
+        createStreamResponse([
+          accepted('req-en-interrupted'),
+          'data: {"type":"thinking","step":1,"message":"Working"}',
+        ]),
+      );
+      await useAgentChatStore.getState().startStream({
+        message: 'Analyze AAPL',
+        session_id: 'session-test',
+        request_id: 'req-en-interrupted',
+      });
+      expect(useAgentChatStore.getState().chatError).toMatchObject({
+        title: 'Incomplete response',
+        message: 'The Agent stream was interrupted before completion. Please try again.',
+      });
+
+      vi.mocked(agentApi.chatStream).mockResolvedValueOnce(
+        createStreamResponse([
+          'data: {"type":"done","success":false,"error":"context failed"}',
+        ]),
+      );
+      await useAgentChatStore.getState().startStream({
+        message: 'Analyze AAPL',
+        session_id: 'session-test',
+        request_id: 'req-en-unaccepted',
+      });
+      expect(useAgentChatStore.getState().chatError).toMatchObject({
+        title: 'Request not accepted',
+        message: 'The Agent did not acknowledge this message. Keep your input and try again.',
+      });
+    });
   });
 });

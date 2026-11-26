@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { analysisApi, DuplicateTaskError } from '../../api/analysis';
 import { historyApi } from '../../api/history';
 import type {
@@ -9,6 +9,7 @@ import type {
   TaskListResponse,
 } from '../../types/analysis';
 import { getRecentStartDate, getTodayInShanghai } from '../../utils/format';
+import { UI_LANGUAGE_STORAGE_KEY } from '../../utils/uiLanguage';
 import { useStockPoolStore } from '../stockPoolStore';
 
 vi.mock('../../api/history', () => ({
@@ -1444,5 +1445,43 @@ describe('stockPoolStore', () => {
     const finalState = useStockPoolStore.getState();
     expect(finalState.stockBarItems).toEqual(latestItems);
     expect(finalState.stockBarRefreshFailed).toBe(false);
+  });
+
+  describe('localization (EN)', () => {
+    afterEach(() => {
+      window.localStorage.removeItem(UI_LANGUAGE_STORAGE_KEY);
+      document.documentElement.lang = '';
+    });
+
+    it('localizes validation, duplicate task, and failed task errors in English', async () => {
+      window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'en');
+
+      await useStockPoolStore.getState().submitAnalysis({ stockCode: '' });
+      expect(useStockPoolStore.getState().inputError).toBe('Please enter a stock code');
+
+      await useStockPoolStore.getState().submitAnalysis({ stockCode: 'AAPL??' });
+      expect(useStockPoolStore.getState().inputError).toBe('Please enter a valid stock code or stock name');
+
+      vi.mocked(analysisApi.analyzeAsync).mockRejectedValueOnce(new DuplicateTaskError('AAPL', 'task-dup'));
+      await useStockPoolStore.getState().submitAnalysis({ stockCode: 'AAPL' });
+      expect(useStockPoolStore.getState().duplicateError).toBe(
+        'Stock AAPL is already being analyzed; please wait for it to finish',
+      );
+
+      useStockPoolStore.getState().syncTaskFailed({
+        taskId: 'task-fail-en',
+        stockCode: 'AAPL',
+        stockName: 'Apple',
+        status: 'failed',
+        progress: 100,
+        reportType: 'detailed',
+        createdAt: '2026-03-18T08:00:00Z',
+        error: '',
+      });
+      expect(useStockPoolStore.getState().error).toMatchObject({
+        title: 'Request Failed',
+        message: 'Analysis failed',
+      });
+    });
   });
 });

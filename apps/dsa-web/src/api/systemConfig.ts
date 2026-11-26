@@ -1,6 +1,7 @@
 import apiClient from './index';
 import { createParsedApiError, getParsedApiError, type ParsedApiError } from './error';
 import { toCamelCase } from './utils';
+import { resolveActiveUiLanguage } from '../utils/format';
 import type {
   AgentBackendStatusPreviewRequest,
   AgentBackendStatusResponse,
@@ -38,7 +39,7 @@ export class SystemConfigValidationError extends Error {
     this.name = 'SystemConfigValidationError';
     this.issues = issues;
     this.parsedError = parsedError ?? createParsedApiError({
-      title: '配置校验失败',
+      title: resolveActiveUiLanguage() === 'en' ? 'Configuration validation failed' : '配置校验失败',
       message,
       rawMessage: message,
       status: 400,
@@ -56,7 +57,7 @@ export class SystemConfigConflictError extends Error {
     this.name = 'SystemConfigConflictError';
     this.currentConfigVersion = currentConfigVersion;
     this.parsedError = parsedError ?? createParsedApiError({
-      title: '配置版本冲突',
+      title: resolveActiveUiLanguage() === 'en' ? 'Configuration version conflict' : '配置版本冲突',
       message,
       rawMessage: message,
       status: 409,
@@ -113,6 +114,7 @@ function toSnakeTestChannelPayload(payload: TestLLMChannelRequest): Record<strin
 }
 
 function toSnakeNotificationTestPayload(payload: TestNotificationChannelRequest): Record<string, unknown> {
+  const isEnglish = resolveActiveUiLanguage() === 'en';
   return {
     channel: payload.channel,
     items: (payload.items || []).map((item) => ({
@@ -120,8 +122,12 @@ function toSnakeNotificationTestPayload(payload: TestNotificationChannelRequest)
       value: item.value,
     })),
     mask_token: payload.maskToken ?? '******',
-    title: payload.title ?? 'DSA 通知测试',
-    content: payload.content ?? '这是一条来自 DSA Web 设置页的通知测试消息。',
+    title: payload.title ?? (isEnglish ? 'DSA Notification Test' : 'DSA 通知测试'),
+    content: payload.content ?? (
+      isEnglish
+        ? 'This is a test notification message from DSA Web Settings.'
+        : '这是一条来自 DSA Web 设置页的通知测试消息。'
+    ),
     timeout_seconds: payload.timeoutSeconds ?? 20,
   };
 }
@@ -315,10 +321,11 @@ export const systemConfigApi = {
         const status = (error as { response?: { status?: number } }).response?.status;
         const payloadData = (error as { response?: { data?: unknown } }).response?.data;
 
+        const isEnglish = resolveActiveUiLanguage() === 'en';
         if (status === 400) {
           const validationError = toCamelCase<SystemConfigValidationErrorResponse>(payloadData ?? {});
           throw new SystemConfigValidationError(
-            parsed.message || validationError.message || '配置校验失败',
+            parsed.message || validationError.message || (isEnglish ? 'Configuration validation failed' : '配置校验失败'),
             validationError.issues || [],
             parsed,
           );
@@ -327,7 +334,7 @@ export const systemConfigApi = {
         if (status === 409) {
           const conflict = toCamelCase<SystemConfigConflictResponse>(payloadData ?? {});
           throw new SystemConfigConflictError(
-            parsed.message || conflict.message || '配置版本冲突',
+            parsed.message || conflict.message || (isEnglish ? 'Configuration version conflict' : '配置版本冲突'),
             conflict.currentConfigVersion,
             parsed,
           );

@@ -1,8 +1,9 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createParsedApiError, type ParsedApiError } from '../../api/error';
 import { SystemConfigConflictError, SystemConfigValidationError } from '../../api/systemConfig';
 import type { ConfigValidationIssue } from '../../types/systemConfig';
+import { UI_LANGUAGE_STORAGE_KEY } from '../../utils/uiLanguage';
 import { useSystemConfig } from '../useSystemConfig';
 
 const { getConfig, validate, update } = vi.hoisted(() => ({
@@ -156,9 +157,16 @@ const sampleLlmConfig = {
 describe('useSystemConfig', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    window.localStorage.removeItem(UI_LANGUAGE_STORAGE_KEY);
+    document.documentElement.lang = '';
     getConfig.mockResolvedValue(sampleConfig);
     validate.mockResolvedValue({ valid: true, issues: [] });
     update.mockResolvedValue({ warnings: [] });
+  });
+
+  afterEach(() => {
+    window.localStorage.removeItem(UI_LANGUAGE_STORAGE_KEY);
+    document.documentElement.lang = '';
   });
 
   it('keeps load callback stable after a successful load', async () => {
@@ -1008,5 +1016,78 @@ describe('useSystemConfig', () => {
     ).toBe('SH600519,AAPL');
     expect(result.current.hasDirty).toBe(false);
     expect(result.current.getChangedItems()).toEqual([]);
+  });
+
+  it('localizes save and validation feedback in English when active language is en', async () => {
+    window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'en');
+    getConfig.mockResolvedValue(sampleConfig);
+
+    const { result } = renderHook(() => useSystemConfig());
+    await act(async () => {
+      await result.current.load();
+    });
+
+    // No-op save without dirty changes
+    let noOpOutcome!: { success: boolean; message?: string };
+    await act(async () => {
+      noOpOutcome = await result.current.save();
+    });
+    expect(noOpOutcome).toEqual({ success: true, message: 'No unsaved changes' });
+    expect(result.current.toast).toEqual({ type: 'success', message: 'No unsaved changes.' });
+
+    // Validation failure
+    const validationIssues: ConfigValidationIssue[] = [
+      { key: 'STOCK_LIST', code: 'invalid_stock_code', message: 'Invalid stock code', severity: 'error' },
+    ];
+    validate.mockResolvedValueOnce({ valid: false, issues: validationIssues });
+    act(() => {
+      result.current.setDraftValue('STOCK_LIST', 'BAD_CODE');
+    });
+    let invalidOutcome!: { success: boolean; message?: string; issues?: ConfigValidationIssue[] };
+    await act(async () => {
+      invalidOutcome = await result.current.save();
+    });
+    expect(invalidOutcome).toEqual({
+      success: false,
+      message: 'Configuration validation failed',
+      issues: validationIssues,
+    });
+    expect(result.current.saveError?.title).toBe('Configuration validation failed');
+    expect(result.current.saveError?.message).toBe('Fix the form errors before saving.');
+
+    // In-flight duplicate save guard + success toast with warnings
+    const updateDeferred = createDeferred<{ warnings: string[] }>();
+    update.mockImplementationOnce(() => updateDeferred.promise);
+    let firstSave!: Promise<{ success: boolean; message?: string }>;
+    let duplicateSave!: Promise<{ success: boolean; message?: string }>;
+    act(() => {
+      firstSave = result.current.save();
+      duplicateSave = result.current.save();
+    });
+    expect(await duplicateSave).toEqual({
+      success: false,
+      message: 'Configuration save already in progress',
+    });
+    await act(async () => {
+      updateDeferred.resolve({ warnings: ['warn A', 'warn B'] });
+      await firstSave;
+    });
+    expect(result.current.toast).toEqual({
+      type: 'success',
+      message: 'Settings updated; Warnings: warn A; warn B',
+    });
+
+    // Conflict error formatting
+    act(() => {
+      result.current.setDraftValue('STOCK_LIST', 'AAPL');
+    });
+    update.mockRejectedValueOnce(new SystemConfigConflictError('version stale'));
+    let conflictOutcome!: { success: boolean; message?: string };
+    await act(async () => {
+      conflictOutcome = await result.current.save();
+    });
+    expect(conflictOutcome).toEqual({ success: false, message: 'Save failed' });
+    expect(result.current.saveError?.title).toBe('Configuration version conflict');
+    expect(result.current.saveError?.message).toBe('version stale. Please reload settings first.');
   });
 });
