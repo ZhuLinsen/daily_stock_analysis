@@ -366,3 +366,76 @@ screening:
     ):
         listed = list_strategies(tmp_path)
     assert [item.name for item in listed] == ["healthy_in_memory"]
+
+
+def test_load_strategy_ignores_invalid_legacy_tech_weight_when_factor_weights_configured(
+    tmp_path: Path,
+) -> None:
+    legacy_path = tmp_path / "legacy_custom.yaml"
+    legacy_path.write_text(
+        """
+name: legacy_custom
+display_name: Legacy Factor Strategy
+description: custom factor weights override legacy tech_weight
+screening:
+  enabled: true
+  market_scope: [cn]
+  tech_weight: "not-used"
+  factor_weights:
+    value: 0.6
+    momentum: 0.4
+  max_output: 5
+""".strip(),
+        encoding="utf-8",
+    )
+    loaded = load_strategy(legacy_path)
+    assert loaded.screening.tech_weight == pytest.approx(0.35)
+    assert normalized_factor_weights(loaded.screening) == pytest.approx(
+        {"value": 0.6, "momentum": 0.4}
+    )
+
+    invalid_no_weights = tmp_path / "empty_weights_bad_tech.yaml"
+    invalid_no_weights.write_text(
+        """
+name: empty_weights_bad_tech
+display_name: Invalid Tech Weight Strategy
+description: empty factor weights should reject invalid tech_weight
+screening:
+  enabled: true
+  market_scope: [cn]
+  tech_weight: "not-used"
+  factor_weights: {}
+  max_output: 5
+""".strip(),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="tech_weight"):
+        load_strategy(invalid_no_weights)
+
+
+def test_load_strategy_preserves_exact_factor_weight_keys_without_whitespace_overwrite(
+    tmp_path: Path,
+) -> None:
+    strategy_path = tmp_path / "whitespace_factor_key.yaml"
+    strategy_path.write_text(
+        """
+name: whitespace_factor_key
+display_name: Exact Key Strategy
+description: whitespace-suffixed unknown key must not overwrite valid value weight
+screening:
+  enabled: true
+  market_scope: [cn]
+  factor_weights:
+    value: 0.8
+    "value ": 0.2
+    momentum: 0.2
+  max_output: 5
+""".strip(),
+        encoding="utf-8",
+    )
+    loaded = load_strategy(strategy_path)
+    assert loaded.screening.factor_weights["value"] == pytest.approx(0.8)
+    assert loaded.screening.factor_weights["value "] == pytest.approx(0.2)
+    assert normalized_factor_weights(loaded.screening) == pytest.approx(
+        {"value": 0.8, "momentum": 0.2}
+    )

@@ -209,12 +209,17 @@ def load_strategy(filepath: Path) -> Strategy:
 
     hard_filters = HardFilterConfig(**hf_data)
 
+    factor_weights = _validated_factor_weights(screening_data, filepath)
     screening = ScreeningConfig(
         enabled=screening_data.get("enabled", False),
         market_scope=screening_data.get("market_scope", ["cn"]),
         hard_filters=hard_filters,
-        tech_weight=_validated_tech_weight(screening_data, filepath),
-        factor_weights=_validated_factor_weights(screening_data, filepath),
+        tech_weight=_validated_tech_weight(
+            screening_data,
+            filepath,
+            has_factor_weights=bool(factor_weights),
+        ),
+        factor_weights=factor_weights,
         scoring_profile=_optional_mapping(
             screening_data, "scoring_profile", filepath, allowed_keys=_SCORING_PROFILE_KEYS
         ),
@@ -1039,10 +1044,20 @@ def _coerce_finite_float(raw: object, context: str) -> float:
     return value
 
 
-def _validated_tech_weight(screening_data: dict, filepath: Path) -> float:
+def _validated_tech_weight(
+    screening_data: dict,
+    filepath: Path,
+    *,
+    has_factor_weights: bool = False,
+) -> float:
     raw = screening_data.get("tech_weight", 0.35)
     if raw is None:
         return 0.35
+    if has_factor_weights:
+        try:
+            return _coerce_finite_float(raw, f"tech_weight in strategy file {filepath.name}")
+        except ValueError:
+            return 0.35
     return _coerce_finite_float(raw, f"tech_weight in strategy file {filepath.name}")
 
 
@@ -1056,7 +1071,7 @@ def _validated_factor_weights(screening_data: dict, filepath: Path) -> dict[str,
     for key, weight in raw.items():
         if not isinstance(key, str) or not key.strip():
             raise ValueError(f"Invalid factor_weights key in strategy file {filepath.name}: expected non-empty string")
-        validated[key.strip()] = _coerce_finite_float(
+        validated[key] = _coerce_finite_float(
             weight, f"factor weight '{key}' in strategy file {filepath.name}"
         )
     return validated
