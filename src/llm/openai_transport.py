@@ -41,6 +41,7 @@ from src.llm.native_types import (
     extract_client_overrides,
     has_header_case_insensitive,
     merge_header_overrides,
+    parse_native_model_spec,
     resolve_native_protocol,
     resolve_openai_wire_protocol,
     stream_pooled_completion,
@@ -65,6 +66,8 @@ _CHAT_COMPLETIONS_OPTIONAL_KEYS = (
     "tool_choice",
     "parallel_tool_calls",
     "reasoning_effort",
+    "prompt_cache_key",
+    "prompt_cache_retention",
     "user",
 )
 
@@ -81,6 +84,7 @@ _FILTERED_REQUEST_KWARGS = frozenset(
         "default_headers",
         "custom_llm_provider",
         "wire_protocol",
+        "api_surface",
         "timeout",
         "num_retries",
         "fallbacks",
@@ -97,12 +101,14 @@ def supports_native_openai_provider(
     *,
     api_base: Optional[str] = None,
     custom_llm_provider: Optional[str] = None,
+    api_surface: Optional[str] = None,
 ) -> bool:
     """Return True if model/provider speaks native OpenAI Chat or Responses protocol."""
     protocol = resolve_native_protocol(
         model,
         api_base=api_base,
         custom_llm_provider=custom_llm_provider,
+        api_surface=api_surface,
     )
     if protocol in {"openai_chat", "openai_responses"}:
         return True
@@ -404,6 +410,37 @@ def _convert_tools_for_responses(tools: Any) -> Optional[List[Dict[str, Any]]]:
     return converted or None
 
 
+def _convert_tool_choice_for_responses(tool_choice: Any) -> Any:
+    if tool_choice is None or isinstance(tool_choice, str):
+        return tool_choice
+    if isinstance(tool_choice, Mapping):
+        if tool_choice.get("type") == "function" and isinstance(tool_choice.get("function"), Mapping):
+            fn_name = tool_choice["function"].get("name")
+            if fn_name:
+                return {"type": "function", "name": str(fn_name)}
+        return dict(tool_choice)
+    return tool_choice
+
+
+def _convert_response_format_for_responses(response_format: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(response_format, Mapping):
+        return None
+    rtype = str(response_format.get("type") or "").strip().lower()
+    if rtype == "json_object":
+        return {"format": {"type": "json_object"}}
+    if rtype == "json_schema" and isinstance(response_format.get("json_schema"), Mapping):
+        js = response_format["json_schema"]
+        fmt: Dict[str, Any] = {"type": "json_schema"}
+        if js.get("name") is not None:
+            fmt["name"] = str(js["name"])
+        if isinstance(js.get("schema"), Mapping):
+            fmt["schema"] = dict(js["schema"])
+        if js.get("strict") is not None:
+            fmt["strict"] = bool(js["strict"])
+        return {"format": fmt}
+    return None
+
+
 def build_responses_api_payload(
     *,
     wire_model: str,
@@ -491,7 +528,7 @@ def build_responses_api_payload(
     if responses_tools:
         body["tools"] = responses_tools
     if kwargs.get("tool_choice") is not None:
-        body["tool_choice"] = kwargs["tool_choice"]
+        body["tool_choice"] = _convert_tool_choice_for_responses(kwargs["tool_choice"])
     if kwargs.get("temperature") is not None:
         body["temperature"] = kwargs["temperature"]
     if kwargs.get("top_p") is not None:
@@ -513,6 +550,18 @@ def build_responses_api_payload(
         merged_extra.update(deployment_extra_body)
     if isinstance(kwargs.get("extra_body"), Mapping):
         merged_extra.update(kwargs["extra_body"])
+
+    if isinstance(kwargs.get("text"), Mapping):
+        body["text"] = dict(kwargs["text"])
+    elif "text" not in merged_extra and kwargs.get("response_format") is not None:
+        converted_text = _convert_response_format_for_responses(kwargs["response_format"])
+        if converted_text is not None:
+            body["text"] = converted_text
+
+    for cache_key_field in ("prompt_cache_key", "prompt_cache_retention"):
+        if kwargs.get(cache_key_field) is not None:
+            body[cache_key_field] = kwargs[cache_key_field]
+
     for key, value in merged_extra.items():
         if value is not None:
             body[key] = value
@@ -797,19 +846,28 @@ class NativeOpenAIRouter:
             params = raw_entry.get("litellm_params") or {}
             if not isinstance(params, Mapping):
                 params = {}
+            model_info = raw_entry.get("model_info") or {}
+            if not isinstance(model_info, Mapping):
+                model_info = {}
             raw_model = str(params.get("model") or raw_entry.get("model_name") or "").strip()
             alias = str(raw_entry.get("model_name") or raw_model).strip()
-            provider, wire_model = strip_provider_prefix(raw_model)
+            custom_provider = params.get("custom_llm_provider")
+            provider, wire_model, _ = parse_native_model_spec(
+                raw_model,
+                custom_llm_provider=str(custom_provider) if custom_provider else None,
+            )
             api_base = str(
                 params.get("api_base")
                 or params.get("base_url")
                 or DEFAULT_PROVIDER_BASES.get(provider)
                 or DEFAULT_PROVIDER_BASES["openai"]
             ).strip()
+            api_surface = model_info.get("dsa_api_surface") or params.get("api_surface")
             protocol = resolve_openai_wire_protocol(
                 raw_model,
                 api_base=api_base,
                 wire_protocol=params.get("wire_protocol"),
+                api_surface=str(api_surface) if api_surface else None,
             )
             extra_headers: Dict[str, str] = {}
             merge_header_overrides(extra_headers, params)
@@ -826,7 +884,7 @@ class NativeOpenAIRouter:
                     provider=provider,
                     extra_headers=extra_headers,
                     extra_body=extra_body,
-                    priority=int((raw_entry.get("model_info") or {}).get("priority", idx)),
+                    priority=int(model_info.get("priority", idx)),
                     timeout=float(timeout_val) if timeout_val is not None else None,
                 )
             )
@@ -838,7 +896,11 @@ class NativeOpenAIRouter:
         return self._pool
 
     def _ephemeral_entry(self, model: str, kwargs: Mapping[str, Any]) -> DeploymentEntry:
-        provider, wire_model = strip_provider_prefix(model)
+        custom_provider = kwargs.get("custom_llm_provider")
+        provider, wire_model, _ = parse_native_model_spec(
+            model,
+            custom_llm_provider=str(custom_provider) if custom_provider else None,
+        )
         client_api_key, client_base_url, _client_http = extract_client_overrides(kwargs)
         api_base = str(
             kwargs.get("api_base")
@@ -847,10 +909,12 @@ class NativeOpenAIRouter:
             or DEFAULT_PROVIDER_BASES.get(provider)
             or DEFAULT_PROVIDER_BASES["openai"]
         ).strip()
+        api_surface = kwargs.get("api_surface")
         protocol = resolve_openai_wire_protocol(
             model,
             api_base=api_base,
             wire_protocol=kwargs.get("wire_protocol"),
+            api_surface=str(api_surface) if api_surface else None,
         )
         extra_headers: Dict[str, str] = {}
         merge_header_overrides(extra_headers, kwargs)
@@ -952,10 +1016,12 @@ class NativeOpenAITransport:
         model = str(kwargs.get("model") or "").strip()
         api_base = kwargs.get("api_base") or kwargs.get("base_url")
         custom_provider = kwargs.get("custom_llm_provider")
+        api_surface = kwargs.get("api_surface")
         if not supports_native_openai_provider(
             model,
             api_base=api_base,
             custom_llm_provider=custom_provider,
+            api_surface=str(api_surface) if api_surface else None,
         ):
             if self._fallback_transport is not None:
                 return self._fallback_transport.completion(**kwargs)
@@ -982,12 +1048,19 @@ class NativeOpenAITransport:
 
     def create_router(self, model_list: List[Dict[str, Any]], **kwargs: Any) -> Any:
         """Build a pooled :class:`NativeOpenAIRouter` when deployments use OpenAI-family protocols."""
-        all_openai = all(
-            supports_native_openai_provider(
-                str((entry.get("litellm_params") or {}).get("model") or entry.get("model_name") or ""),
-                api_base=(entry.get("litellm_params") or {}).get("api_base"),
-                custom_llm_provider=(entry.get("litellm_params") or {}).get("custom_llm_provider"),
+        def _entry_supports_openai(entry: Mapping[str, Any]) -> bool:
+            params = entry.get("litellm_params") if isinstance(entry.get("litellm_params"), Mapping) else {}
+            model_info = entry.get("model_info") if isinstance(entry.get("model_info"), Mapping) else {}
+            surface = model_info.get("dsa_api_surface") or params.get("api_surface")
+            return supports_native_openai_provider(
+                str(params.get("model") or entry.get("model_name") or ""),
+                api_base=params.get("api_base") or params.get("base_url"),
+                custom_llm_provider=params.get("custom_llm_provider"),
+                api_surface=str(surface) if surface else None,
             )
+
+        all_openai = all(
+            _entry_supports_openai(entry)
             for entry in (model_list or [])
             if isinstance(entry, Mapping)
         )

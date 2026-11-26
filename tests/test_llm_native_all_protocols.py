@@ -7,8 +7,10 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import unittest
-from unittest.mock import MagicMock
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from unittest.mock import MagicMock, patch
 
 import httpx
 
@@ -17,6 +19,7 @@ from src.llm import (
     NativeAPIError,
     NativeBadRequestError,
     NativeContextWindowExceededError,
+    NativeOpenAITransport,
     NativeRateLimitError,
     NativeUnifiedRouter,
     NativeUnifiedTransport,
@@ -26,6 +29,9 @@ from src.llm import (
 )
 from src.llm.anthropic_transport import resolve_anthropic_endpoint
 from src.llm.gemini_transport import resolve_gemini_endpoint
+from src.llm.native_types import parse_native_model_spec, resolve_openai_wire_protocol, strip_provider_prefix
+from src.llm.openai_transport import build_responses_api_payload, prepare_openai_request
+from src.llm.pool import DeploymentEntry
 from src.llm.usage import normalize_litellm_usage
 
 
@@ -843,6 +849,379 @@ class UnifiedRouterAndFailoverTests(unittest.TestCase):
         self.assertEqual(r_resp.choices[0].message.content, "responses-ok")
         self.assertTrue(seen_urls[0].endswith("/chat/completions"))
         self.assertTrue(seen_urls[1].endswith("/responses"))
+
+
+class ResponsesSurfaceAndLoopbackProtocolTests(unittest.TestCase):
+    def test_parse_native_model_spec_decodes_responses_without_corrupting_nested_models(self) -> None:
+        self.assertEqual(
+            parse_native_model_spec("openai/responses/gpt-4.1"),
+            ("openai", "gpt-4.1", "responses"),
+        )
+        self.assertEqual(
+            parse_native_model_spec("openai/responses/org/gpt-4.1-custom"),
+            ("openai", "org/gpt-4.1-custom", "responses"),
+        )
+        self.assertEqual(
+            parse_native_model_spec("responses/gpt-4.1"),
+            ("openai", "gpt-4.1", "responses"),
+        )
+        self.assertEqual(strip_provider_prefix("openai/responses/gpt-4.1"), ("openai", "gpt-4.1"))
+
+        # Multi-segment model IDs that do not encode Responses stay intact.
+        self.assertEqual(
+            parse_native_model_spec("openrouter/anthropic/claude-3.5-sonnet"),
+            ("openrouter", "anthropic/claude-3.5-sonnet", None),
+        )
+        self.assertEqual(
+            parse_native_model_spec("openai/Qwen/Qwen3"),
+            ("openai", "Qwen/Qwen3", None),
+        )
+
+        # Protocol resolution honors encoded prefix and explicit api_surface overrides.
+        self.assertEqual(resolve_native_protocol("openai/responses/gpt-4.1"), "openai_responses")
+        self.assertEqual(resolve_native_protocol("responses/gpt-4.1"), "openai_responses")
+        self.assertEqual(
+            resolve_native_protocol("openai/gpt-4.1", api_surface="responses"),
+            "openai_responses",
+        )
+        self.assertEqual(
+            resolve_openai_wire_protocol("openai/gpt-5", api_surface="chat_completions"),
+            "openai_chat",
+        )
+        self.assertEqual(
+            resolve_native_protocol("openai/gpt-5", api_surface="chat_completions"),
+            "openai_chat",
+        )
+
+    def test_responses_payload_flattens_tool_choice_response_format_and_cache_key(self) -> None:
+        payload = build_responses_api_payload(
+            wire_model="gpt-4.1",
+            messages=[{"role": "user", "content": "Analyze 600519"}],
+            tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "get_quote",
+                        "description": "Fetch quote",
+                        "parameters": {"type": "object", "properties": {"code": {"type": "string"}}},
+                    },
+                }
+            ],
+            tool_choice={"type": "function", "function": {"name": "get_quote"}},
+            response_format={
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "analysis_report",
+                    "schema": {"type": "object", "properties": {"score": {"type": "number"}}},
+                    "strict": True,
+                },
+            },
+            prompt_cache_key="dsa-cache-key-1",
+            prompt_cache_retention="24h",
+        )
+        self.assertEqual(payload["model"], "gpt-4.1")
+        self.assertEqual(payload["tool_choice"], {"type": "function", "name": "get_quote"})
+        self.assertEqual(
+            payload["text"],
+            {
+                "format": {
+                    "type": "json_schema",
+                    "name": "analysis_report",
+                    "schema": {"type": "object", "properties": {"score": {"type": "number"}}},
+                    "strict": True,
+                }
+            },
+        )
+        self.assertEqual(payload["prompt_cache_key"], "dsa-cache-key-1")
+        self.assertEqual(payload["prompt_cache_retention"], "24h")
+
+        # Also verify chat completions keeps prompt_cache_key and strips internal api_surface
+        entry = DeploymentEntry(
+            deployment_id="oa-chat",
+            model_name="openai/gpt-4.1",
+            wire_model="gpt-4.1",
+            api_base="https://api.openai.com/v1",
+            api_key="sk-oa",
+            protocol="openai_chat",
+            provider="openai",
+        )
+        _, _, chat_body, _ = prepare_openai_request(
+            entry,
+            [{"role": "user", "content": "hi"}],
+            False,
+            {"prompt_cache_key": "chat-key", "api_surface": "chat_completions"},
+        )
+        self.assertEqual(chat_body["prompt_cache_key"], "chat-key")
+        self.assertNotIn("api_surface", chat_body)
+
+    def test_real_loopback_http_and_chunked_sse_across_all_four_protocols(self) -> None:
+        recorded: list[dict] = []
+
+        class LoopbackLLMHandler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def log_message(self, format: str, *args) -> None:  # noqa: A002
+                return
+
+            def _send_json(self, status: int, data: dict) -> None:
+                raw = json.dumps(data).encode("utf-8")
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(raw)))
+                self.send_header("Connection", "close")
+                self.end_headers()
+                self.wfile.write(raw)
+                self.wfile.flush()
+
+            def _send_chunked_sse(self, events: list[str]) -> None:
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+                self.send_header("Cache-Control", "no-cache")
+                self.send_header("Transfer-Encoding", "chunked")
+                self.send_header("Connection", "close")
+                self.end_headers()
+                for event_text in events:
+                    raw = event_text.encode("utf-8")
+                    self.wfile.write(f"{len(raw):X}\r\n".encode("ascii") + raw + b"\r\n")
+                    self.wfile.flush()
+                self.wfile.write(b"0\r\n\r\n")
+                self.wfile.flush()
+
+            def do_POST(self) -> None:  # noqa: N802
+                length = int(self.headers.get("Content-Length", "0") or "0")
+                raw_body = self.rfile.read(length).decode("utf-8")
+                body = json.loads(raw_body) if raw_body else {}
+                recorded.append(
+                    {
+                        "path": self.path,
+                        "auth": self.headers.get("Authorization"),
+                        "x_api_key": self.headers.get("x-api-key"),
+                        "anthropic_version": self.headers.get("anthropic-version"),
+                        "x_goog_api_key": self.headers.get("x-goog-api-key"),
+                        "body": body,
+                    }
+                )
+
+                if self.path == "/v1/responses":
+                    if body.get("stream"):
+                        self._send_chunked_sse(
+                            [
+                                'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"resp-"}\n\n',
+                                'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"stream"}\n\n',
+                                'event: response.completed\ndata: {"type":"response.completed","response":{"id":"resp_sse","model":"gpt-4.1","usage":{"input_tokens":5,"output_tokens":2}}}\n\n',
+                            ]
+                        )
+                    else:
+                        self._send_json(
+                            200,
+                            {
+                                "id": "resp_sync",
+                                "model": body.get("model", "gpt-4.1"),
+                                "output": [
+                                    {
+                                        "type": "message",
+                                        "content": [{"type": "output_text", "text": "resp-ok"}],
+                                    }
+                                ],
+                                "usage": {"input_tokens": 5, "output_tokens": 2},
+                            },
+                        )
+                    return
+
+                if self.path == "/v1/chat/completions":
+                    if body.get("stream"):
+                        self._send_chunked_sse(
+                            [
+                                'data: {"id":"chat_sse","model":"gpt-4o","choices":[{"index":0,"delta":{"content":"chat-"}}]}\n\n',
+                                'data: {"id":"chat_sse","model":"gpt-4o","choices":[{"index":0,"delta":{"content":"stream"},"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":2,"total_tokens":6}}\n\n',
+                                "data: [DONE]\n\n",
+                            ]
+                        )
+                    else:
+                        self._send_json(
+                            200,
+                            {
+                                "id": "chat_sync",
+                                "model": body.get("model", "gpt-4o"),
+                                "choices": [
+                                    {"index": 0, "finish_reason": "stop", "message": {"role": "assistant", "content": "chat-ok"}}
+                                ],
+                                "usage": {"prompt_tokens": 4, "completion_tokens": 2, "total_tokens": 6},
+                            },
+                        )
+                    return
+
+                if self.path == "/v1/messages":
+                    if body.get("stream"):
+                        self._send_chunked_sse(
+                            [
+                                'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_sse","model":"claude-sonnet-4-5","usage":{"input_tokens":7}}}\n\n',
+                                'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ant-"}}\n\n',
+                                'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"stream"}}\n\n',
+                                'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}\n\n',
+                                'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+                            ]
+                        )
+                    else:
+                        self._send_json(
+                            200,
+                            {
+                                "id": "msg_sync",
+                                "model": "claude-sonnet-4-5",
+                                "role": "assistant",
+                                "stop_reason": "end_turn",
+                                "content": [{"type": "text", "text": "ant-ok"}],
+                                "usage": {"input_tokens": 7, "output_tokens": 2},
+                            },
+                        )
+                    return
+
+                if ":streamGenerateContent" in self.path:
+                    self._send_chunked_sse(
+                        [
+                            'data: {"responseId":"gem_sse","modelVersion":"gemini-2.5-flash","candidates":[{"index":0,"content":{"parts":[{"text":"gem-"}]}}]}\n\n',
+                            'data: {"responseId":"gem_sse","modelVersion":"gemini-2.5-flash","candidates":[{"index":0,"finishReason":"STOP","content":{"parts":[{"text":"stream"}]}}],"usageMetadata":{"promptTokenCount":8,"candidatesTokenCount":2,"totalTokenCount":10}}\n\n',
+                        ]
+                    )
+                    return
+
+                if ":generateContent" in self.path:
+                    self._send_json(
+                        200,
+                        {
+                            "responseId": "gem_sync",
+                            "modelVersion": "gemini-2.5-flash",
+                            "candidates": [{"index": 0, "finishReason": "STOP", "content": {"parts": [{"text": "gem-ok"}]}}],
+                            "usageMetadata": {"promptTokenCount": 8, "candidatesTokenCount": 2, "totalTokenCount": 10},
+                        },
+                    )
+                    return
+
+                self._send_json(404, {"error": {"message": f"Unexpected path {self.path}"}})
+
+        try:
+            server = ThreadingHTTPServer(("127.0.0.1", 0), LoopbackLLMHandler)
+        except PermissionError as exc:
+            self.skipTest(f"Local loopback TCP sockets are unavailable: {exc}")
+
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        base_root = f"http://127.0.0.1:{server.server_port}"
+
+        try:
+            with patch.dict(os.environ, {"NO_PROXY": "127.0.0.1,localhost", "no_proxy": "127.0.0.1,localhost"}):
+                transport = create_native_transport(fallback_to_litellm=False)
+                messages = [{"role": "user", "content": "ping"}]
+
+                # 1. OpenAI Responses (via channel wire encoding openai/responses/gpt-4.1)
+                r_resp = transport.completion(
+                    model="openai/responses/gpt-4.1",
+                    api_key="sk-resp-loop",
+                    api_base=f"{base_root}/v1",
+                    messages=messages,
+                )
+                self.assertEqual(r_resp.choices[0].message.content, "resp-ok")
+                self.assertEqual(recorded[-1]["path"], "/v1/responses")
+                self.assertEqual(recorded[-1]["body"]["model"], "gpt-4.1")
+                self.assertEqual(recorded[-1]["auth"], "Bearer sk-resp-loop")
+
+                resp_stream = "".join(
+                    c.choices[0].delta.content or ""
+                    for c in transport.completion(
+                        model="openai/responses/gpt-4.1",
+                        api_key="sk-resp-loop",
+                        api_base=f"{base_root}/v1",
+                        messages=messages,
+                        stream=True,
+                    )
+                )
+                self.assertEqual(resp_stream, "resp-stream")
+
+                # 2. OpenAI Chat Completions
+                r_chat = transport.completion(
+                    model="openai/gpt-4o",
+                    api_key="sk-chat-loop",
+                    api_base=f"{base_root}/v1",
+                    messages=messages,
+                )
+                self.assertEqual(r_chat.choices[0].message.content, "chat-ok")
+                self.assertEqual(recorded[-1]["path"], "/v1/chat/completions")
+                chat_stream = "".join(
+                    c.choices[0].delta.content or ""
+                    for c in transport.completion(
+                        model="openai/gpt-4o",
+                        api_key="sk-chat-loop",
+                        api_base=f"{base_root}/v1",
+                        messages=messages,
+                        stream=True,
+                    )
+                )
+                self.assertEqual(chat_stream, "chat-stream")
+
+                # 3. Anthropic Messages
+                r_ant = transport.completion(
+                    model="anthropic/claude-sonnet-4-5",
+                    api_key="sk-ant-loop",
+                    api_base=base_root,
+                    messages=messages,
+                )
+                self.assertEqual(r_ant.choices[0].message.content, "ant-ok")
+                self.assertEqual(recorded[-1]["path"], "/v1/messages")
+                self.assertEqual(recorded[-1]["x_api_key"], "sk-ant-loop")
+                self.assertEqual(recorded[-1]["anthropic_version"], "2023-06-01")
+                ant_stream = "".join(
+                    c.choices[0].delta.content or ""
+                    for c in transport.completion(
+                        model="anthropic/claude-sonnet-4-5",
+                        api_key="sk-ant-loop",
+                        api_base=base_root,
+                        messages=messages,
+                        stream=True,
+                    )
+                )
+                self.assertEqual(ant_stream, "ant-stream")
+
+                # 4. Google Gemini REST
+                r_gem = transport.completion(
+                    model="gemini/gemini-2.5-flash",
+                    api_key="AIzaLoopTest",
+                    api_base=f"{base_root}/v1beta",
+                    messages=messages,
+                )
+                self.assertEqual(r_gem.choices[0].message.content, "gem-ok")
+                self.assertEqual(
+                    recorded[-1]["path"],
+                    "/v1beta/models/gemini-2.5-flash:generateContent",
+                )
+                self.assertEqual(recorded[-1]["x_goog_api_key"], "AIzaLoopTest")
+                self.assertNotIn("AIzaLoopTest", recorded[-1]["path"])
+                gem_stream = "".join(
+                    c.choices[0].delta.content or ""
+                    for c in transport.completion(
+                        model="gemini/gemini-2.5-flash",
+                        api_key="AIzaLoopTest",
+                        api_base=f"{base_root}/v1beta",
+                        messages=messages,
+                        stream=True,
+                    )
+                )
+                self.assertEqual(gem_stream, "gem-stream")
+
+                # Verify NativeOpenAITransport also respects openai/responses/<model> over real TCP
+                oa_transport = NativeOpenAITransport()
+                r_oa = oa_transport.completion(
+                    model="openai/responses/gpt-4.1",
+                    api_key="sk-oa-loop",
+                    api_base=f"{base_root}/v1",
+                    messages=messages,
+                )
+                self.assertEqual(r_oa.choices[0].message.content, "resp-ok")
+                self.assertEqual(recorded[-1]["path"], "/v1/responses")
+                self.assertEqual(recorded[-1]["body"]["model"], "gpt-4.1")
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
 
 
 if __name__ == "__main__":

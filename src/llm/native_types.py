@@ -309,21 +309,54 @@ class NativeStreamChunk:
 # ============================================================
 
 
-def strip_provider_prefix(model: str) -> Tuple[str, str]:
-    """Extract ``(provider, wire_model)``, inferring Anthropic/Gemini when unprefixed."""
+def parse_native_model_spec(
+    model: str,
+    *,
+    custom_llm_provider: Optional[str] = None,
+) -> Tuple[str, str, Optional[str]]:
+    """Parse ``(provider, wire_model, encoded_api_surface)`` from a model identifier.
+
+    Decodes LiteLLM's Responses API encodings (``openai/responses/<model>`` and
+    ``responses/<model>``) while preserving multi-segment gateway model IDs such as
+    ``openrouter/anthropic/claude-3.5-sonnet`` and ``openai/Qwen/Qwen3``.
+    """
     raw = str(model or "").strip()
+    custom_provider = (custom_llm_provider or "").strip().lower()
     if not raw:
-        return "openai", ""
+        return (custom_provider or "openai"), "", None
     if "/" not in raw:
         lowered = raw.lower()
         if lowered.startswith("claude"):
-            return "anthropic", raw
-        if lowered.startswith("gemini"):
-            return "gemini", raw
-        return "openai", raw
+            inferred = "anthropic"
+        elif lowered.startswith("gemini"):
+            inferred = "gemini"
+        else:
+            inferred = "openai"
+        return (custom_provider or inferred), raw, None
+
     prefix, rest = raw.split("/", 1)
-    provider = prefix.strip().lower()
-    return provider, rest.strip()
+    prefix_l = prefix.strip().lower()
+    rest_clean = rest.strip()
+
+    if prefix_l == "responses" and rest_clean:
+        return (custom_provider or "openai"), rest_clean, "responses"
+
+    effective_provider = custom_provider or prefix_l
+    if (
+        prefix_l in {"openai", "openai_compatible"}
+        or effective_provider in {"openai", "openai_compatible"}
+    ) and rest_clean.lower().startswith("responses/"):
+        inner = rest_clean.split("/", 1)[1].strip()
+        if inner:
+            return effective_provider, inner, "responses"
+
+    return (custom_provider or prefix_l), rest_clean, None
+
+
+def strip_provider_prefix(model: str) -> Tuple[str, str]:
+    """Extract ``(provider, wire_model)``, decoding ``responses/`` and inferring unprefixed models."""
+    provider, wire_model, _ = parse_native_model_spec(model)
+    return provider, wire_model
 
 
 def resolve_openai_wire_protocol(
@@ -331,6 +364,7 @@ def resolve_openai_wire_protocol(
     *,
     api_base: Optional[str] = None,
     wire_protocol: Optional[str] = None,
+    api_surface: Optional[str] = None,
 ) -> str:
     """Resolve ``openai_chat`` vs ``openai_responses`` for an OpenAI-family target."""
     explicit = (wire_protocol or "").strip().lower()
@@ -339,11 +373,20 @@ def resolve_openai_wire_protocol(
     if explicit in {"openai_responses", "responses", "openai-responses"}:
         return "openai_responses"
 
+    surface = (api_surface or "").strip().lower()
+    if surface in {"openai_chat", "chat", "chat_completions"}:
+        return "openai_chat"
+    if surface in {"openai_responses", "responses", "openai-responses"}:
+        return "openai_responses"
+
+    provider, wire_model, encoded_surface = parse_native_model_spec(model)
+    if encoded_surface == "responses":
+        return "openai_responses"
+
     normalized_base = (api_base or "").strip().rstrip("/").lower()
     if normalized_base.endswith("/responses"):
         return "openai_responses"
 
-    provider, wire_model = strip_provider_prefix(model)
     lowered_model = wire_model.lower()
     if provider in {"openai", "openai_compatible"} and (
         (lowered_model.startswith("gpt-5") and "chat-latest" not in lowered_model)
@@ -362,6 +405,7 @@ def resolve_native_protocol(
     api_base: Optional[str] = None,
     custom_llm_provider: Optional[str] = None,
     wire_protocol: Optional[str] = None,
+    api_surface: Optional[str] = None,
 ) -> Optional[str]:
     """Resolve native wire protocol (``openai_chat``, ``openai_responses``, ``anthropic``, ``gemini``) or ``None``."""
     explicit = (wire_protocol or "").strip().lower()
@@ -383,9 +427,14 @@ def resolve_native_protocol(
         if provider_hint in NATIVE_GEMINI_PROVIDERS:
             return "gemini"
         if provider_hint in {"openai", "openai_compatible"} or provider_hint in NATIVE_OPENAI_PROVIDERS:
-            return resolve_openai_wire_protocol(model, api_base=api_base, wire_protocol=wire_protocol)
+            return resolve_openai_wire_protocol(
+                model,
+                api_base=api_base,
+                wire_protocol=wire_protocol,
+                api_surface=api_surface,
+            )
 
-    provider, _ = strip_provider_prefix(model)
+    provider, _, _ = parse_native_model_spec(model)
     if provider in FALLBACK_ONLY_PROVIDERS:
         return None
     if provider in NATIVE_ANTHROPIC_PROVIDERS:
@@ -393,7 +442,12 @@ def resolve_native_protocol(
     if provider in NATIVE_GEMINI_PROVIDERS:
         return "gemini"
     if provider in NATIVE_OPENAI_PROVIDERS:
-        return resolve_openai_wire_protocol(model, api_base=api_base, wire_protocol=wire_protocol)
+        return resolve_openai_wire_protocol(
+            model,
+            api_base=api_base,
+            wire_protocol=wire_protocol,
+            api_surface=api_surface,
+        )
 
     if api_base:
         normalized_base = str(api_base).strip().lower()
@@ -401,7 +455,12 @@ def resolve_native_protocol(
             return "anthropic"
         if "generativelanguage.googleapis.com" in normalized_base:
             return "gemini"
-        return resolve_openai_wire_protocol(model, api_base=api_base, wire_protocol=wire_protocol)
+        return resolve_openai_wire_protocol(
+            model,
+            api_base=api_base,
+            wire_protocol=wire_protocol,
+            api_surface=api_surface,
+        )
 
     return None
 

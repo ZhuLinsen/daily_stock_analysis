@@ -840,6 +840,112 @@ assert "litellm" not in sys.modules, f"litellm unexpectedly imported: {list(k fo
                 formatted = format_doctor_report(report)
                 self.assertIn("transport=native", formatted)
 
+    def test_channel_api_surface_responses_routes_to_responses_endpoint_across_router_and_callers(self) -> None:
+        from src.config import apply_litellm_api_surface
+        from src.llm import NativeOpenAIRouter, NativeOpenAITransport
+
+        env = {
+            "LLM_CHANNELS": "openai",
+            "LLM_OPENAI_PROTOCOL": "openai",
+            "LLM_OPENAI_BASE_URL": "https://api.openai.com/v1",
+            "LLM_OPENAI_API_KEY": "sk-resp-channel",
+            "LLM_OPENAI_MODELS": "openai/gpt-4.1",
+            "LLM_OPENAI_API_SURFACE": "responses",
+            "LITELLM_MODEL": "openai/gpt-4.1",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            cfg = Config._load_from_env()
+
+        self.assertEqual(len(cfg.llm_model_list), 1)
+        entry = cfg.llm_model_list[0]
+        self.assertEqual(entry["model_name"], "openai/gpt-4.1")
+        self.assertEqual(entry["litellm_params"]["model"], "openai/responses/gpt-4.1")
+        self.assertEqual(entry["model_info"]["dsa_api_surface"], "responses")
+
+        captured: list[tuple[str, dict]] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content.decode("utf-8"))
+            captured.append((str(request.url), body))
+            return httpx.Response(
+                200,
+                json={
+                    "id": "resp_e2e",
+                    "object": "response",
+                    "model": body.get("model", "gpt-4.1"),
+                    "output": [
+                        {
+                            "type": "message",
+                            "content": [{"type": "output_text", "text": "OK"}],
+                        }
+                    ],
+                    "usage": {"input_tokens": 5, "output_tokens": 1},
+                },
+            )
+
+        mock_http = httpx.MockTransport(handler)
+        for fallback_to_litellm in (True, False):
+            transport = create_native_transport(
+                http_transport=mock_http,
+                fallback_to_litellm=fallback_to_litellm,
+            )
+            router = transport.create_router(cfg.llm_model_list, timeout=10, num_retries=0)
+            self.assertIsInstance(router, NativeUnifiedRouter)
+            resp = router.completion(
+                model="openai/gpt-4.1",
+                messages=[{"role": "user", "content": "Reply with OK"}],
+            )
+            self.assertEqual(resp.choices[0].message.content, "OK")
+
+            url, body = captured[-1]
+            self.assertEqual(url, "https://api.openai.com/v1/responses")
+            self.assertEqual(body["model"], "gpt-4.1")
+            self.assertIn("input", body)
+            self.assertNotIn("messages", body)
+
+            # Direct completion path (used by screening/ranker via apply_litellm_api_surface)
+            wire_model = apply_litellm_api_surface("openai/gpt-4.1", "responses")
+            direct_resp = transport.completion(
+                model=wire_model,
+                api_key="sk-resp-channel",
+                api_base="https://api.openai.com/v1",
+                messages=[{"role": "user", "content": "Rank candidates"}],
+            )
+            self.assertEqual(direct_resp.choices[0].message.content, "OK")
+            url2, body2 = captured[-1]
+            self.assertEqual(url2, "https://api.openai.com/v1/responses")
+            self.assertEqual(body2["model"], "gpt-4.1")
+
+        # NativeOpenAITransport / NativeOpenAIRouter parity
+        oa_transport = NativeOpenAITransport(http_transport=mock_http)
+        oa_router = oa_transport.create_router(cfg.llm_model_list, timeout=10, num_retries=0)
+        self.assertIsInstance(oa_router, NativeOpenAIRouter)
+        oa_resp = oa_router.completion(
+            model="openai/gpt-4.1",
+            messages=[{"role": "user", "content": "Check router"}],
+        )
+        self.assertEqual(oa_resp.choices[0].message.content, "OK")
+        self.assertEqual(captured[-1][0], "https://api.openai.com/v1/responses")
+        self.assertEqual(captured[-1][1]["model"], "gpt-4.1")
+
+        # Web Settings SystemConfigService.test_llm_channel path
+        svc = SystemConfigService.__new__(SystemConfigService)
+        unified = create_native_transport(http_transport=mock_http, fallback_to_litellm=False)
+        with use_transport(unified):
+            result = svc.test_llm_channel(
+                name="openai_responses_test",
+                protocol="openai",
+                base_url="https://api.openai.com/v1",
+                api_key="sk-resp-channel",
+                models=["openai/gpt-4.1"],
+                api_surface="responses",
+                enabled=True,
+                timeout_seconds=10.0,
+            )
+        self.assertTrue(result["success"], msg=result)
+        self.assertEqual(captured[-1][0], "https://api.openai.com/v1/responses")
+        self.assertEqual(captured[-1][1]["model"], "gpt-4.1")
+
 
 if __name__ == "__main__":
     unittest.main()

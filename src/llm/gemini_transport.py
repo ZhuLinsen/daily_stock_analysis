@@ -583,7 +583,7 @@ def prepare_gemini_request(
     filtered_kwargs = {
         k: v
         for k, v in kwargs.items()
-        if k not in {"wire_model", "messages", "stream", "deployment_extra_body", "client"}
+        if k not in {"wire_model", "messages", "stream", "deployment_extra_body", "client", "api_surface", "wire_protocol"}
     }
     payload = build_gemini_payload(
         wire_model=entry.wire_model,

@@ -28,6 +28,7 @@ from src.llm.native_types import (
     execute_pooled_completion,
     extract_client_overrides,
     merge_header_overrides,
+    parse_native_model_spec,
     resolve_default_api_base,
     resolve_native_protocol,
     stream_pooled_completion,
@@ -206,6 +207,7 @@ def supports_native_protocol(
     api_base: Optional[str] = None,
     custom_llm_provider: Optional[str] = None,
     wire_protocol: Optional[str] = None,
+    api_surface: Optional[str] = None,
 ) -> bool:
     """Return True when target is handled natively across OpenAI/Anthropic/Gemini."""
     return (
@@ -214,6 +216,7 @@ def supports_native_protocol(
             api_base=api_base,
             custom_llm_provider=custom_llm_provider,
             wire_protocol=wire_protocol,
+            api_surface=api_surface,
         )
         is not None
     )
@@ -261,19 +264,23 @@ class NativeUnifiedRouter:
         raw_model: str,
         params: Mapping[str, Any],
         priority: int,
+        api_surface: Optional[str] = None,
     ) -> DeploymentEntry:
         client_api_key, client_base_url, _ = extract_client_overrides(params)
         api_base_override = params.get("api_base") or params.get("base_url") or client_base_url
         custom_provider = params.get("custom_llm_provider")
+        resolved_surface = api_surface if api_surface is not None else params.get("api_surface")
         protocol = resolve_native_protocol(
             raw_model,
             api_base=str(api_base_override) if api_base_override else None,
             custom_llm_provider=str(custom_provider) if custom_provider else None,
             wire_protocol=params.get("wire_protocol"),
+            api_surface=str(resolved_surface) if resolved_surface else None,
         )
-        provider, wire_model = strip_provider_prefix(raw_model)
-        if custom_provider:
-            provider = str(custom_provider).strip().lower()
+        provider, wire_model, _ = parse_native_model_spec(
+            raw_model,
+            custom_llm_provider=str(custom_provider) if custom_provider else None,
+        )
         if protocol is None:
             raise NativeBadRequestError(
                 f"Model '{raw_model}' does not use a native HTTPX protocol",
@@ -309,9 +316,13 @@ class NativeUnifiedRouter:
             params = raw_entry.get("litellm_params") or {}
             if not isinstance(params, Mapping):
                 params = {}
+            model_info = raw_entry.get("model_info") or {}
+            if not isinstance(model_info, Mapping):
+                model_info = {}
             raw_model = str(params.get("model") or raw_entry.get("model_name") or "").strip()
             alias = str(raw_entry.get("model_name") or raw_model).strip()
-            priority = int((raw_entry.get("model_info") or {}).get("priority", idx))
+            priority = int(model_info.get("priority", idx))
+            api_surface = model_info.get("dsa_api_surface") or params.get("api_surface")
             entries.append(
                 cls._build_entry(
                     deployment_id=f"{alias}:{idx}",
@@ -319,6 +330,7 @@ class NativeUnifiedRouter:
                     raw_model=raw_model,
                     params=params,
                     priority=priority,
+                    api_surface=str(api_surface) if api_surface else None,
                 )
             )
         return entries
@@ -481,12 +493,14 @@ class NativeUnifiedTransport:
         api_base = kwargs.get("api_base") or kwargs.get("base_url") or client_base_url
         custom_provider = kwargs.get("custom_llm_provider")
         wire_protocol = kwargs.get("wire_protocol")
+        api_surface = kwargs.get("api_surface")
 
         if not supports_native_protocol(
             model,
             api_base=str(api_base) if api_base else None,
             custom_llm_provider=str(custom_provider) if custom_provider else None,
             wire_protocol=str(wire_protocol) if wire_protocol else None,
+            api_surface=str(api_surface) if api_surface else None,
         ):
             if self._fallback_transport is not None:
                 return self._fallback_transport.completion(**kwargs)
@@ -513,14 +527,20 @@ class NativeUnifiedTransport:
 
     def create_router(self, model_list: List[Dict[str, Any]], **kwargs: Any) -> Any:
         """Build a pooled :class:`NativeUnifiedRouter` when every deployment uses a native protocol."""
-        all_native = all(
-            supports_native_protocol(
-                str((entry.get("litellm_params") or {}).get("model") or entry.get("model_name") or ""),
-                api_base=(entry.get("litellm_params") or {}).get("api_base")
-                or (entry.get("litellm_params") or {}).get("base_url"),
-                custom_llm_provider=(entry.get("litellm_params") or {}).get("custom_llm_provider"),
-                wire_protocol=(entry.get("litellm_params") or {}).get("wire_protocol"),
+        def _entry_supports_native(entry: Mapping[str, Any]) -> bool:
+            params = entry.get("litellm_params") if isinstance(entry.get("litellm_params"), Mapping) else {}
+            model_info = entry.get("model_info") if isinstance(entry.get("model_info"), Mapping) else {}
+            surface = model_info.get("dsa_api_surface") or params.get("api_surface")
+            return supports_native_protocol(
+                str(params.get("model") or entry.get("model_name") or ""),
+                api_base=params.get("api_base") or params.get("base_url"),
+                custom_llm_provider=params.get("custom_llm_provider"),
+                wire_protocol=params.get("wire_protocol"),
+                api_surface=str(surface) if surface else None,
             )
+
+        all_native = all(
+            _entry_supports_native(entry)
             for entry in (model_list or [])
             if isinstance(entry, Mapping)
         )
