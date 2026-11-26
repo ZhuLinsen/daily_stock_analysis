@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  attachParsedApiError,
   formatParsedApiError,
   getParsedApiError,
+  localizeParsedApiError,
   parseApiError,
   toApiErrorMessage,
 } from '../error';
@@ -155,5 +157,42 @@ describe('API error and stocksApi localization', () => {
   it('localizes empty import input error in English when UI language is en', async () => {
     window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'en');
     await expect(stocksApi.parseImport()).rejects.toThrow('Please provide a file or paste text');
+  });
+
+  it('re-localizes attached Errors and validation_failed ParsedApiError dynamically across language switches', () => {
+    window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'zh');
+    const networkErr = new Error('Network Error') as Error & { code?: string };
+    networkErr.code = 'ERR_NETWORK';
+
+    const attachedZh = attachParsedApiError(networkErr);
+    expect(attachedZh.title).toBe('无法连接到本地服务');
+    expect(networkErr.message).toContain('无法连接到本地服务');
+
+    const resolvedEn = getParsedApiError(networkErr, 'en');
+    expect(resolvedEn.title).toBe('Cannot Connect to Local Service');
+    expect(resolvedEn.message).not.toMatch(/[\u4e00-\u9fff]/);
+    expect(localizeParsedApiError(attachedZh, 'zh').title).toBe('无法连接到本地服务');
+
+    const emptyMsgErr = new Error('') as Error & { response?: { status: number; data: unknown } };
+    emptyMsgErr.response = {
+      status: 400,
+      data: {
+        detail: {
+          error: 'validation_failed',
+          issues: [{ key: 'LITELLM_MODEL', code: 'unknown_model' }],
+        },
+      },
+    };
+    const attachedValidationZh = attachParsedApiError(emptyMsgErr);
+    expect(attachedValidationZh.title).toBe('配置需要调整');
+    expect(attachedValidationZh.message).toContain('请选择当前启用渠道中的模型');
+
+    const validationEn = localizeParsedApiError(attachedValidationZh, 'en');
+    expect(validationEn.title).toBe('Configuration Needs Attention');
+    expect(validationEn.message).toContain('LITELLM_MODEL: Please choose a model from an enabled channel');
+    expect(validationEn.message).not.toMatch(/[\u4e00-\u9fff]/);
+
+    const validationZhAgain = getParsedApiError(emptyMsgErr, 'zh');
+    expect(validationZhAgain.title).toBe('配置需要调整');
   });
 });

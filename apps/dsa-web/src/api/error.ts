@@ -2,6 +2,9 @@ import axios from 'axios';
 import type { UiLanguage } from '../i18n/uiText';
 import { resolveActiveUiLanguage } from '../utils/format';
 
+const parsedErrorResolvers = new WeakMap<ParsedApiError, (language: UiLanguage) => ParsedApiError>();
+const originalErrorMessages = new WeakMap<object, string>();
+
 export type ApiErrorCategory =
   | 'agent_disabled'
   | 'missing_params'
@@ -102,8 +105,11 @@ function getErrorMessage(error: unknown): string | null {
     return error.trim() || null;
   }
 
-  if (error instanceof Error && error.message.trim()) {
-    return error.message.trim();
+  if (error instanceof Error) {
+    if (originalErrorMessages.has(error)) {
+      return (originalErrorMessages.get(error) ?? '').trim() || null;
+    }
+    return error.message.trim() || null;
   }
 
   if (isRecord(error) && typeof (error as ErrorCarrier).message === 'string') {
@@ -244,6 +250,23 @@ export function createParsedApiError(options: CreateParsedApiErrorOptions): Pars
   };
 }
 
+export function createLocalizedParsedApiError(
+  resolver: (language: UiLanguage) => ParsedApiError,
+  language?: UiLanguage,
+): ParsedApiError {
+  const resolved = resolver(resolveActiveUiLanguage(language));
+  parsedErrorResolvers.set(
+    resolved,
+    (nextLanguage) => createLocalizedParsedApiError(resolver, nextLanguage),
+  );
+  return resolved;
+}
+
+export function localizeParsedApiError(parsed: ParsedApiError, language?: UiLanguage): ParsedApiError {
+  const resolver = parsedErrorResolvers.get(parsed);
+  return resolver ? resolver(resolveActiveUiLanguage(language)) : parsed;
+}
+
 export function isParsedApiError(value: unknown): value is ParsedApiError {
   return isRecord(value)
     && typeof value.title === 'string'
@@ -272,13 +295,14 @@ export function formatParsedApiError(parsed: ParsedApiError, language?: UiLangua
 }
 
 export function getParsedApiError(error: unknown, language?: UiLanguage): ParsedApiError {
+  const activeLanguage = resolveActiveUiLanguage(language);
   if (isParsedApiError(error)) {
-    return error;
+    return localizeParsedApiError(error, activeLanguage);
   }
   if (isRecord(error) && isParsedApiError((error as ErrorCarrier).parsedError)) {
-    return (error as ErrorCarrier).parsedError as ParsedApiError;
+    return localizeParsedApiError((error as ErrorCarrier).parsedError as ParsedApiError, activeLanguage);
   }
-  return parseApiError(error, language);
+  return parseApiError(error, activeLanguage);
 }
 
 export function createApiError(
@@ -304,6 +328,9 @@ export function createApiError(
 }
 
 export function attachParsedApiError(error: unknown): ParsedApiError {
+  if (error instanceof Error && !originalErrorMessages.has(error)) {
+    originalErrorMessages.set(error, error.message);
+  }
   const parsed = parseApiError(error);
   if (isRecord(error)) {
     const carrier = error as ErrorCarrier;
@@ -320,8 +347,7 @@ export function isLocalConnectionFailure(error: unknown): boolean {
   return parseApiError(error).category === 'local_connection_failed';
 }
 
-export function parseApiError(error: unknown, language?: UiLanguage): ParsedApiError {
-  const activeLanguage = resolveActiveUiLanguage(language);
+function buildParsedApiError(error: unknown, activeLanguage: UiLanguage): ParsedApiError {
   const isEnglish = activeLanguage === 'en';
   const response = getResponse(error);
   const status = response?.status;
@@ -610,6 +636,16 @@ export function parseApiError(error: unknown, language?: UiLanguage): ParsedApiE
     status,
     category: 'unknown',
   });
+}
+
+export function parseApiError(error: unknown, language?: UiLanguage): ParsedApiError {
+  if (isParsedApiError(error) && parsedErrorResolvers.has(error)) {
+    return localizeParsedApiError(error, language);
+  }
+  return createLocalizedParsedApiError(
+    (activeLanguage) => buildParsedApiError(error, activeLanguage),
+    language,
+  );
 }
 
 export function toApiErrorMessage(

@@ -1,5 +1,10 @@
 import apiClient from './index';
-import { createParsedApiError, getParsedApiError, type ParsedApiError } from './error';
+import {
+  createLocalizedParsedApiError,
+  createParsedApiError,
+  getParsedApiError,
+  type ParsedApiError,
+} from './error';
 import { toCamelCase } from './utils';
 import { resolveActiveUiLanguage } from '../utils/format';
 import type {
@@ -38,13 +43,13 @@ export class SystemConfigValidationError extends Error {
     super(message);
     this.name = 'SystemConfigValidationError';
     this.issues = issues;
-    this.parsedError = parsedError ?? createParsedApiError({
-      title: resolveActiveUiLanguage() === 'en' ? 'Configuration validation failed' : '配置校验失败',
+    this.parsedError = parsedError ?? createLocalizedParsedApiError((language) => createParsedApiError({
+      title: language === 'en' ? 'Configuration validation failed' : '配置校验失败',
       message,
       rawMessage: message,
       status: 400,
       category: 'http_error',
-    });
+    }));
   }
 }
 
@@ -56,13 +61,13 @@ export class SystemConfigConflictError extends Error {
     super(message);
     this.name = 'SystemConfigConflictError';
     this.currentConfigVersion = currentConfigVersion;
-    this.parsedError = parsedError ?? createParsedApiError({
-      title: resolveActiveUiLanguage() === 'en' ? 'Configuration version conflict' : '配置版本冲突',
+    this.parsedError = parsedError ?? createLocalizedParsedApiError((language) => createParsedApiError({
+      title: language === 'en' ? 'Configuration version conflict' : '配置版本冲突',
       message,
       rawMessage: message,
       status: 409,
       category: 'http_error',
-    });
+    }));
   }
 }
 

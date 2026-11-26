@@ -1,6 +1,6 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createParsedApiError, type ParsedApiError } from '../../api/error';
+import { attachParsedApiError, createParsedApiError, type ParsedApiError } from '../../api/error';
 import { SystemConfigConflictError, SystemConfigValidationError } from '../../api/systemConfig';
 import { UiLanguageProvider, useUiLanguage } from '../../contexts/UiLanguageContext';
 import type { ConfigValidationIssue } from '../../types/systemConfig';
@@ -1155,6 +1155,114 @@ describe('useSystemConfig', () => {
     expect(result.current.config.toast).toEqual({
       type: 'success',
       message: '配置已更新',
+    });
+  });
+
+  it('re-localizes settled loadError, saveError, and error toast across zh/en switches (OR-COR-5a9e1d7c)', async () => {
+    window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'zh');
+
+    const loadNetworkError = new Error('Network Error') as Error & { code?: string };
+    loadNetworkError.code = 'ERR_NETWORK';
+    attachParsedApiError(loadNetworkError);
+    getConfig.mockRejectedValueOnce(loadNetworkError);
+
+    const { result } = renderHook(
+      () => ({ config: useSystemConfig(), ui: useUiLanguage() }),
+      { wrapper: UiLanguageProvider },
+    );
+
+    await act(async () => {
+      await result.current.config.load();
+    });
+    expect(result.current.config.loadError?.title).toBe('无法连接到本地服务');
+
+    act(() => {
+      result.current.ui.setLanguage('en');
+    });
+    expect(result.current.config.loadError?.title).toBe('Cannot Connect to Local Service');
+    expect(result.current.config.loadError?.message).not.toMatch(/[\u4e00-\u9fff]/);
+
+    act(() => {
+      result.current.ui.setLanguage('zh');
+    });
+    expect(result.current.config.loadError?.title).toBe('无法连接到本地服务');
+
+    // Load succeeds, then test settled validation error switching zh -> en -> zh
+    getConfig.mockResolvedValue(sampleConfig);
+    await act(async () => {
+      await result.current.config.load();
+    });
+    expect(result.current.config.loadError).toBeNull();
+
+    validate.mockResolvedValueOnce({
+      valid: false,
+      issues: [{ key: 'STOCK_LIST', code: 'invalid', message: 'invalid', severity: 'error' }],
+    });
+    act(() => {
+      result.current.config.setDraftValue('STOCK_LIST', 'BAD_CODE');
+    });
+    await act(async () => {
+      await result.current.config.save();
+    });
+    expect(result.current.config.saveError?.title).toBe('配置校验未通过');
+    expect(result.current.config.saveError?.message).toBe('请先修正表单错误后再保存。');
+
+    act(() => {
+      result.current.ui.setLanguage('en');
+    });
+    expect(result.current.config.saveError?.title).toBe('Configuration validation failed');
+    expect(result.current.config.saveError?.message).toBe('Fix the form errors before saving.');
+
+    // Settled conflict error + toast switching en -> zh -> en
+    validate.mockResolvedValue({ valid: true, issues: [] });
+    update.mockRejectedValueOnce(new SystemConfigConflictError('version stale'));
+    await act(async () => {
+      await result.current.config.save();
+    });
+    expect(result.current.config.saveError?.title).toBe('Configuration version conflict');
+    expect(result.current.config.saveError?.message).toBe('version stale. Please reload settings first.');
+    expect(result.current.config.toast).toMatchObject({
+      type: 'error',
+      error: {
+        title: 'Configuration version conflict',
+        message: 'version stale. Please reload settings first.',
+      },
+    });
+
+    act(() => {
+      result.current.ui.setLanguage('zh');
+    });
+    expect(result.current.config.saveError?.title).toBe('配置版本冲突');
+    expect(result.current.config.saveError?.message).toBe('version stale，请先重新加载配置。');
+    expect(result.current.config.toast).toMatchObject({
+      type: 'error',
+      error: {
+        title: '配置版本冲突',
+        message: 'version stale，请先重新加载配置。',
+      },
+    });
+
+    // Settled network error on save (with toast) switching zh -> en
+    const saveNetworkError = new Error('Network Error') as Error & { code?: string };
+    saveNetworkError.code = 'ERR_NETWORK';
+    attachParsedApiError(saveNetworkError);
+    update.mockRejectedValueOnce(saveNetworkError);
+    await act(async () => {
+      await result.current.config.save();
+    });
+    expect(result.current.config.saveError?.title).toBe('无法连接到本地服务');
+    expect(result.current.config.toast).toMatchObject({
+      type: 'error',
+      error: { title: '无法连接到本地服务' },
+    });
+
+    act(() => {
+      result.current.ui.setLanguage('en');
+    });
+    expect(result.current.config.saveError?.title).toBe('Cannot Connect to Local Service');
+    expect(result.current.config.toast).toMatchObject({
+      type: 'error',
+      error: { title: 'Cannot Connect to Local Service' },
     });
   });
 });
