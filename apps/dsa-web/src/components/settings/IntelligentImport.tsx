@@ -1,5 +1,5 @@
 import type React from 'react';
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { getParsedApiError } from '../../api/error';
 import { stocksApi, type ExtractItem } from '../../api/stocks';
 import { systemConfigApi, SystemConfigConflictError } from '../../api/systemConfig';
@@ -17,7 +17,7 @@ interface IntelligentImportProps {
   stockListValue: string;
   configVersion: string;
   maskToken: string;
-  onMerged: (newValue: string) => void | Promise<void>;
+  onMerged: (newValue: string, options?: { committed?: boolean }) => void | Promise<void>;
   disabled?: boolean;
 }
 
@@ -113,6 +113,16 @@ export const IntelligentImport: React.FC<IntelligentImportProps> = ({
   const [pasteText, setPasteText] = useState('');
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const dataFileInputRef = useRef<HTMLInputElement | null>(null);
+  const mountedRef = useRef(true);
+  const extractRequestIdRef = useRef(0);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      extractRequestIdRef.current += 1;
+    };
+  }, []);
 
   const parseCurrentList = useCallback(() => {
     return parseStockListValue(stockListValue);
@@ -121,6 +131,13 @@ export const IntelligentImport: React.FC<IntelligentImportProps> = ({
   const addItems = useCallback((newItems: ExtractItem[]) => {
     setItems((prev) => mergeItems(prev, newItems));
   }, []);
+
+  const addExtractedResponse = useCallback(
+    (res: { items?: ExtractItem[]; codes: string[] }) => {
+      addItems(res.items ?? res.codes.map((c) => ({ code: c, name: null, confidence: 'medium' })));
+    },
+    [addItems],
+  );
 
   const handleImageFile = useCallback(
     async (file: File) => {
@@ -133,12 +150,15 @@ export const IntelligentImport: React.FC<IntelligentImportProps> = ({
         setError(t('settings.intelligentImportImageSizeError'));
         return;
       }
+      const requestId = ++extractRequestIdRef.current;
       setError(null);
       setIsLoading(true);
       try {
         const res = await stocksApi.extractFromImage(file);
-        addItems(res.items ?? res.codes.map((c) => ({ code: c, name: null, confidence: 'medium' })));
+        if (!mountedRef.current || requestId !== extractRequestIdRef.current) return;
+        addExtractedResponse(res);
       } catch (e) {
+        if (!mountedRef.current || requestId !== extractRequestIdRef.current) return;
         const parsed = getParsedApiError(e);
         const err = e && typeof e === 'object' ? (e as { response?: { status?: number }; code?: string }) : null;
         let fallback = t('settings.intelligentImportRecognitionFailed');
@@ -146,10 +166,12 @@ export const IntelligentImport: React.FC<IntelligentImportProps> = ({
         else if (err?.code === 'ECONNABORTED') fallback = t('settings.intelligentImportTimeout');
         setError(parsed.message || fallback);
       } finally {
-        setIsLoading(false);
+        if (mountedRef.current && requestId === extractRequestIdRef.current) {
+          setIsLoading(false);
+        }
       }
     },
-    [addItems, t],
+    [addExtractedResponse, t],
   );
 
   const handleDataFile = useCallback(
@@ -158,19 +180,24 @@ export const IntelligentImport: React.FC<IntelligentImportProps> = ({
         setError(t('settings.intelligentImportFileSizeError'));
         return;
       }
+      const requestId = ++extractRequestIdRef.current;
       setError(null);
       setIsLoading(true);
       try {
         const res = await stocksApi.parseImport(file);
-        addItems(res.items ?? res.codes.map((c) => ({ code: c, name: null, confidence: 'medium' })));
+        if (!mountedRef.current || requestId !== extractRequestIdRef.current) return;
+        addExtractedResponse(res);
       } catch (e) {
+        if (!mountedRef.current || requestId !== extractRequestIdRef.current) return;
         const parsed = getParsedApiError(e);
         setError(parsed.message || t('settings.intelligentImportParseFailed'));
       } finally {
-        setIsLoading(false);
+        if (mountedRef.current && requestId === extractRequestIdRef.current) {
+          setIsLoading(false);
+        }
       }
     },
-    [addItems, t],
+    [addExtractedResponse, t],
   );
 
   const handlePasteParse = useCallback(() => {
@@ -180,20 +207,27 @@ export const IntelligentImport: React.FC<IntelligentImportProps> = ({
       setError(t('settings.intelligentImportTextSizeError'));
       return;
     }
+    const requestId = ++extractRequestIdRef.current;
     setError(null);
     setIsLoading(true);
     stocksApi
       .parseImport(undefined, trimmedText)
       .then((res) => {
-        addItems(res.items ?? res.codes.map((c) => ({ code: c, name: null, confidence: 'medium' })));
-        setPasteText('');
+        if (!mountedRef.current || requestId !== extractRequestIdRef.current) return;
+        addExtractedResponse(res);
+        setPasteText((prev) => (prev.trim() === trimmedText ? '' : prev));
       })
       .catch((e) => {
+        if (!mountedRef.current || requestId !== extractRequestIdRef.current) return;
         const parsed = getParsedApiError(e);
         setError(parsed.message || t('settings.intelligentImportParseFailed'));
       })
-      .finally(() => setIsLoading(false));
-  }, [pasteText, addItems, t]);
+      .finally(() => {
+        if (mountedRef.current && requestId === extractRequestIdRef.current) {
+          setIsLoading(false);
+        }
+      });
+  }, [pasteText, addExtractedResponse, t]);
 
   const onDrop = useCallback(
     (e: React.DragEvent) => {
@@ -247,6 +281,8 @@ export const IntelligentImport: React.FC<IntelligentImportProps> = ({
   }, []);
 
   const clearAll = useCallback(() => {
+    extractRequestIdRef.current += 1;
+    setIsLoading(false);
     setItems([]);
     setPasteText('');
     setError(null);
@@ -272,18 +308,28 @@ export const IntelligentImport: React.FC<IntelligentImportProps> = ({
         reloadNow: true,
         items: [{ key: 'STOCK_LIST', value }],
       });
-      setItems([]);
-      setPasteText('');
+      if (mountedRef.current) {
+        setItems([]);
+        setPasteText('');
+      }
       await onMerged(value);
     } catch (e) {
       if (e instanceof SystemConfigConflictError) {
-        await onMerged(value);
-        setError(t('settings.intelligentImportConfigUpdated'));
-      } else {
+        try {
+          await onMerged(value, { committed: false });
+        } catch {
+          // Keep the conflict hint visible even if the background refresh fails.
+        }
+        if (mountedRef.current) {
+          setError(t('settings.intelligentImportConfigUpdated'));
+        }
+      } else if (mountedRef.current) {
         setError(e instanceof Error ? e.message : t('settings.intelligentImportMergeFailed'));
       }
     } finally {
-      setIsMerging(false);
+      if (mountedRef.current) {
+        setIsMerging(false);
+      }
     }
   }, [items, configVersion, maskToken, onMerged, parseCurrentList, t]);
 

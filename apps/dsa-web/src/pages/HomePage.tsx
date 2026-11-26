@@ -34,6 +34,7 @@ import { isWatchlistRowPendingAnalysis } from '../components/watchlist/watchlist
 import { useDashboardLifecycle, useHomeDashboardState } from '../hooks';
 import { useWatchlist } from '../hooks/useWatchlist';
 import { useUiLanguage } from '../contexts/UiLanguageContext';
+import { localizeSkill } from '../locales/strategyText';
 import type { SetupStatusResponse } from '../types/systemConfig';
 import { localizeSetupStatus } from '../utils/systemConfigI18n';
 import { getSampleAnalysisReport } from '../data/sampleReport';
@@ -525,9 +526,13 @@ const HomePage: React.FC = () => {
     closeHistoryTrend();
   }, [closeHistoryTrend, isHistoryTrendOpen, isHistoryTrendUnavailable]);
 
+  const localizedAnalysisSkills = useMemo(
+    () => analysisSkills.map((skill) => localizeSkill(skill, uiLanguage)),
+    [analysisSkills, uiLanguage],
+  );
   const selectedStrategy = useMemo(
-    () => analysisSkills.find((skill) => skill.id === selectedStrategyId),
-    [analysisSkills, selectedStrategyId],
+    () => localizedAnalysisSkills.find((skill) => skill.id === selectedStrategyId),
+    [localizedAnalysisSkills, selectedStrategyId],
   );
   const selectedAnalysisSkills = useMemo(
     () => (selectedStrategyId ? [selectedStrategyId] : undefined),
@@ -536,13 +541,13 @@ const HomePage: React.FC = () => {
   const strategyOptions = useMemo(
     () => [
       { id: '', name: t('home.defaultStrategyName'), description: t('home.defaultStrategyDescription') },
-      ...analysisSkills.map((skill) => ({
+      ...localizedAnalysisSkills.map((skill) => ({
         id: skill.id,
         name: skill.name,
         description: skill.description,
       })),
     ],
-    [analysisSkills, t],
+    [localizedAnalysisSkills, t],
   );
   const closeStrategyMenu = useCallback((restoreFocus = false) => {
     setStrategyMenuOpen(false);

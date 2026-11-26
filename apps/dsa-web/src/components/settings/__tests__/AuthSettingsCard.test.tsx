@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { AuthSettingsCard } from '../AuthSettingsCard';
 
@@ -123,5 +123,41 @@ describe('AuthSettingsCard', () => {
 
     expect(await screen.findByText('设置新密码是必填项')).toBeInTheDocument();
     expect(updateSettings).not.toHaveBeenCalled();
+  });
+
+  it('guards synchronous double-submit and still refreshes global auth status after unmount', async () => {
+    let resolveUpdate!: () => void;
+    updateSettings.mockImplementationOnce(() => new Promise<void>((resolve) => {
+      resolveUpdate = resolve;
+    }));
+    refreshStatus.mockResolvedValueOnce(undefined);
+
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const { unmount } = render(<AuthSettingsCard />);
+
+      fireEvent.click(screen.getByRole('checkbox'));
+      fireEvent.change(screen.getByLabelText('设置管理员密码'), { target: { value: 'passwd6' } });
+      fireEvent.change(screen.getByLabelText('确认新密码'), { target: { value: 'passwd6' } });
+
+      const submitButton = screen.getByRole('button', { name: '开启认证' });
+      fireEvent.click(submitButton);
+      fireEvent.click(submitButton);
+
+      expect(updateSettings).toHaveBeenCalledTimes(1);
+
+      unmount();
+
+      await act(async () => {
+        resolveUpdate();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(refreshStatus).toHaveBeenCalledTimes(1);
+      expect(consoleErrorSpy).not.toHaveBeenCalled();
+    } finally {
+      consoleErrorSpy.mockRestore();
+    }
   });
 });

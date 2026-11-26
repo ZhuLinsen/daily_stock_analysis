@@ -1,5 +1,5 @@
 import type React from 'react';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { authApi } from '../../api/auth';
 import { getParsedApiError, isParsedApiError, type ParsedApiError } from '../../api/error';
 import { useAuth } from '../../hooks';
@@ -29,6 +29,15 @@ export const AuthSettingsCard: React.FC = () => {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | ParsedApiError | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const mountedRef = useRef(true);
+  const submittingRef = useRef(false);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   const isDirty = desiredEnabled !== authEnabled || currentPassword || password || passwordConfirm;
   const targetActionLabel = createNextModeLabel(authEnabled, desiredEnabled, t);
@@ -60,6 +69,7 @@ export const AuthSettingsCard: React.FC = () => {
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
+    if (isSubmitting || submittingRef.current) return;
     setError(null);
     setSuccessMessage(null);
 
@@ -84,6 +94,7 @@ export const AuthSettingsCard: React.FC = () => {
       return;
     }
 
+    submittingRef.current = true;
     setIsSubmitting(true);
     try {
       await authApi.updateSettings(
@@ -92,13 +103,19 @@ export const AuthSettingsCard: React.FC = () => {
         passwordConfirm.trim() || undefined,
         currentPassword.trim() || undefined,
       );
+      // Keep AuthProvider synchronized even if the card unmounts mid-save (e.g. switching categories).
       await refreshStatus();
+      if (!mountedRef.current) return;
       setSuccessMessage(desiredEnabled ? t('settings.authSuccessUpdated') : t('settings.authSuccessDisabled'));
       resetForm();
     } catch (err: unknown) {
+      if (!mountedRef.current) return;
       setError(getParsedApiError(err));
     } finally {
-      setIsSubmitting(false);
+      submittingRef.current = false;
+      if (mountedRef.current) {
+        setIsSubmitting(false);
+      }
     }
   };
 

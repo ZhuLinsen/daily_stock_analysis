@@ -20,7 +20,7 @@ import logging
 import re
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Optional, Tuple, List, Dict, Any
 from urllib.parse import urlsplit
 
@@ -37,6 +37,7 @@ from tenacity import (
 from .base import BaseFetcher, DataFetchError, RateLimitError, STANDARD_COLUMNS,is_bse_code, is_st_stock, is_kc_cy_stock, normalize_stock_code, _is_hk_market
 from .realtime_types import UnifiedRealtimeQuote, ChipDistribution
 from src.config import get_config
+from src.core.trading_calendar import get_effective_trading_date
 import os
 from zoneinfo import ZoneInfo
 
@@ -634,7 +635,9 @@ class TushareFetcher(BaseFetcher):
         except TusharePermissionError:
             return []
 
-        if df_cal is None or df_cal.empty or "cal_date" not in df_cal.columns:
+        if df_cal is None or not hasattr(df_cal, "empty") or isinstance(df_cal, pd.DataFrame) is False:
+            return []
+        if df_cal.empty or "cal_date" not in df_cal.columns or "is_open" not in df_cal.columns:
             logger.warning("[Tushare] trade_cal returned empty, unable to update trade calendar cache")
             self.date_list = []
             self._date_list_end = requested_end_date
@@ -647,6 +650,41 @@ class TushareFetcher(BaseFetcher):
         self.date_list = trade_dates
         self._date_list_end = requested_end_date
         return trade_dates
+
+    def _resolve_expected_cn_index_date(self, china_now: datetime) -> Optional[date]:
+        """Resolve latest expected CN trading date, or None when calendars lack coverage."""
+        import src.core.trading_calendar as tc
+
+        if getattr(tc, "_XCALS_AVAILABLE", False) and getattr(tc, "xcals", None) is not None:
+            ex = tc.MARKET_EXCHANGE.get("cn")
+            if ex:
+                try:
+                    cal = tc.xcals.get_calendar(ex)
+                    first_session = cal.first_session.date()
+                    last_session = cal.last_session.date()
+                    if first_session <= china_now.date() <= last_session:
+                        return get_effective_trading_date("cn", current_time=china_now)
+                except Exception as e:
+                    logger.debug("[Tushare] Failed to check CN trading calendar coverage: %s", e)
+
+        try:
+            current_date = china_now.strftime("%Y%m%d")
+            current_clock = china_now.strftime("%H:%M")
+            trade_dates = self._get_trade_dates(current_date)
+        except Exception:
+            return None
+
+        if not isinstance(trade_dates, list) or not trade_dates:
+            return None
+
+        use_today = current_date not in trade_dates or current_clock >= "15:00"
+        picked = self._pick_trade_date(trade_dates, use_today=use_today)
+        if not isinstance(picked, str):
+            return None
+        try:
+            return datetime.strptime(picked.strip().replace("-", "")[:8], "%Y%m%d").date()
+        except ValueError:
+            return None
 
     @staticmethod
     def _pick_trade_date(trade_dates: List[str], use_today: bool) -> Optional[str]:
@@ -1056,29 +1094,33 @@ class TushareFetcher(BaseFetcher):
 
             row = df.iloc[0]
 
-            # 计算涨跌幅
-            price = safe_float(row['price'])
-            pre_close = safe_float(row['pre_close'])
-            change_pct = 0.0
-            change_amount = 0.0
+            # 计算涨跌幅（缺失价格或昨收时不伪造 0 涨跌幅，交由备用数据源补全）
+            price = safe_float(row.get('price'))
+            pre_close = safe_float(row.get('pre_close'))
+            if price is None or price <= 0 or pre_close is None or pre_close <= 0:
+                return None
 
-            if price and pre_close and pre_close > 0:
-                change_amount = price - pre_close
-                change_pct = (change_amount / pre_close) * 100
+            change_amount = price - pre_close
+            change_pct = (change_amount / pre_close) * 100
+
+            raw_volume = safe_int(row.get('volume'))
+            volume = raw_volume // 100 if raw_volume is not None else None
+            raw_name = row.get('name')
+            name = "" if pd.isna(raw_name) else str(raw_name)
 
             # 构建统一对象
             return UnifiedRealtimeQuote(
                 code=normalized_code,
-                name=str(row['name']),
+                name=name,
                 source=RealtimeSource.TUSHARE,
                 price=price,
                 change_pct=round(change_pct, 2),
                 change_amount=round(change_amount, 2),
-                volume=safe_int(row['volume']) // 100,  # 转换为手
-                amount=safe_float(row['amount']),
-                high=safe_float(row['high']),
-                low=safe_float(row['low']),
-                open_price=safe_float(row['open']),
+                volume=volume,  # 转换为手
+                amount=safe_float(row.get('amount')),
+                high=safe_float(row.get('high')),
+                low=safe_float(row.get('low')),
+                open_price=safe_float(row.get('open')),
                 pre_close=pre_close,
             )
 
@@ -1110,10 +1152,12 @@ class TushareFetcher(BaseFetcher):
         try:
             # Tushare index_daily 获取历史数据，实时数据需用其他接口或估算
             # 由于 Tushare 免费用户可能无法获取指数实时行情，这里作为备选
-            # 使用 index_daily 获取最近交易日数据
+            # 使用 index_daily 获取最近交易日数据（20 天窗口可覆盖春节/国庆长假）
 
-            end_date = datetime.now().strftime('%Y%m%d')
-            start_date = (datetime.now() - pd.Timedelta(days=5)).strftime('%Y%m%d')
+            china_now = self._get_china_now()
+            expected_date = self._resolve_expected_cn_index_date(china_now)
+            end_date = china_now.strftime('%Y%m%d')
+            start_date = (china_now - timedelta(days=20)).strftime('%Y%m%d')
 
             results = []
 
@@ -1127,23 +1171,39 @@ class TushareFetcher(BaseFetcher):
                         end_date=end_date,
                     )
                     if df is not None and not df.empty:
-                        row = df.iloc[0] # 最新一天
+                        if 'trade_date' not in df.columns:
+                            continue
+                        row = df.sort_values('trade_date', ascending=False).iloc[0]
+                        raw_trade_date = str(row.get('trade_date') or '').strip().replace('-', '')[:8]
+                        try:
+                            row_date = datetime.strptime(raw_trade_date, '%Y%m%d').date()
+                        except ValueError:
+                            continue
+                        if expected_date is not None and row_date < expected_date:
+                            continue
 
-                        current = safe_float(row['close'])
-                        prev_close = safe_float(row['pre_close'])
+                        current = safe_float(row.get('close'))
+                        change_pct = safe_float(row.get('pct_chg'))
+                        if current is None or current <= 0 or change_pct is None:
+                            continue
+                        prev_close = safe_float(row.get('pre_close'), default=0.0)
+                        change_val = safe_float(row.get('change'))
+                        if change_val is None:
+                            change_val = round(current - prev_close, 4) if prev_close > 0 else 0.0
+                        amount_val = safe_float(row.get('amount'), default=0.0)
 
                         results.append({
                             'code': ts_code.split('.')[0], # 兼容 sh000001 格式需转换，这里保持纯数字
                             'name': name,
                             'current': current,
-                            'change': safe_float(row['change']),
-                            'change_pct': safe_float(row['pct_chg']),
-                            'open': safe_float(row['open']),
-                            'high': safe_float(row['high']),
-                            'low': safe_float(row['low']),
+                            'change': change_val,
+                            'change_pct': change_pct,
+                            'open': safe_float(row.get('open'), default=0.0),
+                            'high': safe_float(row.get('high'), default=0.0),
+                            'low': safe_float(row.get('low'), default=0.0),
                             'prev_close': prev_close,
-                            'volume': safe_float(row['vol']),
-                            'amount': safe_float(row['amount']) * 1000, # 千元转元
+                            'volume': safe_float(row.get('vol'), default=0.0),
+                            'amount': amount_val * 1000, # 千元转元
                             'amplitude': 0.0 # Tushare index_daily 不直接返回振幅
                         })
                 except TusharePermissionError:
@@ -1226,18 +1286,29 @@ class TushareFetcher(BaseFetcher):
                         start_date=last_date,
                         end_date=last_date,
                     )
+                    if df is None or df.empty:
+                        return None
                     # 为防止不同接口返回的列名大小写不一致（例如 rt_k 返回小写，daily 返回大写），统一将列名转为小写
+                    df = df.copy()
                     df.columns = [col.lower() for col in df.columns]
 
                     # 获取股票基础信息（包含代码和名称）
                     df_basic = self._call_api_with_rate_limit("stock_basic", fields='ts_code,name')
-                    df = pd.merge(df, df_basic, on='ts_code', how='left')
-                    # 将 daily的 amount 列的值乘以 1000 来和其他数据源保持一致
+                    if df_basic is not None and not df_basic.empty:
+                        df_basic = df_basic.copy()
+                        df_basic.columns = [col.lower() for col in df_basic.columns]
+                        if 'ts_code' in df_basic.columns and 'ts_code' in df.columns:
+                            df = pd.merge(df, df_basic, on='ts_code', how='left')
+                    # 将 daily 的 amount 列的值乘以 1000 来和其他数据源保持一致；
+                    # 保留无法解析的非空原始值，避免将损坏数据静默转为 NaN 伪装成停牌空值
                     if 'amount' in df.columns:
-                        df['amount'] = df['amount'] * 1000
+                        numeric_amounts = pd.to_numeric(df['amount'], errors='coerce')
+                        df['amount'] = [
+                            val * 1000 if pd.notna(val) else raw
+                            for val, raw in zip(numeric_amounts, df['amount'])
+                        ]
 
-                    if df is not None and not df.empty:
-                        return self._calc_market_stats(df)
+                    return self._calc_market_stats(df)
                 except TusharePermissionError:
                     return None
                 except Exception as e:
@@ -1255,7 +1326,9 @@ class TushareFetcher(BaseFetcher):
             df: pd.DataFrame,
             ) -> Optional[Dict[str, Any]]:
             """从行情 DataFrame 计算涨跌统计。"""
+            import math
             import numpy as np
+            from .realtime_types import safe_float
 
             df = df.copy()
             
@@ -1267,33 +1340,75 @@ class TushareFetcher(BaseFetcher):
             pre_close_col = next((c for c in ['昨收', '昨日收盘', 'pre_close','lastClose'] if c in df.columns), None)
             amount_col = next((c for c in ['成交额', '成交额', 'amount','amount'] if c in df.columns), None) 
             
+            if (
+                code_col is None
+                or name_col is None
+                or close_col is None
+                or pre_close_col is None
+                or amount_col is None
+            ):
+                return None
+
+            codes = df[code_col]
+            names = df[name_col]
+            amounts = df[amount_col]
+
             limit_up_count = 0
             limit_down_count = 0
             up_count = 0
             down_count = 0
             flat_count = 0
+            valid_rows = 0
+            total_amount = 0.0
 
-            for code, name, current_price, pre_close, amount in zip(
-                df[code_col], df[name_col], df[close_col], df[pre_close_col], df[amount_col]
+            for code, name, raw_close, raw_pre_close, raw_amount in zip(
+                codes, names, df[close_col], df[pre_close_col], amounts
             ):
-                
-                # 停牌过滤 efinance 的停牌数据有时候会缺失价格显示为 '-'，em 显示为none
-                if pd.isna(current_price) or pd.isna(pre_close) or current_price in ['-'] or pre_close in ['-'] or amount == 0:
+                current_price = safe_float(raw_close)
+                pre_close = safe_float(raw_pre_close)
+                amount_val = safe_float(raw_amount)
+
+                if amount_val is not None and (not math.isfinite(amount_val) or amount_val < 0):
+                    return None
+
+                # Genuine suspended stocks have 0 turnover or standard blank/'-' quotes without turnover.
+                if amount_val == 0:
                     continue
-                
-                # em、efinance 为str 需要转换为float
-                current_price = float(current_price)
-                pre_close = float(pre_close)
-                
+
+                is_blank_close = pd.isna(raw_close) or str(raw_close).strip() in {"", "-"}
+                is_blank_pre_close = pd.isna(raw_pre_close) or str(raw_pre_close).strip() in {"", "-"}
+                is_blank_amount = pd.isna(raw_amount) or str(raw_amount).strip() in {"", "-"}
+                if amount_val is None and is_blank_amount and (is_blank_close or is_blank_pre_close):
+                    continue
+
+                # Active/traded or corrupted rows must have valid finite prices, finite positive
+                # turnover, and stock_basic identity; fail closed (return None) so
+                # DataFetcherManager falls back to complete market stats.
+                if (
+                    current_price is None
+                    or not math.isfinite(current_price)
+                    or current_price <= 0
+                    or pre_close is None
+                    or not math.isfinite(pre_close)
+                    or pre_close <= 0
+                    or amount_val is None
+                ):
+                    return None
+
+                code_str = "" if pd.isna(code) else str(code).strip()
+                name_str = "" if pd.isna(name) else str(name).strip()
+                if not code_str or not name_str:
+                    return None
+
                 # 获取去除前缀的纯数字代码
-                pure_code = normalize_stock_code(str(code)) 
+                pure_code = normalize_stock_code(code_str)
 
                 # A. 确定每只股票的涨跌幅比例 (使用纯数字代码判断)
                 if is_bse_code(pure_code): 
                     ratio = 0.30
                 elif is_kc_cy_stock(pure_code): #pure_code.startswith(('688', '30')):
                     ratio = 0.20
-                elif is_st_stock(name): #'ST' in str_name:
+                elif is_st_stock(name_str): #'ST' in str_name:
                     ratio = 0.05
                 else:
                     ratio = 0.10
@@ -1306,38 +1421,35 @@ class TushareFetcher(BaseFetcher):
                 limit_down_price_Tolerance = round(abs(pre_close * (1 - ratio) - limit_down_price), 10)
 
                 # C. 精确比对
-                if current_price > 0 :
-                    is_limit_up = (current_price > 0) and (abs(current_price - limit_up_price) <= limit_up_price_Tolerance)
-                    is_limit_down = (current_price > 0) and (abs(current_price - limit_down_price) <= limit_down_price_Tolerance)
+                valid_rows += 1
+                total_amount += amount_val
+                is_limit_up = abs(current_price - limit_up_price) <= limit_up_price_Tolerance
+                is_limit_down = abs(current_price - limit_down_price) <= limit_down_price_Tolerance
 
-                    if is_limit_up:
-                        limit_up_count += 1
-                    if is_limit_down:
-                        limit_down_count += 1
+                if is_limit_up:
+                    limit_up_count += 1
+                if is_limit_down:
+                    limit_down_count += 1
 
-                    if current_price > pre_close:
-                        up_count += 1
-                    elif current_price < pre_close:
-                        down_count += 1
-                    else:
-                        flat_count += 1
+                if current_price > pre_close:
+                    up_count += 1
+                elif current_price < pre_close:
+                    down_count += 1
+                else:
+                    flat_count += 1
                     
+            if valid_rows == 0 or not math.isfinite(total_amount):
+                return None
+
             # 统计数量
-            stats = {
+            return {
                 'up_count': up_count,
                 'down_count': down_count,
                 'flat_count': flat_count,
                 'limit_up_count': limit_up_count,
                 'limit_down_count': limit_down_count,
-                'total_amount': 0.0,
+                'total_amount': float(total_amount) / 1e8,
             }
-            
-            # 成交额统计
-            if amount_col and amount_col in df.columns:
-                df[amount_col] = pd.to_numeric(df[amount_col], errors='coerce')
-                stats['total_amount'] = (df[amount_col].sum() / 1e8)
-                
-            return stats
 
     def get_trade_time(self,early_time='09:30',late_time='16:30') -> Optional[str]:
         '''
@@ -1388,9 +1500,14 @@ class TushareFetcher(BaseFetcher):
         2. 东财接口 (ts.pro_api().moneyflow_ind_dc)
         注意：每个接口的行业分类和板块定义不同，会导致结果两者不一致
         """
-        def _get_rank_top_n(df: pd.DataFrame, change_col: str, industry_name: str, n: int) -> Tuple[list, list]:
+        def _get_rank_top_n(df: pd.DataFrame, change_col: str, industry_name: str, n: int) -> Optional[Tuple[list, list]]:
+            if change_col not in df.columns or industry_name not in df.columns:
+                return None
+            df = df.copy()
             df[change_col] = pd.to_numeric(df[change_col], errors='coerce')
             df = df.dropna(subset=[change_col])
+            if df.empty:
+                return None
 
             # 涨幅前n
             top = df.nlargest(n, change_col)
@@ -1424,8 +1541,9 @@ class TushareFetcher(BaseFetcher):
                 if df is not None and not df.empty:
                     change_col = 'pct_change'
                     name = 'industry'
-                    if change_col in df.columns:
-                        return _get_rank_top_n(df, change_col, name, n)
+                    ranked = _get_rank_top_n(df, change_col, name, n)
+                    if ranked is not None:
+                        return ranked
             except TusharePermissionError:
                 pass
             except Exception as e:
@@ -1440,11 +1558,14 @@ class TushareFetcher(BaseFetcher):
             try:
                 df = self._call_api_with_rate_limit("moneyflow_ind_dc", trade_date=start_date)
                 if df is not None and not df.empty:
+                    if 'content_type' not in df.columns:
+                        return None
                     df = df[df['content_type'] == '行业']  # 过滤出行业板块
                     change_col = 'pct_change'
                     name = 'name'
-                    if change_col in df.columns:
-                        return _get_rank_top_n(df, change_col, name, n)
+                    ranked = _get_rank_top_n(df, change_col, name, n)
+                    if ranked is not None:
+                        return ranked
             except TusharePermissionError:
                 return None
             except Exception as e:
@@ -1504,6 +1625,8 @@ class TushareFetcher(BaseFetcher):
                 end_date=start_date,
             )
             if df is not None and not df.empty:
+                from .realtime_types import safe_float
+
                 daily_df = self._call_api_with_rate_limit(
                     "daily",
                     ts_code=ts_code,
@@ -1512,12 +1635,14 @@ class TushareFetcher(BaseFetcher):
                 )
                 if daily_df is None or daily_df.empty:
                     return None
-                current_price = daily_df.iloc[0]['close']
+                current_price = safe_float(daily_df.iloc[0].get('close'))
+                if current_price is None or current_price <= 0:
+                    return None
                 metrics = self.compute_cyq_metrics(df, current_price)
 
                 chip = ChipDistribution(
                     code=stock_code,
-                    date=datetime.strptime(start_date, '%Y%m-%d' if '-' in start_date else '%Y%m%d').strftime('%Y-%m-%d'),
+                    date=datetime.strptime(start_date, '%Y-%m-%d' if '-' in start_date else '%Y%m%d').strftime('%Y-%m-%d'),
                     profit_ratio=metrics['获利比例'],
                     avg_cost=metrics['平均成本'],
                     cost_90_low=metrics['90成本-低'],
@@ -1548,11 +1673,30 @@ class TushareFetcher(BaseFetcher):
         :return: 包含各项筹码指标的字典  
         """
         import numpy as np
+
+        if df is None or df.empty or 'price' not in df.columns or 'percent' not in df.columns:
+            raise ValueError("Invalid cyq_chips data: missing required price/percent columns")
+
+        df_clean = df.copy()
+        df_clean['price'] = pd.to_numeric(df_clean['price'], errors='coerce')
+        df_clean['percent'] = pd.to_numeric(df_clean['percent'], errors='coerce')
+        if (
+            df_clean['price'].isna().any()
+            or df_clean['percent'].isna().any()
+            or (~np.isfinite(df_clean['price'])).any()
+            or (~np.isfinite(df_clean['percent'])).any()
+            or (df_clean['price'] <= 0).any()
+            or (df_clean['percent'] < 0).any()
+        ):
+            raise ValueError("Invalid cyq_chips data: contains invalid price or percent rows")
+
         # 1. 确保按价格从小到大排序 (Tushare 返回的数据往往是纯倒序的)
-        df_sorted = df.sort_values(by='price', ascending=True).reset_index(drop=True)
+        df_sorted = df_clean.sort_values(by='price', ascending=True).reset_index(drop=True)
 
         # 2. 防止原始数据 percent 总和产生浮点数误差，归一化到 100%
-        total_percent = df_sorted['percent'].sum()
+        total_percent = float(df_sorted['percent'].sum())
+        if df_sorted.empty or not np.isfinite(total_percent) or total_percent <= 0:
+            raise ValueError("Invalid cyq_chips data: empty or non-positive total percent")
 
         df_sorted['norm_percent'] = df_sorted['percent'] / total_percent * 100
 

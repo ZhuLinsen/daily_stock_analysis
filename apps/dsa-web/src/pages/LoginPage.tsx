@@ -1,5 +1,5 @@
 import type React from 'react';
-import { useState, useEffect } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { motion, useMotionValue, useTransform, useSpring } from "motion/react";
 import { Lock, Loader2, Cpu, TrendingUp, Network, ShieldCheck } from "lucide-react";
 import { Button, Input, ParticleBackground } from '../components/common';
@@ -28,6 +28,15 @@ const LoginPage: React.FC = () => {
   const [passwordConfirm, setPasswordConfirm] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | ParsedApiError | null>(null);
+  const mountedRef = useRef(true);
+  const submittingRef = useRef(false);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   const isFirstTime = setupState === 'no_password' || !passwordSet;
 
@@ -52,21 +61,27 @@ const LoginPage: React.FC = () => {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSubmitting || submittingRef.current) return;
     setError(null);
     if (isFirstTime && password !== passwordConfirm) {
       setError(t('login.passwordMismatch'));
       return;
     }
+    submittingRef.current = true;
     setIsSubmitting(true);
     try {
       const result = await login(password, isFirstTime ? passwordConfirm : undefined);
+      if (!mountedRef.current) return;
       if (result.success) {
         navigate(redirect, { replace: true });
       } else {
         setError(result.error ?? t('login.loginFailed'));
       }
     } finally {
-      setIsSubmitting(false);
+      submittingRef.current = false;
+      if (mountedRef.current) {
+        setIsSubmitting(false);
+      }
     }
   };
 
