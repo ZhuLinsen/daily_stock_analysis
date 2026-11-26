@@ -2161,4 +2161,271 @@ describe('watchlist button with code variants', () => {
     expect(screen.getByText('从自选删除')).toBeInTheDocument();
     expect(mockRemoveFromWatchlist).not.toHaveBeenCalled();
   });
+
+  it('copies assistant reply via legacy fallback when navigator.clipboard is unavailable', async () => {
+    const originalClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+    const originalExecCommand = Object.getOwnPropertyDescriptor(document, 'execCommand');
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: undefined,
+    });
+    const execCommand = vi.fn().mockReturnValue(true);
+    Object.defineProperty(document, 'execCommand', {
+      configurable: true,
+      value: execCommand,
+    });
+    mockStoreState.messages = [
+      { id: 'assistant-copy', role: 'assistant', content: '测试 HTTP 回退复制内容' },
+    ];
+
+    try {
+      render(
+        <MemoryRouter initialEntries={['/chat']}>
+          <ChatPage />
+        </MemoryRouter>,
+      );
+
+      const copyButton = await screen.findByRole('button', { name: '复制' });
+      await act(async () => {
+        fireEvent.click(copyButton);
+        await Promise.resolve();
+      });
+
+      expect(execCommand).toHaveBeenCalledWith('copy');
+      expect(await screen.findByRole('button', { name: '已复制' })).toBeInTheDocument();
+    } finally {
+      if (originalClipboard) {
+        Object.defineProperty(navigator, 'clipboard', originalClipboard);
+      } else {
+        Reflect.deleteProperty(navigator, 'clipboard');
+      }
+      if (originalExecCommand) {
+        Object.defineProperty(document, 'execCommand', originalExecCommand);
+      } else {
+        Reflect.deleteProperty(document, 'execCommand');
+      }
+    }
+  });
+
+  it('surfaces copy failure and clears stale copied state on retry failure', async () => {
+    vi.useFakeTimers();
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const originalClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+    const originalExecCommand = Object.getOwnPropertyDescriptor(document, 'execCommand');
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: undefined,
+    });
+    const execCommand = vi.fn().mockReturnValue(false);
+    Object.defineProperty(document, 'execCommand', {
+      configurable: true,
+      value: execCommand,
+    });
+    mockStoreState.messages = [
+      { id: 'assistant-copy-fail', role: 'assistant', content: '复制失败状态测试' },
+    ];
+
+    try {
+      render(
+        <MemoryRouter initialEntries={['/chat']}>
+          <ChatPage />
+        </MemoryRouter>,
+      );
+
+      // Initial failure shows '复制失败' and resets back to '复制' after 2000ms.
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: '复制' }));
+        await Promise.resolve();
+      });
+      expect(screen.getByRole('button', { name: '复制失败' })).toBeInTheDocument();
+
+      act(() => {
+        vi.advanceTimersByTime(2000);
+      });
+      expect(screen.getByRole('button', { name: '复制' })).toBeInTheDocument();
+
+      // Succeed first -> '已复制', then retry and fail before timer expires -> immediately '复制失败'.
+      execCommand.mockReturnValueOnce(true).mockReturnValueOnce(false);
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: '复制' }));
+        await Promise.resolve();
+      });
+      expect(screen.getByRole('button', { name: '已复制' })).toBeInTheDocument();
+
+      act(() => {
+        vi.advanceTimersByTime(500);
+      });
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: '已复制' }));
+        await Promise.resolve();
+      });
+      expect(screen.getByRole('button', { name: '复制失败' })).toBeInTheDocument();
+
+      act(() => {
+        vi.advanceTimersByTime(2000);
+      });
+      expect(screen.getByRole('button', { name: '复制' })).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+      consoleErrorSpy.mockRestore();
+      if (originalClipboard) {
+        Object.defineProperty(navigator, 'clipboard', originalClipboard);
+      } else {
+        Reflect.deleteProperty(navigator, 'clipboard');
+      }
+      if (originalExecCommand) {
+        Object.defineProperty(document, 'execCommand', originalExecCommand);
+      } else {
+        Reflect.deleteProperty(document, 'execCommand');
+      }
+    }
+  });
+
+  it('skips execCommand fallback when an older message writeText rejects after copying a newer message', async () => {
+    const originalClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+    const originalExecCommand = Object.getOwnPropertyDescriptor(document, 'execCommand');
+    let rejectFirstMessage!: (reason?: unknown) => void;
+    const writeText = vi
+      .fn()
+      .mockImplementationOnce(
+        () => new Promise<void>((_resolve, reject) => {
+          rejectFirstMessage = reject;
+        }),
+      )
+      .mockResolvedValueOnce(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+    const execCommand = vi.fn().mockReturnValue(true);
+    Object.defineProperty(document, 'execCommand', {
+      configurable: true,
+      value: execCommand,
+    });
+    mockStoreState.messages = [
+      { id: 'assistant-msg-a', role: 'assistant', content: '消息 A 内容' },
+      { id: 'assistant-msg-b', role: 'assistant', content: '消息 B 内容' },
+    ];
+
+    try {
+      render(
+        <MemoryRouter initialEntries={['/chat']}>
+          <ChatPage />
+        </MemoryRouter>,
+      );
+
+      const copyButtons = await screen.findAllByRole('button', { name: '复制' });
+      expect(copyButtons).toHaveLength(2);
+
+      // Copy message A (pending), then copy message B (succeeds).
+      fireEvent.click(copyButtons[0]);
+      await act(async () => {
+        fireEvent.click(copyButtons[1]);
+        await Promise.resolve();
+      });
+      expect(screen.getByRole('button', { name: '已复制' })).toBeInTheDocument();
+
+      // Message A's pending writeText rejects -> must NOT run execCommand or show failure.
+      await act(async () => {
+        rejectFirstMessage(new DOMException('Denied', 'NotAllowedError'));
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(execCommand).not.toHaveBeenCalled();
+      expect(screen.getByRole('button', { name: '已复制' })).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: '复制失败' })).not.toBeInTheDocument();
+    } finally {
+      if (originalClipboard) {
+        Object.defineProperty(navigator, 'clipboard', originalClipboard);
+      } else {
+        Reflect.deleteProperty(navigator, 'clipboard');
+      }
+      if (originalExecCommand) {
+        Object.defineProperty(document, 'execCommand', originalExecCommand);
+      } else {
+        Reflect.deleteProperty(document, 'execCommand');
+      }
+    }
+  });
+
+  it('does not leave a retried message button stuck on copied when superseded by another message copy', async () => {
+    vi.useFakeTimers();
+    const originalClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+    const originalExecCommand = Object.getOwnPropertyDescriptor(document, 'execCommand');
+    let rejectRetryA!: (reason?: unknown) => void;
+    const writeText = vi
+      .fn()
+      .mockResolvedValueOnce(undefined)
+      .mockImplementationOnce(
+        () => new Promise<void>((_resolve, reject) => {
+          rejectRetryA = reject;
+        }),
+      )
+      .mockResolvedValueOnce(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+    const execCommand = vi.fn().mockReturnValue(true);
+    Object.defineProperty(document, 'execCommand', {
+      configurable: true,
+      value: execCommand,
+    });
+    mockStoreState.messages = [
+      { id: 'assistant-msg-a', role: 'assistant', content: '消息 A 内容' },
+      { id: 'assistant-msg-b', role: 'assistant', content: '消息 B 内容' },
+    ];
+
+    try {
+      render(
+        <MemoryRouter initialEntries={['/chat']}>
+          <ChatPage />
+        </MemoryRouter>,
+      );
+
+      const [btnA, btnB] = screen.getAllByRole('button', { name: '复制' });
+      // 1) Copy A -> '已复制'
+      await act(async () => {
+        fireEvent.click(btnA);
+        await Promise.resolve();
+      });
+      expect(screen.getByRole('button', { name: '已复制' })).toBeInTheDocument();
+
+      // 2) Retry A (pending) -> immediately copy B (succeeds) -> A retry rejects
+      fireEvent.click(screen.getByRole('button', { name: '已复制' }));
+      await act(async () => {
+        fireEvent.click(btnB);
+        await Promise.resolve();
+      });
+      await act(async () => {
+        rejectRetryA(new DOMException('Denied', 'NotAllowedError'));
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(execCommand).not.toHaveBeenCalled();
+      expect(screen.getAllByRole('button', { name: '已复制' })).toHaveLength(1);
+      expect(screen.getAllByRole('button', { name: '复制' })).toHaveLength(1);
+
+      // 3) After 2000ms, both buttons reset cleanly to '复制' (no stuck '已复制').
+      act(() => {
+        vi.advanceTimersByTime(2000);
+      });
+      expect(screen.queryByRole('button', { name: '已复制' })).not.toBeInTheDocument();
+      expect(screen.getAllByRole('button', { name: '复制' })).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+      if (originalClipboard) {
+        Object.defineProperty(navigator, 'clipboard', originalClipboard);
+      } else {
+        Reflect.deleteProperty(navigator, 'clipboard');
+      }
+      if (originalExecCommand) {
+        Object.defineProperty(document, 'execCommand', originalExecCommand);
+      } else {
+        Reflect.deleteProperty(document, 'execCommand');
+      }
+    }
+  });
 });

@@ -1,7 +1,8 @@
 import type React from 'react';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { historyApi } from '../../api/history';
 import type { ReportLanguage } from '../../types/analysis';
+import { copyTextToClipboard } from '../../utils/clipboard';
 import { markdownToPlainText } from '../../utils/markdown';
 import { getReportText, normalizeReportLanguage } from '../../utils/reportLanguage';
 import { Tooltip } from '../common/Tooltip';
@@ -16,6 +17,14 @@ export interface ReportMarkdownPanelProps {
   reportLanguage?: ReportLanguage;
 }
 
+type CopyType = 'markdown' | 'text';
+type CopyStatus = 'copied' | 'failed';
+type CopyFeedback = {
+  type: CopyType;
+  status: CopyStatus;
+  contentKey: string;
+};
+
 export const ReportMarkdownPanel: React.FC<ReportMarkdownPanelProps> = ({
   recordId,
   stockName,
@@ -28,30 +37,91 @@ export const ReportMarkdownPanel: React.FC<ReportMarkdownPanelProps> = ({
   const [content, setContent] = useState<string>('');
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [copiedType, setCopiedType] = useState<'markdown' | 'text' | null>(null);
+  const [copyFeedback, setCopyFeedback] = useState<CopyFeedback | null>(null);
+  const contentKey = `${recordId}\u0000${content}`;
+  const [prevContentKey, setPrevContentKey] = useState(contentKey);
+  if (prevContentKey !== contentKey) {
+    setPrevContentKey(contentKey);
+    setCopyFeedback(null);
+  }
+  const mountedRef = useRef(true);
+  const copyTokenRef = useRef(0);
+  const copyResetTimerRef = useRef<number | null>(null);
 
-  const handleCopyMarkdown = useCallback(async () => {
-    if (!content) return;
-    try {
-      await navigator.clipboard.writeText(content);
-      setCopiedType('markdown');
-      setTimeout(() => setCopiedType(null), 2000);
-    } catch (error) {
-      console.error('Copy failed:', error);
-    }
-  }, [content]);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      copyTokenRef.current += 1;
+      if (copyResetTimerRef.current !== null) {
+        window.clearTimeout(copyResetTimerRef.current);
+        copyResetTimerRef.current = null;
+      }
+    };
+  }, []);
 
-  const handleCopyPlainText = useCallback(async () => {
-    if (!content) return;
-    try {
-      const plainText = markdownToPlainText(content);
-      await navigator.clipboard.writeText(plainText);
-      setCopiedType('text');
-      setTimeout(() => setCopiedType(null), 2000);
-    } catch (error) {
-      console.error('Copy failed:', error);
+  useEffect(() => {
+    copyTokenRef.current += 1;
+    if (copyResetTimerRef.current !== null) {
+      window.clearTimeout(copyResetTimerRef.current);
+      copyResetTimerRef.current = null;
     }
-  }, [content]);
+  }, [contentKey]);
+
+  const handleCopy = useCallback(async (type: CopyType) => {
+    if (!content) return;
+    const token = ++copyTokenRef.current;
+    if (copyResetTimerRef.current !== null) {
+      window.clearTimeout(copyResetTimerRef.current);
+      copyResetTimerRef.current = null;
+    }
+    setCopyFeedback(null);
+
+    const isAttemptCurrent = () =>
+      mountedRef.current && copyTokenRef.current === token;
+
+    let ok = false;
+    try {
+      const value = type === 'markdown' ? content : markdownToPlainText(content);
+      ok = await copyTextToClipboard(value, {
+        shouldFallback: isAttemptCurrent,
+      });
+      if (!ok && isAttemptCurrent()) {
+        console.error('Copy failed: clipboard unavailable');
+      }
+    } catch (err) {
+      if (isAttemptCurrent()) {
+        console.error('Copy failed:', err);
+      }
+      ok = false;
+    }
+
+    if (!isAttemptCurrent()) {
+      return;
+    }
+
+    setCopyFeedback({
+      type,
+      status: ok ? 'copied' : 'failed',
+      contentKey,
+    });
+
+    copyResetTimerRef.current = window.setTimeout(() => {
+      copyResetTimerRef.current = null;
+      if (!mountedRef.current || copyTokenRef.current !== token) {
+        return;
+      }
+      setCopyFeedback(null);
+    }, 2000);
+  }, [content, contentKey]);
+
+  const handleCopyMarkdown = useCallback(() => {
+    void handleCopy('markdown');
+  }, [handleCopy]);
+
+  const handleCopyPlainText = useCallback(() => {
+    void handleCopy('text');
+  }, [handleCopy]);
 
   useEffect(() => {
     let isMounted = true;
@@ -82,6 +152,25 @@ export const ReportMarkdownPanel: React.FC<ReportMarkdownPanelProps> = ({
     };
   }, [recordId, loadReportFailedText]);
 
+  const activeCopyFeedback =
+    copyFeedback && copyFeedback.contentKey === contentKey ? copyFeedback : null;
+  const markdownCopyStatus =
+    activeCopyFeedback?.type === 'markdown' ? activeCopyFeedback.status : 'idle';
+  const plainTextCopyStatus =
+    activeCopyFeedback?.type === 'text' ? activeCopyFeedback.status : 'idle';
+  const markdownButtonLabel =
+    markdownCopyStatus === 'copied'
+      ? text.copied
+      : markdownCopyStatus === 'failed'
+        ? text.copyFailed
+        : text.copyMarkdownSource;
+  const plainTextButtonLabel =
+    plainTextCopyStatus === 'copied'
+      ? text.copied
+      : plainTextCopyStatus === 'failed'
+        ? text.copyFailed
+        : text.copyPlainText;
+
   return (
     <>
       <div className="mb-4 flex items-center justify-between gap-3">
@@ -103,18 +192,26 @@ export const ReportMarkdownPanel: React.FC<ReportMarkdownPanelProps> = ({
             reportTitle={`${stockName || stockCode}-${stockCode}`}
             reportLanguage={reportLanguage}
           />
-          <Tooltip content={text.copyMarkdownSource}>
+          <Tooltip content={markdownButtonLabel}>
             <span className="inline-flex">
               <button
                 type="button"
                 onClick={handleCopyMarkdown}
-                disabled={isLoading || !content || copiedType !== null}
-                className="home-surface-button flex h-10 w-10 items-center justify-center rounded-lg text-secondary-text hover:text-foreground disabled:opacity-50"
-                aria-label={text.copyMarkdownSource}
+                disabled={isLoading || !content}
+                className={`home-surface-button flex h-10 w-10 items-center justify-center rounded-lg disabled:opacity-50 ${
+                  markdownCopyStatus === 'failed'
+                    ? 'text-danger hover:text-danger'
+                    : 'text-secondary-text hover:text-foreground'
+                }`}
+                aria-label={markdownButtonLabel}
               >
-                {copiedType === 'markdown' ? (
+                {markdownCopyStatus === 'copied' ? (
                   <svg className="h-6 w-6 text-success" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                  </svg>
+                ) : markdownCopyStatus === 'failed' ? (
+                  <svg className="h-6 w-6 text-danger" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
                   </svg>
                 ) : (
                   <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -125,18 +222,26 @@ export const ReportMarkdownPanel: React.FC<ReportMarkdownPanelProps> = ({
             </span>
           </Tooltip>
 
-          <Tooltip content={text.copyPlainText}>
+          <Tooltip content={plainTextButtonLabel}>
             <span className="inline-flex">
               <button
                 type="button"
                 onClick={handleCopyPlainText}
-                disabled={isLoading || !content || copiedType !== null}
-                className="home-surface-button flex h-10 w-10 items-center justify-center rounded-lg text-secondary-text hover:text-foreground disabled:opacity-50"
-                aria-label={text.copyPlainText}
+                disabled={isLoading || !content}
+                className={`home-surface-button flex h-10 w-10 items-center justify-center rounded-lg disabled:opacity-50 ${
+                  plainTextCopyStatus === 'failed'
+                    ? 'text-danger hover:text-danger'
+                    : 'text-secondary-text hover:text-foreground'
+                }`}
+                aria-label={plainTextButtonLabel}
               >
-                {copiedType === 'text' ? (
+                {plainTextCopyStatus === 'copied' ? (
                   <svg className="h-6 w-6 text-success" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                  </svg>
+                ) : plainTextCopyStatus === 'failed' ? (
+                  <svg className="h-6 w-6 text-danger" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
                   </svg>
                 ) : (
                   <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">

@@ -26,6 +26,7 @@ const zh = {
   'common.success': '成功',
   'common.copy': '复制',
   'common.copied': '已复制!',
+  'common.copyFailed': '复制失败',
 
   'language.current': '中文',
   'language.english': 'English',
@@ -1064,6 +1065,7 @@ const en: Record<UiTextKey, string> = {
   'common.success': 'Success',
   'common.copy': 'Copy',
   'common.copied': 'Copied!',
+  'common.copyFailed': 'Copy failed',
 
   'language.current': 'English',
   'language.english': 'English',
