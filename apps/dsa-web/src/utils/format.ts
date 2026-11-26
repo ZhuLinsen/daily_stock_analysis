@@ -1,9 +1,36 @@
 import type { UiLanguage } from '../i18n/uiText';
 import { getUiLanguageStorage, normalizeUiLanguage, UI_LANGUAGE_STORAGE_KEY } from './uiLanguage';
 
+const mountedTabUiLanguages = new Map<symbol, UiLanguage>();
+
+export function registerActiveTabUiLanguage(id: symbol, language: UiLanguage): void {
+  mountedTabUiLanguages.delete(id);
+  mountedTabUiLanguages.set(id, language);
+}
+
+export function unregisterActiveTabUiLanguage(id: symbol): void {
+  mountedTabUiLanguages.delete(id);
+}
+
 export function resolveActiveUiLanguage(language?: UiLanguage): UiLanguage {
   if (language) {
     return language;
+  }
+  if (mountedTabUiLanguages.size > 0) {
+    let latest: UiLanguage = 'zh';
+    for (const activeLanguage of mountedTabUiLanguages.values()) {
+      latest = activeLanguage;
+    }
+    return latest;
+  }
+  if (typeof document !== 'undefined') {
+    const docLang = document.documentElement.lang.trim().toLowerCase();
+    if (docLang.startsWith('en')) {
+      return 'en';
+    }
+    if (docLang.startsWith('zh')) {
+      return 'zh';
+    }
   }
   const storage = getUiLanguageStorage();
   if (storage) {
@@ -13,16 +40,7 @@ export function resolveActiveUiLanguage(language?: UiLanguage): UiLanguage {
         return stored;
       }
     } catch {
-      // Ignore storage read failures and fall through to document language.
-    }
-  }
-  if (typeof document !== 'undefined') {
-    const docLang = document.documentElement.lang.trim().toLowerCase();
-    if (docLang.startsWith('en')) {
-      return 'en';
-    }
-    if (docLang.startsWith('zh')) {
-      return 'zh';
+      // Ignore storage read failures and fall through to default language.
     }
   }
   return 'zh';

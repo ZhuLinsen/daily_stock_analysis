@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type React from 'react';
-import type { ParsedApiError } from '../../api/error';
 import { getParsedApiError } from '../../api/error';
 import { systemConfigApi } from '../../api/systemConfig';
 import { useUiLanguage } from '../../contexts/UiLanguageContext';
+import type { UiLanguage } from '../../i18n/uiText';
 import type { LLMApiSurface, LLMCapabilityCheck, LLMCapabilityCheckResult } from '../../types/systemConfig';
 import { ApiErrorAlert, Badge, Button, InlineAlert, Input, Select, StatusDot, Tooltip } from '../common';
 import type { ChannelProtocol } from './llmProviderTemplates';
@@ -95,24 +95,35 @@ interface ChannelConfig {
   enabled: boolean;
 }
 
+type LocalValidationMessageKey =
+  | 'validationEmptyChannelName'
+  | 'validationMixedHermesRoute'
+  | 'validationNonCanonicalRouteAlias'
+  | 'validationInvalidPrimaryModel'
+  | 'validationInvalidAgentPrimaryModel'
+  | 'validationInvalidFallbackModel'
+  | 'validationInvalidVisionModel';
+
+type SaveSuccessMessageKey = 'saveSuccessAi' | 'saveSuccessChannels';
+
 interface ChannelTestState {
   status: 'idle' | 'loading' | 'success' | 'error';
-  text?: string;
-  hint?: string;
+  resolveText?: (locale: LlmChannelEditorLocale, lang: UiLanguage) => string;
+  resolveHint?: (locale: LlmChannelEditorLocale) => string | undefined;
 }
 
 interface ChannelDiscoveryState {
   status: 'idle' | 'loading' | 'success' | 'error';
-  text?: string;
-  hint?: string;
+  resolveText?: (locale: LlmChannelEditorLocale, lang: UiLanguage) => string;
+  resolveHint?: (locale: LlmChannelEditorLocale) => string | undefined;
   models: string[];
 }
 
 interface ChannelCapabilityState {
   selected: LLMCapabilityCheck[];
   status: 'idle' | 'loading' | 'success' | 'error';
-  text?: string;
-  hint?: string;
+  resolveText?: (locale: LlmChannelEditorLocale, lang: UiLanguage) => string;
+  resolveHint?: (locale: LlmChannelEditorLocale) => string | undefined;
   results: Partial<Record<LLMCapabilityCheck, LLMCapabilityCheckResult>>;
 }
 
@@ -437,6 +448,12 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
   const selectedCapabilities = capabilityState?.selected || [];
   const capabilityResults = capabilityState?.results || {};
   const capabilityBusy = capabilityState?.status === 'loading';
+  const discoveryText = discoveryState?.resolveText?.(text, language);
+  const discoveryHint = discoveryState?.resolveHint?.(text);
+  const testText = testState?.resolveText?.(text, language);
+  const testHint = testState?.resolveHint?.(text);
+  const capabilityText = capabilityState?.resolveText?.(text, language);
+  const capabilityHint = capabilityState?.resolveHint?.(text);
   const channelNameInputId = `llm-channel-${channel.id}-name`;
   const protocolInputId = `llm-channel-${channel.id}-protocol`;
   const apiSurfaceInputId = `llm-channel-${channel.id}-api-surface`;
@@ -700,12 +717,12 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
                     : 'text-muted-text'
               }`}
               >
-                {discoveryState?.text || text.discoveryDefaultHint}
+                {discoveryText || text.discoveryDefaultHint}
               </span>
             </div>
-            {discoveryState?.hint ? (
+            {discoveryHint ? (
               <p className="text-[11px] text-secondary-text">
-                {discoveryState.hint}
+                {discoveryHint}
               </p>
             ) : null}
 
@@ -780,26 +797,26 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
             >
               {testState?.status === 'loading' ? text.testConnectionLoading : text.testConnectionButton}
             </Button>
-            {testState?.text ? (
+            {testText ? (
               <div className="space-y-1">
                 <span className={`block text-xs ${
-                  testState.status === 'success'
+                  testState?.status === 'success'
                     ? 'text-success'
-                    : testState.status === 'error'
+                    : testState?.status === 'error'
                       ? 'text-danger'
                       : 'text-muted-text'
                 }`}
                 >
-                  {testState.text}
+                  {testText}
                 </span>
                 {selectedModels[0] ? (
                   <p className="text-[11px] text-secondary-text">
                     {text.firstModelTestNote(selectedModels[0])}
                   </p>
                 ) : null}
-                {testState.hint ? (
+                {testHint ? (
                   <p className="text-[11px] text-secondary-text">
-                    {testState.hint}
+                    {testHint}
                   </p>
                 ) : null}
               </div>
@@ -852,20 +869,20 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
               ))}
             </div>
 
-            {capabilityState?.text ? (
+            {capabilityText ? (
               <div className="space-y-1">
                 <p className={`text-xs ${
-                  capabilityState.status === 'success'
+                  capabilityState?.status === 'success'
                     ? 'text-success'
-                    : capabilityState.status === 'error'
+                    : capabilityState?.status === 'error'
                       ? 'text-danger'
                       : 'text-muted-text'
                 }`}
                 >
-                  {capabilityState.text}
+                  {capabilityText}
                 </p>
-                {capabilityState.hint ? (
-                  <p className="text-[11px] text-secondary-text">{capabilityState.hint}</p>
+                {capabilityHint ? (
+                  <p className="text-[11px] text-secondary-text">{capabilityHint}</p>
                 ) : null}
               </div>
             ) : null}
@@ -1698,9 +1715,9 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
   const [runtimeConfig, setRuntimeConfig] = useState<RuntimeConfig>(initialRuntimeConfig);
   const [isSaving, setIsSaving] = useState(false);
   const [saveMessage, setSaveMessage] = useState<
-    | { type: 'success'; text: string }
-    | { type: 'error'; error: ParsedApiError }
-    | { type: 'local-error'; text: string }
+    | { type: 'success'; key: SaveSuccessMessageKey }
+    | { type: 'error'; rawError: unknown }
+    | { type: 'local-error'; key: LocalValidationMessageKey }
     | null
   >(null);
   const [saveWarnings, setSaveWarnings] = useState<string[]>([]);
@@ -2074,7 +2091,7 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
     }
     const hasEmptyName = channels.some((channel) => !channel.name.trim());
     if (hasEmptyName) {
-      setSaveMessage({ type: 'local-error', text: text.validationEmptyChannelName });
+      setSaveMessage({ type: 'local-error', key: 'validationEmptyChannelName' });
       return;
     }
 
@@ -2087,7 +2104,7 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
         return origin?.hasHermes && origin.hasNonHermes;
       });
       if (mixedPrimary || mixedFallback) {
-        setSaveMessage({ type: 'local-error', text: text.validationMixedHermesRoute });
+        setSaveMessage({ type: 'local-error', key: 'validationMixedHermesRoute' });
         return;
       }
 
@@ -2098,7 +2115,7 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
         || runtimeConfig.fallbackModels.some((model) => hasCanonicalRouteAliasMismatch(model, availableModels))
       );
       if (nonCanonicalRouteAlias) {
-        setSaveMessage({ type: 'local-error', text: text.validationNonCanonicalRouteAlias });
+        setSaveMessage({ type: 'local-error', key: 'validationNonCanonicalRouteAlias' });
         return;
       }
     }
@@ -2114,14 +2131,14 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
       const invalidPrimaryModel = runtimeConfigForSave.primaryModel
         && !isRuntimeModelAvailable(runtimeConfigForSave.primaryModel, availableModels, savedItemMap);
       if (invalidPrimaryModel) {
-        setSaveMessage({ type: 'local-error', text: text.validationInvalidPrimaryModel });
+        setSaveMessage({ type: 'local-error', key: 'validationInvalidPrimaryModel' });
         return;
       }
 
       const invalidAgentPrimaryModel = runtimeConfigForSave.agentPrimaryModel
         && !isRuntimeModelAvailable(runtimeConfigForSave.agentPrimaryModel, agentSafeModels, savedItemMap);
       if (invalidAgentPrimaryModel) {
-        setSaveMessage({ type: 'local-error', text: text.validationInvalidAgentPrimaryModel });
+        setSaveMessage({ type: 'local-error', key: 'validationInvalidAgentPrimaryModel' });
         return;
       }
 
@@ -2129,14 +2146,14 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
         (model) => !isRuntimeModelAvailable(model, availableModels, savedItemMap),
       );
       if (invalidFallbackModel) {
-        setSaveMessage({ type: 'local-error', text: text.validationInvalidFallbackModel });
+        setSaveMessage({ type: 'local-error', key: 'validationInvalidFallbackModel' });
         return;
       }
 
       const invalidVisionModel = runtimeConfigForSave.visionModel
         && !isRuntimeModelAvailable(runtimeConfigForSave.visionModel, visionSafeModels, savedItemMap);
       if (invalidVisionModel) {
-        setSaveMessage({ type: 'local-error', text: text.validationInvalidVisionModel });
+        setSaveMessage({ type: 'local-error', key: 'validationInvalidVisionModel' });
         return;
       }
     }
@@ -2190,14 +2207,14 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
         onDraftItemsChangeRef.current?.([]);
       }
       setSaveWarnings(responseWarnings);
-      setSaveMessage({ type: 'success', text: managesRuntimeConfig ? text.saveSuccessAi : text.saveSuccessChannels });
+      setSaveMessage({ type: 'success', key: managesRuntimeConfig ? 'saveSuccessAi' : 'saveSuccessChannels' });
     } catch (error: unknown) {
       if (!mountedRef.current) {
         return;
       }
       pendingSaveFeedbackFingerprintRef.current = null;
       setSaveWarnings([]);
-      setSaveMessage({ type: 'error', error: getParsedApiError(error) });
+      setSaveMessage({ type: 'error', rawError: error });
     } finally {
       saveInFlightRef.current = false;
       if (mountedRef.current) {
@@ -2211,7 +2228,10 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
       delete testNonceRef.current[channel.id];
       setTestStates((previous) => ({
         ...previous,
-        [channel.id]: { status: 'error', text: text.runtimeOnlyHermesSecretMessage },
+        [channel.id]: {
+          status: 'error',
+          resolveText: (locale) => locale.runtimeOnlyHermesSecretMessage,
+        },
       }));
       return;
     }
@@ -2223,7 +2243,10 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
 
     setTestStates((previous) => ({
       ...previous,
-      [channel.id]: { status: 'loading', text: text.testLoadingText },
+      [channel.id]: {
+        status: 'loading',
+        resolveText: (locale) => locale.testLoadingText,
+      },
     }));
 
     try {
@@ -2242,17 +2265,18 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
         return;
       }
 
-      const statusText = result.success
-        ? text.testSuccessText(result.resolvedModel, result.latencyMs)
-        : buildLlmFailureText(result, text);
-      const hint = result.success ? undefined : buildLlmTestHint(result, text);
-
       setTestStates((previous) => ({
         ...previous,
         [channel.id]: {
           status: result.success ? 'success' : 'error',
-          text: statusText,
-          hint,
+          resolveText: (locale) => (
+            result.success
+              ? locale.testSuccessText(result.resolvedModel, result.latencyMs)
+              : buildLlmFailureText(result, locale)
+          ),
+          resolveHint: result.success
+            ? undefined
+            : (locale) => buildLlmTestHint(result, locale),
         },
       }));
     } catch (error: unknown) {
@@ -2260,10 +2284,12 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
         return;
       }
 
-      const parsed = getParsedApiError(error);
       setTestStates((previous) => ({
         ...previous,
-        [channel.id]: { status: 'error', text: parsed.message || text.testFailureFallback },
+        [channel.id]: {
+          status: 'error',
+          resolveText: (locale, lang) => getParsedApiError(error, lang).message || locale.testFailureFallback,
+        },
       }));
     }
   };
@@ -2275,8 +2301,8 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
         ...previous,
         [channel.id]: {
           status: 'error',
-          text: text.runtimeOnlyHermesSecretMessage,
-          hint: undefined,
+          resolveText: (locale) => locale.runtimeOnlyHermesSecretMessage,
+          resolveHint: undefined,
           models: previous[channel.id]?.models || [],
         },
       }));
@@ -2292,8 +2318,8 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
       ...previous,
       [channel.id]: {
         status: 'loading',
-        text: text.discoveryLoadingText,
-        hint: undefined,
+        resolveText: (locale) => locale.discoveryLoadingText,
+        resolveHint: undefined,
         models: previous[channel.id]?.models || [],
       },
     }));
@@ -2314,23 +2340,26 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
         ...previous,
         [channel.id]: {
           status: result.success ? 'success' : 'error',
-          text: result.success
-            ? text.discoverySuccessText(result.models.length, result.latencyMs)
-            : buildLlmFailureText(result, text),
-          hint: result.success ? undefined : getLlmTroubleshootingHint(result.errorCode, result.stage, text, 'discovery', result.details),
+          resolveText: (locale) => (
+            result.success
+              ? locale.discoverySuccessText(result.models.length, result.latencyMs)
+              : buildLlmFailureText(result, locale)
+          ),
+          resolveHint: result.success
+            ? undefined
+            : (locale) => getLlmTroubleshootingHint(result.errorCode, result.stage, locale, 'discovery', result.details),
           models: result.success ? result.models : (previous[channel.id]?.models || []),
         },
       }));
     } catch (error: unknown) {
       if (!mountedRef.current || discoveryNonceRef.current[channel.id] !== nonce) return;
 
-      const parsed = getParsedApiError(error);
       setDiscoveryStates((previous) => ({
         ...previous,
         [channel.id]: {
           status: 'error',
-          text: parsed.message || text.discoveryFailureFallback,
-          hint: undefined,
+          resolveText: (locale, lang) => getParsedApiError(error, lang).message || locale.discoveryFailureFallback,
+          resolveHint: undefined,
           models: previous[channel.id]?.models || [],
         },
       }));
@@ -2349,8 +2378,8 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
           ...current,
           selected,
           status: current.status === 'loading' ? current.status : 'idle',
-          text: current.status === 'loading' ? current.text : undefined,
-          hint: current.status === 'loading' ? current.hint : undefined,
+          resolveText: current.status === 'loading' ? current.resolveText : undefined,
+          resolveHint: current.status === 'loading' ? current.resolveHint : undefined,
           results: current.status === 'loading' ? current.results : {},
         },
       };
@@ -2370,8 +2399,8 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
         [channel.id]: {
           selected,
           status: 'error',
-          text: text.runtimeOnlyHermesSecretMessage,
-          hint: undefined,
+          resolveText: (locale) => locale.runtimeOnlyHermesSecretMessage,
+          resolveHint: undefined,
           results: {},
         },
       }));
@@ -2388,8 +2417,8 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
       [channel.id]: {
         selected,
         status: 'loading',
-        text: text.capabilityCheckingText,
-        hint: undefined,
+        resolveText: (locale) => locale.capabilityCheckingText,
+        resolveHint: undefined,
         results: {},
       },
     }));
@@ -2417,27 +2446,30 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
         [channel.id]: {
           selected,
           status: hasFailure || hasSkipped || !result.success ? 'error' : 'success',
-          text: Object.keys(capabilityResults).length > 0
-            ? summarizeCapabilityResults(capabilityResults, text)
-            : result.success
-              ? text.capabilityNoResultsText
-              : buildLlmFailureText(result, text),
-          hint: getFirstCapabilityHint(capabilityResults, text)
-            || (!result.success ? buildLlmTestHint(result, text) : undefined),
+          resolveText: (locale) => (
+            Object.keys(capabilityResults).length > 0
+              ? summarizeCapabilityResults(capabilityResults, locale)
+              : result.success
+                ? locale.capabilityNoResultsText
+                : buildLlmFailureText(result, locale)
+          ),
+          resolveHint: (locale) => (
+            getFirstCapabilityHint(capabilityResults, locale)
+            || (!result.success ? buildLlmTestHint(result, locale) : undefined)
+          ),
           results: capabilityResults,
         },
       }));
     } catch (error: unknown) {
       if (!mountedRef.current || capabilityNonceRef.current[channel.id] !== nonce) return;
 
-      const parsed = getParsedApiError(error);
       setCapabilityStates((previous) => ({
         ...previous,
         [channel.id]: {
           selected,
           status: 'error',
-          text: parsed.message || text.capabilityFailureFallback,
-          hint: undefined,
+          resolveText: (locale, lang) => getParsedApiError(error, lang).message || locale.capabilityFailureFallback,
+          resolveHint: undefined,
           results: {},
         },
       }));
@@ -2732,7 +2764,7 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
           {saveMessage?.type === 'success' ? (
             <InlineAlert
               variant="success"
-              message={saveMessage.text}
+              message={text[saveMessage.key]}
               className="rounded-lg px-3 py-2 text-sm shadow-none"
             />
           ) : null}
@@ -2755,12 +2787,12 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
           {saveMessage?.type === 'local-error' ? (
             <InlineAlert
               variant="danger"
-              message={saveMessage.text}
+              message={text[saveMessage.key]}
               className="rounded-lg px-3 py-2 text-sm shadow-none"
             />
           ) : null}
 
-          {saveMessage?.type === 'error' ? <ApiErrorAlert error={saveMessage.error} /> : null}
+          {saveMessage?.type === 'error' ? <ApiErrorAlert error={getParsedApiError(saveMessage.rawError, language)} /> : null}
         </div>
       ) : null}
     </div>

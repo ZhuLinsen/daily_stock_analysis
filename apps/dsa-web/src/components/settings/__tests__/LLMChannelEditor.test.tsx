@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { UiLanguageProvider } from '../../../contexts/UiLanguageContext';
 import { UI_LANGUAGE_STORAGE_KEY } from '../../../utils/uiLanguage';
+import { UiLanguageToggle } from '../../i18n/UiLanguageToggle';
 import { LLMChannelEditor } from '../LLMChannelEditor';
 
 const {
@@ -3310,6 +3311,85 @@ describe('LLMChannelEditor', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Save AI Config' }));
       expect(await screen.findByText('Channel name cannot be empty and may only contain lowercase letters, numbers, or underscores.')).toBeInTheDocument();
       expect(container.textContent).not.toMatch(cjkPattern);
+    });
+
+    it('re-localizes in-flight and settled channel async results when UI language switches', async () => {
+      window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'zh');
+      const cjkPattern = /[\u4e00-\u9fff]/;
+
+      let resolveTest!: (v: unknown) => void;
+      let resolveDiscover!: (v: unknown) => void;
+      let resolveCap!: (v: unknown) => void;
+      let resolveSave!: (v: unknown) => void;
+      testLLMChannel
+        .mockImplementationOnce(() => new Promise((r) => { resolveTest = r; }))
+        .mockImplementationOnce(() => new Promise((r) => { resolveCap = r; }));
+      discoverLLMChannelModels.mockImplementationOnce(() => new Promise((r) => { resolveDiscover = r; }));
+      update.mockImplementationOnce(() => new Promise((r) => { resolveSave = r; }));
+
+      render(
+        <UiLanguageProvider>
+          <UiLanguageToggle />
+          <div data-testid="channel-editor-surface">
+            <LLMChannelEditor
+              items={[
+                { key: 'LLM_CHANNELS', value: 'modelflare' },
+                { key: 'LLM_MODELFLARE_PROTOCOL', value: 'openai' },
+                { key: 'LLM_MODELFLARE_API_SURFACE', value: 'chat_completions' },
+                { key: 'LLM_MODELFLARE_BASE_URL', value: 'https://modelflare.dev/v1' },
+                { key: 'LLM_MODELFLARE_ENABLED', value: 'true' },
+                { key: 'LLM_MODELFLARE_API_KEY', value: 'sk-mf-test' },
+                { key: 'LLM_MODELFLARE_MODELS', value: 'gpt-6.1-sol' },
+                { key: 'LITELLM_MODEL', value: 'openai/gpt-6.1-sol' },
+              ]}
+              configVersion="v1"
+              maskToken="******"
+              onSaved={() => {}}
+            />
+          </div>
+        </UiLanguageProvider>
+      );
+
+      // Expand row in ZH, modify temperature so Save button enables, then start all 4 async requests in ZH
+      fireEvent.click(screen.getByRole('button', { name: /Modelflare（聚合平台）/i }));
+      fireEvent.change(screen.getByRole('slider'), { target: { value: '0.5' } });
+      fireEvent.click(await screen.findByRole('button', { name: '测试连接' }));
+      fireEvent.click(screen.getByRole('button', { name: '获取模型' }));
+      fireEvent.click(screen.getByLabelText('JSON'));
+      fireEvent.click(screen.getByRole('button', { name: '检测能力' }));
+      fireEvent.click(screen.getByRole('button', { name: '保存 AI 配置' }));
+
+      // Switch to EN while all 4 requests are still in flight -> loading labels update live to EN
+      fireEvent.click(screen.getByRole('button', { name: '切换界面语言' }));
+      expect(await screen.findByText('Fetching model list...')).toBeInTheDocument();
+      expect(screen.getByText('Checking runtime capabilities...')).toBeInTheDocument();
+      expect(screen.getByText('Testing')).toBeInTheDocument();
+
+      // Resolve all 4 requests -> results must render cleanly in EN without ZH leakage
+      await act(async () => {
+        resolveTest({ success: true, resolvedModel: 'gpt-6.1-sol', latencyMs: 42 });
+        resolveDiscover({ success: true, models: ['gpt-6.1-sol', 'gpt-6.1-terra'], latencyMs: 18 });
+        resolveCap({
+          success: true,
+          capabilityResults: {
+            json: { status: 'passed', message: 'JSON ok' },
+          },
+        });
+        resolveSave({ warnings: [] });
+      });
+
+      expect(await screen.findByText('Connected · gpt-6.1-sol · 42 ms')).toBeInTheDocument();
+      expect(screen.getByText('Fetched 2 models · 18 ms')).toBeInTheDocument();
+      expect(screen.getByText('Capability checks complete: 1 passed / 0 failed / 0 skipped')).toBeInTheDocument();
+      expect(screen.getByText('AI configuration saved')).toBeInTheDocument();
+      expect(screen.getByTestId('channel-editor-surface').textContent).not.toMatch(cjkPattern);
+
+      // Switch back to ZH after completion -> all 4 settled results must re-render in ZH
+      fireEvent.click(screen.getByRole('button', { name: 'Switch UI language' }));
+      expect(await screen.findByText('连接成功 · gpt-6.1-sol · 42 ms')).toBeInTheDocument();
+      expect(screen.getByText('已获取 2 个模型 · 18 ms')).toBeInTheDocument();
+      expect(screen.getByText('能力检测完成：1 通过 / 0 失败 / 0 跳过')).toBeInTheDocument();
+      expect(screen.getByText('AI 配置已保存')).toBeInTheDocument();
     });
   });
 });

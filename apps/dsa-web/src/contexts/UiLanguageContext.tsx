@@ -1,6 +1,7 @@
 import type React from 'react';
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import { createContext, useCallback, useContext, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { formatUiText, UI_TEXT, type UiLanguage, type UiTextKey, type UiTextParams } from '../i18n/uiText';
+import { registerActiveTabUiLanguage, unregisterActiveTabUiLanguage } from '../utils/format';
 import { getRuntimeInitialLanguage, getUiLanguageStorage, persistUiLanguage } from '../utils/uiLanguage';
 
 type UiLanguageContextValue = {
@@ -19,19 +20,28 @@ const UiLanguageContext = createContext<UiLanguageContextValue | null>(null);
 
 export const UiLanguageProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [language, setLanguageState] = useState<UiLanguage>(getRuntimeInitialLanguage);
+  const providerIdRef = useRef<symbol | null>(null);
+  if (!providerIdRef.current) {
+    providerIdRef.current = Symbol('UiLanguageProvider');
+  }
 
   const setLanguage = useCallback((nextLanguage: UiLanguage) => {
     setLanguageState(nextLanguage);
     persistUiLanguage(getUiLanguageStorage(), nextLanguage);
   }, []);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
+    const id = providerIdRef.current!;
+    registerActiveTabUiLanguage(id, language);
     if (typeof document === 'undefined') {
-      return;
+      return () => {
+        unregisterActiveTabUiLanguage(id);
+      };
     }
     const previousLang = document.documentElement.lang;
     document.documentElement.lang = language === 'en' ? 'en' : 'zh-CN';
     return () => {
+      unregisterActiveTabUiLanguage(id);
       document.documentElement.lang = previousLang;
     };
   }, [language]);

@@ -1,4 +1,8 @@
+import { render } from '@testing-library/react';
+import React from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { UiLanguageProvider } from '../../contexts/UiLanguageContext';
+import { buildFollowUpPrompt } from '../chatFollowUp';
 import {
   formatDate,
   formatDateInShanghai,
@@ -6,9 +10,11 @@ import {
   formatReportType,
   getRecentStartDate,
   getTodayInShanghai,
+  resolveActiveUiLanguage,
   shiftDateKey,
 } from '../format';
 import { UI_LANGUAGE_STORAGE_KEY } from '../uiLanguage';
+import { validateStockCode } from '../validation';
 
 describe('Shanghai calendar date helpers', () => {
   afterEach(() => {
@@ -128,5 +134,33 @@ describe('UI language-aware formatters', () => {
     document.documentElement.lang = 'en';
     expect(formatReportType('market_review')).toBe('Market Review');
     expect(formatDateTime(sampleIso)).toBe(expectedEnDateTime);
+  });
+
+  it('prefers mounted tab provider and document language over cross-tab localStorage writes', () => {
+    // Tab A DOM is English while Tab B overwrote shared localStorage to Chinese
+    document.documentElement.lang = 'en';
+    window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'zh');
+
+    expect(resolveActiveUiLanguage()).toBe('en');
+    expect(validateStockCode('').message).toBe('Please enter a stock code');
+    expect(buildFollowUpPrompt('AAPL', null)).toBe('Please analyze AAPL in depth');
+    expect(formatReportType('market_review')).toBe('Market Review');
+
+    // Mounted UiLanguageProvider in English stays immune to subsequent localStorage mutations
+    document.documentElement.lang = '';
+    window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'en');
+    const { unmount } = render(
+      React.createElement(UiLanguageProvider, null, React.createElement('div'))
+    );
+    window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'zh');
+
+    expect(resolveActiveUiLanguage()).toBe('en');
+    expect(validateStockCode('').message).toBe('Please enter a stock code');
+    expect(buildFollowUpPrompt('AAPL', null)).toBe('Please analyze AAPL in depth');
+
+    // Unmounting restores documentElement.lang = '' and removes provider entry so storage fallback works
+    unmount();
+    expect(document.documentElement.lang).toBe('');
+    expect(resolveActiveUiLanguage()).toBe('zh');
   });
 });
