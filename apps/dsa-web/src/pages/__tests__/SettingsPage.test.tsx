@@ -2089,7 +2089,7 @@ describe('SettingsPage', () => {
     expect(saveButton).toBeDisabled();
 
     const enabledCheckbox = await screen.findByTestId('scheduler-enabled-checkbox');
-    expect(enabledCheckbox).toBeChecked();
+    await waitFor(() => expect(enabledCheckbox).toBeChecked());
     fireEvent.click(enabledCheckbox);
 
     await waitFor(() => expect(enabledCheckbox).not.toBeChecked());
@@ -2320,7 +2320,7 @@ describe('SettingsPage', () => {
     expect(saveButton).toBeDisabled();
 
     const enabledCheckbox = await screen.findByTestId('scheduler-enabled-checkbox');
-    expect(enabledCheckbox).not.toBeChecked();
+    await waitFor(() => expect(enabledCheckbox).not.toBeChecked());
     fireEvent.click(enabledCheckbox);
 
     await waitFor(() => expect(enabledCheckbox).toBeChecked());
