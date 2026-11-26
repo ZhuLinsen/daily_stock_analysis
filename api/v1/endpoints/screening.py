@@ -76,6 +76,10 @@ class ScreeningStrategyResponse(BaseModel):
     market_scope: List[str] = Field(default_factory=list)
     market: str = ""
     analysis_skills: List[str] = Field(default_factory=list)
+    requires_daily_features: bool = False
+    active_filters: List[str] = Field(default_factory=list)
+    factor_weights: Dict[str, float] = Field(default_factory=dict)
+    style: Dict[str, Any] = Field(default_factory=dict)
 
 
 class ScreeningScreenAccepted(BaseModel):
