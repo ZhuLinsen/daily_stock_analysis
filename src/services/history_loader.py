@@ -169,6 +169,7 @@ def load_history_df(
     # Calendar-day buffer: ~1.8x trading days + margin for long holidays
     start = end - timedelta(days=int(days * 1.8) + 10)
     db_df: Optional[pd.DataFrame] = None
+    db_latest_date = date.min
 
     # --- 1. DB lookup (canonical code, then prefix-stripped fallback) ------
     try:
@@ -179,6 +180,7 @@ def load_history_df(
         latest_date = max((_bar_date(bar) for bar in bars), default=date.min)
         if bars:
             db_df = pd.DataFrame([b.to_dict() for b in bars])
+            db_latest_date = latest_date
         if bars and latest_date >= end and len(bars) >= required_records:
             logger.debug(
                 "load_history_df(%s): %d bars from DB (requested %d)",
@@ -203,10 +205,23 @@ def load_history_df(
             **fallback_kwargs,
         )
         if df is not None and not df.empty:
+            fetched_latest_date = date.min
             if "date" in df.columns:
                 parsed_dates = pd.to_datetime(df["date"], errors="coerce").dt.date
-                df = df[parsed_dates.isna() | (parsed_dates <= end)].reset_index(drop=True)
-            if not df.empty and (db_df is None or len(df) >= len(db_df)):
+                if bool((parsed_dates.notna() & (parsed_dates > end)).any()):
+                    df = df[parsed_dates.isna() | (parsed_dates <= end)].reset_index(drop=True)
+                    parsed_dates = (
+                        pd.to_datetime(df["date"], errors="coerce").dt.date
+                        if not df.empty
+                        else pd.Series([], dtype="object")
+                    )
+                valid_dates = parsed_dates.dropna()
+                if not valid_dates.empty:
+                    fetched_latest_date = valid_dates.max()
+            if not df.empty and (
+                db_df is None
+                or (fetched_latest_date, len(df)) >= (db_latest_date, len(db_df))
+            ):
                 return df, source
     except Exception as e:
         logger.warning("load_history_df(%s): DataFetcherManager failed: %s", stock_code, e)
