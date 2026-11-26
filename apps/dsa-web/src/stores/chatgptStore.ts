@@ -31,7 +31,6 @@ export const useChatGPTStore = create<ChatGPTState>((set, get) => {
       status, error: null,
       ...(changed || !status.connected ? { models: [], model: '' } : {}),
     });
-    return changed;
   }
 
   async function syncConnection(read: number, refreshModels = false) {
@@ -40,14 +39,14 @@ export const useChatGPTStore = create<ChatGPTState>((set, get) => {
     while (read === readSequence) {
       const status = await chatgptApi.status();
       if (read !== readSequence) return;
-      const changed = applyStatus(status);
+      applyStatus(status);
       const id = status.connection_id;
       if (!status.connected || !id) return status;
       if (id === failedConnection) {
         if (catalogError) throw catalogError;
         return status;
       }
-      if (!changed && !refreshModels && get().models.length) return status;
+      if (!refreshModels && get().models.length) return status;
       try {
         const models = await chatgptApi.models(id, refreshModels);
         if (read !== readSequence) return;
@@ -114,7 +113,6 @@ export const useChatGPTStore = create<ChatGPTState>((set, get) => {
         return undefined;
       }
 
-      if (!result.disconnected) return undefined;
       const status = get().status;
       if (connectionId && status?.connection_id === connectionId) {
         set({ status: null, models: [], model: '' });

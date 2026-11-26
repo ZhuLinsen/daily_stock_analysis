@@ -534,6 +534,7 @@ class ChatGPTOAuthService:
                         **self.data, "registrations": registrations, "current_registration": client_id,
                         "identity": {"id": attempt["id"], "client_id": client_id, "id_token": body["id_token"]},
                         "grant_pending": None if complete else {**operation, "verified_registration": client_id},
+                        # Older builds still read generation when refreshing this connection.
                         "connection": {"id": uuid4().hex, "generation": uuid4().hex, **tokens} if complete else None,
                     })
                     if complete:
@@ -590,8 +591,7 @@ class ChatGPTOAuthService:
         if connection["expires_at"] > time.time() + 45:
             return connection["access_token"]
         client_id = self.data["current_registration"]
-        operation = {"id": uuid4().hex, "kind": "refresh", "connection_id": connection_id,
-                     "generation": connection["generation"], "client_id": client_id}
+        operation = {"id": uuid4().hex, "kind": "refresh", "connection_id": connection_id, "client_id": client_id}
         deadline = time.monotonic() + DISCONNECT_TIMEOUT
         self._save({**self.data, "grant_pending": operation})
         latest = None
@@ -703,7 +703,7 @@ class ChatGPTOAuthService:
             self.data = data
             storage_error = exc
         self.disconnect_retry_id = None
-        if connection_id and storage_error is None:
+        if connection_id:
             self.error = None
         confirmed = False
         if token:

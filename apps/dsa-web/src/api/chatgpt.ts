@@ -46,8 +46,8 @@ export const chatgptApi = {
   async status() {
     return (await apiClient.get<ChatGPTStatus>('/api/v1/chatgpt/status')).data;
   },
-  async connect(target?: ConnectTarget) {
-    return (await apiClient.post<{ authorization_url: string }>('/api/v1/chatgpt/connect', target ?? {})).data;
+  async connect(target: ConnectTarget) {
+    return (await apiClient.post<{ authorization_url: string }>('/api/v1/chatgpt/connect', target)).data;
   },
   async models(connectionId: string, refresh: boolean) {
     return (await apiClient.get<{ models: ChatGPTModel[] }>('/api/v1/chatgpt/models', {
@@ -55,7 +55,7 @@ export const chatgptApi = {
     })).data.models;
   },
   async disconnect(target: DisconnectTarget) {
-    return (await apiClient.post<{ disconnected: boolean; revocation_confirmed: boolean | null }>(
+    return (await apiClient.post<{ disconnected: true; revocation_confirmed: boolean | null }>(
       '/api/v1/chatgpt/disconnect', target,
     )).data;
   },

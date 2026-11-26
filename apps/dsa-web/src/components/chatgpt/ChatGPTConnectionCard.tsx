@@ -58,7 +58,7 @@ export function ChatGPTConnectionCard() {
     }
   }
 
-  async function connect(target?: ConnectTarget) {
+  async function connect(target: ConnectTarget) {
     const tab = window.open('about:blank', '_blank');
     if (!tab) {
       setNotice('浏览器阻止了授权窗口。允许弹窗后再试。');

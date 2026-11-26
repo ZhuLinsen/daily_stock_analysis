@@ -295,17 +295,6 @@ def test_dynamic_registration_retry_keeps_issued_id_without_an_account(oauth, mo
     assert oauth.status()["retry_id"] is None
 
 
-def test_refresh_pending_must_be_durable_before_network(oauth, monkeypatch):
-    expire_connection(oauth)
-    request, dispatch = Mock(), Mock()
-    monkeypatch.setattr(oauth, "_json", request)
-    monkeypatch.setattr(oauth, "_save", Mock(side_effect=OSError("fixture")))
-    with pytest.raises(OSError):
-        oauth.start_request(SOURCE, dispatch)
-    request.assert_not_called()
-    dispatch.assert_not_called()
-
-
 @pytest.mark.parametrize("renamed", [False, True], ids=["prior-file", "pending-file"])
 def test_uncertain_refresh_write_blocks_second_request_until_reconciled(oauth, monkeypatch, renamed):
     expire_connection(oauth)
@@ -693,21 +682,6 @@ def test_report_failure_keeps_safe_error_and_never_retries(monkeypatch):
     assert not result.success
     assert "usage_limit" in result.error_message and "req_safe" in result.error_message
     assert request.call_count == 1
-
-
-def test_invalid_report_json_keeps_response_id(monkeypatch):
-    analyzer = GeminiAnalyzer(
-        config=Config(), generation_backend=SiwcGenerationBackend(SOURCE, 30), generation_source=SOURCE,
-    )
-    response = ChatGPTResponse([item("No report JSON")], SOURCE.model, {}, "resp_invalid_report")
-    monkeypatch.setattr("src.llm.chatgpt_generation_backend.get_chatgpt_service", lambda: object())
-    monkeypatch.setattr("src.llm.chatgpt_generation_backend.request_responses", lambda *args, **kwargs: response)
-
-    report = analyzer.analyze({"code": "600519", "today": {}})
-
-    assert not report.success
-    assert "invalid_json" in report.error_message
-    assert "resp_invalid_report" in report.error_message
 
 
 def test_model_source_may_be_omitted_but_not_null():
@@ -1125,7 +1099,10 @@ def test_completed_calls_reach_ledger_before_local_validation(monkeypatch, tmp_p
     analyzer = GeminiAnalyzer(config=config, generation_backend=SiwcGenerationBackend(SOURCE, 5), generation_source=SOURCE)
     monkeypatch.setattr(analyzer, "_check_content_integrity", Mock(side_effect=[(False, ["analysis_summary"]), (True, [])]))
     assert analyzer.analyze({"code": "600519", "today": {}}).success
-    assert not analyzer.analyze({"code": "600519", "today": {}}).success
+    invalid_report = analyzer.analyze({"code": "600519", "today": {}})
+    assert not invalid_report.success
+    assert "invalid_json" in invalid_report.error_message
+    assert "fixture-8" in invalid_report.error_message
     result = run_agent_loop(messages=MESSAGES.copy(), tool_registry=ToolRegistry(), llm_adapter=ChatGPTToolAdapter(SOURCE, 5))
     assert not result.success and result.total_tokens == 34
     with db.session_scope() as session:

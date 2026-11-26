@@ -318,7 +318,7 @@ class AgentChatSessionService:
         return self.db.commit_chat_user_turn(
             turn.snapshot, turn.message, selected_skill_ids=turn.skill_selection.selected_skill_ids_update,
             active_stock_context=turn.active_stock_context, confirm_stock=turn.confirm_stock,
-            **({"chatgpt_preview": turn.chatgpt_preview} if turn.chatgpt_preview is not None else {}),
+            chatgpt_preview=turn.chatgpt_preview,
         )
 
     def delete_session(self, session_id: str) -> int:

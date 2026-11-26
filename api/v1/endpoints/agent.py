@@ -330,7 +330,7 @@ async def agent_chat(
         return ChatResponse(
             success=result.success,
             content=result.content,
-            answer_backend=(getattr(result, "backend", None) or None) if result.success and clarification is None else None,
+            answer_backend=(result.backend or None) if result.success and clarification is None else None,
             session_id=session_id,
             error=result.error,
             **_accepted_state_payload(accepted),
@@ -647,8 +647,8 @@ async def agent_chat_stream(
                 "session_id": session_id,
             }
             event.update({
-                "backend": getattr(result, "backend", "") or backend_id,
-                "answer_backend": (getattr(result, "backend", None) or None) if result.success else None,
+                "backend": result.backend or backend_id,
+                "answer_backend": (result.backend or None) if result.success else None,
                 "error_code": getattr(result, "error_code", None),
                 "request_id": request_id,
             })

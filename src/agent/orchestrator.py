@@ -207,8 +207,8 @@ class PreparedOrchestratorChatTurn:
 
     session_id: str
     context: AgentContext
-    accepted_snapshot: Optional[Dict[str, Any]] = None
-    db_manager: Optional[DatabaseManager] = None
+    accepted_snapshot: Dict[str, Any]
+    db_manager: DatabaseManager
 
 
 class AgentOrchestrator:
@@ -564,7 +564,6 @@ class AgentOrchestrator:
             ctx.meta["conversation_history"] = history
 
         # Persist user turn
-        accepted = None
         if resolved_turn is not None:
             accepted = session_service.commit_user_turn(resolved_turn)
         else:
@@ -595,22 +594,11 @@ class AgentOrchestrator:
             progress_callback=progress_callback,
         )
 
-        # Persist assistant response
-        if turn.accepted_snapshot is not None:
-            content = orch_result.content if orch_result.success else f"[分析失败] {orch_result.error or '未知错误'}"
-            conversation_manager.add_message(
-                turn.session_id, "assistant", content, accepted_turn=turn.accepted_snapshot,
-                db_manager=turn.db_manager, backend=orch_result.answer_backend or None,
-            )
-        elif orch_result.success:
-            conversation_manager.add_message(
-                turn.session_id, "assistant", orch_result.content, backend=orch_result.answer_backend or None,
-            )
-        else:
-            conversation_manager.add_message(
-                turn.session_id, "assistant",
-                f"[分析失败] {orch_result.error or '未知错误'}",
-            )
+        content = orch_result.content if orch_result.success else f"[分析失败] {orch_result.error or '未知错误'}"
+        conversation_manager.add_message(
+            turn.session_id, "assistant", content, accepted_turn=turn.accepted_snapshot,
+            db_manager=turn.db_manager, backend=orch_result.answer_backend or None,
+        )
 
         return AgentResult(
             success=orch_result.success,

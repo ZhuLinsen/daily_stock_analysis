@@ -28,8 +28,8 @@ class PreparedAgentChatTurn:
     baseline_len: int
     run_id: str
     user_message_id: int
-    accepted_snapshot: Optional[Dict[str, Any]] = None
-    db_manager: Optional[DatabaseManager] = None
+    accepted_snapshot: Dict[str, Any]
+    db_manager: DatabaseManager
 
 
 class AgentChatExecutor:
@@ -92,7 +92,6 @@ class AgentChatExecutor:
         session_service: Optional[AgentChatSessionService] = None,
     ) -> PreparedAgentChatTurn:
         """Prepare context and persist the user message without starting a backend."""
-        resolved_kwargs = {}
         if resolved_turn is not None:
             if (session_service is None or resolved_turn.snapshot["session_id"] != session_id
                     or resolved_turn.message != message or resolved_turn.clarification is not None):
@@ -101,8 +100,9 @@ class AgentChatExecutor:
                 "scope_resolution": StockScopeResolution(resolved_turn.effective_context, resolved_turn.stock_scope),
                 "db_manager": session_service.db,
                 "source_snapshot": resolved_turn.snapshot,
-                **({"confirmed_history": resolved_turn.chatgpt_preview["messages"]}
-                   if resolved_turn.chatgpt_preview is not None else {}),
+                "confirmed_history": (
+                    resolved_turn.chatgpt_preview["messages"] if resolved_turn.chatgpt_preview is not None else None
+                ),
             }
         else:
             db, snapshot = conversation_manager.prepare_turn(session_id)
@@ -122,20 +122,17 @@ class AgentChatExecutor:
         )
         baseline_len = len(prepared.history_messages) + 2
         run_id = str(uuid.uuid4())
-        accepted = None
         if resolved_turn is not None:
             accepted = session_service.commit_user_turn(resolved_turn)
-            user_message_id = accepted["user_message_id"]
         else:
             accepted = conversation_manager.commit_user_turn(db, snapshot, message, selected_skill_ids)
-            user_message_id = accepted["user_message_id"]
         return PreparedAgentChatTurn(
             message=message,
             session_id=session_id,
             prepared=prepared,
             baseline_len=baseline_len,
             run_id=run_id,
-            user_message_id=user_message_id,
+            user_message_id=accepted["user_message_id"],
             accepted_snapshot=accepted,
             db_manager=session_service.db if resolved_turn is not None else db,
         )
@@ -178,32 +175,22 @@ class AgentChatExecutor:
             usage=backend_result.usage,
         )
 
-        if result.success:
-            if turn.accepted_snapshot is not None:
-                assistant_message_id = conversation_manager.add_message(
-                    turn.session_id, "assistant", result.content, backend=result.backend or None, accepted_turn=turn.accepted_snapshot,
-                    db_manager=turn.db_manager,
-                )
-            else:
-                assistant_message_id = conversation_manager.add_message(turn.session_id, "assistant", result.content, backend=result.backend or None)
-            if assistant_message_id is not None and self.include_provider_trace:
-                persist_provider_trace_turns(
-                    session_id=turn.session_id,
-                    run_id=turn.run_id,
-                    messages=result.messages,
-                    baseline_len=turn.baseline_len,
-                    user_message_id=turn.user_message_id,
-                    assistant_message_id=assistant_message_id,
-                    **({"accepted_turn": turn.accepted_snapshot, "db_factory": lambda: turn.db_manager}
-                       if turn.accepted_snapshot is not None else {}),
-                )
-        else:
-            failure_note = f"[分析失败] {result.error or '未知错误'}"
-            if turn.accepted_snapshot is not None:
-                conversation_manager.add_message(
-                    turn.session_id, "assistant", failure_note, accepted_turn=turn.accepted_snapshot,
-                    db_manager=turn.db_manager,
-                )
-            else:
-                conversation_manager.add_message(turn.session_id, "assistant", failure_note)
+        content = result.content if result.success else f"[分析失败] {result.error or '未知错误'}"
+        assistant_message_id = conversation_manager.add_message(
+            turn.session_id, "assistant", content,
+            backend=(result.backend or None) if result.success else None,
+            accepted_turn=turn.accepted_snapshot,
+            db_manager=turn.db_manager,
+        )
+        if result.success and assistant_message_id is not None and self.include_provider_trace:
+            persist_provider_trace_turns(
+                session_id=turn.session_id,
+                run_id=turn.run_id,
+                messages=result.messages,
+                baseline_len=turn.baseline_len,
+                user_message_id=turn.user_message_id,
+                assistant_message_id=assistant_message_id,
+                accepted_turn=turn.accepted_snapshot,
+                db_factory=lambda: turn.db_manager,
+            )
         return result

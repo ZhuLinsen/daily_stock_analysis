@@ -1084,11 +1084,11 @@ class StockAnalysisPipeline:
                 return None
             llm_started_at = time.monotonic()
             llm_model = model_source.model if model_source else getattr(self.config, "litellm_model", None)
-            llm_provider = {"provider": model_source.provider} if model_source else {}
+            llm_provider = model_source.provider if model_source else None
             try:
                 record_llm_run_started(
                     model=llm_model,
-                    **llm_provider,
+                    provider=llm_provider,
                     call_type="analysis",
                 )
                 result = self.analyzer.analyze(
@@ -1116,7 +1116,7 @@ class StockAnalysisPipeline:
                 record_llm_run(
                     success=bool(result and getattr(result, "success", True)),
                     model=(getattr(result, "model_used", None) if result else None) or (llm_model if model_source else None),
-                    **llm_provider,
+                    provider=llm_provider,
                     call_type="analysis",
                     duration_ms=llm_duration_ms,
                     error_type=(
@@ -1134,7 +1134,7 @@ class StockAnalysisPipeline:
                 record_llm_run(
                     success=False,
                     model=llm_model,
-                    **llm_provider,
+                    provider=llm_provider,
                     call_type="analysis",
                     duration_ms=int((time.monotonic() - llm_started_at) * 1000),
                     error_type=type(exc).__name__,
