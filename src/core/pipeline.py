@@ -1343,7 +1343,7 @@ class StockAnalysisPipeline:
         
         # 添加趋势分析结果
         if trend_result:
-            enhanced['trend_analysis'] = {
+            trend_payload: Dict[str, Any] = {
                 'trend_status': trend_result.trend_status.value,
                 'ma_alignment': trend_result.ma_alignment,
                 'trend_strength': trend_result.trend_strength,
@@ -1362,8 +1362,10 @@ class StockAnalysisPipeline:
                 'signal_reasons': trend_result.signal_reasons,
                 'risk_factors': trend_result.risk_factors,
             }
-            if getattr(trend_result, 'quant_factors', None):
-                enhanced['trend_analysis']['quant_factors'] = trend_result.quant_factors
+            trend_qf = getattr(trend_result, 'quant_factors', None)
+            if isinstance(trend_qf, dict) and trend_qf.get('sufficient_data'):
+                trend_payload['quant_factors'] = dict(trend_qf)
+            enhanced['trend_analysis'] = trend_payload
 
         # Issue #234：盘中分析使用实时 OHLC 与趋势 MA 覆盖 today。
         # 防护条件：trend_result.ma5 > 0 表示 MA 计算已成功且数据量充足。

@@ -9,7 +9,7 @@
 ## 📊 {{ labels.summary_heading }}
 
 {% for e in enriched %}
-{{ e.signal_emoji }} **{{ e.stock_name }}({{ e.result.code }})**: {{ e.signal_text }} | {{ labels.score_label }} {{ e.result.sentiment_score }} | {{ e.localized_trend_prediction }}
+{{ e.signal_emoji }} **{{ e.stock_name }}({{ e.result.code }})**: {{ e.signal_text }} | {{ labels.score_label }} {{ e.result.sentiment_score }} | {{ e.localized_trend_prediction }}{% if e.quant_pulse %} | {{ e.quant_pulse }}{% endif %}
 {% if summary_only and e.empty_news_disclosure %}
 {{ e.empty_news_disclosure }}
 {% endif %}
@@ -117,6 +117,26 @@
 {% endif %}
 {% endif %}
 
+{% set qf = e.quant_factors %}
+{% if qf %}
+### 📐 {{ labels.quant_factors_heading }}
+
+**{{ labels.quant_composite_label }}**: {{ qf.score }}/100 | **{{ labels.quant_regime_label }}**: {{ md_cell(qf.regime_label) }}
+
+| {{ labels.quant_dimension_label }} | {{ labels.quant_snapshot_label }} |
+|---------|------|
+| {{ labels.quant_boll_label }} | {{ md_cell(qf.boll_summary) }} |
+| {{ labels.quant_atr_label }} | {{ md_cell(qf.atr_summary) }} |
+| {{ labels.quant_kdj_adx_label }} | {{ md_cell(qf.kdj_adx_summary) }} |
+| {{ labels.quant_flow_label }} | {{ md_cell(qf.flow_summary) }} |
+| {{ labels.quant_momentum_label }} | {{ md_cell(qf.momentum_summary) }} |
+| {{ labels.quant_risk_label }} | {{ md_cell(qf.risk_summary) }} |
+{% if qf.signals_text and qf.signals_text != 'N/A' %}
+**{{ labels.quant_signals_label }}**: {{ md_cell(qf.signals_text) }}
+{% endif %}
+
+{% endif %}
+
 {% set phase_decision = dashboard.get('phase_decision') or {} %}
 {% set phase_decision_has_content = phase_decision.get('action_window') %}
 {% set phase_decision_has_content = phase_decision_has_content or phase_decision.get('immediate_action') %}
@@ -206,6 +226,8 @@
 | 🔵 {{ labels.secondary_buy_label }} | {{ clean_sniper(sniper.get('secondary_buy')) }} |
 | 🛑 {{ labels.stop_loss_label }} | {{ clean_sniper(sniper.get('stop_loss')) }} |
 | 🎊 {{ labels.take_profit_label }} | {{ clean_sniper(sniper.get('take_profit')) }} |
+{% if e.sniper_rr %}| ⚖️ {{ labels.sniper_risk_reward_label }} | {{ md_cell(e.sniper_rr.get('summary')) }} |
+{% endif %}
 {% endif %}
 
 {% set position = battle.get('position_strategy', {}) %}

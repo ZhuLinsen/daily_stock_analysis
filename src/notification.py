@@ -63,6 +63,12 @@ from src.schemas.decision_action import (
 from bot.models import BotMessage
 from src.utils.sanitize import sanitize_diagnostic_text
 from src.formatters import strip_hidden_markdown_metadata
+from src.services.quant_report_helpers import (
+    compute_sniper_risk_reward,
+    extract_quant_factors,
+    format_quant_pulse,
+    render_quant_factors_markdown_lines,
+)
 from src.utils.data_processing import (
     signal_attribution_has_content,
     signal_attribution_weight_items,
@@ -1324,6 +1330,23 @@ class NotificationService(
             signal_tag,
         )
 
+    @staticmethod
+    def _extract_quant_and_rr(
+        result: AnalysisResult,
+        report_language: Optional[str] = None,
+    ) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]], str]:
+        """Extract localized quant factors, sniper Risk/Reward, and compact pulse badge."""
+        qf = extract_quant_factors(result, report_language=report_language)
+        dash = getattr(result, "dashboard", None)
+        battle = dash.get("battle_plan") if isinstance(dash, dict) else None
+        sniper = battle.get("sniper_points") if isinstance(battle, dict) else None
+        sniper_rr = compute_sniper_risk_reward(
+            sniper,
+            current_price=getattr(result, "current_price", None),
+        )
+        pulse = format_quant_pulse(qf, sniper_rr, report_language)
+        return qf, sniper_rr, pulse
+
     def generate_dashboard_report(
         self,
         results: List[AnalysisResult],
@@ -1398,11 +1421,13 @@ class NotificationService(
             for r in sorted_results:
                 signal_text, signal_emoji, _ = self._get_signal_level(r)
                 display_name = self._get_display_name(r, report_language)
+                _, _, quant_pulse = self._extract_quant_and_rr(r, report_language)
+                pulse_suffix = f" | {quant_pulse}" if quant_pulse else ""
                 report_lines.append(
                     f"{signal_emoji} **{display_name}({r.code})**: "
                     f"{signal_text} | "
                     f"{labels['score_label']} {r.sentiment_score} | "
-                    f"{localize_trend_prediction(r.trend_prediction, report_language)}"
+                    f"{localize_trend_prediction(r.trend_prediction, report_language)}{pulse_suffix}"
                 )
                 if self._report_summary_only:
                     news_disclosure = self._empty_news_disclosure(r, report_language)
@@ -1559,6 +1584,10 @@ class NotificationService(
                                 "",
                             ])
 
+                qf, sniper_rr, _ = self._extract_quant_and_rr(result, report_language)
+                if qf:
+                    report_lines.extend(render_quant_factors_markdown_lines(qf, labels))
+
                 self._append_phase_decision_block(report_lines, dashboard, labels)
 
                 # ========== 作战计划 ==========
@@ -1571,7 +1600,7 @@ class NotificationService(
                     # 狙击点位
                     sniper = battle.get('sniper_points', {})
                     if sniper:
-                        report_lines.extend([
+                        sniper_lines = [
                             f"**📍 {labels['action_points_heading']}**",
                             "",
                             f"| {labels['action_points_heading']} | {labels['current_price_label']} |",
@@ -1580,8 +1609,13 @@ class NotificationService(
                             f"| 🔵 {labels['secondary_buy_label']} | {self._clean_sniper_value(sniper.get('secondary_buy', 'N/A'))} |",
                             f"| 🛑 {labels['stop_loss_label']} | {self._clean_sniper_value(sniper.get('stop_loss', 'N/A'))} |",
                             f"| 🎊 {labels['take_profit_label']} | {self._clean_sniper_value(sniper.get('take_profit', 'N/A'))} |",
-                            "",
-                        ])
+                        ]
+                        if sniper_rr and sniper_rr.get("summary"):
+                            sniper_lines.append(
+                                f"| ⚖️ {labels['sniper_risk_reward_label']} | {sniper_rr['summary']} |"
+                            )
+                        sniper_lines.append("")
+                        report_lines.extend(sniper_lines)
                     # 仓位策略
                     position = battle.get('position_strategy', {})
                     if position:
@@ -1742,11 +1776,13 @@ class NotificationService(
             for r in sorted_results:
                 signal_text, signal_emoji, _ = self._get_signal_level(r)
                 stock_name = self._get_display_name(r, report_language)
+                _, _, quant_pulse = self._extract_quant_and_rr(r, report_language)
+                pulse_suffix = f" | {quant_pulse}" if quant_pulse else ""
                 lines.append(
                     f"{signal_emoji} **{stock_name}({r.code})**: "
                     f"{signal_text} | "
                     f"{labels['score_label']} {r.sentiment_score} | "
-                    f"{localize_trend_prediction(r.trend_prediction, report_language)}"
+                    f"{localize_trend_prediction(r.trend_prediction, report_language)}{pulse_suffix}"
                 )
                 news_disclosure = self._empty_news_disclosure(r, report_language)
                 if news_disclosure:
@@ -1826,6 +1862,10 @@ class NotificationService(
                     if points:
                         lines.append(" | ".join(points))
                         lines.append("")
+
+                _, _, quant_pulse = self._extract_quant_and_rr(result, report_language)
+                if quant_pulse:
+                    lines.extend([f"📐 {quant_pulse}", ""])
 
                 # 持仓建议
                 pos_advice = core.get('position_advice', {}) if core else {}
@@ -2011,10 +2051,12 @@ class NotificationService(
             dash = r.dashboard or {}
             core = dash.get('core_conclusion', {}) or {}
             one = (core.get('one_sentence') or r.analysis_summary or '')[:60]
+            _, _, quant_pulse = self._extract_quant_and_rr(r, report_language)
+            pulse_segment = f" | {quant_pulse}" if quant_pulse else ""
             lines.append(
                 f"**{name}({r.code})** {emoji} "
                 f"{signal_text} | "
-                f"{labels['score_label']} {r.sentiment_score} | {one}"
+                f"{labels['score_label']} {r.sentiment_score}{pulse_segment} | {one}"
             )
             news_disclosure = self._empty_news_disclosure(r, report_language)
             if news_disclosure:
@@ -2052,10 +2094,13 @@ class NotificationService(
         # 股票名称（转义 *ST 等特殊字符）
         stock_name = self._get_display_name(result, report_language)
 
+        qf, sniper_rr, quant_pulse = self._extract_quant_and_rr(result, report_language)
+        pulse_suffix = f" | {quant_pulse}" if quant_pulse else ""
+
         lines = [
             f"## {signal_emoji} {stock_name} ({result.code})",
             "",
-            f"> {report_date} | {labels['score_label']}: **{result.sentiment_score}** | {localize_trend_prediction(result.trend_prediction, report_language)}",
+            f"> {report_date} | {labels['score_label']}: **{result.sentiment_score}** | {localize_trend_prediction(result.trend_prediction, report_language)}{pulse_suffix}",
             "",
         ]
 
@@ -2135,6 +2180,14 @@ class NotificationService(
             take_profit = sniper.get('take_profit', '-')
             lines.append(f"| {ideal_buy} | {stop_loss} | {take_profit} |")
             lines.append("")
+
+        if sniper_rr and sniper_rr.get("summary"):
+            lines.extend([
+                f"⚖️ **{labels['sniper_risk_reward_label']}**: {sniper_rr['summary']}",
+                "",
+            ])
+        if qf:
+            lines.extend(render_quant_factors_markdown_lines(qf, labels))
 
         # ========== 信号归因分析 ==========
         signal_attr = dashboard.get('signal_attribution', {}) if dashboard else {}

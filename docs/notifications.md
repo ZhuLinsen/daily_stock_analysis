@@ -54,6 +54,8 @@ Telegram 文本消息遇到 HTTP 429 时，优先按 [Bot API 的 `parameters.re
 
 关联板块渲染保持报告正文生成阶段处理：没有行业/概念涨跌榜信号时，推送报告沿用原有单行样式，例如 `通信线缆及配套 / 通信设备 / 通信 / 江苏板块 / 科技风格`，不额外展示“类型”列。只有命中 `fundamental_context.boards.data` / `sector_rankings` 或 `fundamental_context.concept_boards.data` / `concept_rankings` 的领涨/领跌信号时，才使用表格展示“板块 / 类型 / 板块表现 / 板块涨跌幅”，其中“类型”列用于标明“行业板块”或“概念板块”。该逻辑仅影响报告展示，不改变 provider/model/Base URL、LiteLLM 路由、模型保存、迁移或清理逻辑。
 
+量化多因子与狙击点位盈亏比渲染同样仅作用于报告模板展示（Markdown / Brief / WeChat）：当分析结果或上下文快照提供有效 `quant_factors`（`sufficient_data=true` 且包含有效综合分）时，报告展示 6 维量化因子表格与体制信号摘要；当推导得到有效 `R:R` 盈亏比时展示 `R:R`（及精简/企业微信脉冲条）；因子数据不足或缺失时自动省略对应区块，不输出占位噪音。
+
 ## GitHub Actions 映射
 
 仓库自带 `.github/workflows/00-daily-analysis.yml` 只显式导入固定变量名。P0/P3/P4/P6 已把 Body 模板、安全项、PushPlus topic、路由、降噪、ntfy 和 Gotify 等通知 key 纳入默认 workflow。下面的表格由 `scripts/generate_notification_actions_env_table.py` 从 workflow `env:` 和通知诊断元数据生成，避免手写对照表和真实 Actions 映射继续漂移。

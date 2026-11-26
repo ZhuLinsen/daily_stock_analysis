@@ -1128,6 +1128,13 @@ def fill_price_position_if_needed(
                 computed["support_level"] = support_levels[0]
             if resistance_levels:
                 computed["resistance_level"] = resistance_levels[0]
+            trend_qf = tr.get("quant_factors")
+            if (
+                getattr(result, "quant_factors", None) is None
+                and isinstance(trend_qf, dict)
+                and trend_qf.get("sufficient_data")
+            ):
+                result.quant_factors = dict(trend_qf)
         if realtime_quote:
             rq = realtime_quote if isinstance(realtime_quote, dict) else (
                 realtime_quote.to_dict() if hasattr(realtime_quote, "to_dict") else {}
@@ -2155,10 +2162,11 @@ class AnalysisResult:
     # ========== 基本面上下文（仅运行时，用于通知拼装；不持久化到 to_dict）==========
     fundamental_context: Optional[Dict[str, Any]] = None
     market_structure_context: Optional[Dict[str, Any]] = None
+    quant_factors: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
-        return {
+        payload: Dict[str, Any] = {
             'code': self.code,
             'name': self.name,
             'sentiment_score': self.sentiment_score,
@@ -2199,6 +2207,9 @@ class AnalysisResult:
             'model_used': self.model_used,
             'market_structure_context': self.market_structure_context,
         }
+        if self.quant_factors is not None:
+            payload['quant_factors'] = self.quant_factors
+        return payload
 
     def get_core_conclusion(self) -> str:
         """获取核心结论（一句话）"""

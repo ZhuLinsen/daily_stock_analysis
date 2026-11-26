@@ -47,6 +47,11 @@ from src.utils.data_processing import (
     signal_attribution_has_content,
     signal_attribution_weight_items,
 )
+from src.services.quant_report_helpers import (
+    compute_sniper_risk_reward,
+    extract_quant_factors,
+    format_quant_pulse,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -171,6 +176,11 @@ def render(
     labels = get_report_labels(report_language)
 
     # Build template context with pre-computed signal levels (sorted by score)
+    extra_quant_map = (
+        extra_context.get("quant_factors_by_code")
+        if isinstance(extra_context, dict) and isinstance(extra_context.get("quant_factors_by_code"), dict)
+        else None
+    )
     sorted_results = sorted(results, key=lambda x: x.sentiment_score, reverse=True)
     sorted_enriched = []
     for r in sorted_results:
@@ -194,6 +204,18 @@ def render(
         }.get(display_action, display_action)
         _, se, _ = get_signal_level(signal_action or display_advice, r.sentiment_score, report_language)
         rn = get_localized_stock_name(r.name, r.code, report_language)
+        qf = extract_quant_factors(
+            r,
+            quant_factors_by_code=extra_quant_map,
+            report_language=report_language,
+        )
+        dash = getattr(r, "dashboard", None)
+        battle = dash.get("battle_plan") if isinstance(dash, dict) else None
+        sniper = battle.get("sniper_points") if isinstance(battle, dict) else None
+        sniper_rr = compute_sniper_risk_reward(
+            sniper,
+            current_price=getattr(r, "current_price", None),
+        )
         sorted_enriched.append({
             "result": r,
             "empty_news_disclosure": empty_news_disclosure(r, report_language),
@@ -202,6 +224,9 @@ def render(
             "stock_name": _escape_md(rn),
             "localized_operation_advice": display_advice,
             "localized_trend_prediction": localize_trend_prediction(r.trend_prediction, report_language),
+            "quant_factors": qf,
+            "sniper_rr": sniper_rr,
+            "quant_pulse": format_quant_pulse(qf, sniper_rr, report_language),
         })
 
     display_buckets = [

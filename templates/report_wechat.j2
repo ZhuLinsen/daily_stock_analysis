@@ -8,7 +8,7 @@
 {% if summary_only %}
 **📊 {{ labels.summary_heading }}**
 {% for e in enriched %}
-{{ e.signal_emoji }} **{{ e.stock_name }}({{ e.result.code }})**: {{ e.signal_text }} | {{ labels.score_label }} {{ e.result.sentiment_score }} | {{ e.localized_trend_prediction }}
+{{ e.signal_emoji }} **{{ e.stock_name }}({{ e.result.code }})**: {{ e.signal_text }} | {{ labels.score_label }} {{ e.result.sentiment_score }} | {{ e.localized_trend_prediction }}{% if e.quant_pulse %} | {{ e.quant_pulse }}{% endif %}
 {% if e.empty_news_disclosure %}
 {{ e.empty_news_disclosure }}
 {% endif %}
@@ -58,6 +58,9 @@
 {% if sniper.stop_loss %}{% set ns.parts = ns.parts + ['🛑' ~ labels.stop_loss_label ~ ':' ~ (sniper.stop_loss|string)[:15]] %}{% endif %}
 {% if sniper.take_profit %}{% set ns.parts = ns.parts + ['🎊' ~ labels.take_profit_label ~ ':' ~ (sniper.take_profit|string)[:15]] %}{% endif %}
 {{ ns.parts|join(' | ') }}
+{% endif %}
+{% if e.quant_pulse %}
+📐 {{ e.quant_pulse }}
 {% endif %}
 
 {% set pos_advice = core.get('position_advice', {}) if core else {} %}
