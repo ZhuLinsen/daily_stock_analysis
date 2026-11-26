@@ -282,18 +282,6 @@ screening:
 """.strip(),
         encoding="utf-8",
     )
-    (tmp_path / "bad_factor_weight_bool.yaml").write_text(
-        """
-name: bad_factor_weight_bool
-display_name: 错误布尔因子权重
-screening:
-  enabled: true
-  market_scope: [cn]
-  factor_weights:
-    value: true
-""".strip(),
-        encoding="utf-8",
-    )
 
     quoted = load_strategy(tmp_path / "quoted_numeric_weights.yaml")
     assert quoted.screening.tech_weight == pytest.approx(0.4)
@@ -307,8 +295,6 @@ screening:
         load_strategy(tmp_path / "bad_factor_weight_str.yaml")
     with pytest.raises(ValueError, match="factor weight"):
         load_strategy(tmp_path / "bad_factor_weight_inf.yaml")
-    with pytest.raises(ValueError, match="factor weight"):
-        load_strategy(tmp_path / "bad_factor_weight_bool.yaml")
 
     monkeypatch.setenv("STRATEGIES_DIR", str(tmp_path))
     cfg = Config(screening_enabled=True)
@@ -438,4 +424,117 @@ screening:
     assert loaded.screening.factor_weights["value "] == pytest.approx(0.2)
     assert normalized_factor_weights(loaded.screening) == pytest.approx(
         {"value": 0.8, "momentum": 0.2}
+    )
+
+
+def test_load_strategy_handles_oversized_integer_tech_weight_overflow(
+    tmp_path: Path,
+) -> None:
+    huge_int = "1" + "0" * 309
+
+    idle_overflow = tmp_path / "overflow_with_weights.yaml"
+    idle_overflow.write_text(
+        f"""
+name: overflow_with_weights
+display_name: Idle Overflow Tech Weight
+screening:
+  enabled: true
+  market_scope: [cn]
+  tech_weight: {huge_int}
+  factor_weights:
+    value: 0.7
+    momentum: 0.3
+""".strip(),
+        encoding="utf-8",
+    )
+    loaded = load_strategy(idle_overflow)
+    assert loaded.screening.tech_weight == pytest.approx(0.35)
+    assert loaded.screening.factor_weights == pytest.approx({"value": 0.7, "momentum": 0.3})
+    assert [item.name for item in list_strategies(tmp_path)] == ["overflow_with_weights"]
+
+    active_overflow = tmp_path / "overflow_no_weights.yaml"
+    active_overflow.write_text(
+        f"""
+name: overflow_no_weights
+display_name: Active Overflow Tech Weight
+screening:
+  enabled: true
+  market_scope: [cn]
+  tech_weight: {huge_int}
+""".strip(),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="tech_weight"):
+        load_strategy(active_overflow)
+
+    factor_overflow = tmp_path / "overflow_factor_weight.yaml"
+    factor_overflow.write_text(
+        f"""
+name: overflow_factor_weight
+display_name: Overflow Factor Weight
+screening:
+  enabled: true
+  market_scope: [cn]
+  factor_weights:
+    value: {huge_int}
+""".strip(),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="factor weight"):
+        load_strategy(factor_overflow)
+
+
+def test_load_strategy_accepts_yaml_bool_weights_and_catalog_loads_them(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bool_weights = tmp_path / "bool_weights.yaml"
+    bool_weights.write_text(
+        """
+name: bool_weights
+display_name: YAML Bool Weights
+screening:
+  enabled: true
+  market_scope: [cn]
+  tech_weight: false
+  factor_weights:
+    stability: off
+    value: true
+""".strip(),
+        encoding="utf-8",
+    )
+    loaded = load_strategy(bool_weights)
+    assert loaded.screening.tech_weight == pytest.approx(0.0)
+    assert loaded.screening.factor_weights == pytest.approx({"stability": 0.0, "value": 1.0})
+    assert normalized_factor_weights(loaded.screening) == pytest.approx(
+        {"stability": 0.0, "value": 1.0}
+    )
+
+    bool_tech_only = tmp_path / "bool_tech_weight_only.yaml"
+    bool_tech_only.write_text(
+        """
+name: bool_tech_weight_only
+display_name: YAML Bool Tech Weight Only
+screening:
+  enabled: true
+  market_scope: [cn]
+  tech_weight: true
+""".strip(),
+        encoding="utf-8",
+    )
+    loaded_tech_only = load_strategy(bool_tech_only)
+    assert loaded_tech_only.screening.tech_weight == pytest.approx(1.0)
+
+    assert normalized_factor_weights(loaded_tech_only.screening) == pytest.approx(
+        {"value": 0.0, "liquidity": 0.0, "stability": 0.0, "momentum": 0.55, "activity": 0.45}
+    )
+
+    monkeypatch.setenv("STRATEGIES_DIR", str(tmp_path))
+    service = ScreeningService(config=Config(screening_enabled=True))
+    catalog = service.strategies()
+    assert catalog["strategy_count"] == 2
+    by_id = {item["id"]: item for item in catalog["strategies"]}
+    assert by_id["bool_weights"]["factor_weights"] == pytest.approx({"value": 1.0})
+    assert by_id["bool_tech_weight_only"]["factor_weights"] == pytest.approx(
+        {"momentum": 0.55, "activity": 0.45}
     )

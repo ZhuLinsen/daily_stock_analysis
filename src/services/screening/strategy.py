@@ -1033,11 +1033,11 @@ def _raise_unknown_keys(data: dict, allowed_keys: set[str], context: str) -> Non
 
 
 def _coerce_finite_float(raw: object, context: str) -> float:
-    if isinstance(raw, bool) or not isinstance(raw, (int, float, str)):
+    if not isinstance(raw, (int, float, str)):
         raise ValueError(f"Invalid {context}: expected finite number")
     try:
         value = float(raw.strip() if isinstance(raw, str) else raw)
-    except ValueError as exc:
+    except (TypeError, ValueError, OverflowError) as exc:
         raise ValueError(f"Invalid {context}: expected finite number") from exc
     if not math.isfinite(value):
         raise ValueError(f"Invalid {context}: expected finite number")
@@ -1056,7 +1056,7 @@ def _validated_tech_weight(
     if has_factor_weights:
         try:
             return _coerce_finite_float(raw, f"tech_weight in strategy file {filepath.name}")
-        except ValueError:
+        except (TypeError, ValueError, OverflowError):
             return 0.35
     return _coerce_finite_float(raw, f"tech_weight in strategy file {filepath.name}")
 
