@@ -331,7 +331,8 @@ export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set,
       terminalStatus: null,
     });
 
-    const isEnglish = resolveActiveUiLanguage() === 'en';
+    const isCurrentlyEnglish = () => resolveActiveUiLanguage() === 'en';
+    const startIsEnglish = isCurrentlyEnglish();
     const streamSessionId = payload.session_id || storeSessionId;
     const ownsStream = () => {
       const state = get();
@@ -341,8 +342,8 @@ export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set,
     };
     const skillNames = meta?.skillNames?.length
       ? meta.skillNames
-      : [meta?.skillName ?? (isEnglish ? 'General' : '通用')];
-    const skillName = skillNames.join(isEnglish ? ', ' : '、');
+      : [meta?.skillName ?? (startIsEnglish ? 'General' : '通用')];
+    const skillName = skillNames.join(startIsEnglish ? ', ' : '、');
 
     const userMessage: Message = {
       id: Date.now().toString(),
@@ -374,14 +375,17 @@ export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set,
       let receivedDoneEvent = false;
       let acceptedEvent: StreamAcceptedEvent | null = null;
       const currentProgressSteps: ProgressStep[] = [];
-      const protocolError = (message: string) => createParsedApiError({
-        title: isEnglish ? 'Request not accepted' : '请求未被接受',
-        message: isEnglish
-          ? 'The Agent did not acknowledge this message. Keep your input and try again.'
-          : 'Agent 没有确认接收本次问题，请保留当前内容后重试。',
-        rawMessage: message,
-        category: 'upstream_network',
-      });
+      const protocolError = (message: string) => {
+        const currentIsEnglish = isCurrentlyEnglish();
+        return createParsedApiError({
+          title: currentIsEnglish ? 'Request not accepted' : '请求未被接受',
+          message: currentIsEnglish
+            ? 'The Agent did not acknowledge this message. Keep your input and try again.'
+            : 'Agent 没有确认接收本次问题，请保留当前内容后重试。',
+          rawMessage: message,
+          category: 'upstream_network',
+        });
+      };
       const processLine = (line: string) => {
         if (!line.startsWith('data: ') || !ownsStream() || ac.signal.aborted) return;
 
@@ -433,7 +437,7 @@ export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set,
           const failureEvent = event as unknown as StreamFailureEvent;
           throw getStreamFailureError(
             failureEvent,
-            isEnglish ? 'Analysis error' : '分析出错',
+            isCurrentlyEnglish() ? 'Analysis error' : '分析出错',
           );
         }
         if (!acceptedEvent) {
@@ -449,7 +453,9 @@ export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set,
           if (doneEvent.success === false) {
             throw getStreamFailureError(
               doneEvent,
-              isEnglish ? 'LLM call failed; please check your API Key configuration' : '大模型调用出错，请检查 API Key 配置',
+              isCurrentlyEnglish()
+                ? 'LLM call failed; please check your API Key configuration'
+                : '大模型调用出错，请检查 API Key 配置',
             );
           }
           finalContent = doneEvent.content ?? '';
@@ -493,9 +499,10 @@ export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set,
       }
 
       if (!receivedDoneEvent && !ac.signal.aborted) {
+        const currentIsEnglish = isCurrentlyEnglish();
         throw createParsedApiError({
-          title: isEnglish ? 'Incomplete response' : '回复未完整返回',
-          message: isEnglish
+          title: currentIsEnglish ? 'Incomplete response' : '回复未完整返回',
+          message: currentIsEnglish
             ? 'The Agent stream was interrupted before completion. Please try again.'
             : 'Agent 流式响应在完成前中断，请重试。',
           rawMessage: 'Agent stream ended before a done event was received.',
@@ -513,7 +520,7 @@ export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set,
             {
               id: (Date.now() + 1).toString(),
               role: 'assistant',
-              content: finalContent || (isEnglish ? '(No content)' : '（无内容）'),
+              content: finalContent || (isCurrentlyEnglish() ? '(No content)' : '（无内容）'),
               skills: payload.skills,
               skill: payload.skills?.[0],
               skillNames,

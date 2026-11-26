@@ -959,5 +959,42 @@ describe('agentChatStore session Skill state', () => {
         message: 'The Agent did not acknowledge this message. Keep your input and try again.',
       });
     });
+
+    it('uses the active language when an SSE stream is interrupted after an in-flight language switch', async () => {
+      window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'zh');
+      document.documentElement.lang = 'zh-CN';
+
+      let controllerRef!: ReadableStreamDefaultController<Uint8Array>;
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controllerRef = controller;
+          controller.enqueue(encoder.encode(`${accepted('req-switch')}\n`));
+        },
+      });
+      vi.mocked(agentApi.chatStream).mockResolvedValueOnce(
+        new Response(stream, {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        }),
+      );
+
+      const pending = useAgentChatStore.getState().startStream({
+        message: '分析 600519',
+        session_id: 'session-test',
+        request_id: 'req-switch',
+      });
+
+      await vi.waitFor(() => {
+        expect(useAgentChatStore.getState().messages).toHaveLength(1);
+      });
+      document.documentElement.lang = 'en';
+      controllerRef.close();
+      await pending;
+
+      expect(useAgentChatStore.getState().chatError).toMatchObject({
+        title: 'Incomplete response',
+        message: 'The Agent stream was interrupted before completion. Please try again.',
+      });
+    });
   });
 });

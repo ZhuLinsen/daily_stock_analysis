@@ -955,15 +955,16 @@ export const useStockPoolStore = create<StockPoolState>((set, get) => ({
       }
 
       if (error instanceof DuplicateTaskError) {
+        const currentIsEnglish = resolveActiveUiLanguage() === 'en';
         set({
-          duplicateError: isEnglish
+          duplicateError: currentIsEnglish
             ? `Stock ${error.stockCode} is already being analyzed; please wait for it to finish`
             : `股票 ${error.stockCode} 正在分析中，请等待完成`,
         });
         return;
       }
 
-      set({ error: getParsedApiError(error, language) });
+      set({ error: getParsedApiError(error, resolveActiveUiLanguage()) });
     } finally {
       if (requestId === analyzeRequestSeq) {
         set({ isAnalyzing: false });

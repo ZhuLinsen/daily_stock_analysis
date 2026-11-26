@@ -1483,5 +1483,21 @@ describe('stockPoolStore', () => {
         message: 'Analysis failed',
       });
     });
+
+    it('uses the active language when DuplicateTaskError resolves after an in-flight switch', async () => {
+      window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'zh');
+      document.documentElement.lang = 'zh-CN';
+      const deferred = createDeferred<never>();
+      vi.mocked(analysisApi.analyzeAsync).mockReturnValueOnce(deferred.promise);
+
+      const pending = useStockPoolStore.getState().submitAnalysis({ stockCode: '600519' });
+      document.documentElement.lang = 'en';
+      deferred.reject(new DuplicateTaskError('600519', 'task-dup-switch'));
+      await pending;
+
+      expect(useStockPoolStore.getState().duplicateError).toBe(
+        'Stock 600519 is already being analyzed; please wait for it to finish',
+      );
+    });
   });
 });

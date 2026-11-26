@@ -2,6 +2,7 @@ import { act, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createParsedApiError, type ParsedApiError } from '../../api/error';
 import { SystemConfigConflictError, SystemConfigValidationError } from '../../api/systemConfig';
+import { UiLanguageProvider, useUiLanguage } from '../../contexts/UiLanguageContext';
 import type { ConfigValidationIssue } from '../../types/systemConfig';
 import { UI_LANGUAGE_STORAGE_KEY } from '../../utils/uiLanguage';
 import { useSystemConfig } from '../useSystemConfig';
@@ -1089,5 +1090,71 @@ describe('useSystemConfig', () => {
     expect(conflictOutcome).toEqual({ success: false, message: 'Save failed' });
     expect(result.current.saveError?.title).toBe('Configuration version conflict');
     expect(result.current.saveError?.message).toBe('version stale. Please reload settings first.');
+  });
+
+  it('re-localizes validation and save toast when UI language switches mid-request and post-save (OR-COR-07f319b1)', async () => {
+    window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'zh');
+    getConfig.mockResolvedValue(sampleConfig);
+
+    const { result } = renderHook(
+      () => ({ config: useSystemConfig(), ui: useUiLanguage() }),
+      { wrapper: UiLanguageProvider },
+    );
+    await act(async () => {
+      await result.current.config.load();
+    });
+
+    const deferredValidate = createDeferred<{ valid: boolean; issues: ConfigValidationIssue[] }>();
+    validate.mockImplementationOnce(() => deferredValidate.promise);
+    act(() => {
+      result.current.config.setDraftValue('STOCK_LIST', 'BAD_CODE');
+    });
+
+    let invalidSave!: Promise<{ success: boolean; message?: string; issues?: ConfigValidationIssue[] }>;
+    act(() => {
+      invalidSave = result.current.config.save();
+    });
+    act(() => {
+      result.current.ui.setLanguage('en');
+    });
+    await act(async () => {
+      deferredValidate.resolve({
+        valid: false,
+        issues: [{ key: 'STOCK_LIST', code: 'invalid', message: 'invalid', severity: 'error' }],
+      });
+      await invalidSave;
+    });
+    expect(result.current.config.saveError?.title).toBe('Configuration validation failed');
+
+    act(() => {
+      result.current.ui.setLanguage('zh');
+      result.current.config.setDraftValue('STOCK_LIST', 'AAPL');
+    });
+    const deferredUpdate = createDeferred<{ warnings: string[] }>();
+    update.mockImplementationOnce(() => deferredUpdate.promise);
+
+    let okSave!: Promise<{ success: boolean; message?: string }>;
+    act(() => {
+      okSave = result.current.config.save();
+    });
+    act(() => {
+      result.current.ui.setLanguage('en');
+    });
+    await act(async () => {
+      deferredUpdate.resolve({ warnings: [] });
+      await okSave;
+    });
+    expect(result.current.config.toast).toEqual({
+      type: 'success',
+      message: 'Settings updated',
+    });
+
+    act(() => {
+      result.current.ui.setLanguage('zh');
+    });
+    expect(result.current.config.toast).toEqual({
+      type: 'success',
+      message: '配置已更新',
+    });
   });
 });

@@ -1,7 +1,12 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { systemConfigApi } from '../api/systemConfig';
-import { resolveActiveUiLanguage } from '../utils/format';
+import { useActiveUiLanguage } from '../contexts/UiLanguageContext';
 import { includesStockCode, toAssetAwareCodeKey } from '../utils/stockCode';
+
+type WatchlistNotice =
+  | { kind: 'added' | 'removed'; stockCode: string }
+  | { kind: 'failed' }
+  | null;
 
 export interface UseWatchlistReturn {
   watchlistCodes: string[];
@@ -16,10 +21,11 @@ export interface UseWatchlistReturn {
 }
 
 export function useWatchlist(getCodeKey: (code: string) => string = toAssetAwareCodeKey): UseWatchlistReturn {
+  const activeLanguage = useActiveUiLanguage();
   const [codes, setCodes] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isActioning, setIsActioning] = useState(false);
-  const [actionMessage, setActionMessage] = useState<string | null>(null);
+  const [actionNotice, setActionNotice] = useState<WatchlistNotice>(null);
   const messageTimerRef = useRef<number | null>(null);
   const mountedRef = useRef(true);
   const actionInFlightRef = useRef(false);
@@ -63,19 +69,35 @@ export function useWatchlist(getCodeKey: (code: string) => string = toAssetAware
     });
   }, [refresh]);
 
-  const showMessage = useCallback((msg: string) => {
+  const showNotice = useCallback((notice: Exclude<WatchlistNotice, null>) => {
     if (messageTimerRef.current !== null) {
       window.clearTimeout(messageTimerRef.current);
       messageTimerRef.current = null;
     }
-    setActionMessage(msg);
+    setActionNotice(notice);
     messageTimerRef.current = window.setTimeout(() => {
       messageTimerRef.current = null;
       if (mountedRef.current) {
-        setActionMessage(null);
+        setActionNotice(null);
       }
     }, 3000);
   }, []);
+
+  const actionMessage = useMemo(() => {
+    if (!actionNotice) return null;
+    const isEn = activeLanguage === 'en';
+    if (actionNotice.kind === 'failed') {
+      return isEn ? 'Action failed' : '操作失败';
+    }
+    if (actionNotice.kind === 'added') {
+      return isEn
+        ? `Added ${actionNotice.stockCode} to watchlist`
+        : `已加入自选 ${actionNotice.stockCode}`;
+    }
+    return isEn
+      ? `Removed ${actionNotice.stockCode} from watchlist`
+      : `已从自选移除 ${actionNotice.stockCode}`;
+  }, [actionNotice, activeLanguage]);
 
   const isInWatchlist = useCallback(
     (stockCode: string) => includesStockCode(codes, stockCode, getCodeKey),
@@ -86,7 +108,7 @@ export function useWatchlist(getCodeKey: (code: string) => string = toAssetAware
     async (
       stockCode: string,
       mutate: (code: string) => Promise<string[]>,
-      successMessage: string,
+      successKind: 'added' | 'removed',
     ) => {
       if (!stockCode || actionInFlightRef.current) return;
       actionInFlightRef.current = true;
@@ -109,11 +131,11 @@ export function useWatchlist(getCodeKey: (code: string) => string = toAssetAware
             nextRequestSeqRef.current,
           );
           setCodes(result);
-          showMessage(successMessage);
+          showNotice({ kind: successKind, stockCode });
         }
       } catch {
         if (mountedRef.current) {
-          showMessage(resolveActiveUiLanguage() === 'en' ? 'Action failed' : '操作失败');
+          showNotice({ kind: 'failed' });
         }
       } finally {
         actionInFlightRef.current = false;
@@ -125,16 +147,14 @@ export function useWatchlist(getCodeKey: (code: string) => string = toAssetAware
         }
       }
     },
-    [refresh, showMessage],
+    [refresh, showNotice],
   );
 
   const addToWatchlist = useCallback(
     async (stockCode: string) => runWatchlistMutation(
       stockCode,
       (code) => systemConfigApi.addToWatchlist(code),
-      resolveActiveUiLanguage() === 'en'
-        ? `Added ${stockCode} to watchlist`
-        : `已加入自选 ${stockCode}`,
+      'added',
     ),
     [runWatchlistMutation],
   );
@@ -143,9 +163,7 @@ export function useWatchlist(getCodeKey: (code: string) => string = toAssetAware
     async (stockCode: string) => runWatchlistMutation(
       stockCode,
       (code) => systemConfigApi.removeFromWatchlist(code),
-      resolveActiveUiLanguage() === 'en'
-        ? `Removed ${stockCode} from watchlist`
-        : `已从自选移除 ${stockCode}`,
+      'removed',
     ),
     [runWatchlistMutation],
   );

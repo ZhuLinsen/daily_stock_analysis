@@ -61,6 +61,20 @@ export const formatDateTime = (value?: string | null, language?: UiLanguage): st
   }).format(date);
 };
 
+export const formatShortDateTime = (value?: string | null, language?: UiLanguage): string => {
+  if (!value) return '—';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+
+  const locale = resolveActiveUiLanguage(language) === 'en' ? 'en-US' : 'zh-CN';
+  return new Intl.DateTimeFormat(locale, {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(date);
+};
+
 export const formatDate = (value?: string, language?: UiLanguage): string => {
   if (!value) return '—';
   const date = new Date(value);

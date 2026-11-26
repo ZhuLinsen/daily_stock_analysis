@@ -1,13 +1,14 @@
-import { render } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import React from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { UiLanguageProvider } from '../../contexts/UiLanguageContext';
+import { UiLanguageProvider, useUiLanguage } from '../../contexts/UiLanguageContext';
 import { buildFollowUpPrompt } from '../chatFollowUp';
 import {
   formatDate,
   formatDateInShanghai,
   formatDateTime,
   formatReportType,
+  formatShortDateTime,
   getRecentStartDate,
   getTodayInShanghai,
   resolveActiveUiLanguage,
@@ -125,6 +126,23 @@ describe('UI language-aware formatters', () => {
     expect(formatDateTime(sampleIso, 'en')).toBe(expectedEnDateTime);
     expect(formatDate(sampleIso, 'en')).toBe(expectedEnDate);
 
+    const expectedZhShortDateTime = new Intl.DateTimeFormat('zh-CN', {
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    }).format(sampleDate);
+    const expectedEnShortDateTime = new Intl.DateTimeFormat('en-US', {
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    }).format(sampleDate);
+    expect(formatShortDateTime(sampleIso, 'zh')).toBe(expectedZhShortDateTime);
+    expect(formatShortDateTime(sampleIso, 'en')).toBe(expectedEnShortDateTime);
+    expect(expectedEnShortDateTime).toMatch(/05\/18/);
+    expect(expectedEnShortDateTime).not.toContain('/2026');
+
     window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'en');
     expect(formatDateTime(sampleIso)).toBe(expectedEnDateTime);
     expect(formatDate(sampleIso)).toBe(expectedEnDate);
@@ -162,5 +180,31 @@ describe('UI language-aware formatters', () => {
     unmount();
     expect(document.documentElement.lang).toBe('');
     expect(resolveActiveUiLanguage()).toBe('zh');
+  });
+
+  it('synchronously updates active tab language before child memoized render reads arg-less formatters', () => {
+    const sampleIso = '2026-05-18T09:30:00Z';
+    const expectedZhDateTime = formatDateTime(sampleIso, 'zh');
+    const expectedEnDateTime = formatDateTime(sampleIso, 'en');
+
+    const RenderPhaseDateChild = () => {
+      const { setLanguage, t } = useUiLanguage();
+      const formatted = React.useMemo(() => formatDateTime(sampleIso), [t]);
+      return React.createElement(
+        React.Fragment,
+        null,
+        React.createElement('span', { 'data-testid': 'memo-date' }, formatted),
+        React.createElement('button', { type: 'button', onClick: () => setLanguage('en') }, 'to-en'),
+      );
+    };
+
+    window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'zh');
+    render(
+      React.createElement(UiLanguageProvider, null, React.createElement(RenderPhaseDateChild)),
+    );
+
+    expect(screen.getByTestId('memo-date').textContent).toBe(expectedZhDateTime);
+    fireEvent.click(screen.getByRole('button', { name: 'to-en' }));
+    expect(screen.getByTestId('memo-date').textContent).toBe(expectedEnDateTime);
   });
 });

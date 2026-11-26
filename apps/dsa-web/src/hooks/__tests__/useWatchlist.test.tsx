@@ -1,6 +1,7 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { StrictMode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { UiLanguageProvider, useUiLanguage } from '../../contexts/UiLanguageContext';
 import { useWatchlist } from '../useWatchlist';
 import { resolveRegisteredIndexCanonical, toAssetAwareCodeKey } from '../../utils/stockCode';
 import { UI_LANGUAGE_STORAGE_KEY } from '../../utils/uiLanguage';
@@ -504,5 +505,55 @@ describe('useWatchlist', () => {
       await result.current.addToWatchlist('BAD');
     });
     expect(result.current.actionMessage).toBe('Action failed');
+  });
+
+  it('re-localizes watchlist action message when UI language switches mid-mutation and after completion (OR-COR-07f319b1)', async () => {
+    window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'zh');
+    let resolveAdd!: (codes: string[]) => void;
+    let resolveRemove!: (codes: string[]) => void;
+    mockGetWatchlist.mockResolvedValueOnce([]);
+    mockAddToWatchlist.mockImplementationOnce(() => new Promise<string[]>((resolve) => {
+      resolveAdd = resolve;
+    }));
+    mockRemoveFromWatchlist.mockImplementationOnce(() => new Promise<string[]>((resolve) => {
+      resolveRemove = resolve;
+    }));
+
+    const { result } = renderHook(
+      () => ({ watchlist: useWatchlist(), ui: useUiLanguage() }),
+      { wrapper: UiLanguageProvider },
+    );
+    await waitFor(() => expect(result.current.watchlist.isLoading).toBe(false));
+
+    let addPromise!: Promise<void>;
+    act(() => {
+      addPromise = result.current.watchlist.addToWatchlist('600519');
+    });
+    act(() => {
+      result.current.ui.setLanguage('en');
+    });
+    await act(async () => {
+      resolveAdd(['600519']);
+      await addPromise;
+    });
+    expect(result.current.watchlist.actionMessage).toBe('Added 600519 to watchlist');
+
+    act(() => {
+      result.current.ui.setLanguage('zh');
+    });
+    expect(result.current.watchlist.actionMessage).toBe('已加入自选 600519');
+
+    let removePromise!: Promise<void>;
+    act(() => {
+      removePromise = result.current.watchlist.removeFromWatchlist('600519');
+    });
+    act(() => {
+      result.current.ui.setLanguage('en');
+    });
+    await act(async () => {
+      resolveRemove([]);
+      await removePromise;
+    });
+    expect(result.current.watchlist.actionMessage).toBe('Removed 600519 from watchlist');
   });
 });
