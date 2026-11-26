@@ -2597,19 +2597,32 @@ class DataFetcherManager:
 
         if is_us or is_hk:
             prefer_lb = self._longbridge_preferred() and not is_us_index
-            pre_quote = None
-            futu_failed_token = None
             if is_us:
-                # Futu OpenD covers US stocks (US.AAPL) via a broker quote feed.
-                # When configured it is tried before the YFinance/Longbridge
-                # chain, but a stale Futu snapshot (or a failed request) must not
-                # mask a fresher quote from those sources: it falls through and
-                # is recorded as the actual fallback source.
-                if not is_us_index and self._futu_realtime_enabled():
-                    pre_quote = self._try_fetcher_quote(stock_code, "FutuFetcher", **target_kwargs)
-                    if pre_quote is not None:
+                # 美股实时候选链同样由“数值优先级”决定，规则与日 K 一致：
+                #   - Longbridge preferred 时 Longbridge 锚定首位(pin_first)
+                #   - 其余成员(另一条 YFinance/Longbridge 主链源，以及仅在已配置
+                #     OpenD 时参与的 Futu)按各源当前 priority 排序
+                # 因此 FUTU_PRIORITY 对日 K 与实时行情同样生效：把它调大后 Futu
+                # 不会抢在 YFinance/Longbridge 之前成为美股实时主源。
+                anchor_src = "LongbridgeFetcher" if prefer_lb else "YfinanceFetcher"
+                us_candidates = self._us_realtime_source_order(
+                    prefer_lb=prefer_lb, is_us_index=is_us_index
+                )
+                secondary_src = "YfinanceFetcher" if prefer_lb else "LongbridgeFetcher"
+                secondary_kw: dict = {}
+                market_label = "US index" if is_us_index else "US"
+
+                primary_quote = None
+                fallback_from = None
+                for src_name in us_candidates:
+                    candidate = self._try_fetcher_quote(
+                        stock_code, src_name, **target_kwargs
+                    )
+                    if candidate is not None and src_name == "FutuFetcher":
+                        # Futu 快照可能过期：过期即丢弃并继续下一源，
+                        # 避免过期快照压住更新的报价。
                         probe = self._enrich_realtime_quote(
-                            pre_quote,
+                            candidate,
                             realtime_cache_ttl=getattr(config, "realtime_cache_ttl", None),
                         )
                         if getattr(probe, "is_stale", False):
@@ -2618,17 +2631,27 @@ class DataFetcherManager:
                                 stock_code,
                                 getattr(probe, "stale_seconds", None),
                             )
-                            pre_quote = None
-                    if pre_quote is None:
+                            candidate = None
+                    if candidate is None:
+                        if fallback_from is None:
+                            fallback_from = self._realtime_fetcher_token(src_name)
                         logger.info(
-                            "[realtime quote] US %s futu source unusable, falling back", stock_code
+                            "[realtime quote] %s %s source %s unusable, falling back",
+                            market_label,
+                            stock_code,
+                            src_name,
                         )
-                        futu_failed_token = self._realtime_fetcher_token("FutuFetcher")
-                primary_src = "LongbridgeFetcher" if prefer_lb else "YfinanceFetcher"
-                secondary_src = "YfinanceFetcher" if prefer_lb else "LongbridgeFetcher"
-                market_label = "US index" if is_us_index else "US"
-                primary_kw: dict = {}
-                secondary_kw: dict = {}
+                        continue
+                    primary_quote = candidate
+                    logger.info(
+                        "[realtime quote] %s %s fetched (source: %s)",
+                        market_label,
+                        stock_code,
+                        src_name,
+                    )
+                    break
+                if primary_quote is None and fallback_from is None:
+                    fallback_from = self._realtime_fetcher_token(anchor_src)
             else:
                 hk_priority = [
                     source.strip().lower()
@@ -2701,21 +2724,6 @@ class DataFetcherManager:
                 if log_final_failure:
                     logger.info("[realtime quote] HK %s no available data source", stock_code)
                 return None
-            primary_token = self._realtime_fetcher_token(primary_src, **primary_kw)
-            if pre_quote is not None:
-                # Futu already returned a fresh quote; the primary/secondary
-                # sources are still used below to supplement missing fields.
-                primary_quote = pre_quote
-                fallback_from = None
-                logger.info(f"[realtime quote] {market_label} {stock_code} fetched (source: FutuFetcher)")
-            else:
-                primary_quote = self._try_fetcher_quote(stock_code, primary_src, **primary_kw, **target_kwargs)
-                if primary_quote is None:
-                    fallback_from = futu_failed_token or primary_token
-                else:
-                    fallback_from = futu_failed_token
-                if primary_quote is not None:
-                    logger.info(f"[realtime quote] {market_label} {stock_code} fetched (source: {primary_src})")
             # US index quotes are YFinance-only. Longbridge accepts index-like
             # symbols syntactically, but does not provide the index quote
             # contract used by this manager, so it must not be used as either
@@ -2980,6 +2988,25 @@ class DataFetcherManager:
             pinned, rest = source_order[0], source_order[1:]
             return [pinned] + sorted(rest, key=lambda name: priority_by_name.get(name, 10 ** 9))
         return sorted(source_order, key=lambda name: priority_by_name.get(name, 10 ** 9))
+
+    def _us_realtime_source_order(self, *, prefer_lb: bool, is_us_index: bool) -> List[str]:
+        """美股实时行情候选顺序，与日 K 共用同一套数值优先级规则。
+
+        - Longbridge preferred（且非指数）时 Longbridge 锚定首位；
+        - 其余成员（另一条 YFinance/Longbridge 主链源，以及仅在已配置 OpenD
+          时参与的 Futu）按各 fetcher.priority 稳定排序；
+        - 美股指数只走 YFinance，不引入其它源。
+        """
+        anchor_src = "LongbridgeFetcher" if prefer_lb else "YfinanceFetcher"
+        order = [anchor_src]
+        if not is_us_index:
+            order.append("YfinanceFetcher" if prefer_lb else "LongbridgeFetcher")
+            if self._futu_realtime_enabled():
+                order.append("FutuFetcher")
+        # 与美股日 K 相同：只有 Longbridge preferred 的锚定首位不受普通
+        # priority 覆盖；其余情况全部按当前数值优先级排序，FUTU_PRIORITY
+        # 因此对实时行情同样生效。
+        return self._order_us_sources_by_priority(order, pin_first=bool(prefer_lb))
 
     def _longbridge_preferred(self, capability: str = "realtime_quote") -> bool:
         """Return True when Longbridge keys are configured and available.
