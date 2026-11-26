@@ -15,6 +15,7 @@
 """
 
 import logging
+import math
 import random
 import time
 from threading import BoundedSemaphore, Event, RLock, Thread
@@ -635,6 +636,25 @@ class BaseFetcher(ABC):
         time.sleep(sleep_time)
 
 
+_HITHINK_INDEX_EXCHANGES = {"SH": "SH", "SZ": "SZ", "BJ": "BJ", "TI": "TI"}
+
+
+def _hithink_index_thscode(entry: Any) -> Optional[str]:
+    """Map a registry entry to a documented HiThink index symbol.
+
+    The current ``IndexRegistry`` only materializes SH, SZ, and CSI rows.
+    CSI codes are not sent here. ``.TI`` is accepted so a future 同花顺 index
+    entry is not dropped by an exchange allow-list.
+    """
+    if entry is None:
+        return None
+    suffix = _HITHINK_INDEX_EXCHANGES.get(getattr(entry, "exchange", ""))
+    bare = str(getattr(entry, "bare_code", "") or "").strip()
+    if not suffix or not bare:
+        return None
+    return f"{bare}.{suffix}"
+
+
 class DataFetcherManager:
     """
     数据源策略管理器
@@ -657,6 +677,7 @@ class DataFetcherManager:
         "TushareFetcher": {"cn", "hk"},
         "TickPlusFetcher": {"cn"},
         "TickFlowFetcher": {"cn"},
+        "HiThinkFetcher": {"cn"},
         # 妙想为垂直补充数据源（资金流/筹码分布），不提供日线行情
         "MiaoxiangFetcher": set(),
         "PytdxFetcher": {"cn"},
@@ -710,6 +731,7 @@ class DataFetcherManager:
         self._fetcher_call_locks_lock = RLock()
         self._stock_name_cache: Dict[str, str] = {}
         self._stock_name_cache_lock = RLock()
+        self._stock_directory_coverage: Dict[str, str] = {}
         
         if fetchers:
             # 按优先级排序
@@ -743,6 +765,20 @@ class DataFetcherManager:
             self._stock_name_cache = {}
         if not hasattr(self, "_stock_name_cache_lock") or self._stock_name_cache_lock is None:
             self._stock_name_cache_lock = RLock()
+        if not hasattr(self, "_stock_directory_coverage") or self._stock_directory_coverage is None:
+            self._stock_directory_coverage = {}
+
+    def _market_list_fetchers(self) -> List[BaseFetcher]:
+        """Return market-list providers with HiThink kept as a supplement.
+
+        ``HITHINK_PRIORITY`` orders only the generic daily K-line chain. Index
+        snapshots, rankings, hot stocks, the limit-up pool, stock names, and
+        the ticker directory still try the existing sources first.
+        """
+        fetchers = self._get_fetchers_snapshot()
+        primary = [fetcher for fetcher in fetchers if fetcher.name != "HiThinkFetcher"]
+        supplement = [fetcher for fetcher in fetchers if fetcher.name == "HiThinkFetcher"]
+        return primary + supplement
 
     def _get_fetchers_snapshot(self) -> List[BaseFetcher]:
         self._ensure_concurrency_guards()
@@ -1214,6 +1250,89 @@ class DataFetcherManager:
                 )
                 errors.append(f"[{source_name}] ({error_type}) {error_reason}")
 
+        hithink = fetchers_by_name.get("HiThinkFetcher")
+        thscode = _hithink_index_thscode(target.matched_index)
+        if (
+            hithink is not None
+            and thscode
+            and self._is_fetcher_available(hithink, capability="index_daily")
+        ):
+            # The current registry resolves SH, SZ, and CSI only. SH/SZ use
+            # HiThink after the fixed route. BJ and 同花顺 .TI are accepted
+            # when a registry entry exists. CSI is not a documented HiThink
+            # index symbol and stays on the fixed route.
+            attempt_start = time.time()
+            record_provider_run_started(
+                data_type="daily_data",
+                provider="HiThinkFetcher",
+                operation="get_index_daily_data",
+            )
+            try:
+                df = self._call_fetcher_method(
+                    hithink,
+                    "get_index_daily_data",
+                    thscode,
+                    start_date,
+                    end_date,
+                    days,
+                )
+                duration_ms = int((time.time() - attempt_start) * 1000)
+                if df is not None and not df.empty:
+                    record_provider_run(
+                        data_type="daily_data",
+                        provider="HiThinkFetcher",
+                        operation="get_index_daily_data",
+                        success=True,
+                        latency_ms=duration_ms,
+                        record_count=len(df),
+                    )
+                    self._record_daily_source_success(hithink, "cn_index")
+                    logger.info(
+                        "[index source completed] %s fetched with [HiThinkFetcher]: rows=%d",
+                        target.canonical_id,
+                        len(df),
+                    )
+                    return df, "HiThinkFetcher"
+                reason = "empty result"
+                record_provider_run(
+                    data_type="daily_data",
+                    provider="HiThinkFetcher",
+                    operation="get_index_daily_data",
+                    success=False,
+                    latency_ms=duration_ms,
+                    error_type="empty",
+                    error_message=reason,
+                    fallback_to=None,
+                    record_count=0,
+                )
+                if df is not None and df.empty:
+                    self._record_daily_source_success(hithink, "cn_index")
+                else:
+                    self._record_daily_source_failure(hithink, "cn_index", reason)
+                errors.append("[HiThinkFetcher] empty result")
+            except Exception as exc:
+                error_type, error_reason = summarize_exception(exc)
+                duration_ms = int((time.time() - attempt_start) * 1000)
+                record_provider_run(
+                    data_type="daily_data",
+                    provider="HiThinkFetcher",
+                    operation="get_index_daily_data",
+                    success=False,
+                    latency_ms=duration_ms,
+                    error_type=error_type,
+                    error_message=error_reason,
+                    fallback_to=None,
+                    record_count=0,
+                )
+                self._record_daily_source_failure(hithink, "cn_index", error_reason)
+                logger.warning(
+                    "[index source failed] [HiThinkFetcher] %s: error_type=%s, reason=%s",
+                    target.canonical_id,
+                    error_type,
+                    error_reason,
+                )
+                errors.append(f"[HiThinkFetcher] ({error_type}) {error_reason}")
+
         logger.error(
             "[index source exhausted] %s all index daily sources failed: elapsed=%.2fs; %s",
             target.canonical_id,
@@ -1531,6 +1650,76 @@ class DataFetcherManager:
 
         logger.warning("[index name] failed to resolve name for %s from all sources", cache_key)
         return cache_key
+
+    def _get_hithink_fetcher(self):
+        for fetcher in self._get_fetchers_snapshot():
+            if fetcher.name == "HiThinkFetcher" and self._is_fetcher_available(fetcher):
+                return fetcher
+        return None
+
+    def _load_cn_fundamental_bundle(
+        self,
+        stock_code: str,
+        budget_seconds: float,
+    ) -> Tuple[Dict[str, Any], Optional[str], int]:
+        """Load AkShare first, then fill only missing HiThink blocks.
+
+        Each provider has its own timeout and quarantine key. A HiThink call
+        that is still running cannot block the next AkShare request.
+        """
+        from .hithink_fundamentals import (
+            HiThinkFundamentalAdapter,
+            anchor_report_date,
+            empty_fundamental_bundle,
+            merge_fundamental_bundles,
+        )
+
+        budget = max(0.0, float(budget_seconds))
+        if budget <= 0:
+            return empty_fundamental_bundle(), "fundamental stage timeout", 0
+
+        total_ms = 0
+        errors: List[str] = []
+        ak_payload, ak_error, ak_ms = self._run_with_retry(
+            lambda: self._fundamental_adapter.get_fundamental_bundle(stock_code),
+            budget,
+            "fundamental_bundle_akshare",
+            quarantine_key=("akshare", "fundamental_bundle"),
+        )
+        total_ms += ak_ms
+        budget = max(0.0, budget - ak_ms / 1000.0)
+        if ak_error:
+            errors.append(ak_error)
+
+        hithink_payload: Optional[Dict[str, Any]] = None
+        hithink = self._get_hithink_fetcher()
+        if hithink is not None and self._is_fetcher_available(hithink, capability="fundamental"):
+            if budget <= 0:
+                errors.append("fundamental_bundle_hithink timeout")
+            else:
+                hithink_deadline = time.monotonic() + budget
+                known_report_date = anchor_report_date(ak_payload)
+                hithink_payload, hithink_error, hithink_ms = self._run_with_retry(
+                    lambda: HiThinkFundamentalAdapter(hithink).get_fundamental_bundle(
+                        stock_code,
+                        deadline=hithink_deadline,
+                        report_date=known_report_date,
+                    ),
+                    budget,
+                    "fundamental_bundle_hithink",
+                    quarantine_key=("hithink", "fundamental_bundle"),
+                )
+                total_ms += hithink_ms
+                if hithink_error:
+                    errors.append(hithink_error)
+
+        merged = merge_fundamental_bundles(
+            ak_payload if isinstance(ak_payload, dict) else empty_fundamental_bundle(),
+            hithink_payload if isinstance(hithink_payload, dict) else empty_fundamental_bundle(),
+        )
+        if merged.get("status") != "partial" and errors:
+            merged["status"] = "failed"
+        return merged, ("; ".join(errors) or None), total_ms
 
     def _get_tickflow_fetcher(self):
         """Lazily create a TickFlow fetcher for market-review-only calls."""
@@ -1903,6 +2092,23 @@ class DataFetcherManager:
             )
         else:
             logger.debug("[data source init] skip TickFlowFetcher because TICKFLOW_API_KEY is not configured")
+
+        hithink_api_key = (getattr(config, "hithink_finance_api_key", None) or "").strip()
+        if hithink_api_key:
+            from .hithink_fetcher import HiThinkFetcher
+
+            optional_fetchers.append(
+                HiThinkFetcher(
+                    api_key=hithink_api_key,
+                    priority=getattr(config, "hithink_priority", 7),
+                    kline_adjust=getattr(config, "hithink_kline_adjust", "none"),
+                    batch_daily_enabled=getattr(config, "hithink_batch_daily_enabled", True),
+                    batch_size=getattr(config, "hithink_batch_size", 10),
+                    timeout=getattr(config, "hithink_timeout_sec", 15),
+                )
+            )
+        else:
+            logger.debug("[data source init] skip HiThinkFetcher because HITHINK_FINANCE_API_KEY is not configured")
 
         mx_apikey = getattr(config, "mx_apikey", None)
         if not isinstance(mx_apikey, str):
@@ -2321,7 +2527,7 @@ class DataFetcherManager:
         # efinance/akshare_em/tushare 通过一次调用填充全市场缓存；
         # tickplus / tickflow 只预取当前自选股，避免全市场请求。
         priority = config.realtime_source_priority.lower()
-        prefetch_sources = ['efinance', 'akshare_em', 'tushare', 'tickplus', 'tickflow']
+        prefetch_sources = ['efinance', 'akshare_em', 'tushare', 'tickplus', 'tickflow', 'hithink']
         
         # 如果优先级中前两个都不是可预取数据源，跳过预取
         # 因为新浪/腾讯是单股票查询，不需要预取
@@ -2359,21 +2565,31 @@ class DataFetcherManager:
         )
         
         # TickPlus / TickFlow 使用当前标的的批量接口；其他源通过首次查询触发自身缓存。
-        if prefetch_source in {"tickplus", "tickflow"}:
-            fetcher_name = "TickPlusFetcher" if prefetch_source == "tickplus" else "TickFlowFetcher"
+        if prefetch_source in {"tickplus", "tickflow", "hithink"}:
+            fetcher_name = {
+                "tickplus": "TickPlusFetcher",
+                "tickflow": "TickFlowFetcher",
+                "hithink": "HiThinkFetcher",
+            }[prefetch_source]
             fetcher = self._get_fetcher_by_name(fetcher_name, capability="realtime_quote")
             if fetcher is None or not hasattr(fetcher, "prefetch_realtime_quotes"):
                 logger.info(
                     "[prefetch] component=realtime_prefetch action=skip reason=provider_unavailable"
                 )
                 return 0
+            if prefetch_source == "tickplus":
+                batch_size = 100
+            elif prefetch_source == "hithink":
+                batch_size = getattr(config, "hithink_batch_size", 10)
+            else:
+                batch_size = getattr(config, "tickflow_batch_size", 100)
             try:
                 return int(
                     self._call_fetcher_method(
                         fetcher,
                         "prefetch_realtime_quotes",
                         stock_codes,
-                        batch_size=100 if prefetch_source == "tickplus" else getattr(config, "tickflow_batch_size", 100),
+                        batch_size=batch_size,
                     )
                     or 0
                 )
@@ -2414,24 +2630,36 @@ class DataFetcherManager:
             return 0
 
     def prefetch_daily_klines(self, stock_codes: List[str], days: int = 30) -> int:
-        """Batch-prefetch TickFlow daily K-lines without changing per-stock callers."""
-        fetcher = self._get_fetcher_by_name("TickFlowFetcher", capability="daily_data")
-        if fetcher is None or not hasattr(fetcher, "prefetch_daily_klines"):
-            return 0
+        """Warm prefetch-capable daily providers in priority order.
 
-        try:
-            return int(
-                self._call_fetcher_method(
-                    fetcher,
-                    "prefetch_daily_klines",
-                    stock_codes,
-                    days=days,
+        A source that can answer one stock but has no batch prefetch does not
+        block a later provider that does. The first prefetch that caches at
+        least one symbol stops the walk.
+        """
+        cached = 0
+        for fetcher in self._get_fetchers_snapshot():
+            if not self._is_fetcher_available(fetcher, capability="daily_data"):
+                continue
+            prefetch = getattr(fetcher, "prefetch_daily_klines", None)
+            if not callable(prefetch):
+                continue
+            try:
+                added = int(
+                    self._call_fetcher_method(
+                        fetcher,
+                        "prefetch_daily_klines",
+                        stock_codes,
+                        days=days,
+                    )
+                    or 0
                 )
-                or 0
-            )
-        except Exception as exc:
-            logger.warning("[TickFlowFetcher] daily K-line prefetch failed: %s", exc)
-            return 0
+            except Exception as exc:
+                logger.warning("[%s] daily K-line prefetch failed: %s", fetcher.name, exc)
+                added = 0
+            cached += added
+            if added > 0:
+                break
+        return cached
 
     @staticmethod
     def _utc_now_iso() -> str:
@@ -2759,8 +2987,12 @@ class DataFetcherManager:
                         )
                         quote = self._call_fetcher_method(fetcher, 'get_realtime_quote', raw_stock_code or stock_code)
 
-                elif source in {"tickplus", "tickflow"}:
-                    fetcher_name = "TickPlusFetcher" if source == "tickplus" else "TickFlowFetcher"
+                elif source in {"tickplus", "tickflow", "hithink"}:
+                    fetcher_name = {
+                        "tickplus": "TickPlusFetcher",
+                        "tickflow": "TickFlowFetcher",
+                        "hithink": "HiThinkFetcher",
+                    }[source]
                     fetcher = self._get_fetcher_by_name(fetcher_name, capability="realtime_quote")
                     if fetcher is not None and hasattr(fetcher, 'get_realtime_quote'):
                         record_provider_run_started(
@@ -3212,7 +3444,7 @@ class DataFetcherManager:
         upper_code = stock_code.strip().upper()
         market = "us" if upper_code.endswith(_US_EXCHANGE_SUFFIXES) else _market_tag(upper_code)
         _US_CAPABLE_FETCHERS = {"YfinanceFetcher", "LongbridgeFetcher", "FinnhubFetcher", "AlphaVantageFetcher"}
-        for fetcher in self._get_fetchers_snapshot():
+        for fetcher in self._market_list_fetchers():
             if not hasattr(fetcher, 'get_stock_name'):
                 continue
             if market == "us":
@@ -3379,13 +3611,16 @@ class DataFetcherManager:
             return result
         
         # 2. 尝试批量获取股票列表
-        for fetcher in self._get_fetchers_snapshot():
+        for fetcher in self._market_list_fetchers():
             if not hasattr(fetcher, 'get_stock_list') or not missing_codes:
                 continue
             if not self._is_fetcher_available(fetcher, capability="stock_list"):
                 continue
             try:
                 stock_list = self._call_fetcher_method(fetcher, 'get_stock_list')
+                coverage = self._stock_list_coverage(stock_list)
+                if coverage:
+                    self._stock_directory_coverage[fetcher.name] = coverage
                 if stock_list is not None and not stock_list.empty:
                     cache_updates: Dict[str, str] = {}
                     for _, row in stock_list.iterrows():
@@ -3400,16 +3635,32 @@ class DataFetcherManager:
                     if cache_updates:
                         with self._stock_name_cache_lock:
                             self._stock_name_cache.update(cache_updates)
-                    
+
+                    if coverage == "partial":
+                        logger.info(
+                            "[stock name] %s returned a partial directory; cached usable names, %s remaining",
+                            fetcher.name,
+                            len(missing_codes),
+                        )
+                    elif not missing_codes:
+                        logger.info("[stock name] batch fetch from %s completed", fetcher.name)
+                    else:
+                        logger.info(
+                            "[stock name] batch fetch from %s completed, %s remaining",
+                            fetcher.name,
+                            len(missing_codes),
+                        )
+
                     if not missing_codes:
                         break
-                    
+                elif coverage == "partial":
                     logger.info(
-                        f"[stock name] batch fetch from {fetcher.name} completed, "
-                        f"{len(missing_codes)} remaining"
+                        "[stock name] %s returned a partial directory with no usable names; continuing",
+                        fetcher.name,
                     )
             except Exception as e:
-                logger.debug(f"[stock name] {fetcher.name} batch fetch failed: {e}")
+                self._stock_directory_coverage[fetcher.name] = "failed"
+                logger.debug("[stock name] %s batch fetch failed: %s", fetcher.name, e)
                 continue
         
         # 3. 逐个获取剩余的
@@ -3422,31 +3673,110 @@ class DataFetcherManager:
         logger.info(f"[stock name] batch fetch completed, succeeded {len(result)}/{len(stock_codes)}")
         return result
 
+    @staticmethod
+    def _stock_list_coverage(stock_list: Any) -> str:
+        """Read a provider directory flag without treating legacy lists as partial."""
+        attrs = getattr(stock_list, "attrs", None)
+        if not isinstance(attrs, dict):
+            return ""
+        if "complete" not in attrs and "truncated" not in attrs:
+            return ""
+        if attrs.get("truncated") or attrs.get("complete") is False:
+            return "partial"
+        if attrs.get("complete") is True:
+            return "complete"
+        return ""
+
+    @staticmethod
+    def _main_indices_are_partial(data: List[Dict[str, Any]]) -> bool:
+        return any(isinstance(row, dict) and row.get("coverage") == "partial" for row in data)
+
+    @staticmethod
+    def _main_index_coverage_score(data: Optional[List[Dict[str, Any]]]) -> int:
+        """Count distinct index codes that have a finite positive price.
+
+        NaN, infinity, non-positive prices, and rows without a code do not
+        count. Quotes from different providers are never merged. A later
+        partial result replaces the saved one only when this count is strictly
+        higher.
+        """
+        codes = set()
+        for row in data or []:
+            if not isinstance(row, dict):
+                continue
+            try:
+                price = float(row.get("current"))
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(price) or price <= 0:
+                continue
+            code = str(row.get("code") or "").strip()
+            if not code:
+                continue
+            codes.add(code)
+        return len(codes)
+
+    def _accept_main_indices(
+        self,
+        data: Optional[List[Dict[str, Any]]],
+        partial_indices: Optional[List[Dict[str, Any]]],
+        provider: str,
+    ) -> Tuple[Optional[List[Dict[str, Any]]], Optional[List[Dict[str, Any]]]]:
+        if not data:
+            return None, partial_indices
+        if self._main_indices_are_partial(data):
+            incoming = self._main_index_coverage_score(data)
+            kept = self._main_index_coverage_score(partial_indices)
+            if partial_indices is None or incoming > kept:
+                if partial_indices is None:
+                    logger.info("[%s] index quotes are partial; continuing", provider)
+                else:
+                    logger.info(
+                        "[%s] partial index quotes cover more codes, replacing the saved result: %s > %s",
+                        provider,
+                        incoming,
+                        kept,
+                    )
+                partial_indices = data
+            else:
+                logger.info(
+                    "[%s] partial index quotes do not cover more codes; continuing",
+                    provider,
+                )
+            return None, partial_indices
+        logger.info("[%s] fetched index quotes", provider)
+        return data, partial_indices
+
     def get_main_indices(self, region: str = "cn") -> List[Dict[str, Any]]:
         """获取主要指数实时行情（自动切换数据源）"""
+        partial_indices: Optional[List[Dict[str, Any]]] = None
         if region == "cn":
             tickflow_fetcher = self._get_tickflow_fetcher()
             if tickflow_fetcher is not None:
                 try:
                     data = tickflow_fetcher.get_main_indices(region=region)
-                    if data:
-                        logger.info("[TickFlowFetcher] fetched index quotes")
-                        return data
+                    accepted, partial_indices = self._accept_main_indices(
+                        data, partial_indices, "TickFlowFetcher",
+                    )
+                    if accepted:
+                        return accepted
                 except Exception as e:
                     logger.warning(f"[TickFlowFetcher] failed to fetch index quotes: {e}")
 
-        for fetcher in self._fetchers:
+        for fetcher in self._market_list_fetchers():
             if region == "cn" and fetcher.name == "TickFlowFetcher":
                 continue
             try:
                 data = fetcher.get_main_indices(region=region)
-                if data:
-                    logger.info(f"[{fetcher.name}] fetched index quotes")
-                    return data
+                accepted, partial_indices = self._accept_main_indices(
+                    data, partial_indices, fetcher.name,
+                )
+                if accepted:
+                    return accepted
             except Exception as e:
                 logger.warning(f"[{fetcher.name}] failed to fetch index quotes: {e}")
                 continue
-        return []
+        return partial_indices or []
 
     def get_market_stats(
         self, *, purpose: str = "unspecified", include_provider: bool = False, allow_cache: bool = True,
@@ -4493,16 +4823,16 @@ class DataFetcherManager:
 
         valuation_timeout = min(fetch_timeout, remaining_seconds)
         if realtime_quote is not _REALTIME_QUOTE_UNSET:
-            quote_payload, valuation_err, valuation_ms = realtime_quote, None, 0
+            quote_payload, valuation_err, realtime_quote_ms = realtime_quote, None, 0
         elif valuation_timeout > 0:
-            quote_payload, valuation_err, valuation_ms = self._run_with_retry(
+            quote_payload, valuation_err, realtime_quote_ms = self._run_with_retry(
                 lambda: self.get_realtime_quote(stock_code, **({"analysis_target": analysis_target} if analysis_target is not None else {})),
                 valuation_timeout,
                 "fundamental_valuation",
             )
-            _consume_budget(valuation_ms)
+            _consume_budget(realtime_quote_ms)
         else:
-            quote_payload, valuation_err, valuation_ms = None, "fundamental stage timeout", 0
+            quote_payload, valuation_err, realtime_quote_ms = None, "fundamental stage timeout", 0
 
         valuation_payload = {
             "pe_ratio": getattr(quote_payload, "pe_ratio", None) if quote_payload else None,
@@ -4510,25 +4840,76 @@ class DataFetcherManager:
             "total_mv": getattr(quote_payload, "total_mv", None) if quote_payload else None,
             "circ_mv": getattr(quote_payload, "circ_mv", None) if quote_payload else None,
         }
+        valuation_errors = [valuation_err] if valuation_err else []
+        filled_valuation_fields: List[str] = []
+        hithink_valuation_ms = 0
+        if market == "cn" and not is_etf:
+            hithink = self._get_hithink_fetcher()
+            # Keep half of the remaining stage budget for AkShare statements
+            # and the later fundamental blocks. A slow valuation request must
+            # not consume the whole stage.
+            supplement_timeout = min(fetch_timeout, remaining_seconds / 2)
+            if (
+                hithink is not None
+                and self._is_fetcher_available(hithink, capability="valuation")
+                and supplement_timeout > 0
+            ):
+                from .hithink_fundamentals import HiThinkFundamentalAdapter, supplement_valuation
+
+                valuation_deadline = time.monotonic() + supplement_timeout
+                snapshot, snapshot_error, hithink_valuation_ms = self._run_with_retry(
+                    lambda: HiThinkFundamentalAdapter(hithink).get_valuation(
+                        stock_code,
+                        deadline=valuation_deadline,
+                    ),
+                    supplement_timeout,
+                    "fundamental_valuation_hithink",
+                    quarantine_key=("hithink", "valuation"),
+                )
+                _consume_budget(hithink_valuation_ms)
+                if snapshot_error:
+                    valuation_errors.append(snapshot_error)
+                if isinstance(snapshot, dict):
+                    filled_valuation_fields = supplement_valuation(
+                        hithink, stock_code, valuation_payload, snapshot=snapshot,
+                    )
+            elif hithink is not None and supplement_timeout <= 0:
+                valuation_errors.append("fundamental_valuation_hithink timeout")
+        field_sources = {
+            field_name: "HiThinkFetcher" if field_name in filled_valuation_fields else "realtime_quote"
+            for field_name, field_value in valuation_payload.items()
+            if field_value is not None
+        }
+        if field_sources:
+            valuation_payload["field_sources"] = field_sources
         valuation_status = self._infer_block_status(
-            valuation_payload,
+            {key: value for key, value in valuation_payload.items() if key != "field_sources"},
             "partial" if quote_payload is not None else "not_supported",
         )
-        if valuation_status == "partial" and valuation_err and not self._has_meaningful_payload(valuation_payload):
+        if valuation_status == "partial" and valuation_err and not self._has_meaningful_payload(
+            {key: value for key, value in valuation_payload.items() if key != "field_sources"}
+        ):
             valuation_status = "failed"
+        valuation_chain = [
+            {"provider": "realtime_quote", "result": valuation_status, "duration_ms": realtime_quote_ms},
+        ]
+        if filled_valuation_fields:
+            valuation_chain.append(
+                {"provider": "HiThinkFetcher", "result": "ok", "duration_ms": hithink_valuation_ms},
+            )
         result_ctx["valuation"] = self._build_fundamental_block(
             valuation_status,
             valuation_payload,
             self._normalize_source_chain(
-                [{"provider": "realtime_quote", "result": valuation_status, "duration_ms": valuation_ms}],
+                valuation_chain,
                 "realtime_quote",
                 valuation_status,
-                valuation_ms,
+                realtime_quote_ms,
             ),
-            [valuation_err] if valuation_err else [],
+            valuation_errors,
         )
 
-        # growth / earnings / institution (one AkShare call)
+        # growth / earnings / institution: AkShare, then missing HiThink blocks
         if remaining_seconds <= 0:
             bundle_status = "failed"
             bundle_payload: Dict[str, Any] = {}
@@ -4536,11 +4917,9 @@ class DataFetcherManager:
             bundle_ms = 0
         else:
             bundle_timeout = min(fetch_timeout, remaining_seconds)
-            bundle_payload, bundle_err_msg, bundle_ms = self._run_with_retry(
-                lambda: self._fundamental_adapter.get_fundamental_bundle(stock_code),
+            bundle_payload, bundle_err_msg, bundle_ms = self._load_cn_fundamental_bundle(
+                stock_code,
                 bundle_timeout,
-                "fundamental_bundle",
-                quarantine_key=("akshare", "fundamental_bundle"),
             )
             _consume_budget(bundle_ms)
             if not isinstance(bundle_payload, dict):
@@ -4965,6 +5344,8 @@ class DataFetcherManager:
                     [err or "boards empty from all sources"],
                 )
             board_status = "ok" if top and bottom else "partial"
+            if self._ranking_is_partial((top, bottom)):
+                board_status = "partial"
             return self._build_fundamental_block(
                 board_status,
                 {"top": top or [], "bottom": bottom or []},
@@ -4991,9 +5372,11 @@ class DataFetcherManager:
             """Get sector rankings with ordered fallback chain metadata."""
             source_chain: List[Dict[str, Any]] = []
             last_error = ""
+            partial_rankings = None
 
-            # 直接遍历管理器已经按 priority 排好序的数据源列表
-            for fetcher in self._fetchers:
+            # HiThink stays after existing sources. Daily priority does not
+            # move it ahead of the current market-list providers.
+            for fetcher in self._market_list_fetchers():
                 if not hasattr(fetcher, 'get_sector_rankings'):
                     continue
 
@@ -5001,15 +5384,24 @@ class DataFetcherManager:
                 try:
                     data = fetcher.get_sector_rankings(n)
                     duration_ms = int((time.time() - start) * 1000)
-                    if data and data[0] is not None and data[1] is not None:
+                    if data and data[0] is not None and data[1] is not None and (data[0] or data[1]):
+                        partial = self._ranking_is_partial(data)
                         source_chain.append(
                             {
                                 "provider": fetcher.name,
-                                "result": "ok",
+                                "result": "partial" if partial else "ok",
                                 "duration_ms": duration_ms,
                             }
                         )
-                        logger.info(f"[{fetcher.name}] fetched sector rankings")
+                        if partial:
+                            logger.info(
+                                "[%s] sector rankings cover only part of the directory; continuing",
+                                fetcher.name,
+                            )
+                            if partial_rankings is None:
+                                partial_rankings = (data[0], data[1])
+                            continue
+                        logger.info("[%s] fetched sector rankings", fetcher.name)
                         return data[0], data[1], source_chain, ""
 
                     last_error = f"{fetcher.name}返回空结果"
@@ -5035,7 +5427,19 @@ class DataFetcherManager:
                     )
                     logger.warning(f"[{fetcher.name}] failed to fetch sector rankings: {error_reason}")
 
+            if partial_rankings is not None:
+                return partial_rankings[0], partial_rankings[1], source_chain, ""
             return [], [], source_chain, last_error
+
+    @staticmethod
+    def _ranking_is_partial(data: Any) -> bool:
+        if not isinstance(data, tuple):
+            return False
+        rows = []
+        for side in data[:2]:
+            if isinstance(side, list):
+                rows.extend(side)
+        return any(isinstance(row, dict) and row.get("coverage") == "partial" for row in rows)
 
     def get_sector_rankings(self, n: int = 5) -> Tuple[List[Dict], List[Dict]]:
         """获取板块涨跌榜（自动切换数据源）"""
@@ -5083,10 +5487,21 @@ class DataFetcherManager:
 
             top: List[Dict] = []
             bottom: List[Dict] = []
-            for fetcher in self._get_fetchers_snapshot():
+            partial_top: Optional[List[Dict]] = None
+            partial_bottom: Optional[List[Dict]] = None
+            for fetcher in self._market_list_fetchers():
                 try:
                     data = fetcher.get_concept_rankings(normalized_n)
                     if data and (data[0] or data[1]):
+                        if self._ranking_is_partial(data):
+                            if partial_top is None:
+                                partial_top = data[0] or []
+                                partial_bottom = data[1] or []
+                            logger.info(
+                                "[%s] concept rankings cover only part of the directory; continuing",
+                                fetcher.name,
+                            )
+                            continue
                         top = data[0] or []
                         bottom = data[1] or []
                         logger.info(f"[{fetcher.name}] fetched concept rankings")
@@ -5097,13 +5512,17 @@ class DataFetcherManager:
                     last_error = f"{fetcher.name} ({error_type}) {error_reason}"
                     logger.warning(f"[{fetcher.name}] failed to fetch concept rankings: {error_reason}")
 
-            if not top and not bottom and last_error:
-                logger.warning(f"[concept rankings] all sources failed, last error: {last_error}")
+            if not top and not bottom and partial_top is not None:
+                top = partial_top
+                bottom = partial_bottom or []
+            elif not top and not bottom and last_error:
+                logger.warning("[concept rankings] all sources failed, last error: %s", last_error)
 
+            partial = self._ranking_is_partial((top, bottom))
             ttl = (
-                self.__class__._CONCEPT_RANKINGS_CACHE_TTL_SECONDS
-                if top or bottom
-                else self.__class__._CONCEPT_RANKINGS_EMPTY_CACHE_TTL_SECONDS
+                self.__class__._CONCEPT_RANKINGS_EMPTY_CACHE_TTL_SECONDS
+                if partial or not (top or bottom)
+                else self.__class__._CONCEPT_RANKINGS_CACHE_TTL_SECONDS
             )
             cached_top = self._copy_ranking_rows(top)
             cached_bottom = self._copy_ranking_rows(bottom)
@@ -5117,7 +5536,7 @@ class DataFetcherManager:
     def get_hot_stocks(self, n: int = 10) -> List[Dict[str, Any]]:
         """获取市场人气股榜（自动切换数据源）。"""
         last_error = ""
-        for fetcher in self._fetchers:
+        for fetcher in self._market_list_fetchers():
             try:
                 data = fetcher.get_hot_stocks(n)
                 if data:
@@ -5139,7 +5558,7 @@ class DataFetcherManager:
     ) -> List[Dict[str, Any]]:
         """获取涨停池与连板梯队（自动切换数据源）。"""
         last_error = ""
-        for fetcher in self._fetchers:
+        for fetcher in self._market_list_fetchers():
             try:
                 data = fetcher.get_limit_up_pool(date=date, n=n)
                 if data:

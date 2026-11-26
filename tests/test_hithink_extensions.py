@@ -1,0 +1,1644 @@
+# -*- coding: utf-8 -*-
+"""HiThink fundamentals, index data, and reference-list tests. HTTP is mocked."""
+
+from __future__ import annotations
+
+import threading
+import time
+import unittest
+from datetime import datetime
+from types import SimpleNamespace
+from unittest.mock import patch
+from zoneinfo import ZoneInfo
+
+import pandas as pd
+
+from data_provider.base import BaseFetcher, DataFetchError, DataFetcherManager, _hithink_index_thscode
+from data_provider.hithink_fetcher import HiThinkFetcher, HiThinkRequestError
+from data_provider.hithink_fundamentals import (
+    HiThinkFundamentalAdapter,
+    empty_fundamental_bundle,
+    merge_fundamental_bundles,
+    supplement_valuation,
+)
+
+
+def _ms(year: int, month: int, day: int) -> int:
+    moment = datetime(year, month, day, tzinfo=ZoneInfo("Asia/Shanghai"))
+    return int(moment.timestamp() * 1000)
+
+
+def _response(payload):
+    class _Response:
+        status_code = 200
+
+        def json(self):
+            return payload
+
+    return _Response()
+
+
+def _ok(data):
+    return {"code": 0, "message": "success", "data": data}
+
+
+class HiThinkExtensionTests(unittest.TestCase):
+    def _fetcher(self) -> HiThinkFetcher:
+        return HiThinkFetcher(api_key="hithink-test-key", retry_backoff=0)
+
+    def test_fundamental_bundle_maps_statements_and_keeps_nulls(self) -> None:
+        fetcher = self._fetcher()
+        income = _ok({"item": [{
+            "fiscal_year": 2024,
+            "fiscal_period": "Q3",
+            "period_end_ms": _ms(2024, 9, 30),
+            "operating_income": 10,
+            "parent_holder_net_profit": 4,
+        }]})
+        balance = _ok({"item": [{
+            "period_end_ms": _ms(2024, 9, 30),
+            "assets_total": 20,
+            "total_debt": None,
+        }]})
+        cash = _ok({"item": [{
+            "period_end_ms": _ms(2024, 9, 30),
+            "act_cash_flow_net": 3,
+        }]})
+        indicators = _ok({
+            "report": "2024-3",
+            "abilities": [
+                {"ability": "growth", "indicators": [
+                    {"index_id": "operating_income_yoy_growth_ratio", "value": "12.5"},
+                    {"index_id": "net_profit_yoy_growth_ratio", "value": None},
+                ]},
+                {"ability": "profitability", "indicators": [
+                    {"index_id": "sale_gross_margin", "value": "89.12"},
+                    {"index_id": "index_weighted_avg_roe", "value": "21"},
+                ]},
+            ],
+        })
+        with patch(
+            "data_provider.hithink_fetcher.requests.get",
+            side_effect=[_response(income), _response(balance), _response(cash), _response(indicators)],
+        ):
+            bundle = HiThinkFundamentalAdapter(fetcher).get_fundamental_bundle("600519")
+
+        self.assertEqual(bundle["status"], "partial")
+        self.assertEqual(bundle["growth"]["revenue_yoy"], 12.5)
+        self.assertIsNone(bundle["growth"]["net_profit_yoy"])
+        self.assertEqual(bundle["growth"]["gross_margin"], 89.12)
+        report = bundle["earnings"]["financial_report"]
+        self.assertEqual(report["revenue"], 10)
+        self.assertEqual(report["net_profit_parent"], 4)
+        self.assertEqual(report["operating_cash_flow"], 3)
+        self.assertEqual(report["roe"], 21)
+        self.assertIsNone(bundle["earnings"]["balance_sheet"]["total_debt"])
+
+    def test_statements_from_another_period_are_not_mixed(self) -> None:
+        fetcher = self._fetcher()
+        income = _ok({"item": [{
+            "fiscal_year": 2024,
+            "fiscal_period": "Q3",
+            "period_end_ms": _ms(2024, 9, 30),
+            "operating_income": 10,
+            "parent_holder_net_profit": 4,
+        }]})
+        balance = _ok({"item": [{"period_end_ms": _ms(2024, 9, 30), "assets_total": 20}]})
+        cash = _ok({"item": [{"period_end_ms": _ms(2024, 6, 30), "act_cash_flow_net": 3}]})
+        indicators = _ok({"abilities": []})
+        with patch(
+            "data_provider.hithink_fetcher.requests.get",
+            side_effect=[_response(income), _response(balance), _response(cash), _response(indicators)],
+        ):
+            bundle = HiThinkFundamentalAdapter(fetcher).get_fundamental_bundle("600519")
+
+        report = bundle["earnings"]["financial_report"]
+        self.assertEqual(report["report_date"], "2024-09-30")
+        self.assertEqual(report["revenue"], 10)
+        self.assertIsNone(report["operating_cash_flow"])
+        self.assertIn("balance_sheet", bundle["earnings"])
+        self.assertNotIn("cash_flow", bundle["earnings"])
+        self.assertIn("period_mismatch:cash_flow", bundle["errors"])
+
+    def test_fundamental_budget_stops_later_statements(self) -> None:
+        fetcher = self._fetcher()
+        income = _ok({"item": [{
+            "fiscal_year": 2024,
+            "fiscal_period": "Q3",
+            "period_end_ms": _ms(2024, 9, 30),
+            "operating_income": 10,
+        }]})
+        calls = []
+
+        def fake_get(url, params=None, headers=None, timeout=None):
+            calls.append(url)
+            from data_provider.hithink_fetcher import _request_budget
+
+            _request_budget.deadline = time.monotonic() - 1
+            return _response(income)
+
+        with patch("data_provider.hithink_fetcher.requests.get", side_effect=fake_get):
+            bundle = HiThinkFundamentalAdapter(fetcher).get_fundamental_bundle(
+                "600519",
+                deadline=time.monotonic() + 5,
+            )
+
+        self.assertEqual(calls, ["https://fuyao.aicubes.cn/api/a-share/financials/income-statements"])
+        self.assertIn("budget_exhausted", bundle["errors"])
+        self.assertIn("income_statement", bundle["earnings"])
+        self.assertNotIn("balance_sheet", bundle["earnings"])
+
+    def test_expired_fundamental_budget_makes_no_request(self) -> None:
+        fetcher = self._fetcher()
+        with patch("data_provider.hithink_fetcher.requests.get", side_effect=AssertionError("request")):
+            bundle = HiThinkFundamentalAdapter(fetcher).get_fundamental_bundle(
+                "600519",
+                deadline=time.monotonic() - 1,
+            )
+        self.assertEqual(bundle["errors"], ["budget_exhausted"])
+        self.assertEqual(bundle["earnings"], {})
+
+    def test_valuation_fills_only_missing_fields(self) -> None:
+        fetcher = self._fetcher()
+        payload = _ok({"item": [{
+            "thscode": "600519.SH",
+            "pe_ttm": 9,
+            "pe_mrq": None,
+            "pb_mrq": None,
+            "ps_ttm": 2,
+            "pcf_ttm": -1,
+        }]})
+        target = {"pe_ratio": 1.5, "pb_ratio": None}
+        with patch("data_provider.hithink_fetcher.requests.get", return_value=_response(payload)):
+            filled = supplement_valuation(fetcher, "600519", target)
+        self.assertEqual(target["pe_ratio"], 1.5)
+        self.assertIsNone(target["pb_ratio"])
+        self.assertEqual(target["ps_ttm"], 2)
+        self.assertEqual(target["pcf_ttm"], -1)
+        self.assertEqual(filled, ["ps_ttm", "pcf_ttm"])
+
+    def test_fundamental_failure_falls_back_to_akshare(self) -> None:
+        fetcher = self._fetcher()
+        manager = DataFetcherManager(fetchers=[fetcher])
+        manager._fundamental_adapter = type("Ak", (), {"get_fundamental_bundle": lambda self, code: {"status": "partial", "from": "ak"}})()
+        with patch("data_provider.hithink_fetcher.requests.get", return_value=_response({"code": 2004, "message": "denied", "data": None})) as request:
+            payload, _error, _ms = manager._load_cn_fundamental_bundle("600519", 5)
+        self.assertEqual(payload["from"], "ak")
+        self.assertEqual(request.call_count, 3)
+        self.assertTrue(fetcher.is_available("fundamental"))
+        self.assertFalse(fetcher._financial_path_available("/api/a-share/financials/income-statements"))
+        self.assertFalse(fetcher._financial_path_available("/api/a-share/financials/balance-sheets"))
+        self.assertFalse(fetcher._financial_path_available("/api/a-share/financials/cash-flow-statements"))
+        self.assertTrue(fetcher.is_available("daily_data"))
+
+    def test_main_indices_and_rankings(self) -> None:
+        fetcher = self._fetcher()
+        snapshot = _ok({"item": [{
+            "thscode": "000001.SH",
+            "last_price": 3000,
+            "price_change": 10,
+            "price_change_ratio_pct": 0.3,
+            "prev_price": 2990,
+            "volume": 100,
+            "turnover": 200,
+        }]})
+        catalog = _ok({"item": [
+            {"thscode": "881101.TI", "name": "银行"},
+            {"thscode": "881102.TI", "name": "软件"},
+        ]})
+        ranked = _ok({"item": [
+            {"thscode": "881101.TI", "price_change_ratio_pct": -1.2},
+            {"thscode": "881102.TI", "price_change_ratio_pct": 3.4},
+        ]})
+        with patch(
+            "data_provider.hithink_fetcher.requests.get",
+            side_effect=[_response(snapshot), _response(catalog), _response(ranked)],
+        ) as request:
+            indices = fetcher.get_main_indices("cn")
+            top, bottom = fetcher.get_sector_rankings(1)
+        self.assertEqual(indices[0]["code"], "sh000001")
+        self.assertEqual(indices[0]["name"], "上证指数")
+        self.assertEqual(indices[0]["coverage"], "partial")
+        self.assertEqual(top[0]["name"], "软件")
+        self.assertEqual(bottom[0]["name"], "银行")
+        self.assertNotIn("hithink-test-key", request.call_args.args[0])
+
+    def test_index_snapshot_permission_cools_only_index_snapshot(self) -> None:
+        fetcher = self._fetcher()
+        denied = {"code": 2004, "message": "forbidden", "request_id": "req-index-snapshot", "data": None}
+        calls = []
+
+        def fake_get(url, params=None, headers=None, timeout=None):
+            calls.append(url)
+            return _response(denied)
+
+        with patch("data_provider.hithink_fetcher.requests.get", side_effect=fake_get):
+            with self.assertRaises(HiThinkRequestError):
+                fetcher.get_main_indices("cn")
+            self.assertIsNone(fetcher.get_main_indices("cn"))
+
+        self.assertEqual(calls, ["https://fuyao.aicubes.cn/api/a-share-index/prices/snapshot"])
+        self.assertFalse(fetcher.is_available("index_snapshot"))
+        self.assertTrue(fetcher.is_available("index_daily"))
+        self.assertTrue(fetcher.is_available("index_rankings"))
+        self.assertTrue(fetcher.is_available("daily_data"))
+        self.assertTrue(fetcher.is_available("realtime_quote"))
+
+    def test_index_history_permission_cools_only_index_daily(self) -> None:
+        fetcher = self._fetcher()
+        denied = {"code": 2004, "message": "forbidden", "request_id": "req-index-daily", "data": None}
+        calls = []
+
+        def fake_get(url, params=None, headers=None, timeout=None):
+            calls.append(url)
+            return _response(denied)
+
+        with patch("data_provider.hithink_fetcher.requests.get", side_effect=fake_get):
+            with self.assertRaises(HiThinkRequestError):
+                fetcher.get_index_daily_data("000001.SH", start_date="2024-05-20", end_date="2024-05-21")
+            with self.assertRaises(DataFetchError):
+                fetcher.get_index_daily_data("000001.SH", start_date="2024-05-20", end_date="2024-05-21")
+
+        self.assertEqual(calls, ["https://fuyao.aicubes.cn/api/a-share-index/prices/historical"])
+        self.assertFalse(fetcher.is_available("index_daily"))
+        self.assertTrue(fetcher.is_available("index_snapshot"))
+        self.assertTrue(fetcher.is_available("index_rankings"))
+        self.assertTrue(fetcher.is_available("daily_data"))
+        self.assertTrue(fetcher.is_available("realtime_quote"))
+
+    def test_index_history_rejects_unexpected_adjustment(self) -> None:
+        fetcher = self._fetcher()
+        payload = _ok({"adjust": "forward", "item": []})
+        with patch("data_provider.hithink_fetcher.requests.get", return_value=_response(payload)):
+            with self.assertRaises(HiThinkRequestError):
+                fetcher.get_index_daily_data("000001.SH", start_date="2024-05-20", end_date="2024-05-21")
+
+    def test_names_directory_hot_stocks_and_limit_up_pool(self) -> None:
+        fetcher = self._fetcher()
+        search = _ok({"item": [{"ticker": "600519", "name": "贵州茅台", "asset_type": "a-share"}]})
+        listing = _ok({"item": [{"ticker": "600519", "name": "贵州茅台", "asset_type": "a-share"}]})
+        hot = _ok({"item": [{"ticker": "600519", "name": "贵州茅台", "rank": 1, "heat": "10"}]})
+        quote = _ok({"item": [{"thscode": "600519.SH", "last_price": 1435.26, "price_change_ratio_pct": 1.77}]})
+        pool = _ok({"item": [{
+            "ticker": "603986",
+            "name": "兆易创新",
+            "last_price": 118.23,
+            "price_change_ratio_pct": 10.0,
+            "limit_up_time": "09:34",
+            "continue_day_cnt": 2,
+            "continue_day_text": "2连板",
+            "seal_money": 100,
+            "limit_up_reason": "存储芯片",
+        }]})
+        with patch(
+            "data_provider.hithink_fetcher.requests.get",
+            side_effect=[_response(search), _response(listing), _response(hot), _response(quote), _response(pool)],
+        ) as request:
+            self.assertEqual(fetcher.get_stock_name("600519"), "贵州茅台")
+            frame = fetcher.get_stock_list()
+            hot_rows = fetcher.get_hot_stocks(1)
+            limit_rows = fetcher.get_limit_up_pool(date="20241113", n=1)
+        self.assertEqual(frame.iloc[0]["code"], "600519")
+        self.assertEqual(hot_rows[0]["source"], "HiThink热股榜")
+        self.assertEqual(hot_rows[0]["price"], 1435.26)
+        self.assertEqual(hot_rows[0]["change_pct"], 1.77)
+        self.assertEqual(limit_rows[0]["consecutive_boards"], 2)
+        self.assertEqual(limit_rows[0]["industry"], "")
+        self.assertEqual(limit_rows[0]["limit_up_reason"], "存储芯片")
+        self.assertEqual(limit_rows[0]["first_limit_time"], "")
+        self.assertEqual(limit_rows[0]["limit_up_time"], "09:34")
+        self.assertEqual(request.call_args_list[-1].kwargs["params"]["sort_field"], "continue_day_cnt")
+        self.assertIn("date_ms", request.call_args_list[-1].kwargs["params"])
+
+    def test_hot_stock_permission_cools_only_hot_stocks(self) -> None:
+        fetcher = self._fetcher()
+        calls = []
+
+        def fake_get(url, headers=None, params=None, timeout=None):
+            calls.append(url)
+            return _response({"code": 2003, "message": "capability denied", "data": None})
+
+        with patch("data_provider.hithink_fetcher.requests.get", side_effect=fake_get):
+            with self.assertRaises(HiThinkRequestError):
+                fetcher.get_hot_stocks(1)
+            self.assertIsNone(fetcher.get_hot_stocks(1))
+
+        self.assertEqual(calls, ["https://fuyao.aicubes.cn/api/a-share/special-data/hot-stock-list"])
+        self.assertFalse(fetcher.is_available("hot_stocks"))
+        self.assertTrue(fetcher.is_available("limit_up_pool"))
+        self.assertTrue(fetcher.is_available("realtime_quote"))
+        self.assertTrue(fetcher.is_available("daily_data"))
+        self.assertTrue(fetcher.is_available())
+
+    def test_hot_list_survives_snapshot_permission_cooldown(self) -> None:
+        fetcher = self._fetcher()
+        manager = DataFetcherManager(fetchers=[fetcher])
+        hot = _ok({"item": [{"ticker": "600519", "name": "贵州茅台", "rank": 1, "heat": "10"}]})
+        denied = {"code": 2003, "message": "capability denied", "data": None}
+        calls = []
+
+        def fake_get(url, params=None, headers=None, timeout=None):
+            calls.append(url)
+            if "hot-stock-list" in url:
+                return _response(hot)
+            return _response(denied)
+
+        with patch("data_provider.hithink_fetcher.requests.get", side_effect=fake_get):
+            first = manager.get_hot_stocks(1)
+            second = manager.get_hot_stocks(1)
+
+        self.assertEqual([row["code"] for row in first], ["600519"])
+        self.assertEqual([row["code"] for row in second], ["600519"])
+        self.assertEqual(len([url for url in calls if "hot-stock-list" in url]), 2)
+        self.assertEqual(len([url for url in calls if url.endswith("/snapshot")]), 1)
+        self.assertTrue(fetcher.is_available("hot_stocks"))
+        self.assertFalse(fetcher.is_available("realtime_quote"))
+
+    def test_limit_up_permission_cools_only_limit_up_pool(self) -> None:
+        fetcher = self._fetcher()
+        calls = []
+
+        def fake_get(url, headers=None, params=None, timeout=None):
+            calls.append(url)
+            return _response({"code": 2004, "message": "denied", "data": None})
+
+        with patch("data_provider.hithink_fetcher.requests.get", side_effect=fake_get):
+            with self.assertRaises(HiThinkRequestError):
+                fetcher.get_limit_up_pool(date="20241113", n=1)
+            self.assertIsNone(fetcher.get_limit_up_pool(date="20241113", n=1))
+
+        self.assertEqual(calls, ["https://fuyao.aicubes.cn/api/a-share/special-data/limit-up-pool"])
+        self.assertFalse(fetcher.is_available("limit_up_pool"))
+        self.assertTrue(fetcher.is_available("hot_stocks"))
+        self.assertTrue(fetcher.is_available("realtime_quote"))
+        self.assertTrue(fetcher.is_available("daily_data"))
+        self.assertTrue(fetcher.is_available())
+
+
+class _IndexFake(BaseFetcher):
+    def __init__(self, name: str, result):
+        self.name = name
+        self.priority = 1
+        self.result = result
+        self.calls = []
+
+    def _fetch_raw_data(self, stock_code, start_date, end_date):
+        raise NotImplementedError
+
+    def _normalize_data(self, df, stock_code):
+        raise NotImplementedError
+
+    def is_available_for_request(self, _capability: str) -> bool:
+        return True
+
+    def get_daily_data(self, stock_code, start_date=None, end_date=None, days=30):
+        self.calls.append(stock_code)
+        return self.result
+
+
+class _HiThinkIndexFake(_IndexFake):
+    def __init__(self):
+        super().__init__("HiThinkFetcher", pd.DataFrame())
+        self.index_calls = []
+
+    def get_index_daily_data(self, thscode, start_date=None, end_date=None, days=30):
+        self.index_calls.append(thscode)
+        frame = pd.DataFrame({
+            "date": [pd.Timestamp("2024-05-21")],
+            "open": [1], "high": [2], "low": [1], "close": [2],
+            "volume": [10], "amount": [20], "pct_chg": [1],
+        })
+        return frame
+
+
+class HiThinkIndexRouteTests(unittest.TestCase):
+    def test_fixed_index_route_still_wins_before_hithink(self) -> None:
+        tencent = _IndexFake("TencentFetcher", pd.DataFrame({
+            "date": [pd.Timestamp("2024-05-21")],
+            "open": [1], "high": [1], "low": [1], "close": [1],
+            "volume": [1], "amount": [1], "pct_chg": [0],
+        }))
+        hithink = _HiThinkIndexFake()
+        manager = DataFetcherManager(fetchers=[tencent, hithink])
+        _frame, source = manager.get_daily_data("sh000001")
+        self.assertEqual(source, "TencentFetcher")
+        self.assertEqual(hithink.index_calls, [])
+
+    def test_hithink_index_history_runs_after_the_fixed_route_fails(self) -> None:
+        empty = pd.DataFrame()
+        fetchers = [
+            _IndexFake(name, empty)
+            for name in ("TencentFetcher", "AkshareFetcher", "TickFlowFetcher", "YfinanceFetcher")
+        ]
+        hithink = _HiThinkIndexFake()
+        manager = DataFetcherManager(fetchers=[*fetchers, hithink])
+        _frame, source = manager.get_daily_data("sh000001")
+        self.assertEqual(source, "HiThinkFetcher")
+        self.assertEqual(hithink.index_calls, ["000001.SH"])
+
+    def test_hithink_index_history_keeps_moving_averages(self) -> None:
+        empty = pd.DataFrame()
+        fetchers = [
+            _IndexFake(name, empty)
+            for name in ("TencentFetcher", "AkshareFetcher", "TickFlowFetcher", "YfinanceFetcher")
+        ]
+        hithink = HiThinkFetcher(api_key="hithink-test-key", retry_backoff=0)
+        manager = DataFetcherManager(fetchers=[*fetchers, hithink])
+        bars = []
+        for day, close in ((18, 100), (19, 110), (20, 120)):
+            bars.append({
+                "date_ms": _ms(2024, 11, day),
+                "open_price": close - 1,
+                "high_price": close + 1,
+                "low_price": close - 2,
+                "close_price": close,
+                "volume": 1000 * day,
+                "turnover": 1000 * close,
+            })
+        payload = _ok({"item": bars})
+        with patch("data_provider.hithink_fetcher.requests.get", return_value=_response(payload)):
+            frame, source = manager.get_daily_data(
+                "sh000001",
+                start_date="2024-11-18",
+                end_date="2024-11-20",
+            )
+
+        self.assertEqual(source, "HiThinkFetcher")
+        self.assertEqual(len(frame), 3)
+        for column in ("ma5", "ma10", "ma20", "volume_ratio"):
+            self.assertIn(column, frame.columns)
+            self.assertTrue(frame[column].notna().all())
+        self.assertAlmostEqual(frame.iloc[-1]["ma5"], 110.0)
+
+    def test_index_history_older_than_five_years_is_not_returned_as_success(self) -> None:
+        empty = pd.DataFrame()
+        fetchers = [
+            _IndexFake(name, empty)
+            for name in ("TencentFetcher", "AkshareFetcher", "TickFlowFetcher", "YfinanceFetcher")
+        ]
+        hithink = HiThinkFetcher(api_key="hithink-test-key", retry_backoff=0)
+        manager = DataFetcherManager(fetchers=[*fetchers, hithink])
+
+        with patch("data_provider.hithink_fetcher.requests.get", side_effect=AssertionError("request")):
+            frame, source = manager.get_daily_data(
+                "sh000001",
+                start_date="2010-01-04",
+                end_date="2024-05-21",
+            )
+
+        self.assertTrue(frame.empty)
+        self.assertEqual(source, "")
+
+    def test_cooled_index_daily_is_not_called_after_the_fixed_route_fails(self) -> None:
+        class _CooledHiThink(_HiThinkIndexFake):
+            def is_available_for_request(self, capability=""):
+                return capability != "index_daily"
+
+        empty = pd.DataFrame()
+        fetchers = [
+            _IndexFake(name, empty)
+            for name in ("TencentFetcher", "AkshareFetcher", "TickFlowFetcher", "YfinanceFetcher")
+        ]
+        hithink = _CooledHiThink()
+        manager = DataFetcherManager(fetchers=[*fetchers, hithink])
+        _frame, source = manager.get_daily_data("sh000001")
+        self.assertNotEqual(source, "HiThinkFetcher")
+        self.assertEqual(hithink.index_calls, [])
+
+    def test_hithink_index_history_records_provider_runs(self) -> None:
+        empty = pd.DataFrame()
+        fetchers = [
+            _IndexFake(name, empty)
+            for name in ("TencentFetcher", "AkshareFetcher", "TickFlowFetcher", "YfinanceFetcher")
+        ]
+        hithink = _HiThinkIndexFake()
+        manager = DataFetcherManager(fetchers=[*fetchers, hithink])
+        with patch("data_provider.base.record_provider_run") as run, \
+                patch("data_provider.base.record_provider_run_started") as started:
+            _frame, source = manager.get_daily_data("sh000001")
+        self.assertEqual(source, "HiThinkFetcher")
+        self.assertTrue(any(
+            call.kwargs.get("provider") == "HiThinkFetcher"
+            and call.kwargs.get("operation") == "get_index_daily_data"
+            for call in started.call_args_list
+        ))
+        self.assertTrue(any(
+            call.kwargs.get("provider") == "HiThinkFetcher"
+            and call.kwargs.get("success") is True
+            for call in run.call_args_list
+        ))
+
+    def test_index_symbol_accepts_tonghuashun_suffix_and_skips_csi(self) -> None:
+        self.assertEqual(
+            _hithink_index_thscode(SimpleNamespace(exchange="TI", bare_code="886042")),
+            "886042.TI",
+        )
+        self.assertEqual(
+            _hithink_index_thscode(SimpleNamespace(exchange="SH", bare_code="000001")),
+            "000001.SH",
+        )
+        self.assertIsNone(_hithink_index_thscode(SimpleNamespace(exchange="CSI", bare_code="930955")))
+        self.assertNotIn("HiThinkFetcher", DataFetcherManager._CN_INDEX_DAILY_SOURCE_ORDER)
+
+
+def _bundle(**overrides):
+    payload = {
+        "status": "partial",
+        "growth": {},
+        "earnings": {},
+        "institution": {},
+        "source_chain": [],
+        "errors": [],
+    }
+    payload.update(overrides)
+    return payload
+
+
+class HiThinkFundamentalMergeTests(unittest.TestCase):
+    def _fetcher(self) -> HiThinkFetcher:
+        return HiThinkFetcher(api_key="hithink-test-key", retry_backoff=0)
+
+    def test_different_report_period_does_not_overwrite_akshare_blocks(self) -> None:
+        merged = merge_fundamental_bundles(
+            _bundle(
+                growth={"revenue_yoy": 1.0, "net_profit_yoy": None},
+                earnings={
+                    "financial_report": {"report_date": "2024-12-31", "revenue": 1, "roe": None},
+                    "forecast_summary": {"text": "预增"},
+                    "quick_report_summary": {"text": "快报"},
+                    "dividend": {"amount": 3},
+                },
+                institution={"institution_holding_change": {"pct": 1}},
+                source_chain=["earnings:akshare"],
+            ),
+            _bundle(
+                growth={"revenue_yoy": 9.0, "net_profit_yoy": 8.0, "roe": 7.0},
+                earnings={
+                    "financial_report": {"report_date": "2024-09-30", "revenue": 9, "roe": 7.0},
+                    "income_statement": {"operating_income": 9},
+                },
+                source_chain=["growth:hithink"],
+            ),
+        )
+        self.assertEqual(merged["growth"]["revenue_yoy"], 1.0)
+        self.assertIsNone(merged["growth"]["net_profit_yoy"])
+        self.assertEqual(merged["earnings"]["financial_report"]["revenue"], 1)
+        self.assertNotIn("income_statement", merged["earnings"])
+        self.assertEqual(merged["earnings"]["forecast_summary"]["text"], "预增")
+        self.assertEqual(merged["earnings"]["quick_report_summary"]["text"], "快报")
+        self.assertEqual(merged["earnings"]["dividend"]["amount"], 3)
+        self.assertEqual(merged["institution"]["institution_holding_change"]["pct"], 1)
+
+    def test_same_report_period_fills_only_missing_fields(self) -> None:
+        merged = merge_fundamental_bundles(
+            _bundle(
+                growth={"revenue_yoy": 1.0, "net_profit_yoy": None},
+                earnings={"financial_report": {"report_date": "2024-09-30", "revenue": 1, "roe": None}},
+            ),
+            _bundle(
+                growth={"revenue_yoy": 9.0, "net_profit_yoy": 8.0},
+                earnings={
+                    "financial_report": {"report_date": "2024-09-30", "revenue": 9, "roe": 7.0},
+                    "income_statement": {"operating_income": 9},
+                },
+            ),
+        )
+        self.assertEqual(merged["growth"]["revenue_yoy"], 1.0)
+        self.assertEqual(merged["growth"]["net_profit_yoy"], 8.0)
+        self.assertEqual(merged["earnings"]["financial_report"]["revenue"], 1)
+        self.assertEqual(merged["earnings"]["financial_report"]["roe"], 7.0)
+        self.assertEqual(merged["earnings"]["income_statement"]["operating_income"], 9)
+
+    def test_missing_akshare_report_can_take_the_hithink_period(self) -> None:
+        merged = merge_fundamental_bundles(
+            _bundle(earnings={"dividend": {"amount": 3}}),
+            _bundle(
+                growth={"revenue_yoy": 9.0},
+                earnings={"financial_report": {"report_date": "2024-09-30", "revenue": 9}},
+            ),
+        )
+        self.assertEqual(merged["earnings"]["dividend"]["amount"], 3)
+        self.assertEqual(merged["earnings"]["financial_report"]["revenue"], 9)
+        self.assertEqual(merged["growth"]["revenue_yoy"], 9.0)
+
+    def test_hithink_timeout_does_not_quarantine_akshare(self) -> None:
+        fetcher = self._fetcher()
+        manager = DataFetcherManager(fetchers=[fetcher])
+        manager._fundamental_adapter.get_fundamental_bundle = lambda code: _bundle(
+            earnings={"dividend": {"amount": 3}},
+        )
+
+        stop = threading.Event()
+
+        def slow_bundle(_self, _code, deadline=None):
+            stop.wait(2)
+            return _bundle()
+
+        with patch.object(HiThinkFundamentalAdapter, "get_fundamental_bundle", slow_bundle):
+            payload, error, _ms = manager._load_cn_fundamental_bundle("600519", 0.4)
+            follow_up, follow_error, _follow_ms = manager._run_with_retry(
+                lambda: "akshare-ready",
+                1,
+                "fundamental_bundle_akshare",
+                quarantine_key=("akshare", "fundamental_bundle"),
+            )
+            stop.set()
+        self.assertEqual(payload["earnings"]["dividend"]["amount"], 3)
+        self.assertIn("timeout", error or "")
+        self.assertEqual(follow_up, "akshare-ready")
+        self.assertIsNone(follow_error)
+
+    def test_valuation_supplement_stays_inside_the_stage_budget(self) -> None:
+        fetcher = self._fetcher()
+        manager = DataFetcherManager(fetchers=[fetcher])
+        manager._fundamental_adapter.get_fundamental_bundle = lambda code: _bundle()
+
+        stop = threading.Event()
+
+        def slow_valuation(_self, _code, deadline=None):
+            stop.wait(2)
+            return {"pe_ratio": 9}
+
+        with patch.object(HiThinkFundamentalAdapter, "get_valuation", side_effect=AssertionError("no budget")):
+            manager.get_fundamental_context("600519", budget_seconds=0, realtime_quote=None)
+
+        with patch.object(HiThinkFundamentalAdapter, "get_valuation", slow_valuation), \
+                patch.object(HiThinkFundamentalAdapter, "get_fundamental_bundle", return_value=_bundle()):
+            started = time.perf_counter()
+            manager.get_fundamental_context("600519", budget_seconds=0.4, realtime_quote=None)
+            elapsed = time.perf_counter() - started
+            stop.set()
+        self.assertLess(elapsed, 1.5)
+
+    def test_slow_valuation_still_calls_akshare(self) -> None:
+        fetcher = self._fetcher()
+        manager = DataFetcherManager(fetchers=[fetcher])
+        calls = []
+        manager._fundamental_adapter.get_fundamental_bundle = lambda code: calls.append(code) or _bundle()
+        stop = threading.Event()
+
+        def slow_valuation(_self, _code, deadline=None):
+            stop.wait(5)
+            return {}
+
+        with patch.object(HiThinkFundamentalAdapter, "get_valuation", slow_valuation), \
+                patch.object(HiThinkFundamentalAdapter, "get_fundamental_bundle", return_value=_bundle()):
+            manager.get_fundamental_context(
+                "600519",
+                budget_seconds=0.4,
+                realtime_quote=SimpleNamespace(),
+            )
+        stop.set()
+        self.assertEqual(calls, ["600519"])
+
+    def test_valuation_permission_does_not_block_statements(self) -> None:
+        fetcher = self._fetcher()
+        manager = DataFetcherManager(fetchers=[fetcher])
+        ak_calls = []
+        manager._fundamental_adapter.get_fundamental_bundle = (
+            lambda code: ak_calls.append(code) or _bundle()
+        )
+        urls = []
+
+        def fake_get(url, params=None, headers=None, timeout=None):
+            urls.append(url)
+            if "valuations" in url:
+                return _response({"code": 2003, "message": "denied", "data": None})
+            return _response({"code": 0, "message": "ok", "data": {"item": []}})
+
+        with patch("data_provider.hithink_fetcher.requests.get", side_effect=fake_get):
+            manager.get_fundamental_context(
+                "600519",
+                budget_seconds=5,
+                realtime_quote=SimpleNamespace(),
+            )
+
+        self.assertTrue(any("valuations" in url for url in urls))
+        self.assertTrue(any("financials" in url for url in urls))
+        self.assertEqual(ak_calls, ["600519"])
+        self.assertFalse(fetcher.is_available("valuation"))
+        self.assertTrue(fetcher.is_available("fundamental"))
+
+    def test_balance_sheet_permission_does_not_skip_cash_flow_or_indicators(self) -> None:
+        fetcher = self._fetcher()
+        manager = DataFetcherManager(fetchers=[fetcher])
+        manager._fundamental_adapter.get_fundamental_bundle = lambda code: empty_fundamental_bundle()
+        period = _ms(2024, 3, 31)
+        urls = []
+
+        def fake_get(url, params=None, headers=None, timeout=None):
+            urls.append(url)
+            if "valuations" in url:
+                return _response(_ok({"item": []}))
+            if url.endswith("balance-sheets"):
+                return _response({"code": 2003, "message": "denied", "data": None})
+            if url.endswith("income-statements"):
+                return _response(_ok({"item": [{
+                    "period_end_ms": period,
+                    "fiscal_year": 2024,
+                    "fiscal_period": "Q1",
+                    "operating_income": 100,
+                    "parent_holder_net_profit": 20,
+                }]}))
+            if url.endswith("cash-flow-statements"):
+                return _response(_ok({"item": [{
+                    "period_end_ms": period,
+                    "fiscal_year": 2024,
+                    "fiscal_period": "Q1",
+                    "act_cash_flow_net": 12.5,
+                }]}))
+            if url.endswith("indicators"):
+                return _response(_ok({
+                    "abilities": [{
+                        "indicators": [{"index_id": "net_profit_yoy_growth_ratio", "value": 8.0}],
+                    }],
+                }))
+            raise AssertionError(url)
+
+        with patch("data_provider.hithink_fetcher.requests.get", side_effect=fake_get):
+            first = manager.get_fundamental_context(
+                "600519",
+                budget_seconds=5,
+                realtime_quote=SimpleNamespace(),
+            )
+            second = manager.get_fundamental_context(
+                "000001",
+                budget_seconds=5,
+                realtime_quote=SimpleNamespace(),
+            )
+
+        report = first["earnings"]["data"]["financial_report"]
+        self.assertEqual(report["operating_cash_flow"], 12.5)
+        self.assertEqual(first["growth"]["data"]["net_profit_yoy"], 8.0)
+        self.assertEqual(second["earnings"]["data"]["financial_report"]["operating_cash_flow"], 12.5)
+        self.assertEqual(len([url for url in urls if url.endswith("balance-sheets")]), 1)
+        self.assertEqual(len([url for url in urls if url.endswith("cash-flow-statements")]), 2)
+        self.assertEqual(len([url for url in urls if url.endswith("indicators")]), 2)
+        self.assertTrue(fetcher.is_available("fundamental"))
+        self.assertFalse(fetcher._financial_path_available("/api/a-share/financials/balance-sheets"))
+        self.assertTrue(fetcher._financial_path_available("/api/a-share/financials/cash-flow-statements"))
+
+    def test_income_denial_uses_the_akshare_period_for_cash_flow_and_indicators(self) -> None:
+        fetcher = self._fetcher()
+        manager = DataFetcherManager(fetchers=[fetcher])
+        period = _ms(2024, 9, 30)
+
+        def ak_bundle():
+            payload = empty_fundamental_bundle()
+            payload["earnings"] = {
+                "financial_report": {
+                    "report_date": "2024-09-30",
+                    "revenue": 100,
+                    "net_profit_parent": 20,
+                    "operating_cash_flow": None,
+                    "roe": None,
+                }
+            }
+            return payload
+
+        manager._fundamental_adapter.get_fundamental_bundle = lambda code: ak_bundle()
+        urls = []
+        reports = []
+
+        def fake_get(url, params=None, headers=None, timeout=None):
+            urls.append(url)
+            if url.endswith("indicators"):
+                reports.append((params or {}).get("report"))
+            if "valuations" in url or url.endswith("balance-sheets"):
+                return _response(_ok({"item": []}))
+            if url.endswith("income-statements"):
+                return _response({"code": 2003, "message": "denied", "data": None})
+            if url.endswith("cash-flow-statements"):
+                return _response(_ok({"item": [{
+                    "period_end_ms": period,
+                    "fiscal_year": 2024,
+                    "fiscal_period": "Q3",
+                    "act_cash_flow_net": 12.5,
+                }]}))
+            if url.endswith("indicators"):
+                return _response(_ok({
+                    "abilities": [{
+                        "indicators": [{"index_id": "net_profit_yoy_growth_ratio", "value": 8.0}],
+                    }],
+                }))
+            raise AssertionError(url)
+
+        with patch("data_provider.hithink_fetcher.requests.get", side_effect=fake_get):
+            first = manager.get_fundamental_context(
+                "600519",
+                budget_seconds=5,
+                realtime_quote=SimpleNamespace(),
+            )
+            second = manager.get_fundamental_context(
+                "000001",
+                budget_seconds=5,
+                realtime_quote=SimpleNamespace(),
+            )
+
+        self.assertEqual(first["earnings"]["data"]["financial_report"]["operating_cash_flow"], 12.5)
+        self.assertEqual(first["growth"]["data"]["net_profit_yoy"], 8.0)
+        self.assertEqual(second["earnings"]["data"]["financial_report"]["operating_cash_flow"], 12.5)
+        self.assertEqual(reports, ["2024-3", "2024-3"])
+        self.assertEqual(len([url for url in urls if url.endswith("income-statements")]), 1)
+        self.assertEqual(len([url for url in urls if url.endswith("cash-flow-statements")]), 2)
+        self.assertFalse(fetcher._financial_path_available("/api/a-share/financials/income-statements"))
+        self.assertTrue(fetcher._financial_path_available("/api/a-share/financials/cash-flow-statements"))
+
+    def test_daily_priority_does_not_move_hithink_ahead_of_hot_stocks(self) -> None:
+        class _Board:
+            def __init__(self, name: str, priority: int, code: str) -> None:
+                self.name = name
+                self.priority = priority
+                self.calls = 0
+                self._code = code
+
+            def get_hot_stocks(self, n: int = 10):
+                self.calls += 1
+                return [{"code": self._code, "name": self._code}]
+
+        hithink = _Board("HiThinkFetcher", 0, "600519")
+        akshare = _Board("AkshareFetcher", 1, "000001")
+        manager = DataFetcherManager(fetchers=[hithink, akshare])
+
+        rows = manager.get_hot_stocks(1)
+
+        self.assertEqual(rows[0]["code"], "000001")
+        self.assertEqual(akshare.calls, 1)
+        self.assertEqual(hithink.calls, 0)
+
+    def test_daily_priority_does_not_move_hithink_ahead_of_stock_names(self) -> None:
+        class _NameSource:
+            def __init__(self, name: str, priority: int, value: str) -> None:
+                self.name = name
+                self.priority = priority
+                self.value = value
+                self.calls = []
+                self.list_calls = 0
+
+            def get_stock_name(self, stock_code: str) -> str:
+                self.calls.append(stock_code)
+                return self.value
+
+            def get_stock_list(self):
+                self.list_calls += 1
+                frame = pd.DataFrame([{"code": "689999", "name": self.value}])
+                frame.attrs["complete"] = True
+                return frame
+
+        hithink = _NameSource("HiThinkFetcher", 0, "同花顺名")
+        akshare = _NameSource("AkshareFetcher", 1, "已有名")
+        manager = DataFetcherManager(fetchers=[hithink, akshare])
+
+        self.assertEqual(manager.get_stock_name("689999", allow_realtime=False), "已有名")
+        self.assertEqual(akshare.calls, ["689999"])
+        self.assertEqual(hithink.calls, [])
+
+        batch_hithink = _NameSource("HiThinkFetcher", 0, "同花顺名")
+        batch_akshare = _NameSource("AkshareFetcher", 1, "已有名")
+        batch_manager = DataFetcherManager(fetchers=[batch_hithink, batch_akshare])
+        names = batch_manager.batch_get_stock_names(["689999"])
+        self.assertEqual(names["689999"], "已有名")
+        self.assertEqual(batch_akshare.list_calls, 1)
+        self.assertEqual(batch_hithink.list_calls, 0)
+
+    def test_preloaded_partial_concept_ranking_stays_partial(self) -> None:
+        from src.services.market_hotspot_service import MarketHotspotService
+        from src.services.market_structure_service import MarketStructureService
+        from src.utils.data_processing import concept_board_status, extract_board_detail_fields
+
+        partial = [{"name": "A", "change_pct": 1.0, "coverage": "partial"}]
+        context: dict = {
+            "boards": {
+                "status": "ok",
+                "data": {
+                    "top": [{"name": "银行", "change_pct": 1.0}],
+                    "bottom": [{"name": "软件", "change_pct": -1.0}],
+                },
+            },
+            "concept_boards": {
+                "status": concept_board_status(partial, partial),
+                "data": {"top": list(partial), "bottom": list(partial)},
+            },
+        }
+        self.assertEqual(context["concept_boards"]["status"], "partial")
+
+        details = extract_board_detail_fields({"fundamental_context": context})
+        self.assertEqual(details["concept_rankings"]["status"], "partial")
+        self.assertEqual(details["concept_rankings"]["top"][0]["coverage"], "partial")
+
+        hotspot = MarketHotspotService(fetcher_manager=SimpleNamespace())
+        service = MarketStructureService(fetcher_manager=SimpleNamespace(), hotspot_service=hotspot)
+        built = service.build_context(
+            code="600519",
+            stock_name="茅台",
+            market="cn",
+            fundamental_context=context,
+        )
+        self.assertEqual(built["market_theme_context"]["status"], "partial")
+        self.assertEqual(built["market_theme_context"]["data_quality"]["status"], "partial")
+        self.assertNotEqual(built["status"], "ok")
+
+    def test_concept_ranking_includes_the_full_catalog(self) -> None:
+        fetcher = self._fetcher()
+        items = [{"thscode": f"881{i:03d}.TI", "name": f"概念{i}"} for i in range(11)]
+        snapshots = []
+        catalogs = []
+
+        def request(path, params, capability=None):
+            if path.endswith("ths-index-list"):
+                catalogs.append(path)
+                return {"code": 0, "data": {"item": items}}
+            snapshots.append(params["thscodes"])
+            return {"code": 0, "data": {"item": [
+                {
+                    "thscode": symbol,
+                    "price_change_ratio_pct": 99 if symbol == "881010.TI" else 1,
+                }
+                for symbol in params["thscodes"].split(",")
+            ]}}
+
+        fetcher._request = request
+        top, _bottom = fetcher.get_concept_rankings(1)
+        self.assertEqual(len(snapshots), 2)
+        self.assertEqual(top[0]["name"], "概念10")
+        self.assertNotIn("coverage", top[0])
+        fetcher.get_concept_rankings(1)
+        self.assertEqual(catalogs, [catalogs[0]])
+        self.assertEqual(len(snapshots), 4)
+
+    def test_missing_ranking_quotes_are_partial(self) -> None:
+        fetcher = self._fetcher()
+        items = [
+            {"thscode": "881001.TI", "name": "银行"},
+            {"thscode": "881002.TI", "name": "软件"},
+        ]
+
+        def request(path, params, capability=None):
+            if path.endswith("ths-index-list"):
+                return {"code": 0, "data": {"item": items}}
+            return {"code": 0, "data": {"item": [
+                {"thscode": "881001.TI", "price_change_ratio_pct": 1.2},
+                {"thscode": "881002.TI", "price_change_ratio_pct": None},
+            ]}}
+
+        fetcher._request = request
+        top, _bottom = fetcher.get_sector_rankings(2)
+        self.assertEqual(top[0]["coverage"], "partial")
+        self.assertEqual([row["name"] for row in top], ["银行"])
+
+    def test_ranking_permission_stops_later_batches(self) -> None:
+        fetcher = self._fetcher()
+        items = [{"thscode": f"881{i:03d}.TI", "name": f"概念{i}"} for i in range(11)]
+        snapshots = []
+
+        def request(path, params, capability=None):
+            if path.endswith("ths-index-list"):
+                return {"code": 0, "data": {"item": items}}
+            snapshots.append(params["thscodes"])
+            if len(snapshots) == 2:
+                raise HiThinkRequestError("denied", code=2004, permission=True)
+            return {"code": 0, "data": {"item": [
+                {"thscode": symbol, "price_change_ratio_pct": 1}
+                for symbol in params["thscodes"].split(",")
+            ]}}
+
+        fetcher._request = request
+        top, _bottom = fetcher.get_concept_rankings(1)
+        self.assertEqual(top[0]["coverage"], "partial")
+        self.assertEqual(len(snapshots), 2)
+        self.assertFalse(fetcher.is_available("index_rankings"))
+        self.assertTrue(fetcher.is_available("daily_data"))
+        self.assertIsNone(fetcher.get_concept_rankings(1))
+        self.assertEqual(len(snapshots), 2)
+
+    def test_catalog_permission_cools_rankings_without_blocking_quotes(self) -> None:
+        fetcher = self._fetcher()
+        denied = {"code": 2004, "message": "forbidden", "request_id": "req-catalog", "data": None}
+        calls = []
+
+        def fake_get(url, params=None, headers=None, timeout=None):
+            calls.append(url)
+            return _response(denied)
+
+        with patch("data_provider.hithink_fetcher.requests.get", side_effect=fake_get):
+            self.assertIsNone(fetcher.get_concept_rankings(1))
+            self.assertIsNone(fetcher.get_sector_rankings(1))
+
+        self.assertEqual(calls, ["https://fuyao.aicubes.cn/api/a-share-index/catalog/ths-index-list"])
+        self.assertFalse(fetcher.is_available("index_rankings"))
+        self.assertTrue(fetcher.is_available("daily_data"))
+        self.assertTrue(fetcher.is_available("realtime_quote"))
+        self.assertEqual(fetcher._index_catalog_cache, {})
+
+    def test_ranking_snapshot_permission_does_not_block_realtime_quotes(self) -> None:
+        fetcher = self._fetcher()
+        denied = {"code": 2004, "message": "forbidden", "request_id": "req-rank", "data": None}
+        catalog = _ok({"item": [{"thscode": "881001.TI", "name": "软件"}]})
+        quote = _ok({"item": [{
+            "thscode": "600519.SH",
+            "last_price": 10,
+            "price_change": 1,
+            "price_change_ratio_pct": 1,
+            "volume": 100,
+            "turnover": 1000,
+            "open_price": 9,
+            "high_price": 11,
+            "low_price": 8,
+            "prev_price": 9,
+        }]})
+        calls = []
+
+        def fake_get(url, params=None, headers=None, timeout=None):
+            calls.append(url)
+            if url.endswith("ths-index-list"):
+                return _response(catalog)
+            if url.endswith("/api/a-share-index/prices/snapshot"):
+                return _response(denied)
+            return _response(quote)
+
+        with patch("data_provider.hithink_fetcher.requests.get", side_effect=fake_get):
+            self.assertIsNone(fetcher.get_concept_rankings(1))
+            realtime = fetcher.get_realtime_quote("600519")
+
+        self.assertEqual(realtime.price, 10)
+        self.assertFalse(fetcher.is_available("index_rankings"))
+        self.assertTrue(fetcher.is_available("realtime_quote"))
+        self.assertEqual(sum(url.endswith("/api/a-share/prices/snapshot") for url in calls), 1)
+
+    def test_realtime_permission_does_not_block_rankings(self) -> None:
+        fetcher = self._fetcher()
+        denied = {"code": 2004, "message": "forbidden", "request_id": "req-quote", "data": None}
+        catalog = _ok({"item": [{"thscode": "881001.TI", "name": "软件"}]})
+        ranked = _ok({"item": [{"thscode": "881001.TI", "price_change_ratio_pct": 1.2}]})
+        calls = []
+
+        def fake_get(url, params=None, headers=None, timeout=None):
+            calls.append(url)
+            if url.endswith("/api/a-share/prices/snapshot"):
+                return _response(denied)
+            if url.endswith("ths-index-list"):
+                return _response(catalog)
+            return _response(ranked)
+
+        with patch("data_provider.hithink_fetcher.requests.get", side_effect=fake_get):
+            with self.assertRaises(HiThinkRequestError):
+                fetcher.get_realtime_quote("600519")
+            top, _bottom = fetcher.get_concept_rankings(1)
+
+        self.assertEqual(top[0]["name"], "软件")
+        self.assertNotIn("coverage", top[0])
+        self.assertFalse(fetcher.is_available("realtime_quote"))
+        self.assertTrue(fetcher.is_available("index_rankings"))
+        self.assertEqual(sum(url.endswith("ths-index-list") for url in calls), 1)
+        self.assertEqual(sum(url.endswith("/api/a-share-index/prices/snapshot") for url in calls), 1)
+
+    def test_directory_permission_does_not_repeat(self) -> None:
+        fetcher = self._fetcher()
+        calls = []
+
+        def request(_path, params, capability=None):
+            calls.append(params["offset"])
+            self.assertEqual(capability, "stock_list")
+            raise HiThinkRequestError("denied", code=2004, permission=True)
+
+        fetcher._request = request
+        frame = fetcher.get_stock_list()
+        self.assertTrue(frame.empty)
+        self.assertTrue(frame.attrs["truncated"])
+        self.assertFalse(frame.attrs["complete"])
+        self.assertEqual(calls, [0])
+        self.assertFalse(fetcher.is_available("stock_list"))
+        self.assertTrue(fetcher.is_available())
+        fetcher.get_stock_list()
+        self.assertEqual(calls, [0])
+
+    def test_ticker_search_uses_the_directory_cooldown(self) -> None:
+        fetcher = self._fetcher()
+        denied = {"code": 2003, "message": "capability denied", "request_id": "req-search", "data": None}
+        calls = []
+
+        def fake_get(url, headers=None, params=None, timeout=None):
+            calls.append(url)
+            return _response(denied)
+
+        with patch("data_provider.hithink_fetcher.requests.get", side_effect=fake_get):
+            with self.assertRaises(HiThinkRequestError):
+                fetcher.get_stock_name("600519")
+            with self.assertRaises(DataFetchError):
+                fetcher.get_stock_name("000001")
+            frame = fetcher.get_stock_list()
+
+        self.assertEqual(calls, ["https://fuyao.aicubes.cn/api/meta/tickers/search"])
+        self.assertTrue(frame.empty)
+        self.assertFalse(fetcher.is_available("stock_list"))
+        self.assertFalse(fetcher.is_available("stock_name"))
+        self.assertTrue(fetcher.is_available("realtime_quote"))
+        self.assertTrue(fetcher.is_available("daily_data"))
+
+    def test_complete_directory_is_cached_as_complete(self) -> None:
+        fetcher = self._fetcher()
+        frame = pd.DataFrame([{"code": "600519", "name": "贵州茅台"}])
+        frame.attrs["complete"] = True
+        frame.attrs["truncated"] = False
+        fetcher.get_stock_list = lambda: frame
+        fetcher.get_stock_name = lambda code: (_ for _ in ()).throw(AssertionError("per-code lookup"))
+        manager = DataFetcherManager(fetchers=[fetcher])
+
+        names = manager.batch_get_stock_names(["600519"])
+
+        self.assertEqual(names["600519"], "贵州茅台")
+        self.assertEqual(manager._stock_name_cache["600519"], "贵州茅台")
+        self.assertEqual(manager._stock_directory_coverage["HiThinkFetcher"], "complete")
+
+    def test_partial_directory_caches_names_without_claiming_complete(self) -> None:
+        fetcher = self._fetcher()
+        calls = {"list": 0, "name": []}
+
+        def listing():
+            calls["list"] += 1
+            frame = pd.DataFrame([{"code": "600519", "name": "贵州茅台"}])
+            frame.attrs["complete"] = False
+            frame.attrs["truncated"] = True
+            return frame
+
+        def stock_name(code):
+            calls["name"].append(code)
+            return "未收录股票" if code == "123456" else None
+
+        fetcher.get_stock_list = listing
+        fetcher.get_stock_name = stock_name
+        manager = DataFetcherManager(fetchers=[fetcher])
+
+        names = manager.batch_get_stock_names(["600519", "123456"])
+        self.assertEqual(names, {"600519": "贵州茅台", "123456": "未收录股票"})
+        self.assertEqual(manager._stock_name_cache["600519"], "贵州茅台")
+        self.assertEqual(manager._stock_directory_coverage["HiThinkFetcher"], "partial")
+        self.assertEqual(calls["name"], ["123456"])
+
+        manager.batch_get_stock_names(["123457"])
+        self.assertEqual(calls["list"], 2)
+        self.assertEqual(manager._stock_directory_coverage["HiThinkFetcher"], "partial")
+        self.assertTrue(fetcher.is_available("realtime_quote"))
+        self.assertTrue(fetcher.is_available("daily_data"))
+
+    def test_directory_permission_does_not_disable_other_hithink_capabilities(self) -> None:
+        fetcher = self._fetcher()
+        calls = []
+
+        def fake_get(url, headers=None, params=None, timeout=None):
+            calls.append(url)
+            return _response({"code": 2004, "message": "denied", "data": None})
+
+        manager = DataFetcherManager(fetchers=[fetcher])
+        with patch("data_provider.hithink_fetcher.requests.get", side_effect=fake_get):
+            names = manager.batch_get_stock_names(["123456"])
+
+        self.assertEqual(names, {})
+        self.assertEqual(manager._stock_directory_coverage["HiThinkFetcher"], "partial")
+        self.assertFalse(fetcher.is_available("stock_list"))
+        self.assertTrue(fetcher.is_available("realtime_quote"))
+        self.assertTrue(fetcher.is_available("daily_data"))
+        self.assertTrue(fetcher.is_available("fundamental"))
+        self.assertEqual(calls, ["https://fuyao.aicubes.cn/api/meta/tickers/list"])
+
+    def test_legacy_directory_without_coverage_attrs_keeps_batch_behavior(self) -> None:
+        primary = _DirectoryFetcher()
+        manager = DataFetcherManager(fetchers=[primary])
+
+        names = manager.batch_get_stock_names(["000001", "123456"])
+
+        self.assertEqual(names["000001"], "平安银行")
+        self.assertNotIn("123456", names)
+        self.assertEqual(manager._stock_name_cache["000001"], "平安银行")
+        self.assertEqual(manager._stock_directory_coverage, {})
+        self.assertEqual(primary.list_calls, 1)
+
+    def test_main_index_snapshot_coverage(self) -> None:
+        from data_provider.hithink_index import _MAIN_INDICES
+
+        fetcher = self._fetcher()
+
+        def payload(codes, price=100):
+            return _ok({"item": [
+                {
+                    "thscode": code,
+                    "last_price": price,
+                    "price_change": 1,
+                    "price_change_ratio_pct": 0.1,
+                    "prev_price": 99,
+                }
+                for code in codes
+            ]})
+
+        codes = [item[0] for item in _MAIN_INDICES]
+        with patch("data_provider.hithink_fetcher.requests.get", return_value=_response(payload(codes))):
+            complete = fetcher.get_main_indices("cn")
+        self.assertEqual(len(complete), 6)
+        self.assertTrue(all(row["coverage"] == "complete" for row in complete))
+
+        with patch("data_provider.hithink_fetcher.requests.get", return_value=_response(payload(codes[:5]))):
+            missing_one = fetcher.get_main_indices("cn")
+        self.assertEqual(len(missing_one), 5)
+        self.assertTrue(all(row["coverage"] == "partial" for row in missing_one))
+
+        with patch("data_provider.hithink_fetcher.requests.get", return_value=_response(payload(codes[:2]))):
+            missing_many = fetcher.get_main_indices("cn")
+        self.assertEqual([row["code"] for row in missing_many], ["sh000001", "sz399001"])
+        self.assertTrue(all(row["coverage"] == "partial" for row in missing_many))
+
+        with patch("data_provider.hithink_fetcher.requests.get", return_value=_response(payload(codes, price=0))):
+            self.assertIsNone(fetcher.get_main_indices("cn"))
+
+        missing_change = _ok({"item": [{
+            "thscode": "000001.SH",
+            "last_price": 3200,
+            "prev_price": 3100,
+            "price_change": None,
+            "price_change_ratio_pct": None,
+        }]})
+        manager = DataFetcherManager(fetchers=[fetcher])
+        with patch.object(DataFetcherManager, "_get_tickflow_fetcher", return_value=None), \
+                patch("data_provider.hithink_fetcher.requests.get", return_value=_response(missing_change)):
+            rows = manager.get_main_indices("cn")
+        self.assertEqual(rows[0]["code"], "sh000001")
+        self.assertAlmostEqual(rows[0]["change_pct"], (3200 - 3100) / 3100 * 100)
+        self.assertGreater(rows[0]["change_pct"], 1)
+
+        with patch("data_provider.hithink_fetcher.requests.get", return_value=_response(_ok({"item": [{
+            "thscode": "000001.SH",
+            "last_price": 3200,
+            "price_change_ratio_pct": None,
+        }]}))):
+            self.assertIsNone(fetcher.get_main_indices("cn"))
+
+    def test_partial_main_indices_do_not_stop_later_providers(self) -> None:
+        class _PartialIndices:
+            name = "TushareFetcher"
+            priority = 1
+            calls = 0
+
+            def get_main_indices(self, region="cn"):
+                self.calls += 1
+                return [{"code": "sh000001", "name": "上证指数", "current": 1, "coverage": "partial"}]
+
+        class _CompleteIndices:
+            name = "AkshareFetcher"
+            priority = 2
+            calls = 0
+
+            def get_main_indices(self, region="cn"):
+                self.calls += 1
+                return [{"code": "sh000001", "name": "上证指数", "current": 2, "coverage": "complete"}]
+
+        partial = _PartialIndices()
+        complete = _CompleteIndices()
+        manager = DataFetcherManager(fetchers=[partial, complete])
+        data = manager.get_main_indices("cn")
+        self.assertEqual(data[0]["current"], 2)
+        self.assertEqual(partial.calls, 1)
+        self.assertEqual(complete.calls, 1)
+
+        only_partial = DataFetcherManager(fetchers=[_PartialIndices()])
+        kept = only_partial.get_main_indices("cn")
+        self.assertEqual(kept[0]["coverage"], "partial")
+
+    def test_best_partial_main_indices_are_kept(self) -> None:
+        def rows(codes, price):
+            return [
+                {"code": code, "name": code, "current": price, "coverage": "partial"}
+                for code in codes
+            ]
+
+        class _Provider:
+            def __init__(self, name, indices):
+                self.name = name
+                self.priority = 1
+                self.indices = indices
+                self.calls = 0
+
+            def get_main_indices(self, region="cn"):
+                self.calls += 1
+                return self.indices
+
+        tickflow = _Provider("TickFlowFetcher", rows(["sh000001", "sz399001"], 1))
+        akshare = _Provider(
+            "AkshareFetcher",
+            rows(["sh000001", "sz399001", "sz399006", "sh000688", "sh000016"], 2),
+        )
+        tushare = _Provider("TushareFetcher", [])
+        manager = DataFetcherManager(fetchers=[akshare, tushare])
+        manager._get_tickflow_fetcher = lambda: tickflow
+
+        data = manager.get_main_indices("cn")
+
+        self.assertEqual([row["code"] for row in data], [
+            "sh000001", "sz399001", "sz399006", "sh000688", "sh000016",
+        ])
+        self.assertTrue(all(row["current"] == 2 and row["coverage"] == "partial" for row in data))
+        self.assertEqual(tickflow.calls, 1)
+        self.assertEqual(akshare.calls, 1)
+        self.assertEqual(tushare.calls, 1)
+
+    def test_partial_index_coverage_ignores_non_finite_prices_and_missing_codes(self) -> None:
+        def row(code, price):
+            return {"code": code, "name": code or "", "current": price, "coverage": "partial"}
+
+        self.assertEqual(DataFetcherManager._main_index_coverage_score([
+            row("sh000300", float("nan")),
+            row("sh000016", float("inf")),
+            row("sz399006", float("-inf")),
+            row("", 10),
+            row(None, 11),
+            row("sh000001", 12),
+            row("sh000001", 13),
+        ]), 1)
+
+        class _Provider:
+            def __init__(self, name, indices):
+                self.name = name
+                self.priority = 1
+                self.indices = indices
+                self.calls = 0
+
+            def get_main_indices(self, region="cn"):
+                self.calls += 1
+                return self.indices
+
+        tickflow = _Provider("TickFlowFetcher", [row("sh000001", 1), row("sz399001", 2)])
+        akshare = _Provider("AkshareFetcher", [
+            row("sh000001", 3),
+            row("sz399001", 4),
+            row("sz399006", float("nan")),
+            row("sh000688", float("inf")),
+            row("", 5),
+        ])
+        manager = DataFetcherManager(fetchers=[akshare])
+        manager._get_tickflow_fetcher = lambda: tickflow
+
+        data = manager.get_main_indices("cn")
+
+        self.assertEqual([item["code"] for item in data], ["sh000001", "sz399001"])
+        self.assertEqual(data[0]["current"], 1)
+        self.assertEqual(akshare.calls, 1)
+
+    def test_legacy_main_indices_without_coverage_still_win(self) -> None:
+        class _LegacyIndices:
+            name = "EfinanceFetcher"
+            priority = 1
+
+            def get_main_indices(self, region="cn"):
+                return [{"code": "sh000001", "name": "上证指数", "current": 3}]
+
+        class _LaterIndices:
+            name = "TushareFetcher"
+            priority = 3
+            calls = 0
+
+            def get_main_indices(self, region="cn"):
+                self.calls += 1
+                return [{"code": "sh000300", "name": "沪深300", "current": 4}]
+
+        later = _LaterIndices()
+        manager = DataFetcherManager(fetchers=[_LegacyIndices(), later])
+        data = manager.get_main_indices("cn")
+        self.assertEqual(data[0]["current"], 3)
+        self.assertEqual(later.calls, 0)
+
+    def test_valuation_field_sources_follow_filled_values(self) -> None:
+        fetcher = self._fetcher()
+        manager = DataFetcherManager(fetchers=[fetcher])
+        manager._fundamental_adapter.get_fundamental_bundle = lambda code: _bundle()
+        empty_block = {"status": "not_supported", "data": {}, "source_chain": [], "errors": []}
+        manager.get_capital_flow_context = lambda *args, **kwargs: empty_block
+        manager.get_dragon_tiger_context = lambda *args, **kwargs: empty_block
+        manager.get_board_context = lambda *args, **kwargs: empty_block
+        quote = SimpleNamespace(pe_ratio=1.5, pb_ratio=2.0, total_mv=None, circ_mv=None)
+
+        with patch.object(HiThinkFundamentalAdapter, "get_valuation", return_value={"pe_ratio": 9, "pb_ratio": 8}), \
+                patch.object(HiThinkFundamentalAdapter, "get_fundamental_bundle", return_value=_bundle()):
+            kept = manager.get_fundamental_context("600519", realtime_quote=quote)
+        data = kept["valuation"]["data"]
+        self.assertEqual(data["pe_ratio"], 1.5)
+        self.assertEqual(data["pb_ratio"], 2.0)
+        self.assertEqual(data["field_sources"], {"pe_ratio": "realtime_quote", "pb_ratio": "realtime_quote"})
+        self.assertNotIn("HiThinkFetcher", [item["provider"] for item in kept["valuation"]["source_chain"]])
+
+        quote_missing_pe = SimpleNamespace(pe_ratio=None, pb_ratio=2.0, total_mv=None, circ_mv=None)
+        with patch.object(HiThinkFundamentalAdapter, "get_valuation", return_value={"pe_ratio": 9, "pb_ratio": 8}), \
+                patch.object(HiThinkFundamentalAdapter, "get_fundamental_bundle", return_value=_bundle()):
+            filled = manager.get_fundamental_context("000001", realtime_quote=quote_missing_pe)
+        filled_data = filled["valuation"]["data"]
+        self.assertEqual(filled_data["pe_ratio"], 9)
+        self.assertEqual(filled_data["pb_ratio"], 2.0)
+        self.assertEqual(filled_data["field_sources"]["pe_ratio"], "HiThinkFetcher")
+        self.assertEqual(filled_data["field_sources"]["pb_ratio"], "realtime_quote")
+        self.assertIn("HiThinkFetcher", [item["provider"] for item in filled["valuation"]["source_chain"]])
+
+        with patch.object(HiThinkFundamentalAdapter, "get_valuation", return_value={"pe_ratio": None, "pb_ratio": None}), \
+                patch.object(HiThinkFundamentalAdapter, "get_fundamental_bundle", return_value=_bundle()):
+            empty = manager.get_fundamental_context("601318", realtime_quote=quote)
+        self.assertEqual(empty["valuation"]["data"]["pe_ratio"], 1.5)
+        self.assertNotIn("HiThinkFetcher", [item["provider"] for item in empty["valuation"]["source_chain"]])
+
+        with patch.object(HiThinkFundamentalAdapter, "get_valuation", side_effect=RuntimeError("down")), \
+                patch.object(HiThinkFundamentalAdapter, "get_fundamental_bundle", return_value=_bundle()):
+            failed = manager.get_fundamental_context("600036", realtime_quote=quote)
+        self.assertEqual(failed["valuation"]["data"]["pe_ratio"], 1.5)
+        self.assertEqual(failed["valuation"]["data"]["field_sources"]["pe_ratio"], "realtime_quote")
+        self.assertNotIn("HiThinkFetcher", [item["provider"] for item in failed["valuation"]["source_chain"]])
+
+    def test_valuation_source_chain_keeps_separate_durations(self) -> None:
+        fetcher = self._fetcher()
+        manager = DataFetcherManager(fetchers=[fetcher])
+        manager._fundamental_adapter.get_fundamental_bundle = lambda code: _bundle()
+        empty_block = {"status": "not_supported", "data": {}, "source_chain": [], "errors": []}
+        manager.get_capital_flow_context = lambda *args, **kwargs: empty_block
+        manager.get_dragon_tiger_context = lambda *args, **kwargs: empty_block
+        manager.get_board_context = lambda *args, **kwargs: empty_block
+        quote = SimpleNamespace(pe_ratio=None, pb_ratio=2.0, total_mv=None, circ_mv=None)
+
+        original_retry = manager._run_with_retry
+
+        def fake_retry(task, timeout, task_name, quarantine_key=None):
+            if task_name == "fundamental_valuation":
+                return quote, None, 100
+            if task_name == "fundamental_valuation_hithink":
+                return {"pe_ratio": 9, "pb_ratio": 8}, None, 300
+            return original_retry(task, timeout, task_name, quarantine_key=quarantine_key)
+
+        with patch.object(manager, "_run_with_retry", side_effect=fake_retry), \
+                patch.object(HiThinkFundamentalAdapter, "get_fundamental_bundle", return_value=_bundle()):
+            result = manager.get_fundamental_context("600519")
+
+        chain = {item["provider"]: item for item in result["valuation"]["source_chain"]}
+        self.assertEqual(result["valuation"]["data"]["pe_ratio"], 9)
+        self.assertEqual(result["valuation"]["data"]["pb_ratio"], 2.0)
+        self.assertEqual(chain["realtime_quote"]["duration_ms"], 100)
+        self.assertEqual(chain["HiThinkFetcher"]["duration_ms"], 300)
+
+    def test_batch_name_lookup_uses_hithink_directory_after_earlier_providers(self) -> None:
+        primary = _DirectoryFetcher()
+        fetcher = self._fetcher()
+        fetcher.priority = 7
+        calls = []
+
+        def listing():
+            calls.append("hithink")
+            return pd.DataFrame([
+                {"code": "600519", "name": "贵州茅台"},
+                {"code": "000001", "name": "不应覆盖"},
+            ])
+
+        fetcher.get_stock_list = listing
+        manager = DataFetcherManager(fetchers=[fetcher, primary])
+        names = manager.batch_get_stock_names(["600519", "000001"])
+        self.assertEqual(names["000001"], "平安银行")
+        self.assertEqual(names["600519"], "贵州茅台")
+        self.assertEqual(calls, ["hithink"])
+        self.assertEqual(primary.list_calls, 1)
+
+    def test_name_prefetch_does_not_download_the_full_directory(self) -> None:
+        fetcher = self._fetcher()
+
+        def listing():
+            raise AssertionError("full directory")
+
+        fetcher.get_stock_list = listing
+        fetcher.get_stock_name = lambda code: "贵州茅台"
+        manager = DataFetcherManager(fetchers=[fetcher])
+        manager.prefetch_stock_names(["600519"], use_bulk=False)
+        self.assertEqual(manager._stock_name_cache["600519"], "贵州茅台")
+
+
+    def test_stock_list_marks_a_short_page_complete(self) -> None:
+        fetcher = self._fetcher()
+
+        def request(_path, params, capability=None):
+            self.assertEqual(capability, "stock_list")
+            self.assertEqual(params["limit"], 2)
+            return _ok({"item": [{"ticker": "600519", "name": "贵州茅台", "asset_type": "a-share"}]})
+
+        fetcher._request = request
+        with patch("data_provider.hithink_reference._LIST_PAGE_SIZE", 2):
+            frame = fetcher.get_stock_list()
+        self.assertEqual(len(frame), 1)
+        self.assertTrue(frame.attrs["complete"])
+        self.assertFalse(frame.attrs["truncated"])
+
+    def test_stock_list_marks_the_page_cap_as_truncated(self) -> None:
+        fetcher = self._fetcher()
+        offsets = []
+
+        def request(_path, params, capability=None):
+            self.assertEqual(capability, "stock_list")
+            offsets.append(params["offset"])
+            code = f"{600000 + params['offset']:06d}"
+            return _ok({"item": [{"ticker": code, "name": "名称", "asset_type": "a-share"}]})
+
+        fetcher._request = request
+        with patch("data_provider.hithink_reference._LIST_PAGE_SIZE", 1), patch(
+            "data_provider.hithink_reference._LIST_MAX_PAGES", 2
+        ):
+            frame = fetcher.get_stock_list()
+        self.assertEqual(offsets, [0, 1])
+        self.assertEqual(len(frame), 2)
+        self.assertTrue(frame.attrs["truncated"])
+        self.assertFalse(frame.attrs["complete"])
+
+    def test_partial_concept_ranking_keeps_searching_and_uses_the_short_cache(self) -> None:
+        DataFetcherManager.clear_concept_rankings_cache_for_tests()
+
+        class _PartialRank:
+            name = "TushareFetcher"
+            priority = 1
+            calls = 0
+
+            def get_concept_rankings(self, n=5):
+                type(self).calls += 1
+                return ([{"name": "部分概念", "change_pct": 1, "coverage": "partial"}], [])
+
+        class _CompleteRank:
+            name = "AkshareFetcher"
+            priority = 2
+            calls = 0
+
+            def get_concept_rankings(self, n=5):
+                type(self).calls += 1
+                return ([{"name": "完整概念", "change_pct": 2}], [])
+
+        try:
+            manager = DataFetcherManager(fetchers=[_PartialRank(), _CompleteRank()])
+            top, _bottom = manager.get_concept_rankings(1)
+            self.assertEqual(top[0]["name"], "完整概念")
+            self.assertEqual(_PartialRank.calls, 1)
+            self.assertEqual(_CompleteRank.calls, 1)
+
+            _CompleteRank.calls = 0
+            only_partial = DataFetcherManager(fetchers=[_PartialRank()])
+            with patch.object(DataFetcherManager, "_CONCEPT_RANKINGS_CACHE_TTL_SECONDS", 300), patch.object(
+                DataFetcherManager, "_CONCEPT_RANKINGS_EMPTY_CACHE_TTL_SECONDS", 0
+            ):
+                DataFetcherManager.clear_concept_rankings_cache_for_tests()
+                first, _bottom = only_partial.get_concept_rankings(3)
+                second, _bottom = only_partial.get_concept_rankings(3)
+            self.assertEqual(first[0]["coverage"], "partial")
+            self.assertEqual(second[0]["coverage"], "partial")
+            self.assertEqual(_PartialRank.calls, 3)
+        finally:
+            DataFetcherManager.clear_concept_rankings_cache_for_tests()
+
+    def test_partial_sector_ranking_keeps_later_provider_attempts(self) -> None:
+        class _PartialSector:
+            name = "EastmoneyFetcher"
+            priority = 1
+
+            def get_sector_rankings(self, n=5):
+                return (
+                    [{"name": "部分行业", "coverage": "partial"}],
+                    [{"name": "落后行业", "coverage": "partial"}],
+                )
+
+        class _EmptySector:
+            name = "AkshareFetcher"
+            priority = 2
+
+            def get_sector_rankings(self, n=5):
+                return ([], [])
+
+        class _FailedSector:
+            name = "TushareFetcher"
+            priority = 3
+
+            def get_sector_rankings(self, n=5):
+                raise RuntimeError("sector down")
+
+        manager = DataFetcherManager(fetchers=[_FailedSector(), _PartialSector(), _EmptySector()])
+        top, _bottom, chain, error = manager._get_sector_rankings_with_meta(5)
+
+        self.assertEqual(error, "")
+        self.assertEqual(top[0]["name"], "部分行业")
+        self.assertEqual(
+            [(item["provider"], item["result"]) for item in chain],
+            [
+                ("EastmoneyFetcher", "partial"),
+                ("AkshareFetcher", "empty"),
+                ("TushareFetcher", "failed"),
+            ],
+        )
+
+
+class _DirectoryFetcher(BaseFetcher):
+    def __init__(self):
+        self.name = "TushareFetcher"
+        self.priority = 1
+        self.list_calls = 0
+
+    def _fetch_raw_data(self, stock_code, start_date, end_date):
+        raise NotImplementedError
+
+    def _normalize_data(self, df, stock_code):
+        raise NotImplementedError
+
+    def get_stock_list(self):
+        self.list_calls += 1
+        return pd.DataFrame([{"code": "000001", "name": "平安银行"}])

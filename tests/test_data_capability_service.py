@@ -1008,3 +1008,41 @@ def test_data_capability_api_paths_return_valid_contract() -> None:
     assert capabilities_response.status_code == 200
     assert overview_response.json() == overview_payload
     assert capabilities_response.json() == overview_payload
+
+
+def test_hithink_capability_registers_index_daily_and_financial_snapshot() -> None:
+    unconfigured = DataCapabilityService(
+        config=_config(),
+        fetcher_manager=_FetcherManager([]),
+    ).get_overview()
+    unconfigured_priorities = {item["scenario"]: item for item in unconfigured["priorities"]}
+    assert unconfigured_priorities["cn.index.daily"]["providers"] == [
+        "tencent",
+        "akshare",
+        "tickflow",
+        "yfinance",
+    ]
+    assert "index.daily" in _provider(unconfigured, "hithink")["datasets"]
+    assert "financial.snapshot" in _provider(unconfigured, "hithink")["datasets"]
+
+    configured = DataCapabilityService(
+        config=_config(hithink_finance_api_key="key"),
+        fetcher_manager=_FetcherManager([
+            _Fetcher("AkshareFetcher", 1, available=True),
+            _Fetcher("HiThinkFetcher", 7, available=True),
+        ]),
+    ).get_overview()
+    priorities = {item["scenario"]: item for item in configured["priorities"]}
+    provider = _provider(configured, "hithink")
+
+    assert provider["dataset_markets"]["index.daily"] == ["cn"]
+    assert provider["dataset_markets"]["financial.snapshot"] == ["cn"]
+    assert provider["dataset_markets"]["quote.realtime"] == ["cn"]
+    assert priorities["cn.index.daily"]["providers"] == [
+        "tencent",
+        "akshare",
+        "tickflow",
+        "yfinance",
+        "hithink",
+    ]
+    assert _dataset(configured, "financial.snapshot")["coverage"]["markets"]["cn"]["source"] == "akshare"

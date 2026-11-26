@@ -127,6 +127,17 @@ _PROVIDER_DEFINITIONS: Sequence[_ProviderDefinition] = (
         },
     ),
     _ProviderDefinition(
+        name="hithink",
+        label="HiThink Finance",
+        fetcher_name="HiThinkFetcher",
+        dataset_markets={
+            "quote.realtime": ("cn",),
+            "kline.daily": ("cn",),
+            "index.daily": ("cn",),
+            "financial.snapshot": ("cn",),
+        },
+    ),
+    _ProviderDefinition(
         name="longbridge",
         label="Longbridge",
         fetcher_name="LongbridgeFetcher",
@@ -183,6 +194,7 @@ _REALTIME_SOURCE_PROVIDER = {
     "tushare": "tushare",
     "tickplus": "tickplus",
     "tickflow": "tickflow",
+    "hithink": "hithink",
     "futu": "futu",
     "longbridge": "longbridge",
     "akshare": "akshare",
@@ -207,6 +219,7 @@ _CN_REALTIME_SOURCES = {
     "tushare",
     "tickplus",
     "tickflow",
+    "hithink",
 }
 
 _SCREENING_SOURCES = {"tushare", "sina", "efinance", "akshare_em", "em_datacenter"}
@@ -368,6 +381,8 @@ class DataCapabilityService:
             return _truthy(getattr(self.config, "tickplus_api_key", None))
         if name == "tickflow":
             return _truthy(getattr(self.config, "tickflow_api_key", None))
+        if name == "hithink":
+            return _truthy(getattr(self.config, "hithink_finance_api_key", None))
         if name == "futu":
             return _truthy(getattr(self.config, "futu_opend_host", None))
         if name == "longbridge":
@@ -394,6 +409,9 @@ class DataCapabilityService:
         if definition.name == "tickflow":
             priority = getattr(self.config, "tickflow_priority", None)
             return priority if isinstance(priority, int) else None
+        if definition.name == "hithink":
+            priority = getattr(self.config, "hithink_priority", None)
+            return priority if isinstance(priority, int) else None
         return None
 
     @staticmethod
@@ -414,6 +432,10 @@ class DataCapabilityService:
             and self._fetcher_available_for_capability(fetcher, capability="daily_data")
         ]
         cn_index_daily = ["tencent", "akshare", "tickflow", "yfinance"]
+        cn_index_daily_source = "DataFetcherManager._CN_INDEX_DAILY_SOURCE_ORDER"
+        if self._is_provider_configured(_PROVIDER_DEFINITION_MAP["hithink"]):
+            cn_index_daily.append("hithink")
+            cn_index_daily_source = "fixed index route, then HiThinkFetcher"
         market_overview = self._market_overview_priority(generic_daily)
         screening_priority = self._screening_snapshot_priority()
         hk_realtime_priority = _split_priority(
@@ -452,7 +474,7 @@ class DataCapabilityService:
             self._priority_view(
                 "cn.index.daily",
                 cn_index_daily,
-                "DataFetcherManager._CN_INDEX_DAILY_SOURCE_ORDER",
+                cn_index_daily_source,
                 known_sources=set(_FETCHER_TO_PROVIDER.values()),
             ),
             self._priority_view(
@@ -783,8 +805,11 @@ class DataCapabilityService:
             )
             else ["yfinance"]
         )
+        cn_providers = ["akshare"]
+        if self._is_provider_configured(_PROVIDER_DEFINITION_MAP["hithink"]):
+            cn_providers.append("hithink")
         return {
-            "cn": {"providers": ["akshare"], "warnings": []},
+            "cn": {"providers": cn_providers, "warnings": []},
             "hk": {"providers": hk_providers, "warnings": []},
             "us": {"providers": ["yfinance"], "warnings": []},
             "jp": {"providers": ["yfinance"], "warnings": []},
@@ -1241,6 +1266,9 @@ class DataCapabilityService:
         tickflow = provider_map.get("tickflow")
         if tickflow and tickflow.get("configured") and "tickflow" not in cn_realtime:
             warnings.append("tickflow_configured_but_not_in_realtime_priority")
+        hithink = provider_map.get("hithink")
+        if hithink and hithink.get("configured") and "hithink" not in cn_realtime:
+            warnings.append("hithink_configured_but_not_in_realtime_priority")
 
         for priority in priorities:
             for warning in priority.get("warnings") or []:

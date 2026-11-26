@@ -990,8 +990,8 @@ describe('DecisionSignalsPage', () => {
     ]));
 
     renderPage();
-    await screen.findByText('决策风格重评估预览');
-    fireEvent.click(screen.getByRole('button', { name: '查看 贵州茅台 AI 建议详情' }));
+    await screen.findByText('贵州茅台');
+    fireEvent.click(await screen.findByRole('button', { name: '查看 贵州茅台 AI 建议详情' }));
 
     await waitFor(() => {
       expect(screen.getAllByText('该信号不支持重评估').length).toBeGreaterThan(0);

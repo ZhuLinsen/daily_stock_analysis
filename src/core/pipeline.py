@@ -1565,6 +1565,8 @@ class StockAnalysisPipeline:
         if market != "cn" or isinstance(enriched_context.get("concept_boards"), dict):
             return
 
+        from src.utils.data_processing import concept_board_status
+
         top_concepts, bottom_concepts = self._get_concept_rankings_for_market(market)
 
         concept_data: Dict[str, Any] = {
@@ -1577,7 +1579,7 @@ class StockAnalysisPipeline:
             # distinguish an attempted empty result from a missing preload.
             concept_data["fetch_attempted"] = True
         enriched_context["concept_boards"] = {
-            "status": "ok" if top_concepts and bottom_concepts else "partial",
+            "status": concept_board_status(top_concepts, bottom_concepts),
             "data": concept_data,
         }
 
@@ -3868,7 +3870,7 @@ class StockAnalysisPipeline:
             if daily_prefetch_count > 0:
                 logger.info(
                     "[prefetch] component=daily_kline_prefetch action=complete "
-                    "provider=TickFlowFetcher cached=%d stock_count=%d",
+                    "cached=%d stock_count=%d",
                     daily_prefetch_count,
                     len(stock_codes),
                 )
