@@ -185,7 +185,12 @@ describe('StockScreeningPage', () => {
     render(<StockScreeningPage />);
 
     expect(await screen.findByText('选股已开启')).toBeInTheDocument();
-    expect(screen.queryByText(/AlphaSift/)).not.toBeInTheDocument();
+    const alphaSiftMatches = screen.getAllByText(/AlphaSift/);
+    expect(alphaSiftMatches).toHaveLength(1);
+    expect(alphaSiftMatches[0].closest('a')).toHaveAttribute(
+      'href',
+      'https://alphasift.zhulinsen.tech/?lang=zh&utm_source=dsa_web_screening',
+    );
     expect(screen.queryByText(/theme_heat/)).not.toBeInTheDocument();
     expect(screen.queryByText('实验功能与风险提示')).not.toBeInTheDocument();
     expect(screen.queryByText('选股结果')).not.toBeInTheDocument();
