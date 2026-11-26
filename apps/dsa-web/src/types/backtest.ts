@@ -80,6 +80,36 @@ export interface BacktestResultsResponse {
 
 // ============ Performance Metrics ============
 
+export interface BacktestEquityPoint {
+  index: number;
+  date?: string | null;
+  code?: string | null;
+  returnPct?: number;
+  equityPct?: number;
+  outcome?: string | null;
+}
+
+export interface BacktestQuantMetrics {
+  sampleCount?: number;
+  activeTradeCount?: number;
+  profitFactor?: number | null;
+  expectancyPct?: number | null;
+  payoffRatio?: number | null;
+  avgWinPct?: number | null;
+  avgLossPct?: number | null;
+  cumulativeReturnPct?: number | null;
+  maxDrawdownPct?: number | null;
+  sharpeRatio?: number | null;
+  sortinoRatio?: number | null;
+  calmarRatio?: number | null;
+  bestTradePct?: number | null;
+  worstTradePct?: number | null;
+  maxConsecutiveWins?: number;
+  maxConsecutiveLosses?: number;
+  exitReasonBreakdown?: Record<string, number>;
+  equityCurve?: BacktestEquityPoint[];
+}
+
 export interface PerformanceMetrics {
   scope: string;
   code?: string;
@@ -109,4 +139,5 @@ export interface PerformanceMetrics {
 
   adviceBreakdown: Record<string, unknown>;
   diagnostics: Record<string, unknown>;
+  quantMetrics?: BacktestQuantMetrics | null;
 }

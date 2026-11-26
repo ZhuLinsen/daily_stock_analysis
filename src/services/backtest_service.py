@@ -1057,6 +1057,9 @@ class BacktestService:
 
     @staticmethod
     def _summary_to_dict(row: BacktestSummary) -> Dict[str, Any]:
+        advice_breakdown = json.loads(row.advice_breakdown_json) if row.advice_breakdown_json else {}
+        diagnostics = json.loads(row.diagnostics_json) if row.diagnostics_json else {}
+        quant_metrics = diagnostics.get("quant_metrics") if isinstance(diagnostics, dict) else None
         return {
             "scope": row.scope,
             "code": None if row.code == OVERALL_SENTINEL_CODE else row.code,
@@ -1080,8 +1083,9 @@ class BacktestService:
             "take_profit_trigger_rate": row.take_profit_trigger_rate,
             "ambiguous_rate": row.ambiguous_rate,
             "avg_days_to_first_hit": row.avg_days_to_first_hit,
-            "advice_breakdown": json.loads(row.advice_breakdown_json) if row.advice_breakdown_json else {},
-            "diagnostics": json.loads(row.diagnostics_json) if row.diagnostics_json else {},
+            "advice_breakdown": advice_breakdown if isinstance(advice_breakdown, dict) else {},
+            "diagnostics": diagnostics if isinstance(diagnostics, dict) else {},
+            "quant_metrics": quant_metrics if isinstance(quant_metrics, dict) else None,
         }
 
     @staticmethod
