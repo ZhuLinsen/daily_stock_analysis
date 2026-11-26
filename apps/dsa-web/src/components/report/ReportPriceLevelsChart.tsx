@@ -13,7 +13,7 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
-import type { StockKLineItem } from '../../api/stocks';
+import type { StockHistoryResponse, StockKLineItem } from '../../api/stocks';
 import type { ReportLanguage, ReportStrategy } from '../../types/analysis';
 import {
   computeQuantTelemetry,
@@ -29,6 +29,8 @@ import { getReportText } from '../../utils/reportLanguage';
 interface ReportPriceLevelsChartProps {
   bars: StockKLineItem[];
   failed?: boolean;
+  ohlcSynthesized?: boolean | null;
+  priceAdjustment?: StockHistoryResponse['priceAdjustment'];
   strategy?: ReportStrategy;
   language?: ReportLanguage;
   reportCurrentPrice?: number;
@@ -73,7 +75,8 @@ const LevelsTooltip: React.FC<{
   closeLabel: string;
   highLowLabel: string;
   qText: QuantChartText;
-}> = ({ active, payload, closeLabel, highLowLabel, qText }) => {
+  isUnadjusted?: boolean;
+}> = ({ active, payload, closeLabel, highLowLabel, qText, isUnadjusted = false }) => {
   if (!active || !payload?.[0]?.payload) {
     return null;
   }
@@ -109,7 +112,7 @@ const LevelsTooltip: React.FC<{
             </span>
           </div>
         ) : null}
-        {d.ma5 != null ? (
+        {!isUnadjusted && d.ma5 != null ? (
           <div className="flex items-center justify-between gap-4">
             <span className="inline-flex items-center gap-1.5">
               <span className="h-1.5 w-1.5 rounded-full bg-amber-400" />
@@ -118,7 +121,7 @@ const LevelsTooltip: React.FC<{
             <span className="font-mono text-amber-400">{formatChartDisplayPrice(d.ma5)}</span>
           </div>
         ) : null}
-        {d.ma20 != null ? (
+        {!isUnadjusted && d.ma20 != null ? (
           <div className="flex items-center justify-between gap-4">
             <span className="inline-flex items-center gap-1.5">
               <span className="h-1.5 w-1.5 rounded-full bg-violet-400" />
@@ -127,7 +130,7 @@ const LevelsTooltip: React.FC<{
             <span className="font-mono text-violet-400">{formatChartDisplayPrice(d.ma20)}</span>
           </div>
         ) : null}
-        {d.ma60 != null ? (
+        {!isUnadjusted && d.ma60 != null ? (
           <div className="flex items-center justify-between gap-4">
             <span className="inline-flex items-center gap-1.5">
               <span className="h-1.5 w-1.5 rounded-full bg-pink-400" />
@@ -136,7 +139,7 @@ const LevelsTooltip: React.FC<{
             <span className="font-mono text-pink-400">{formatChartDisplayPrice(d.ma60)}</span>
           </div>
         ) : null}
-        {d.bollUpper != null && d.bollLower != null ? (
+        {!isUnadjusted && d.bollUpper != null && d.bollLower != null ? (
           <div className="flex items-center justify-between gap-4">
             <span className="inline-flex items-center gap-1.5">
               <span className="h-1.5 w-1.5 rounded-full bg-cyan-400" />
@@ -147,7 +150,7 @@ const LevelsTooltip: React.FC<{
             </span>
           </div>
         ) : null}
-        {d.rsi14 != null ? (
+        {!isUnadjusted && d.rsi14 != null ? (
           <div className="flex items-center justify-between gap-4">
             <span className="text-muted-text">RSI(14):</span>
             <span className="font-mono text-sky-300">{d.rsi14.toFixed(1)}</span>
@@ -238,6 +241,8 @@ const QuantSubPanelTooltip: React.FC<{
 export const ReportPriceLevelsChart: React.FC<ReportPriceLevelsChartProps> = ({
   bars,
   failed = false,
+  ohlcSynthesized = false,
+  priceAdjustment = null,
   strategy,
   language = 'zh',
   reportCurrentPrice,
@@ -253,8 +258,12 @@ export const ReportPriceLevelsChart: React.FC<ReportPriceLevelsChartProps> = ({
 
   const text = getReportText(language).priceLevelsChart;
   const qText = getQuantChartText(language);
+  const isUnadjusted = priceAdjustment === 'unadjusted';
 
-  const allData = useMemo(() => enrichBarsWithMovingAverages(bars, 0), [bars]);
+  const allData = useMemo(
+    () => enrichBarsWithMovingAverages(bars, 0, { ohlcSynthesized: Boolean(ohlcSynthesized) }),
+    [bars, ohlcSynthesized],
+  );
   const data = useMemo(
     () => (windowLimit > 0 && allData.length > windowLimit ? allData.slice(-windowLimit) : allData),
     [allData, windowLimit],
@@ -283,8 +292,8 @@ export const ReportPriceLevelsChart: React.FC<ReportPriceLevelsChartProps> = ({
     : rawLevels;
 
   const telemetry = useMemo(
-    () => computeQuantTelemetry(data, { idealBuy, secondaryBuy, stopLoss, takeProfit }),
-    [data, idealBuy, secondaryBuy, stopLoss, takeProfit],
+    () => computeQuantTelemetry(data, { idealBuy, secondaryBuy, stopLoss, takeProfit }, { priceAdjustment }),
+    [data, idealBuy, secondaryBuy, stopLoss, takeProfit, priceAdjustment],
   );
 
   const referenceLines = useMemo<MergedReferenceLine[]>(() => {
@@ -381,12 +390,14 @@ export const ReportPriceLevelsChart: React.FC<ReportPriceLevelsChartProps> = ({
     const vals: number[] = [];
     for (const d of data) {
       vals.push(d.low, d.high, d.close);
-      if (d.ma5 != null) vals.push(d.ma5);
-      if (d.ma20 != null) vals.push(d.ma20);
-      if (showMa60 && d.ma60 != null) vals.push(d.ma60);
-      if (showBoll) {
-        if (d.bollUpper != null) vals.push(d.bollUpper);
-        if (d.bollLower != null) vals.push(d.bollLower);
+      if (!isUnadjusted) {
+        if (d.ma5 != null) vals.push(d.ma5);
+        if (d.ma20 != null) vals.push(d.ma20);
+        if (showMa60 && d.ma60 != null) vals.push(d.ma60);
+        if (showBoll) {
+          if (d.bollUpper != null) vals.push(d.bollUpper);
+          if (d.bollLower != null) vals.push(d.bollLower);
+        }
       }
     }
     for (const lvl of [idealBuy, secondaryBuy, stopLoss, takeProfit]) {
@@ -404,7 +415,7 @@ export const ReportPriceLevelsChart: React.FC<ReportPriceLevelsChartProps> = ({
     const lower = Math.max(0, Number((minVal - pad).toFixed(decimals)));
     const upper = Number((maxVal + pad).toFixed(decimals));
     return [lower, upper > lower ? upper : Number((lower + (maxVal < 1 ? 0.0004 : 0.02)).toFixed(decimals))];
-  }, [data, idealBuy, secondaryBuy, stopLoss, takeProfit, showMa60, showBoll]);
+  }, [data, idealBuy, secondaryBuy, stopLoss, takeProfit, showMa60, showBoll, isUnadjusted]);
 
   const reportDay = useMemo(() => extractIsoDate(reportDate), [reportDate]);
   const { isHistoricalBeforeWindow, reportMarkerDate } = useMemo(() => {
@@ -695,6 +706,11 @@ export const ReportPriceLevelsChart: React.FC<ReportPriceLevelsChartProps> = ({
         </div>
       ) : null}
 
+      {isUnadjusted ? (
+        <p role="status" className="mb-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-2.5 py-1 text-[11px] text-amber-400">
+          {qText.unadjustedNotice}
+        </p>
+      ) : null}
       {priceScaleMismatch ? (
         <p role="status" className="mb-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-2.5 py-1 text-[11px] text-amber-400">
           {text.priceScaleMismatch}
@@ -738,7 +754,7 @@ export const ReportPriceLevelsChart: React.FC<ReportPriceLevelsChartProps> = ({
               width={54}
             />
             <Tooltip
-              content={<LevelsTooltip closeLabel={text.close} highLowLabel={text.highLow} qText={qText} />}
+              content={<LevelsTooltip closeLabel={text.close} highLowLabel={text.highLow} qText={qText} isUnadjusted={isUnadjusted} />}
             />
             <Legend iconSize={9} iconType="plainline" wrapperStyle={{ fontSize: 11, paddingTop: 4 }} />
             {reportMarkerDate ? (
@@ -758,27 +774,31 @@ export const ReportPriceLevelsChart: React.FC<ReportPriceLevelsChartProps> = ({
               fill={`url(#${gradientId})`}
               isAnimationActive={false}
             />
-            <Line
-              type="monotone"
-              dataKey="ma5"
-              name="MA5"
-              stroke="#f59e0b"
-              strokeWidth={1.35}
-              dot={false}
-              connectNulls={false}
-              isAnimationActive={false}
-            />
-            <Line
-              type="monotone"
-              dataKey="ma20"
-              name="MA20"
-              stroke="#a78bfa"
-              strokeWidth={1.35}
-              dot={false}
-              connectNulls={false}
-              isAnimationActive={false}
-            />
-            {showMa60 ? (
+            {!isUnadjusted ? (
+              <Line
+                type="monotone"
+                dataKey="ma5"
+                name="MA5"
+                stroke="#f59e0b"
+                strokeWidth={1.35}
+                dot={false}
+                connectNulls={false}
+                isAnimationActive={false}
+              />
+            ) : null}
+            {!isUnadjusted ? (
+              <Line
+                type="monotone"
+                dataKey="ma20"
+                name="MA20"
+                stroke="#a78bfa"
+                strokeWidth={1.35}
+                dot={false}
+                connectNulls={false}
+                isAnimationActive={false}
+              />
+            ) : null}
+            {!isUnadjusted && showMa60 ? (
               <Line
                 type="monotone"
                 dataKey="ma60"
@@ -790,7 +810,7 @@ export const ReportPriceLevelsChart: React.FC<ReportPriceLevelsChartProps> = ({
                 isAnimationActive={false}
               />
             ) : null}
-            {showBoll ? (
+            {!isUnadjusted && showBoll ? (
               <Line
                 type="monotone"
                 dataKey="bollUpper"
@@ -803,7 +823,7 @@ export const ReportPriceLevelsChart: React.FC<ReportPriceLevelsChartProps> = ({
                 isAnimationActive={false}
               />
             ) : null}
-            {showBoll ? (
+            {!isUnadjusted && showBoll ? (
               <Line
                 type="monotone"
                 dataKey="bollLower"
@@ -840,7 +860,14 @@ export const ReportPriceLevelsChart: React.FC<ReportPriceLevelsChartProps> = ({
           data-testid={`quant-subpanel-${subPanel}`}
           className="mt-2 h-[126px] w-full border-t border-border/50 pt-2"
         >
-          {!subPanelMeta.hasData ? (
+          {isUnadjusted ? (
+            <p
+              role="status"
+              className="flex h-full items-center justify-center px-3 text-center text-[11px] text-muted-text"
+            >
+              {qText.unadjustedNotice}
+            </p>
+          ) : !subPanelMeta.hasData ? (
             <p
               role="status"
               className="flex h-full items-center justify-center text-[11px] text-muted-text"

@@ -22,6 +22,7 @@ export interface PriceChartDatum {
   macdDif?: number | null;
   macdDea?: number | null;
   macdHist?: number | null;
+  macdPrevDiff?: number | null;
   kdjK?: number | null;
   kdjD?: number | null;
   kdjJ?: number | null;
@@ -265,7 +266,9 @@ export function formatChartDisplayPrice(value: number): string {
 export function enrichBarsWithMovingAverages(
   bars: StockKLineItem[],
   displayLimit = 60,
+  options?: { ohlcSynthesized?: boolean },
 ): PriceChartDatum[] {
+  const ohlcSynthesized = Boolean(options?.ohlcSynthesized);
   const preSorted = [...bars]
     .filter((b) => b && Number.isFinite(Number(b.close)) && Number(b.close) > 0)
     .sort((a, b) => String(a.date).localeCompare(String(b.date)));
@@ -284,6 +287,7 @@ export function enrichBarsWithMovingAverages(
   let ema26 = Number(sorted[0].close);
   let ema20 = Number(sorted[0].close);
   let dea = 0;
+  let prevRawMacdDiff: number | null = null;
 
   let avgGain = 0;
   let avgLoss = 0;
@@ -301,18 +305,27 @@ export function enrichBarsWithMovingAverages(
   const normalized = sorted.map((bar) => {
     const close = Number(bar.close);
     const validHigh =
-      bar.high != null && Number.isFinite(Number(bar.high)) && Number(bar.high) > 0
+      !ohlcSynthesized
+      && bar.high != null
+      && Number.isFinite(Number(bar.high))
+      && Number(bar.high) > 0
         ? Number(bar.high)
         : null;
     const validLow =
-      bar.low != null && Number.isFinite(Number(bar.low)) && Number(bar.low) > 0
+      !ohlcSynthesized
+      && bar.low != null
+      && Number.isFinite(Number(bar.low))
+      && Number(bar.low) > 0
         ? Number(bar.low)
         : null;
     const hasValidRange = validHigh != null && validLow != null;
     const high = hasValidRange ? Math.max(validHigh, validLow, close) : close;
     const low = hasValidRange ? Math.min(validHigh, validLow, close) : close;
     const open =
-      bar.open != null && Number.isFinite(Number(bar.open)) && Number(bar.open) > 0
+      !ohlcSynthesized
+      && bar.open != null
+      && Number.isFinite(Number(bar.open))
+      && Number(bar.open) > 0
         ? Number(bar.open)
         : null;
     const volume =
@@ -373,9 +386,12 @@ export function enrichBarsWithMovingAverages(
     }
     const rawDif = ema12 - ema26;
     dea = idx === 0 ? rawDif : rawDif * k9 + dea * (1 - k9);
+    const rawDiff = rawDif - dea;
     const macdDif = idx >= 25 ? rawDif : null;
     const macdDea = idx >= 25 ? dea : null;
-    const macdHist = idx >= 25 ? 2 * (rawDif - dea) : null;
+    const macdHist = idx >= 25 ? 2 * rawDiff : null;
+    const macdPrevDiff = idx >= 25 ? prevRawMacdDiff : null;
+    prevRawMacdDiff = rawDiff;
 
     let rsi14: number | null = null;
     if (idx > 0) {
@@ -480,6 +496,7 @@ export function enrichBarsWithMovingAverages(
       macdDif,
       macdDea,
       macdHist,
+      macdPrevDiff,
       kdjK: kOut,
       kdjD: dOut,
       kdjJ: jOut,
@@ -506,6 +523,7 @@ export function computeQuantTelemetry(
     stopLoss?: number | null;
     takeProfit?: number | null;
   },
+  options?: { priceAdjustment?: string | null },
 ): QuantTelemetrySummary {
   if (data.length === 0) {
     return {
@@ -549,6 +567,25 @@ export function computeQuantTelemetry(
     && takeProfit > entryRef
       ? (takeProfit - entryRef) / (entryRef - stopLoss)
       : null;
+
+  if (options?.priceAdjustment === 'unadjusted') {
+    return {
+      riskRewardRatio,
+      upsidePct,
+      downsidePct,
+      ma20BiasPct: null,
+      ma60BiasPct: null,
+      annualizedVolPct: null,
+      maxDrawdownPct: null,
+      rsi14: null,
+      rsiRegime: null,
+      bollBandwidthPct: null,
+      bollPercentB: null,
+      bollSqueeze: false,
+      macdSignal: null,
+      atrPct: null,
+    };
+  }
 
   const ma20BiasPct =
     latest.ma20 != null && latest.ma20 > 0 ? ((latest.close - latest.ma20) / latest.ma20) * 100 : null;
@@ -614,8 +651,11 @@ export function computeQuantTelemetry(
   if (latest.macdDif != null && latest.macdDea != null) {
     const diff = latest.macdDif - latest.macdDea;
     const prev = data.length >= 2 ? data[data.length - 2] : null;
-    if (prev?.macdDif != null && prev?.macdDea != null) {
-      const prevDiff = prev.macdDif - prev.macdDea;
+    const prevDiff =
+      prev?.macdDif != null && prev?.macdDea != null
+        ? prev.macdDif - prev.macdDea
+        : latest.macdPrevDiff ?? null;
+    if (prevDiff != null) {
       if (prevDiff <= 0 && diff > MACD_EPSILON) {
         macdSignal = 'bullish_cross';
       } else if (prevDiff >= 0 && diff < -MACD_EPSILON) {

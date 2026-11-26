@@ -18,6 +18,7 @@ export interface QuantChartText {
   subKdj: string;
   subPanelInsufficientData: string;
   subPanelMissingHighLow: string;
+  unadjustedNotice: string;
   riskReward: string;
   ma20Bias: string;
   annualizedVol: string;
@@ -54,6 +55,7 @@ const QUANT_CHART_TEXT: Record<ReportLanguage, QuantChartText> = {
     subKdj: 'KDJ',
     subPanelInsufficientData: '至少需要 {minBars} 个交易日以计算 {indicator}',
     subPanelMissingHighLow: '缺少有效最高/最低价数据，暂无法计算 {indicator}',
+    unadjustedNotice: '当前数据源返回未复权历史行情，存在拆合股或除权除息时可能使涨跌、波动率与技术指标失真，已暂停相关跨日统计与指标曲线。',
     riskReward: '盈亏比',
     ma20Bias: 'MA20乖离',
     annualizedVol: '年化波动',
@@ -88,6 +90,7 @@ const QUANT_CHART_TEXT: Record<ReportLanguage, QuantChartText> = {
     subKdj: 'KDJ',
     subPanelInsufficientData: 'Needs at least {minBars} sessions to compute {indicator}',
     subPanelMissingHighLow: 'Valid high/low range data is unavailable to compute {indicator}',
+    unadjustedNotice: 'This history source returned unadjusted prices. Corporate actions such as splits may distort multi-session return, volatility, and technical indicators, so cross-session analytics are paused.',
     riskReward: 'R:R',
     ma20Bias: 'MA20 Bias',
     annualizedVol: 'Ann.Vol',
@@ -122,6 +125,7 @@ const QUANT_CHART_TEXT: Record<ReportLanguage, QuantChartText> = {
     subKdj: 'KDJ',
     subPanelInsufficientData: '{indicator} 계산에 최소 {minBars}거래일 필요',
     subPanelMissingHighLow: '유효한 고가/저가 데이터가 없어 {indicator}를 계산할 수 없습니다',
+    unadjustedNotice: '현재 데이터 소스가 수정주가가 아닌 미조정 일봉을 반환했습니다. 액면분할 등 권리락 구간 왜곡을 막기 위해 기간 수익률·변동성 및 보조지표 계산을 일시 중지합니다.',
     riskReward: '손익비',
     ma20Bias: 'MA20 이격',
     annualizedVol: '연율 변동성',

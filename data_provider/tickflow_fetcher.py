@@ -231,7 +231,11 @@ class TickFlowFetcher(BaseFetcher):
 
         normalized = normalized.dropna(subset=["date", "close", "volume"])
         normalized = normalized.sort_values("date", ascending=True).reset_index(drop=True)
-        return normalized[["code", *STANDARD_COLUMNS]]
+        result = normalized[["code", *STANDARD_COLUMNS]]
+        result.attrs["price_adjustment"] = (
+            "unadjusted" if self.kline_adjust == "none" else self.kline_adjust
+        )
+        return result
 
     @staticmethod
     def _safe_float(value: Any) -> Optional[float]:

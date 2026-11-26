@@ -813,4 +813,116 @@ describe('ReportPriceLevelsChart helpers & component', () => {
     expect(screen.getByTestId('quant-telemetry-strip')).toHaveTextContent('MACD:多头');
     expect(screen.getByTestId('chart-bar-macdHist')).toBeInTheDocument();
   });
+
+  it('detects MACD golden cross on the exact 26th session when session 25 is hidden', () => {
+    const bars26: StockKLineItem[] = Array.from({ length: 26 }, (_, i) => {
+      const close = i < 25 ? 150 - i * 2 : 124;
+      return {
+        date: `2026-09-${String(i + 1).padStart(2, '0')}`,
+        open: close,
+        high: close + 1,
+        low: close - 1,
+        close,
+      };
+    });
+
+    const enriched26 = enrichBarsWithMovingAverages(bars26, 60);
+    expect(enriched26[24].macdDif).toBeNull();
+    expect(enriched26[25].macdDif).not.toBeNull();
+    expect(computeQuantTelemetry(enriched26).macdSignal).toBe('bullish_cross');
+
+    const { rerender } = render(<ReportPriceLevelsChart bars={bars26} language="zh" />);
+    expect(screen.getByTestId('quant-telemetry-strip')).toHaveTextContent('MACD:金叉');
+    expect(screen.getByTestId('quant-telemetry-strip')).not.toHaveTextContent('MACD:空头');
+
+    rerender(<ReportPriceLevelsChart bars={bars26} language="en" />);
+    expect(screen.getByTestId('quant-telemetry-strip')).toHaveTextContent('MACD:Golden Cross');
+    expect(screen.getByTestId('quant-telemetry-strip')).not.toHaveTextContent('MACD:Bearish');
+  });
+
+  it('ignores close-synthesized positive OHLC when ohlcSynthesized is true', () => {
+    const closeOnlyBars: StockKLineItem[] = Array.from({ length: 15 }, (_, i) => ({
+      date: `2026-10-${String(i + 1).padStart(2, '0')}`,
+      open: 100,
+      high: 100,
+      low: 100,
+      close: 100,
+    }));
+
+    const enriched = enrichBarsWithMovingAverages(closeOnlyBars, 60, { ohlcSynthesized: true });
+    expect(enriched.every((d) => d.open === null && d.hasValidRange === false && d.atrPct === null && d.kdjK === null)).toBe(true);
+    expect(computeQuantTelemetry(enriched).atrPct).toBeNull();
+
+    render(<ReportPriceLevelsChart bars={closeOnlyBars} ohlcSynthesized language="zh" />);
+    expect(screen.getByTestId('quant-telemetry-strip')).not.toHaveTextContent('ATR%:');
+    const tooltip = screen.getByTestId('levels-tooltip');
+    expect(tooltip).not.toHaveTextContent('开盘:');
+    expect(tooltip).not.toHaveTextContent('最高/最低:');
+
+    fireEvent.click(screen.getByRole('button', { name: 'KDJ' }));
+    expect(screen.getByTestId('quant-subpanel-kdj')).toHaveTextContent('缺少有效最高/最低价数据，暂无法计算 KDJ');
+  });
+
+  it('pauses cross-session return, volatility, and indicator analytics for unadjusted split history', () => {
+    const splitBars: StockKLineItem[] = Array.from({ length: 60 }, (_, i) => {
+      const price = i === 59 ? 50 : 100;
+      return {
+        date: `2026-${String(Math.floor(i / 28) + 1).padStart(2, '0')}-${String((i % 28) + 1).padStart(2, '0')}`,
+        open: price,
+        high: price,
+        low: price,
+        close: price,
+      };
+    });
+
+    const enriched60 = enrichBarsWithMovingAverages(splitBars, 60);
+    const pausedTelemetry = computeQuantTelemetry(
+      enriched60,
+      { idealBuy: 48, stopLoss: 45, takeProfit: 60 },
+      { priceAdjustment: 'unadjusted' },
+    );
+    expect(pausedTelemetry.riskRewardRatio).toBeCloseTo(4);
+    expect(pausedTelemetry.maxDrawdownPct).toBeNull();
+    expect(pausedTelemetry.annualizedVolPct).toBeNull();
+    expect(pausedTelemetry.rsi14).toBeNull();
+    expect(pausedTelemetry.macdSignal).toBeNull();
+    expect(pausedTelemetry.atrPct).toBeNull();
+    expect(pausedTelemetry.ma20BiasPct).toBeNull();
+
+    const { rerender } = render(
+      <ReportPriceLevelsChart
+        bars={splitBars}
+        priceAdjustment="unadjusted"
+        strategy={{ idealBuy: '48', stopLoss: '45', takeProfit: '60' }}
+        language="zh"
+      />,
+    );
+    expect(screen.getByText(/未复权历史行情/)).toBeInTheDocument();
+    const strip = screen.getByTestId('quant-telemetry-strip');
+    expect(strip).toHaveTextContent('盈亏比:1:4.0');
+    expect(strip).not.toHaveTextContent('回撤:');
+    expect(strip).not.toHaveTextContent('年化波动:');
+    expect(strip).not.toHaveTextContent('RSI(14):');
+    expect(strip).not.toHaveTextContent('MACD:');
+    expect(strip).not.toHaveTextContent('MA20乖离:');
+
+    const tooltip = screen.getByTestId('levels-tooltip');
+    expect(tooltip).not.toHaveTextContent('MA5:');
+    expect(tooltip).not.toHaveTextContent('MA20:');
+    expect(tooltip).not.toHaveTextContent('RSI(14):');
+
+    fireEvent.click(screen.getByRole('button', { name: 'MACD' }));
+    expect(screen.getByTestId('quant-subpanel-macd')).toHaveTextContent(/未复权历史行情/);
+
+    rerender(
+      <ReportPriceLevelsChart
+        bars={splitBars}
+        priceAdjustment="unadjusted"
+        strategy={{ idealBuy: '48', stopLoss: '45', takeProfit: '60' }}
+        language="en"
+      />,
+    );
+    expect(screen.getAllByText(/unadjusted prices/i).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByTestId('quant-subpanel-macd')).toHaveTextContent(/unadjusted prices/i);
+  });
 });

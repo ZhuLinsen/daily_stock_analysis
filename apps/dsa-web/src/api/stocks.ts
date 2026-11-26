@@ -29,6 +29,8 @@ export type StockHistoryResponse = {
   stockName?: string | null;
   period: string;
   data: StockKLineItem[];
+  priceAdjustment?: 'forward' | 'backward' | 'unadjusted' | 'unknown' | null;
+  ohlcSynthesized?: boolean | null;
 };
 
 export const stocksApi = {
