@@ -689,3 +689,75 @@ def test_compare_strategies_with_precomputed_matches_fresh_computation():
     assert dict(reused).keys() == dict(direct).keys()
     for key in dict(direct):
         assert dict(reused)[key] == pytest.approx(dict(direct)[key], nan_ok=True)
+
+
+def test_inverse_vol_rebalances_when_same_holdings_vol_reverses():
+    # 11 business days: Fri idx=4 (week 1 signal), Mon idx=5 (fill), Fri idx=9 (week 2 signal), Mon idx=10 (fill)
+    idx = _dates(11, "2024-01-01")
+    r_a = np.array([0.01, 0.001, 0.003, 0.001, 0.003, 0.01, 0.05, -0.04, 0.06, 0.03, 0.0])
+    r_b = np.array([0.01, 0.08, -0.05, 0.07, 0.04, 0.01, 0.001, 0.003, 0.001, 0.003, 0.0])
+    closes = pd.DataFrame({"A": _path(r_a), "B": _path(r_b)}, index=idx)
+    params = RotationParams(
+        lookback_days=3,
+        vol_lookback_days=4,
+        top_n=2,
+        cost_bps=0,
+        scoring_mode="return",
+        weighting="inverse_vol",
+    )
+
+    report = build_report(closes.iloc[:10], ["A", "B"], None, params, names={}, next_session=_next_bday)
+    assert "**需要调仓**" in report.markdown
+    assert report.target_weights["B"] > 0.85
+    assert report.target_weights["A"] < 0.15
+
+    bt = run_backtest(closes, ["A", "B"], None, params)
+    assert len(bt.trades) == 2
+    assert bt.trades[0].to_weights["A"] > 0.85
+    assert bt.final_weights["B"] > 0.85
+
+
+def test_inverse_vol_rebalances_on_equal_weight_fallback_after_midweek_gap():
+    idx = _dates(11, "2024-01-01")
+    r_a = np.array([0.01, 0.001, 0.003, 0.001, 0.003, 0.002, 0.001, 0.003, 0.001, 0.003, 0.0])
+    r_b = np.array([0.01, 0.08, -0.05, 0.07, 0.04, 0.002, 0.001, 0.003, 0.001, 0.003, 0.0])
+    closes = pd.DataFrame({"A": _path(r_a), "B": _path(r_b)}, index=idx)
+    # Missing Tuesday quote breaks B's 4-day volatility window on Friday while Friday & Monday have valid quotes.
+    closes.iloc[6, closes.columns.get_loc("B")] = np.nan
+    params = RotationParams(
+        lookback_days=3,
+        vol_lookback_days=4,
+        top_n=2,
+        cost_bps=0,
+        scoring_mode="return",
+        weighting="inverse_vol",
+    )
+
+    report = build_report(closes.iloc[:10], ["A", "B"], None, params, names={}, next_session=_next_bday)
+    assert "**需要调仓**" in report.markdown
+    assert report.target_weights == pytest.approx({"A": 0.5, "B": 0.5})
+
+    bt = run_backtest(closes, ["A", "B"], None, params)
+    assert len(bt.trades) == 2
+    assert bt.trades[0].to_weights["A"] > 0.85
+    assert bt.final_weights == pytest.approx({"A": 0.5, "B": 0.5})
+
+
+def test_zero_return_equal_six_etfs_reports_zero_max_drawdown_days():
+    idx = _dates(366, "2022-01-03")
+    cols = [f"ETF{i}" for i in range(6)]
+    rets = np.r_[np.full(6, 0.01), np.zeros(360)]
+    closes = pd.DataFrame({c: _path(rets) for c in cols}, index=idx)
+    params = RotationParams(
+        lookback_days=5,
+        top_n=6,
+        cost_bps=0.0,
+        scoring_mode="return",
+        weighting="equal",
+    )
+
+    bt = run_backtest(closes, cols, None, params)
+    ext = compute_extended_metrics(bt.equity, bt.benchmark_equity, bt.trades)
+    assert ext["max_drawdown_days"] == 0.0
+    report = build_report(closes, cols, None, params, names={})
+    assert "| 最长回撤天数 | 0 天 | 0 天 |" in report.markdown

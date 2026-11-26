@@ -332,10 +332,10 @@ def is_rebalance_needed(
     weighting: str = "equal",
     reference_weights: Optional[Weights] = None,
 ) -> bool:
-    """Return True when asset set changes, or non-equal risk holdings change rule targets."""
+    """Return True when asset set changes, or inverse_vol rule targets change."""
     if set(target_weights) != set(current_weights):
         return True
-    if weighting == "inverse_vol" and set(target_holdings) != set(current_holdings):
+    if weighting == "inverse_vol":
         rule_changed = (
             _turnover(reference_weights, target_weights) > 1e-9
             if reference_weights is not None
@@ -347,9 +347,14 @@ def is_rebalance_needed(
 
 def _drift(weights: Weights, returns: Dict[str, float]) -> Tuple[Weights, float]:
     """Apply one day of returns; return drifted weights and portfolio return."""
+    if not weights:
+        return {}, 0.0
+    weight_sum = sum(weights.values())
+    if weight_sum <= 0:
+        return {}, 0.0
+    port_ret = sum(w * returns.get(c, 0.0) for c, w in weights.items()) / weight_sum
     grown = {c: w * (1.0 + returns.get(c, 0.0)) for c, w in weights.items()}
     total = sum(grown.values())
-    port_ret = total - 1.0 if weights else 0.0
     if total <= 0:
         return {}, port_ret
     return {c: v / total for c, v in grown.items()}, port_ret
@@ -533,7 +538,9 @@ def compute_extended_metrics(
         if math.isfinite(downside_vol) and downside_vol > ZERO_TOLERANCE:
             out["sortino"] = float(rets.mean() * TRADING_DAYS_PER_YEAR / downside_vol)
 
-    underwater = (series < series.cummax()).to_numpy(dtype=bool)
+    running_peak = series.cummax()
+    drawdown = series / running_peak - 1.0
+    underwater = (drawdown < -ZERO_TOLERANCE).to_numpy(dtype=bool)
     cur_streak = 0
     max_streak = 0
     for is_underwater in underwater:
