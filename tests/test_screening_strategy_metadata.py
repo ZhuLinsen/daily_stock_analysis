@@ -217,6 +217,22 @@ screening:
 """.strip(),
         encoding="utf-8",
     )
+    (tmp_path / "quoted_numeric_weights.yaml").write_text(
+        """
+name: quoted_numeric_weights
+display_name: 引号数字权重策略
+description: valid quoted numeric weights remain backwards compatible
+screening:
+  enabled: true
+  market_scope: [cn]
+  tech_weight: "0.4"
+  factor_weights:
+    value: "0.6"
+    momentum: 0.4
+  max_output: 5
+""".strip(),
+        encoding="utf-8",
+    )
     (tmp_path / "bad_tech_weight.yaml").write_text(
         """
 name: bad_tech_weight
@@ -225,7 +241,19 @@ description: invalid string tech_weight without factor_weights
 screening:
   enabled: true
   market_scope: [cn]
-  tech_weight: "0.4"
+  tech_weight: "not-a-number"
+  max_output: 5
+""".strip(),
+        encoding="utf-8",
+    )
+    (tmp_path / "bad_tech_weight_nan.yaml").write_text(
+        """
+name: bad_tech_weight_nan
+display_name: 非有限字符串权重
+screening:
+  enabled: true
+  market_scope: [cn]
+  tech_weight: "nan"
   max_output: 5
 """.strip(),
         encoding="utf-8",
@@ -242,6 +270,18 @@ screening:
 """.strip(),
         encoding="utf-8",
     )
+    (tmp_path / "bad_factor_weight_inf.yaml").write_text(
+        """
+name: bad_factor_weight_inf
+display_name: 无穷大因子权重
+screening:
+  enabled: true
+  market_scope: [cn]
+  factor_weights:
+    value: "inf"
+""".strip(),
+        encoding="utf-8",
+    )
     (tmp_path / "bad_factor_weight_bool.yaml").write_text(
         """
 name: bad_factor_weight_bool
@@ -255,10 +295,18 @@ screening:
         encoding="utf-8",
     )
 
+    quoted = load_strategy(tmp_path / "quoted_numeric_weights.yaml")
+    assert quoted.screening.tech_weight == pytest.approx(0.4)
+    assert quoted.screening.factor_weights == pytest.approx({"value": 0.6, "momentum": 0.4})
+
     with pytest.raises(ValueError, match="tech_weight"):
         load_strategy(tmp_path / "bad_tech_weight.yaml")
+    with pytest.raises(ValueError, match="tech_weight"):
+        load_strategy(tmp_path / "bad_tech_weight_nan.yaml")
     with pytest.raises(ValueError, match="factor weight"):
         load_strategy(tmp_path / "bad_factor_weight_str.yaml")
+    with pytest.raises(ValueError, match="factor weight"):
+        load_strategy(tmp_path / "bad_factor_weight_inf.yaml")
     with pytest.raises(ValueError, match="factor weight"):
         load_strategy(tmp_path / "bad_factor_weight_bool.yaml")
 
@@ -268,13 +316,16 @@ screening:
 
     status_payload = service.status()
     assert status_payload["available"] is True
-    assert status_payload["strategy_count"] == 1
+    assert status_payload["strategy_count"] == 2
 
     catalog_payload = service.strategies()
-    assert catalog_payload["strategy_count"] == 1
-    assert [s["id"] for s in catalog_payload["strategies"]] == ["healthy_quant"]
+    assert catalog_payload["strategy_count"] == 2
+    assert [s["id"] for s in catalog_payload["strategies"]] == ["healthy_quant", "quoted_numeric_weights"]
     assert catalog_payload["strategies"][0]["factor_weights"] == pytest.approx(
         normalized_factor_weights(ScreeningConfig(tech_weight=0.4))
+    )
+    assert catalog_payload["strategies"][1]["factor_weights"] == pytest.approx(
+        {"value": 0.6, "momentum": 0.4}
     )
 
     app = FastAPI()
@@ -285,7 +336,7 @@ screening:
     client = TestClient(app)
     check_resp = client.post(
         "/api/v1/screening/screen/check",
-        json={"strategy": "healthy_quant", "market": "cn", "snapshot": {"price": 15.0, "name": "正常股"}},
+        json={"strategy": "quoted_numeric_weights", "market": "cn", "snapshot": {"price": 15.0, "name": "正常股"}},
     )
     assert check_resp.status_code == 200
     assert check_resp.json()["passed"] is True
@@ -294,8 +345,8 @@ screening:
         "src.services.screening_service._call_screening_screen",
         return_value={"candidates": [], "candidate_count": 0},
     ):
-        screen_resp = service.screen(strategy="healthy_quant", market="cn", max_results=5)
-    assert screen_resp["strategy"] == "healthy_quant"
+        screen_resp = service.screen(strategy="quoted_numeric_weights", market="cn", max_results=5)
+    assert screen_resp["strategy"] == "quoted_numeric_weights"
 
     healthy_strategy = Strategy(
         name="healthy_in_memory",
@@ -307,7 +358,7 @@ screening:
         name="broken_in_memory",
         display_name="Broken",
         description="invalid",
-        screening=ScreeningConfig(enabled=True, tech_weight="0.4"),  # type: ignore[arg-type]
+        screening=ScreeningConfig(enabled=True, tech_weight="not-a-number"),  # type: ignore[arg-type]
     )
     with patch(
         "src.services.screening.strategy.load_all_strategies",

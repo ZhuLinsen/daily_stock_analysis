@@ -1027,16 +1027,23 @@ def _raise_unknown_keys(data: dict, allowed_keys: set[str], context: str) -> Non
         )
 
 
+def _coerce_finite_float(raw: object, context: str) -> float:
+    if isinstance(raw, bool) or not isinstance(raw, (int, float, str)):
+        raise ValueError(f"Invalid {context}: expected finite number")
+    try:
+        value = float(raw.strip() if isinstance(raw, str) else raw)
+    except ValueError as exc:
+        raise ValueError(f"Invalid {context}: expected finite number") from exc
+    if not math.isfinite(value):
+        raise ValueError(f"Invalid {context}: expected finite number")
+    return value
+
+
 def _validated_tech_weight(screening_data: dict, filepath: Path) -> float:
     raw = screening_data.get("tech_weight", 0.35)
     if raw is None:
         return 0.35
-    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
-        raise ValueError(f"Invalid tech_weight in strategy file {filepath.name}: expected finite number")
-    value = float(raw)
-    if not math.isfinite(value):
-        raise ValueError(f"Invalid tech_weight in strategy file {filepath.name}: expected finite number")
-    return value
+    return _coerce_finite_float(raw, f"tech_weight in strategy file {filepath.name}")
 
 
 def _validated_factor_weights(screening_data: dict, filepath: Path) -> dict[str, float]:
@@ -1049,11 +1056,9 @@ def _validated_factor_weights(screening_data: dict, filepath: Path) -> dict[str,
     for key, weight in raw.items():
         if not isinstance(key, str) or not key.strip():
             raise ValueError(f"Invalid factor_weights key in strategy file {filepath.name}: expected non-empty string")
-        if isinstance(weight, bool) or not isinstance(weight, (int, float)) or not math.isfinite(float(weight)):
-            raise ValueError(
-                f"Invalid factor weight '{key}' in strategy file {filepath.name}: expected finite number"
-            )
-        validated[key.strip()] = float(weight)
+        validated[key.strip()] = _coerce_finite_float(
+            weight, f"factor weight '{key}' in strategy file {filepath.name}"
+        )
     return validated
 
 

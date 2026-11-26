@@ -492,4 +492,142 @@ describe('StockScreeningPage Quant Factor Explorer', () => {
     expect(await screen.findByText('Strategy Factor Weights & Profile Blueprint')).toBeInTheDocument();
     expect(screen.getAllByText('__proto__').length).toBeGreaterThanOrEqual(3);
   });
+
+  it('sorts candidates missing screenScore stably after scored candidates in score_desc without falling back to blended score', async () => {
+    let capturedBlob: Blob | null = null;
+    const createObjectUrlSpy = vi.spyOn(URL, 'createObjectURL').mockImplementation((obj: Blob | MediaSource) => {
+      capturedBlob = obj as Blob;
+      return 'blob:mock-partial-factor-csv';
+    });
+    const revokeObjectUrlSpy = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+    const anchorClickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+
+    screenStocks.mockResolvedValueOnce({
+      enabled: true,
+      candidateCount: 2,
+      strategy: 'momentum_quality',
+      market: 'cn',
+      rankingMode: 'llm',
+      llmRanked: true,
+      candidates: [
+        {
+          rank: 1,
+          code: '000001',
+          name: '平安银行',
+          industry: '银行',
+          price: 11.2,
+          changePct: 0.5,
+          score: 90.0,
+          llmScore: 95.0,
+          riskLevel: 'low',
+          reason: '仅有混合终分，无纯因子分',
+          factorScores: {},
+          raw: {},
+        },
+        {
+          rank: 2,
+          code: '300750',
+          name: '宁德时代',
+          industry: '新能源',
+          price: 215.6,
+          changePct: 2.0,
+          score: 75.0,
+          screenScore: 85.0,
+          llmScore: 60.0,
+          riskLevel: 'medium',
+          reason: '有显式纯因子分',
+          factorScores: { momentum: 85.0 },
+          raw: {},
+        },
+      ],
+    });
+
+    try {
+      render(<StockScreeningPage />);
+      expect(await screen.findByText('策略因子权重与画像蓝图')).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: /运行选股/ }));
+      expect(await screen.findByText('平安银行')).toBeInTheDocument();
+
+      fireEvent.change(screen.getByLabelText('候选排序'), {
+        target: { value: 'score_desc' },
+      });
+
+      const rows = screen.getAllByRole('row');
+      expect(within(rows[1]).getByText('300750')).toBeInTheDocument();
+      expect(within(rows[1]).getByText('综合因子分 85.00')).toBeInTheDocument();
+      expect(within(rows[2]).getByText('000001')).toBeInTheDocument();
+      expect(within(rows[2]).queryByText(/综合因子分/)).not.toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('button', { name: '导出 CSV' }));
+      await waitFor(() => {
+        expect(capturedBlob).not.toBeNull();
+        expect(anchorClickSpy).toHaveBeenCalledTimes(1);
+      });
+
+      const csvText = await (capturedBlob as unknown as Blob).text();
+      const lines = csvText.replace(/^\uFEFF/, '').split('\r\n');
+      expect(lines).toHaveLength(3);
+      expect(lines[1]).toContain('"2","300750","宁德时代","新能源","215.60","2.00","75.00","85.00","60.00"');
+      expect(lines[2]).toContain('"1","000001","平安银行","银行","11.20","0.50","90.00","","95.00"');
+    } finally {
+      createObjectUrlSpy.mockRestore();
+      revokeObjectUrlSpy.mockRestore();
+      anchorClickSpy.mockRestore();
+    }
+  });
+
+  it('preserves original candidate order in score_desc when all candidates lack explicit screenScore', async () => {
+    screenStocks.mockResolvedValueOnce({
+      enabled: true,
+      candidateCount: 2,
+      strategy: 'momentum_quality',
+      market: 'cn',
+      rankingMode: 'llm',
+      llmRanked: true,
+      candidates: [
+        {
+          rank: 1,
+          code: '000002',
+          name: '万科A',
+          industry: '地产',
+          price: 8.5,
+          changePct: 0.2,
+          score: 70.0,
+          llmScore: 80.0,
+          riskLevel: 'medium',
+          reason: '无 screenScore 第一行',
+          factorScores: {},
+          raw: {},
+        },
+        {
+          rank: 2,
+          code: '600519',
+          name: '贵州茅台',
+          industry: '白酒',
+          price: 1520.0,
+          changePct: 1.0,
+          score: 95.0,
+          llmScore: 99.0,
+          riskLevel: 'low',
+          reason: '无 screenScore 第二行',
+          factorScores: {},
+          raw: {},
+        },
+      ],
+    });
+
+    render(<StockScreeningPage />);
+    expect(await screen.findByText('策略因子权重与画像蓝图')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /运行选股/ }));
+    expect(await screen.findByText('万科A')).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('候选排序'), {
+      target: { value: 'score_desc' },
+    });
+
+    const rows = screen.getAllByRole('row');
+    expect(within(rows[1]).getByText('000002')).toBeInTheDocument();
+    // Row 2 is the expanded detail row of the auto-expanded first candidate (000002).
+    expect(within(rows[3]).getByText('600519')).toBeInTheDocument();
+  });
 });

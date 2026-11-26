@@ -6,6 +6,7 @@ import type {
   ScreeningStrategyStyle,
 } from '../../../api/screening';
 import {
+  compareNullableDesc,
   escapeCsvCell,
   getFactorLabel,
   lookupOwnString,
@@ -238,5 +239,14 @@ describe('ScreeningQuantExplorer components & helpers', () => {
       />,
     );
     expect(screen.queryByText('Factor Score')).not.toBeInTheDocument();
+  });
+
+  it('sorts missing/non-finite numeric values stably after finite descending values', () => {
+    expect(compareNullableDesc(90, 80)).toBeLessThan(0);
+    expect(compareNullableDesc(80, 90)).toBeGreaterThan(0);
+    expect(compareNullableDesc(85, null)).toBeLessThan(0);
+    expect(compareNullableDesc(null, 85)).toBeGreaterThan(0);
+    expect(compareNullableDesc(null, undefined)).toBe(0);
+    expect(compareNullableDesc(Number.NaN, null)).toBe(0);
   });
 });

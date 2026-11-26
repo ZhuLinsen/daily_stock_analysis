@@ -61,7 +61,7 @@ SCREENING_EASTMONEY_JITTER_SEC=0.3
 
 后台任务使用 `report_type=screening_screen`，Web 会保存活动任务 ID，并在页面恢复时继续轮询。任务状态会分别提示全市场快照、候选上下文、LLM 重排、最终评分和新闻事件增强等阶段；完成后的结果同时写入 DSA 数据库，因此服务重启后仍可按 `run_id` 查询。新运行的同步/后台响应及历史详情保留 `strategy_version`、`strategy_category` 和 `effective_factor_weights`，记录执行时的策略版本、类别和实际归一化因子权重；旧记录不回填，也不依据升级后的策略文件改写历史。
 
-`/api/v1/screening/strategies` 返回目录中每条策略当前的有效归一化权重 `factor_weights`（由评分器 `normalized_factor_weights` 推导，包含未配置自定义权重时的默认组合；与每次运行持久化保存当时快照权重的 `effective_factor_weights` 相互独立），并跳过已停用的空白名单过滤条件以输出实际生效的 `active_filters`、日线依赖 `requires_daily_features` 与风格字段 `style`（存在配置类型错误的自定义策略会在单文件加载阶段被记录并隔离，不阻断同目录其他正常策略）。Web 选股页据此展示策略因子权重画像，并支持按代码/名称/行业与风险等级过滤候选、按纯因子综合分（`screenScore`，区别于混排终分 `score`）、AI 评分、涨跌幅或单因子排序、最多 3 只候选横向对比及按当前可见顺序导出防公式注入 CSV（缺少 `screenScore` 时在 CSV 纯因子综合分列留空，不回填 `score`）。
+`/api/v1/screening/strategies` 返回目录中每条策略当前的有效归一化权重 `factor_weights`（由评分器 `normalized_factor_weights` 推导，包含未配置自定义权重时的默认组合；与每次运行持久化保存当时快照权重的 `effective_factor_weights` 相互独立），并跳过已停用的空白名单过滤条件以输出实际生效的 `active_filters`、日线依赖 `requires_daily_features` 与风格字段 `style`（自定义 YAML 中的 `tech_weight` 与 `factor_weights` 保持对加引号有限数字字符串的兼容解析，而不可解析/非有限/布尔权重或异常策略文件会在单文件加载阶段被记录并隔离，不阻断同目录其他正常策略）。Web 选股页据此展示策略因子权重画像，并支持按代码/名称/行业与风险等级过滤候选、严格按显式纯因子综合分（`screenScore`，区别于混排终分 `score`；缺少 `screenScore` 的历史或旧候选稳定排在有分候选之后，整批均缺少时保留原序）、AI 评分、涨跌幅或单因子排序、最多 3 只候选横向对比及按当前可见顺序导出防公式注入 CSV（缺少 `screenScore` 时在 CSV 纯因子综合分列留空，不回填 `score`）。
 
 两个候选入口都要求开启 `SCREENING_ENABLED`，关闭时返回 HTTP 403。`run_id` 对应的历史记录缺失时返回 HTTP 404。晋升响应中的 `added` 列出本次新增代码，`already_present` 列出已有代码。晋升保留已登记指数的身份，美股类别股以 `BRK.B` 形式写入自选，`BAC-PL` 等带两字母后缀的 Yahoo 代码保留连字符。首页可直接批量分析含旧格式 `BRK-B` 的自选。Web 和桌面端的自选操作按资产身份区分同码指数和个股，包括使用旧 `.SS` 后缀的上证指数。共用配置文件的 API worker 通过相邻的锁文件串行校验和写入，配置文件所在目录需可写。晋升或首页编辑遇到版本冲突会重新读取自选，最多尝试 4 次，持续冲突时返回 HTTP 409。
 

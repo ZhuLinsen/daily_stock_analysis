@@ -50,10 +50,10 @@ import {
   StrategyFactorBlueprint,
 } from '../components/screening/ScreeningQuantExplorer';
 import {
+  compareNullableDesc,
   exportCandidatesCsv,
   factorBarColorClass,
   getCandidateExplicitFactorScore,
-  getCandidateFactorCompositeScore,
   getCandidateFactorValue,
   getFactorLabel,
   lookupOwnString,
@@ -1016,24 +1016,37 @@ const StockScreeningPage: React.FC = () => {
     });
     if (candidateSortKey === 'default') return filtered;
     const copyList = [...filtered];
-    const numVal = (v: number | null | undefined) =>
-      typeof v === 'number' && Number.isFinite(v) ? v : Number.NEGATIVE_INFINITY;
     copyList.sort((a, b) => {
       switch (candidateSortKey) {
         case 'score_desc':
-          return numVal(getCandidateFactorCompositeScore(b)) - numVal(getCandidateFactorCompositeScore(a));
+          return compareNullableDesc(
+            getCandidateExplicitFactorScore(a),
+            getCandidateExplicitFactorScore(b),
+          );
         case 'llm_desc':
-          return numVal(b.llmScore) - numVal(a.llmScore);
+          return compareNullableDesc(a.llmScore, b.llmScore);
         case 'change_desc':
-          return numVal(b.changePct) - numVal(a.changePct);
+          return compareNullableDesc(a.changePct, b.changePct);
         case 'momentum_desc':
-          return numVal(getCandidateFactorValue(b, 'momentum')) - numVal(getCandidateFactorValue(a, 'momentum'));
+          return compareNullableDesc(
+            getCandidateFactorValue(a, 'momentum'),
+            getCandidateFactorValue(b, 'momentum'),
+          );
         case 'value_desc':
-          return numVal(getCandidateFactorValue(b, 'value')) - numVal(getCandidateFactorValue(a, 'value'));
+          return compareNullableDesc(
+            getCandidateFactorValue(a, 'value'),
+            getCandidateFactorValue(b, 'value'),
+          );
         case 'stability_desc':
-          return numVal(getCandidateFactorValue(b, 'stability')) - numVal(getCandidateFactorValue(a, 'stability'));
+          return compareNullableDesc(
+            getCandidateFactorValue(a, 'stability'),
+            getCandidateFactorValue(b, 'stability'),
+          );
         case 'liquidity_desc':
-          return numVal(getCandidateFactorValue(b, 'liquidity')) - numVal(getCandidateFactorValue(a, 'liquidity'));
+          return compareNullableDesc(
+            getCandidateFactorValue(a, 'liquidity'),
+            getCandidateFactorValue(b, 'liquidity'),
+          );
         default:
           return 0;
       }

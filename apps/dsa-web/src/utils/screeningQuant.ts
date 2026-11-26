@@ -62,14 +62,16 @@ export function getCandidateExplicitFactorScore(candidate: ScreeningCandidate): 
   return null;
 }
 
-export function getCandidateFactorCompositeScore(candidate: ScreeningCandidate): number | null {
-  if (typeof candidate.screenScore === 'number' && Number.isFinite(candidate.screenScore)) {
-    return candidate.screenScore;
-  }
-  if (typeof candidate.score === 'number' && Number.isFinite(candidate.score)) {
-    return candidate.score;
-  }
-  return null;
+export function compareNullableDesc(
+  a: number | null | undefined,
+  b: number | null | undefined,
+): number {
+  const aValid = typeof a === 'number' && Number.isFinite(a);
+  const bValid = typeof b === 'number' && Number.isFinite(b);
+  if (aValid && bValid) return b - a;
+  if (aValid) return -1;
+  if (bValid) return 1;
+  return 0;
 }
 
 export function getCandidateFactorValue(
