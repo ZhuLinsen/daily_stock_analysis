@@ -47,9 +47,9 @@ Verify the exact model ID in your account dashboard and test connection results.
 ### 3. Enable Actions & Run a Manual Test
 
 1. Open the **Actions** tab in your forked repository and click **I understand my workflows, go ahead and enable them**.
-2. Select the **Daily Stock Analysis** workflow on the left and click **Run workflow** on the right to execute an initial test run.
+2. Select the **每日股票分析** workflow (Daily Stock Analysis, `.github/workflows/00-daily-analysis.yml`) on the left and click **Run workflow** on the right to execute an initial test run.
 3. After completion, inspect the workflow logs and confirm report delivery in WeChat Work, Feishu, Telegram, or Email.
 
 :::note[Non-Trading Day Skip Rules]
-By default, the workflow filters out market holidays across A-share, Hong Kong, and US trading calendars. If you want to test execution over a weekend or holiday, check the force-run option when triggering `Run workflow` manually.
+By default, the workflow checks each ticker against its own market's trading calendar across all 6 supported markets (A-share, Hong Kong, US, Japan, South Korea, and Taiwan) and skips tickers whose market is closed. If you want to test execution over a weekend or holiday, check the force-run option when triggering `Run workflow` manually.
 :::

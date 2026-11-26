@@ -56,7 +56,7 @@ Compatibility scope note:
 
 ## GitHub Actions Mapping
 
-The built-in `.github/workflows/00-daily-analysis.yml` imports an explicit set of variables, kept in sync by `scripts/generate_notification_actions_env_table.py`:
+The built-in `.github/workflows/00-daily-analysis.yml` imports an explicit set of variables. `scripts/generate_notification_actions_env_table.py` automatically verifies and syncs the Chinese baseline ([`docs/notifications.md`](notifications.md)); this English table is maintained in manual sync with it:
 
 | Key | Tier | Channel / feature | Actions source | Default |
 | --- | --- | --- | --- | --- |
@@ -144,18 +144,22 @@ Under **Settings -> Notification Channels**, testing uses current page draft val
 
 - `$content_json` / `$title_json`: JSON-escaped strings (**recommended**).
 - `$content` / `$title`: raw strings without JSON escaping (quotes/newlines can produce invalid JSON).
-- In Docker Compose, saving templates via Web Settings writes `$$content_json` / `$$title_json` so Compose does not interpolate `$var` against empty host env vars; runtime restores single `$` placeholders cleanly.
+- In Docker Compose, both Web Settings saves **and manual edits** to your Compose `.env` file must double-escape placeholders as `$$content_json`, `$$title_json`, `$$content`, and `$$title` so Compose does not interpolate `$var` against empty host environment variables; runtime restores single `$` placeholders cleanly.
 
 Generic webhook example:
 
 ```ini
+# Plain local .env
 CUSTOM_WEBHOOK_BODY_TEMPLATE={"title":$title_json,"content":$content_json}
+
+# Docker Compose .env (manual edit or saved from Web Settings)
+CUSTOM_WEBHOOK_BODY_TEMPLATE={"title":$$title_json,"content":$$content_json}
 ```
 
 - **Bark (`api.day.app`)**: place the Bark URL in `CUSTOM_WEBHOOK_URLS`; without a global template, `title`/`body`/`group` are generated automatically, and `body` truncates safely near ~3,000 JSON bytes so APNs stays under Bark's 4,096-byte ceiling.
 - **ntfy**: prefer first-class `NTFY_URL` + optional `NTFY_TOKEN`. Because ntfy enforces a 4,096-byte `message-size-limit` (8,192-byte JSON HTTP 413 ceiling), long reports split cleanly along section boundaries into `<= 3900`-byte chunks titled with `(1/N)`.
 - **Gotify**: prefer first-class `GOTIFY_URL` (server base URL without `/message`, e.g., `https://example.com/gotify`) + `GOTIFY_TOKEN` (`X-Gotify-Key` header).
-- **NapCat / OneBot**: adjust `user_id` / `group_id`, endpoint path, and auth to match your server, e.g. `CUSTOM_WEBHOOK_BODY_TEMPLATE={"group_id":123456789,"message":$content_json}`.
+- **NapCat / OneBot**: adjust `user_id` / `group_id`, endpoint path, and auth to match your server, e.g. `CUSTOM_WEBHOOK_BODY_TEMPLATE={"group_id":123456789,"message":$content_json}` in a plain `.env` (or `{"group_id":123456789,"message":$$content_json}` when editing a Docker Compose `.env`).
 
 ## Notification Routing Strategy
 
@@ -186,7 +190,7 @@ P6-D evaluated both without adding dependencies:
 ## Environment-Specific Setup & Rollback
 
 - **Local**: copy `.env.example` to `.env`, set at least one minimal channel key, and run `python main.py --check-notify`.
-- **Docker**: pass env vars via `--env-file .env` or Compose `env_file` (avoid single-file bind-mounting `.env` over `/app/.env` if saving from Web Settings; set `ENV_FILE=/app/data/runtime.env`). Set `NOTIFICATION_TIMEZONE` explicitly inside containers and never disable `WEBHOOK_VERIFY_SSL` on public endpoints.
+- **Docker**: pass env vars via `--env-file .env` or Compose `env_file` (avoid single-file bind-mounting `.env` over `/app/.env` if saving from Web Settings; set `ENV_FILE=/app/data/runtime.env`). When manually editing a Docker Compose `.env`, double-escape `$` placeholders in `CUSTOM_WEBHOOK_BODY_TEMPLATE` (`$$title_json`, `$$content_json`). Set `NOTIFICATION_TIMEZONE` explicitly inside containers and never disable `WEBHOOK_VERIFY_SSL` on public endpoints.
 - **GitHub Actions**: only variables explicitly listed in `00-daily-analysis.yml` enter the workflow (`STOCK_GROUP_N` / `EMAIL_GROUP_N` numbered vars are not auto-imported).
 - **Desktop**: shares Web Settings and single-channel testing; remember to save settings explicitly when persisting changes.
 - **Rollback**: restore previous `.env` / export backup or clear the channel's minimal keys and restart (or remove Actions Secrets/Variables).

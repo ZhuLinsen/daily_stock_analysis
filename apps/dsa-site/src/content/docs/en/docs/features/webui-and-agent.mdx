@@ -15,6 +15,10 @@ python main.py --serve
 python main.py --serve-only
 ```
 
+:::note[Source-Checkout Frontend Prerequisite]
+Docker images and Desktop releases bundle prebuilt `static/` assets. When running `python main.py --serve` or `--serve-only` from a source checkout, DSA auto-builds `apps/dsa-web` into `static/` on first launch if **Node.js `>=20.19.0 <27`** and **npm `>=10`** are installed (or reuses prebuilt `static/` assets); otherwise FastAPI starts but `/` renders a `Frontend Not Built` page.
+:::
+
 ## Core Workspace Routes
 
 | Route | Module | Purpose |

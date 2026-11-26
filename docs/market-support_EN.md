@@ -128,8 +128,8 @@ Rollback: Revert the Taiwan market-review commit and remove `tw` from configured
 Portfolio accepts JP/KR accounts, trades, and position snapshots while flagging `data_quality=partial` and attaching `realtime_quote_best_effort`, `fx_and_cost_basis_partial`, and `sector_and_risk_metrics_limited` limitations without promising full JPY/KRW FX, cost-basis, market-cap, or concentration accounting.
 
 - Account, trade, cash-ledger, and corporate-action APIs remain available for JP/KR without introducing JPY/KRW FX feeders, fee/lot-size rules, or industry taxonomies.
-- Market Light snapshots and Market Light alerts remain scoped to `cn` / `hk` / `us`.
-- Web alert market dropdown excludes `jp` / `kr`; backend `normalize_market_region()` rejects `jp` / `kr` with an explicit unsupported error.
+- Market Light snapshots (`normalize_market_region()`) cover `cn` / `hk` / `us` / `jp` / `kr` (excluding `tw`), while Market Light alerts (`normalize_market_alert_region()`) remain scoped strictly to `cn` / `hk` / `us`.
+- Web alert market dropdown excludes `jp` / `kr` (and `tw`); backend `normalize_market_alert_region()` rejects `jp` / `kr` (and `tw`) with an explicit unsupported error.
 - In Web Settings, `MARKET_REVIEW_REGION` is a free-text comma-separated field (allowing `cn,us,jp`, `cn,hk,us`, etc.); this only governs market reviews and does not change Market Light alert enums.
 - Existing `cn`, `hk`, `us` settings stay untouched (`both` now covers all six markets; set `cn,hk,us` for pre-JP/KR behavior or `cn,hk,us,jp,kr` for 5-market coverage).
 - Configuration persistence remains unchanged: updates use atomic upsert (`ConfigManager.apply_updates`), leaving unsubmitted `LITELLM_MODEL`, `LITELLM_FALLBACK_MODELS`, `AGENT_LITELLM_MODEL`, `VISION_MODEL`, `OPENAI_BASE_URL`, etc. intact with no cleanup or migration branches.
