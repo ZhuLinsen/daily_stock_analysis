@@ -3,7 +3,7 @@ import { StrictMode, useState } from 'react';
 import { createMemoryRouter, MemoryRouter, RouterProvider } from 'react-router-dom';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createParsedApiError } from '../../api/error';
-import { UiLanguageProvider } from '../../contexts/UiLanguageContext';
+import { UiLanguageProvider, useUiLanguage } from '../../contexts/UiLanguageContext';
 import { historyApi } from '../../api/history';
 import type { ActiveStockContext } from '../../api/agent';
 import type { Message, ProgressStep } from '../../stores/agentChatStore';
@@ -724,7 +724,7 @@ describe('ChatPage', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: '导出会话为 Markdown 文件' }));
 
-    expect(mockDownloadSession).toHaveBeenCalledWith(mockStoreState.messages);
+    expect(mockDownloadSession).toHaveBeenCalledWith(mockStoreState.messages, 'zh');
     expect(mockFormatSessionAsMarkdown).not.toHaveBeenCalled();
   });
 
@@ -1314,7 +1314,7 @@ describe('ChatPage', () => {
     fireEvent.click(await screen.findByRole('button', { name: '发送到已配置的通知机器人/邮箱' }));
 
     await waitFor(() => {
-      expect(mockFormatSessionAsMarkdown).toHaveBeenCalledWith(mockStoreState.messages);
+      expect(mockFormatSessionAsMarkdown).toHaveBeenCalledWith(mockStoreState.messages, 'zh');
       expect(mockSendChat).toHaveBeenCalledWith('# exported markdown');
     });
 
@@ -2426,6 +2426,258 @@ describe('watchlist button with code variants', () => {
       } else {
         Reflect.deleteProperty(document, 'execCommand');
       }
+    }
+  });
+});
+
+const LanguageSwitchControl = () => {
+  const { setLanguage } = useUiLanguage();
+  return (
+    <button type="button" onClick={() => setLanguage('zh')}>
+      Switch to ZH
+    </button>
+  );
+};
+
+describe('ChatPage English UI localization', () => {
+  it('renders Ask AI header, sidebar, empty state, composer, and context compression in English', async () => {
+    window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'en');
+
+    render(
+      <UiLanguageProvider>
+        <MemoryRouter initialEntries={['/chat']}>
+          <ChatPage />
+        </MemoryRouter>
+      </UiLanguageProvider>,
+    );
+
+    expect(document.title).toBe('Ask AI - DSA');
+    expect(await screen.findByRole('heading', { name: 'Ask AI' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'History' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Start new chat' })).toBeInTheDocument();
+    expect(screen.getByText('2 messages')).toBeInTheDocument();
+    expect(screen.getByText('Start asking')).toBeInTheDocument();
+    expect(
+      screen.getByPlaceholderText('e.g. Analyze AAPL / Is Apple a buy now? (Enter to send, Shift+Enter for new line)'),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Send' })).toBeInTheDocument();
+    expect(screen.getByText('Context compression')).toBeInTheDocument();
+    expect(screen.getByText('Save tokens on long chats')).toBeInTheDocument();
+    expect(screen.getByText('Disabled')).toBeInTheDocument();
+
+    const compressionToggle = await screen.findByRole('checkbox', { name: /Context compression/ });
+    await waitFor(() => expect(compressionToggle).not.toBeDisabled());
+    fireEvent.click(compressionToggle);
+    await waitFor(() => expect(screen.getByText('Enabled')).toBeInTheDocument());
+  });
+
+  it('renders message actions, thinking summary, delete modal, watchlist feedback, and markdown export in English', async () => {
+    window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'en');
+    mockStoreState.messages = [
+      { id: 'user-1', role: 'user', content: 'Analyze 600519' },
+      {
+        id: 'assistant-1',
+        role: 'assistant',
+        content: 'Strong uptrend.',
+        skillName: 'Trend Analysis',
+        thinkingSteps: [
+          { type: 'thinking', step: 1 },
+          { type: 'tool_done', tool: 'get_quote', display_name: 'Quote', duration: 1.2, success: true },
+        ],
+      },
+    ];
+    mockStoreState.activeStockContext = {
+      stock_code: '600519',
+      canonical_id: 'sh600519',
+      stock_name: 'Kweichow Moutai',
+      asset_type: 'stock',
+    };
+    mockAddToWatchlist.mockResolvedValue(['600519']);
+
+    const capturedBlobs: Blob[] = [];
+    const originalCreateObjectURL = URL.createObjectURL;
+    const originalRevokeObjectURL = URL.revokeObjectURL;
+    Object.defineProperty(URL, 'createObjectURL', {
+      configurable: true,
+      writable: true,
+      value: vi.fn((blob: Blob) => {
+        capturedBlobs.push(blob);
+        return 'blob:chat-msg-test';
+      }),
+    });
+    Object.defineProperty(URL, 'revokeObjectURL', {
+      configurable: true,
+      writable: true,
+      value: vi.fn(),
+    });
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+
+    try {
+      render(
+        <UiLanguageProvider>
+          <MemoryRouter initialEntries={['/chat']}>
+            <ChatPage />
+          </MemoryRouter>
+        </UiLanguageProvider>,
+      );
+
+      expect(await screen.findByRole('button', { name: 'Export session as Markdown' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Send to configured notification bot/email' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Copy' })).toBeInTheDocument();
+
+      expect(screen.getByText('Thinking process')).toBeInTheDocument();
+      expect(screen.getByText('1 tool call · 1.2s')).toBeInTheDocument();
+      fireEvent.click(screen.getByText('Thinking process'));
+      expect(await screen.findByText('Step 1: Thinking')).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Export message as Markdown' }));
+      expect(capturedBlobs).toHaveLength(1);
+      const exportedMarkdown = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result));
+        reader.onerror = () => reject(reader.error);
+        reader.readAsText(capturedBlobs[0]);
+      });
+      expect(exportedMarkdown).toContain('# AI Response · Trend Analysis');
+
+      fireEvent.click(screen.getByRole('button', { name: 'Add to watchlist' }));
+      await waitFor(() => expect(mockAddToWatchlist).toHaveBeenCalledWith('600519'));
+      expect(await screen.findByText('Added 600519 to watchlist')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Remove from watchlist' })).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('button', { name: /Delete conversation 请简要分析 600519/ }));
+      expect(await screen.findByText('Once deleted, this conversation cannot be recovered. Delete it?')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Delete' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Cancel' })).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    } finally {
+      clickSpy.mockRestore();
+      Object.defineProperty(URL, 'createObjectURL', {
+        configurable: true,
+        writable: true,
+        value: originalCreateObjectURL,
+      });
+      Object.defineProperty(URL, 'revokeObjectURL', {
+        configurable: true,
+        writable: true,
+        value: originalRevokeObjectURL,
+      });
+    }
+  });
+
+  it('renders empty sidebar and connecting stage in English and keeps context compression error localized across language toggle without refetching', async () => {
+    window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'en');
+    mockStoreState.sessions = [];
+    mockStoreState.loading = true;
+    mockStoreState.progressSteps = [];
+    mockGetSystemConfig.mockRejectedValue(createParsedApiError({ title: 'Error', message: '', category: 'unknown' }));
+
+    render(
+      <UiLanguageProvider>
+        <MemoryRouter initialEntries={['/chat']}>
+          <LanguageSwitchControl />
+          <ChatPage />
+        </MemoryRouter>
+      </UiLanguageProvider>,
+    );
+
+    expect(await screen.findByText('No chat history yet')).toBeInTheDocument();
+    expect(screen.getByText('Connecting...')).toBeInTheDocument();
+    expect(await screen.findByText('Unable to load context compression setting')).toBeInTheDocument();
+    expect(mockGetSystemConfig).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Switch to ZH' }));
+    expect(await screen.findByText('无法读取上下文压缩配置')).toBeInTheDocument();
+    expect(mockGetSystemConfig).toHaveBeenCalledTimes(1);
+  });
+
+  it('localizes multi-skill badges with English delimiters, passes language to exports, and updates watchlist/send toast on language switch', async () => {
+    window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'en');
+    mockStoreState.messages = [
+      { id: 'user-1', role: 'user', content: 'Analyze 600519' },
+      {
+        id: 'assistant-1',
+        role: 'assistant',
+        content: 'Bullish alignment',
+        skillNames: ['缠论', 'ma_golden_cross'],
+      },
+    ];
+    mockStoreState.activeStockContext = {
+      stock_code: '600519',
+      canonical_id: 'sh600519',
+      stock_name: 'Kweichow Moutai',
+      asset_type: 'stock',
+    };
+    mockAddToWatchlist.mockResolvedValue(['600519']);
+    mockFormatSessionAsMarkdown.mockReturnValue('# Ask AI Session');
+
+    const capturedBlobs: Blob[] = [];
+    const originalCreateObjectURL = URL.createObjectURL;
+    const originalRevokeObjectURL = URL.revokeObjectURL;
+    Object.defineProperty(URL, 'createObjectURL', {
+      configurable: true,
+      writable: true,
+      value: vi.fn((blob: Blob) => {
+        capturedBlobs.push(blob);
+        return 'blob:multi-skill-test';
+      }),
+    });
+    Object.defineProperty(URL, 'revokeObjectURL', {
+      configurable: true,
+      writable: true,
+      value: vi.fn(),
+    });
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+
+    try {
+      render(
+        <UiLanguageProvider>
+          <MemoryRouter initialEntries={['/chat']}>
+            <LanguageSwitchControl />
+            <ChatPage />
+          </MemoryRouter>
+        </UiLanguageProvider>,
+      );
+
+      expect(await screen.findByText('Chan Theory, MA Golden Cross')).toBeInTheDocument();
+      expect(screen.getByLabelText('Skill Chan Theory, MA Golden Cross')).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Export session as Markdown' }));
+      expect(mockDownloadSession).toHaveBeenCalledWith(mockStoreState.messages, 'en');
+
+      fireEvent.click(screen.getByRole('button', { name: 'Send to configured notification bot/email' }));
+      await waitFor(() => {
+        expect(mockFormatSessionAsMarkdown).toHaveBeenCalledWith(mockStoreState.messages, 'en');
+      });
+      expect(await screen.findByText('Sent to notification channels')).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Export message as Markdown' }));
+      const exportedMessage = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result));
+        reader.onerror = () => reject(reader.error);
+        reader.readAsText(capturedBlobs[0]);
+      });
+      expect(exportedMessage).toContain('# AI Response · Chan Theory, MA Golden Cross');
+
+      fireEvent.click(screen.getByRole('button', { name: 'Add to watchlist' }));
+      expect(await screen.findByText('Added 600519 to watchlist')).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Switch to ZH' }));
+      expect(await screen.findByText('已发送到通知渠道')).toBeInTheDocument();
+      expect(screen.getByText('已加入自选 600519')).toBeInTheDocument();
+    } finally {
+      clickSpy.mockRestore();
+      Object.defineProperty(URL, 'createObjectURL', {
+        configurable: true,
+        writable: true,
+        value: originalCreateObjectURL,
+      });
+      Object.defineProperty(URL, 'revokeObjectURL', {
+        configurable: true,
+        writable: true,
+        value: originalRevokeObjectURL,
+      });
     }
   });
 });

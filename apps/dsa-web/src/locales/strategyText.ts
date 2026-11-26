@@ -90,3 +90,19 @@ export function localizeSkill<T extends LocalizableSkill>(skill: T, language: Ui
     description: skill.description === text.zh.description ? localized.description : skill.description,
   };
 }
+
+/** Resolves a built-in strategy ID or Chinese display name to its active UI language label. */
+export function localizeSkillLabel(nameOrId: string, language: UiLanguage): string {
+  if (language === 'zh') {
+    return nameOrId;
+  }
+  if (Object.hasOwn(BUILTIN_STRATEGY_TEXT, nameOrId)) {
+    return BUILTIN_STRATEGY_TEXT[nameOrId][language].name;
+  }
+  for (const entry of Object.values(BUILTIN_STRATEGY_TEXT)) {
+    if (entry.zh.name === nameOrId) {
+      return entry[language].name;
+    }
+  }
+  return nameOrId;
+}
