@@ -34,7 +34,13 @@ import {
 } from '../utils/stockCode';
 import { useStockIndex } from '../hooks/useStockIndex';
 import { useUiLanguage } from '../contexts/UiLanguageContext';
-import { localizeSkill } from '../locales/strategyText';
+import {
+  BUILTIN_STRATEGY_CATEGORIES,
+  STRATEGY_CATEGORY_LABELS,
+  getStrategyCategory,
+  localizeSkill,
+  type StrategyCategoryId,
+} from '../locales/strategyText';
 
 // Quick question examples shown on empty state
 type ActiveStockContext = Pick<ChatFollowUpContext, 'stock_code' | 'stock_name'>;
@@ -94,6 +100,7 @@ const ChatPage: React.FC = () => {
   const [defaultSkillIds, setDefaultSkillIds] = useState<string[]>([]);
   const [showSkillDesc, setShowSkillDesc] = useState<string | null>(null);
   const [mobileSkillPickerOpen, setMobileSkillPickerOpen] = useState(false);
+  const [activeSkillCategory, setActiveSkillCategory] = useState<StrategyCategoryId>('all');
   const [expandedThinking, setExpandedThinking] = useState<Set<string>>(new Set());
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -452,6 +459,27 @@ const ChatPage: React.FC = () => {
     () => skills.map((skill) => localizeSkill(skill, language)),
     [language, skills],
   );
+  const skillCategoryCounts = useMemo(() => {
+    const counts: Record<StrategyCategoryId, number> = {
+      all: localizedSkills.length,
+      quant: 0,
+      trend: 0,
+      pattern_reversal: 0,
+      framework: 0,
+    };
+    for (const skill of localizedSkills) {
+      counts[getStrategyCategory(skill.id, skill.category)] += 1;
+    }
+    return counts;
+  }, [localizedSkills]);
+  const visibleLocalizedSkills = useMemo(() => {
+    if (activeSkillCategory === 'all') {
+      return localizedSkills;
+    }
+    return localizedSkills.filter(
+      (skill) => getStrategyCategory(skill.id, skill.category) === activeSkillCategory,
+    );
+  }, [activeSkillCategory, localizedSkills]);
   const getSkillNames = useCallback(
     (skillIds: string[]) => skillIds.map((id) => localizedSkills.find((s) => s.id === id)?.name || id),
     [localizedSkills],
@@ -1475,6 +1503,37 @@ const ChatPage: React.FC = () => {
                     <span className="text-xs text-muted-text font-medium uppercase tracking-wider flex-shrink-0 mt-1">
                       {t('chat.skillPickerLabel')}
                     </span>
+                    {localizedSkills.length >= 6 && (
+                      <div
+                        className="flex w-full flex-wrap items-center gap-1 pb-1"
+                        role="group"
+                        aria-label={language === 'en' ? 'Strategy categories' : '策略分类'}
+                      >
+                        {BUILTIN_STRATEGY_CATEGORIES.map((categoryId) => {
+                          const count = skillCategoryCounts[categoryId];
+                          if (categoryId !== 'all' && count === 0) {
+                            return null;
+                          }
+                          const isActive = activeSkillCategory === categoryId;
+                          return (
+                            <button
+                              key={categoryId}
+                              type="button"
+                              aria-pressed={isActive}
+                              onClick={() => setActiveSkillCategory(categoryId)}
+                              className={cn(
+                                'rounded-md px-2 py-0.5 text-[11px] font-medium transition-colors',
+                                isActive
+                                  ? 'bg-primary text-primary-foreground'
+                                  : 'bg-surface/60 text-secondary-text hover:bg-hover hover:text-foreground',
+                              )}
+                            >
+                              {STRATEGY_CATEGORY_LABELS[categoryId][language]} ({count})
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
                     <label className="flex items-center gap-1.5 text-sm cursor-pointer group mt-0.5">
                       <input
                         type="checkbox"
@@ -1490,7 +1549,7 @@ const ChatPage: React.FC = () => {
                         {t('chat.generalSkill')}
                       </span>
                     </label>
-                    {localizedSkills.map((s) => {
+                    {visibleLocalizedSkills.map((s) => {
                       const checked = selectedSkillIdSet.has(s.id);
                       const disabled = !checked && skillLimitReached;
                       return (

@@ -1,0 +1,41 @@
+# Turtle Donchian Trend Following Strategy / 海龟唐奇安趋势策略
+
+name: turtle_donchian
+display_name: 海龟唐奇安趋势
+description: 经典海龟交易法则，以20日唐奇安高点突破入场、10日低点或2倍ATR动态止损并按波动率控制仓位。
+category: quant
+core_rules: [2, 4, 7]
+required_tools:
+  - get_daily_history
+  - analyze_trend
+  - calculate_quant_factors
+aliases: [海龟, 唐奇安, 通道突破, turtle]
+default_priority: 57
+market_regimes: [trending_up]
+
+instructions: |
+  **海龟唐奇安通道趋势策略（Turtle Donchian Breakout Strategy）**
+
+  核心量化逻辑：通过规则化通道突破捕捉中长线主趋势，并使用基于 ATR(14) 的等风险仓位管理（1N = ATR14，单笔最大风险控制在 2N = `atr_stop_loss_long`）以及 10 日低点动态追踪止盈，截断亏损、让利润奔跑。
+
+  ## 量化因子判据
+
+  调用 `calculate_quant_factors` 与 `analyze_trend`：
+
+  1. **入场突破（System-1 20日突破）**
+     - `donchian_signal == "breakout_20_high"`（收盘高于前20日最高点 `donchian_high_20`，无未来函数）。
+     - 趋势环境过滤：MA20 向上或 `adx_direction == "bullish"` 时突破有效性显著高于震荡市。
+
+  2. **ATR 波动率仓位校准**
+     - 查看 `atr_14` 与 `atr_pct`：若 `atr_pct > 5.0%` 属于高波动标的，单仓位应减半控制净值回撤；若 `atr_pct` 在 `1.5%~3.5%`，按标准头寸配置。
+     - 明确给出 `2N` 初始硬止损位 `atr_stop_loss_long` 与 `2R` 潜在风险回报位 `atr_take_profit_2r`。
+
+  3. **离场与移动止盈**
+     - 当触发 `donchian_signal == "breakdown_10_low"`（跌破近10日低点 `donchian_low_10`）或跌破 `atr_stop_loss_long`，明确建议执行趋势离场/止盈。
+     - 若处于 `donchian_signal == "inside"`，标明距离上沿 `donchian_high_20` 触发突破的百分比与保护下沿 `donchian_low_10`。
+
+  评分调整建议：
+  - `donchian_signal == "breakout_20_high"` + `adx_direction == "bullish"` + `obv_trend == "rising"`：`sentiment_score +15`
+  - 处于通道上沿 3% 内蓄势且多头排列：`sentiment_score +6`
+  - 触发 `breakdown_10_low`（10日低点跌破离场信号）：`sentiment_score -12`
+  - 触发 `breakdown_20_low`（20日低点破位）：`sentiment_score -18`

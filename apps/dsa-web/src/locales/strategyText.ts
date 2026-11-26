@@ -73,7 +73,95 @@ export const BUILTIN_STRATEGY_TEXT: Record<string, Record<UiLanguage, StrategyTe
     zh: { name: '波浪理论', description: '基于艾略特波浪理论的推动浪与调整浪结构，判断当前所处浪型与潜在目标价。' },
     en: { name: 'Elliott Wave Theory', description: 'Uses Elliott Wave impulse and corrective structures to judge the current wave and potential price targets.' },
   },
+  bollinger_squeeze: {
+    zh: { name: '布林带收口突破', description: '识别布林带带宽极值收口后的放量方向突破，结合ATR波动扩张与ADX确认趋势启动。' },
+    en: { name: 'Bollinger Squeeze', description: 'Detects directional volume breakouts after extreme Bollinger bandwidth compression using ATR expansion and ADX confirmation.' },
+  },
+  rsi_mean_reversion: {
+    zh: { name: 'RSI/KDJ 均值回归', description: '在震荡市利用ADX过滤强趋势，结合RSI超卖、KDJ低位金叉与布林带下轨偏离捕捉均值回归机会。' },
+    en: { name: 'RSI/KDJ Mean Reversion', description: 'Filters strong trends with ADX in sideways markets and captures rebound setups via RSI oversold, low KDJ crosses, and lower-band deviations.' },
+  },
+  turtle_donchian: {
+    zh: { name: '海龟唐奇安趋势', description: '经典海龟交易法则，以20日唐奇安高点突破入场、10日低点或2倍ATR动态止损并按波动率控制仓位。' },
+    en: { name: 'Turtle Donchian', description: 'Classic Turtle rule system entering on 20-day Donchian breakouts with 10-day low or 2x ATR stops and volatility-sized risk.' },
+  },
+  momentum_quality: {
+    zh: { name: '动量低波复合因子', description: '融合20/60日价格动量、年化波动率与最大回撤约束，辅以VWAP/OBV资金流确认的中期量化多因子策略。' },
+    en: { name: 'Momentum Low-Vol Quality', description: 'Blends 20/60-day momentum with annualized volatility and max-drawdown limits, confirmed by VWAP and OBV money flow.' },
+  },
+  vcp_breakout: {
+    zh: { name: 'VCP 波动收敛突破', description: '基于Minervini波动收敛形态，筛选多头排列中振幅与成交量逐级收敛、紧贴阶段高点蓄势突破的强势股。' },
+    en: { name: 'VCP Breakout', description: 'Based on Minervini Volatility Contraction Pattern, screens Stage-2 leaders with tightening range and dry volume near highs.' },
+  },
 };
+
+export type StrategyCategoryId = 'all' | 'quant' | 'trend' | 'pattern_reversal' | 'framework';
+
+export const BUILTIN_STRATEGY_CATEGORIES: readonly StrategyCategoryId[] = [
+  'all',
+  'quant',
+  'trend',
+  'pattern_reversal',
+  'framework',
+] as const;
+
+export const STRATEGY_CATEGORY_LABELS: Record<StrategyCategoryId, Record<UiLanguage, string>> = {
+  all: { zh: '全部', en: 'All' },
+  quant: { zh: '量化因子', en: 'Quant' },
+  trend: { zh: '趋势顺势', en: 'Trend' },
+  pattern_reversal: { zh: '形态/反转', en: 'Pattern & Reversal' },
+  framework: { zh: '综合框架', en: 'Framework' },
+};
+
+const STRATEGY_CATEGORY_MAP: Record<string, Exclude<StrategyCategoryId, 'all'>> = {
+  bollinger_squeeze: 'quant',
+  rsi_mean_reversion: 'quant',
+  turtle_donchian: 'quant',
+  momentum_quality: 'quant',
+  vcp_breakout: 'quant',
+  bull_trend: 'trend',
+  dragon_head: 'trend',
+  ma_golden_cross: 'trend',
+  shrink_pullback: 'trend',
+  volume_breakout: 'trend',
+  bottom_volume: 'pattern_reversal',
+  one_yang_three_yin: 'pattern_reversal',
+  box_oscillation: 'framework',
+  chan_theory: 'framework',
+  emotion_cycle: 'framework',
+  event_driven: 'framework',
+  expectation_repricing: 'framework',
+  growth_quality: 'framework',
+  hot_theme: 'framework',
+  wave_theory: 'framework',
+};
+
+const API_CATEGORY_TO_PICKER: Record<string, Exclude<StrategyCategoryId, 'all'>> = {
+  quant: 'quant',
+  trend: 'trend',
+  pattern: 'pattern_reversal',
+  reversal: 'pattern_reversal',
+  pattern_reversal: 'pattern_reversal',
+  framework: 'framework',
+  general: 'framework',
+};
+
+/** Resolve UI display category bucket for a built-in or custom strategy id. */
+export function getStrategyCategory(
+  id: string,
+  apiCategory?: string | null,
+): Exclude<StrategyCategoryId, 'all'> {
+  if (typeof apiCategory === 'string') {
+    const normalized = apiCategory.trim().toLowerCase();
+    if (Object.hasOwn(API_CATEGORY_TO_PICKER, normalized)) {
+      return API_CATEGORY_TO_PICKER[normalized];
+    }
+  }
+  if (Object.hasOwn(STRATEGY_CATEGORY_MAP, id)) {
+    return STRATEGY_CATEGORY_MAP[id];
+  }
+  return 'framework';
+}
 
 /** Returns the skill with built-in display text translated for the active UI language. */
 export function localizeSkill<T extends LocalizableSkill>(skill: T, language: UiLanguage): T {

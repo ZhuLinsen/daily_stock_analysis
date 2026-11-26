@@ -2428,4 +2428,52 @@ describe('watchlist button with code variants', () => {
       }
     }
   });
+
+  it('filters strategies by quant category when catalog has 6 or more skills and keeps selection across category switches', async () => {
+    mockStoreState.selectedSkillIds = [];
+    mockGetSkills.mockResolvedValue({
+      skills: [
+        { id: 'bull_trend', name: '默认多头趋势', description: '趋势分析', category: 'trend' },
+        { id: 'ma_golden_cross', name: '均线金叉', description: '均线交叉', category: 'trend' },
+        { id: 'bottom_volume', name: '底部放量', description: '底部形态', category: 'pattern' },
+        { id: 'growth_quality', name: '成长质量', description: '基本面成长', category: 'framework' },
+        { id: 'vcp_breakout', name: 'VCP 波动收敛突破', description: 'VCP 量价策略', category: 'quant' },
+        { id: 'turtle_donchian', name: '海龟唐奇安趋势', description: '海龟趋势策略', category: 'quant' },
+      ],
+      default_skill_id: 'bull_trend',
+    });
+
+    render(
+      <MemoryRouter initialEntries={['/chat']}>
+        <ChatPage />
+      </MemoryRouter>,
+    );
+
+    const quantPill = await screen.findByRole('button', { name: '量化因子 (2)' });
+    fireEvent.click(quantPill);
+
+    expect(screen.queryByRole('checkbox', { name: '均线金叉' })).not.toBeInTheDocument();
+    const vcpBox = screen.getByRole('checkbox', { name: 'VCP 波动收敛突破' });
+    fireEvent.click(vcpBox);
+    expect(vcpBox).toBeChecked();
+
+    fireEvent.click(screen.getByRole('button', { name: '趋势顺势 (2)' }));
+    const maBox = screen.getByRole('checkbox', { name: '均线金叉' });
+    fireEvent.click(maBox);
+    expect(maBox).toBeChecked();
+
+    fireEvent.change(screen.getByPlaceholderText(/分析 600519/), {
+      target: { value: '综合分析 600519' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+
+    await waitFor(() => {
+      expect(mockStartStream).toHaveBeenCalledWith(
+        expect.objectContaining({
+          skills: expect.arrayContaining(['vcp_breakout', 'ma_golden_cross']),
+        }),
+        expect.any(Object),
+      );
+    });
+  });
 });

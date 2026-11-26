@@ -545,9 +545,70 @@ analyze_pattern_tool = ToolDefinition(
 )
 
 
+def _handle_calculate_quant_factors(stock_code: str, days: int = 120) -> dict:
+    """Compute quantitative multi-factor indicators (BOLL, Donchian, ATR, KDJ, ADX, OBV/VWAP/MFI, Momentum)."""
+    from src.quant_factors import compute_quant_factors
+    from src.services.history_loader import load_history_df
+
+    if not (stock_code and str(stock_code).strip()):
+        return {"error": "stock_code is required"}
+
+    try:
+        lookback = max(30, min(int(days), 365))
+    except (TypeError, ValueError):
+        lookback = 120
+
+    df, source = load_history_df(stock_code, days=lookback)
+    if df is None or df.empty:
+        return {"error": f"No historical data available for quant factor analysis on {stock_code}"}
+
+    if len(df) < 20:
+        return {"error": f"Insufficient data for quant factor analysis on {stock_code} (need >= 20 days)"}
+
+    try:
+        result = compute_quant_factors(df, stock_code)
+    except Exception:
+        logger.warning("calculate_quant_factors(%s): Quant factor calculation failed", stock_code, exc_info=True)
+        return {"error": f"Quant factor calculation failed for {stock_code}"}
+
+    payload = result.to_dict()
+    if not payload.get("sufficient_data"):
+        return {"error": f"Insufficient valid OHLCV bars for quant factor analysis on {stock_code}"}
+    payload["source"] = source
+    return payload
+
+
+calculate_quant_factors_tool = ToolDefinition(
+    name="calculate_quant_factors",
+    description="Calculate institutional quantitative multi-factor indicators over daily history. "
+                "Returns Bollinger Bands (20,2) & squeeze status, Donchian channels (20/10d breakout), "
+                "ATR(14) & 2xATR stop-loss, HV20 annualized volatility, VCP contraction ratio, "
+                "KDJ(9,3,3), Wilder ADX(14)/+DI/-DI trend regime, OBV & divergence, 20d VWAP bias, "
+                "MFI(14), 5/20/60d momentum, 60d max drawdown, Sharpe60, and composite factor score.",
+    parameters=[
+        ToolParameter(
+            name="stock_code",
+            type="string",
+            description="Stock code, e.g., '600519'",
+        ),
+        ToolParameter(
+            name="days",
+            type="integer",
+            description="Number of recent trading days to inspect (default: 120, range 30-365)",
+            required=False,
+            default=120,
+        ),
+    ],
+    handler=_handle_calculate_quant_factors,
+    category="analysis",
+    policy=_ANALYSIS_READ_POLICY,
+)
+
+
 ALL_ANALYSIS_TOOLS = [
     analyze_trend_tool,
     calculate_ma_tool,
     get_volume_analysis_tool,
     analyze_pattern_tool,
+    calculate_quant_factors_tool,
 ]

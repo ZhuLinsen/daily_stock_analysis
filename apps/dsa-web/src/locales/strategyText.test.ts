@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { BUILTIN_STRATEGY_TEXT, localizeSkill } from './strategyText';
+import { BUILTIN_STRATEGY_TEXT, getStrategyCategory, localizeSkill } from './strategyText';
 
 const bundledStrategyYaml = import.meta.glob('../../../../strategies/*.yaml', {
   query: '?raw',
@@ -64,5 +64,21 @@ describe('localizeSkill', () => {
       const custom = { id, name: '自定义', description: '自定义描述' };
       expect(localizeSkill(custom, 'en')).toBe(custom);
     }
+  });
+});
+
+describe('getStrategyCategory', () => {
+  it('resolves built-in quant strategies and normalizes explicit API categories', () => {
+    expect(getStrategyCategory('vcp_breakout')).toBe('quant');
+    expect(getStrategyCategory('bollinger_squeeze')).toBe('quant');
+    expect(getStrategyCategory('bull_trend')).toBe('trend');
+    expect(getStrategyCategory('bottom_volume')).toBe('pattern_reversal');
+    expect(getStrategyCategory('chan_theory')).toBe('framework');
+
+    expect(getStrategyCategory('custom_quant_skill', 'quant')).toBe('quant');
+    expect(getStrategyCategory('custom_pattern_skill', 'pattern')).toBe('pattern_reversal');
+    expect(getStrategyCategory('custom_reversal_skill', 'Reversal')).toBe('pattern_reversal');
+    expect(getStrategyCategory('custom_unknown_skill', 'unknown')).toBe('framework');
+    expect(getStrategyCategory('custom_unknown_skill')).toBe('framework');
   });
 });
