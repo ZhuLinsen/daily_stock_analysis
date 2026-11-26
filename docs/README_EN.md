@@ -183,9 +183,9 @@ python main.py
 Common commands:
 
 ```bash
-python main.py --debug
-python main.py --dry-run
-python main.py --stocks 600519,hk00700,AAPL,2330.TW
+python main.py --debug --no-notify
+python main.py --dry-run --no-market-review --no-notify   # stock-pipeline dry-run without market review or push
+python main.py --stocks 600519,hk00700,AAPL,2330.TW --no-market-review  # specific tickers only (skip default market review)
 python main.py --market-review
 python main.py --schedule
 python main.py --serve-only
