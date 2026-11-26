@@ -1356,6 +1356,8 @@ class StockAnalysisPipeline:
                 'signal_reasons': trend_result.signal_reasons,
                 'risk_factors': trend_result.risk_factors,
             }
+            if getattr(trend_result, 'quant_factors', None):
+                enhanced['trend_analysis']['quant_factors'] = trend_result.quant_factors
 
         # Issue #234：盘中分析使用实时 OHLC 与趋势 MA 覆盖 today。
         # 防护条件：trend_result.ma5 > 0 表示 MA 计算已成功且数据量充足。

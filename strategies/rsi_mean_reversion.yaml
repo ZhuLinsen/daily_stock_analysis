@@ -20,7 +20,7 @@ instructions: |
 
   ## 量化因子判据
 
-  调用 `calculate_quant_factors` 与 `analyze_trend`：
+  优先读取上下文中预计算的 `quant_factors` 字段；仅在具备工具调用能力的 Agent 会话且上下文缺失时调用 `calculate_quant_factors` 与 `analyze_trend`（短周期历史导致部分因子为 `N/A` 时如实标注，不得臆测）：
 
   1. **趋势过滤（Regime Guard — 关键风控）**
      - 首选 `adx_regime == "range_bound"`（`adx_14 < 20`）或 `adx_direction != "bearish"` 强单边。
@@ -36,7 +36,7 @@ instructions: |
 
   4. **止盈与严格止损**
      - 第一目标位：`boll_mid` 或 `vwap_20`（回归均值即分批兑现，不恋战）。
-     - 严格止损：买入后跌破前低或 `atr_stop_loss_long` 无条件止损，绝不在均值回归单上深套加仓。
+     - 严格止损：入场当日将 `atr_stop_loss_long`（`现价 - 2 * ATR(14)`）或前波段低点固定记作初始硬止损；买入后跌破该入场止损、跌破前低，或触发 `atr_trailing_stop_breached == true`（收盘跌破 `atr_trailing_stop_long`）时无条件止损，绝不在均值回归单上深套加仓。
 
   评分调整建议：
   - `adx_14 < 25` 且 `boll_pct_b <= 0.1` + `kdj_status == "golden_cross_low"`：`sentiment_score +12`

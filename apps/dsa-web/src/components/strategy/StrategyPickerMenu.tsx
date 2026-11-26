@@ -72,6 +72,7 @@ export const StrategyPickerMenu: React.FC<StrategyPickerMenuProps> = ({
 }) => {
   const [query, setQuery] = useState('');
   const [activeCategory, setActiveCategory] = useState<StrategyCategoryId>('all');
+  const containerRef = useRef<HTMLDivElement | null>(null);
   const itemRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const didApplyInitialFocusRef = useRef(false);
@@ -157,9 +158,43 @@ export const StrategyPickerMenu: React.FC<StrategyPickerMenuProps> = ({
     return () => window.clearTimeout(timer);
   }, [focusItem, initialFocusTarget, selectedId, visibleOptions]);
 
+  const rovingIndex = useMemo(() => {
+    const selectedIdx = visibleOptions.findIndex((option) => option.id === selectedId);
+    return selectedIdx >= 0 ? selectedIdx : 0;
+  }, [selectedId, visibleOptions]);
+
   const handleContainerKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
     if (event.key === 'Tab') {
-      onTabClose?.();
+      const container = containerRef.current;
+      const activeEl = document.activeElement as HTMLElement | null;
+      if (!container || !activeEl) {
+        onTabClose?.();
+        return;
+      }
+      // Allow Tab/Shift+Tab to move between search input, clear button, category
+      // tabs, empty reset button, and roving menu option; close only on exit.
+      const isMenuItem = activeEl.getAttribute('role') === 'menuitemradio';
+      if (isMenuItem && !event.shiftKey) {
+        onTabClose?.();
+        return;
+      }
+      const focusables = Array.from(
+        container.querySelectorAll<HTMLElement>(
+          'input:not([disabled]), button:not([disabled]):not([tabindex="-1"]), [tabindex]:not([tabindex="-1"])',
+        ),
+      );
+      if (focusables.length === 0) {
+        onTabClose?.();
+        return;
+      }
+      const idx = focusables.indexOf(activeEl);
+      if (
+        idx === -1
+        || (event.shiftKey && idx === 0)
+        || (!event.shiftKey && idx === focusables.length - 1)
+      ) {
+        onTabClose?.();
+      }
     } else if (event.key === 'Escape') {
       event.preventDefault();
       event.stopPropagation();
@@ -221,7 +256,7 @@ export const StrategyPickerMenu: React.FC<StrategyPickerMenuProps> = ({
     .join(' ');
 
   return (
-    <div className={containerClasses} onKeyDown={handleContainerKeyDown}>
+    <div ref={containerRef} className={containerClasses} onKeyDown={handleContainerKeyDown}>
       <div className="relative mb-2">
         <Search
           className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-text"
@@ -310,7 +345,7 @@ export const StrategyPickerMenu: React.FC<StrategyPickerMenuProps> = ({
                 type="button"
                 role="menuitemradio"
                 aria-checked={selected}
-                tabIndex={-1}
+                tabIndex={index === rovingIndex ? 0 : -1}
                 onClick={() => onSelect(option.id)}
                 className="flex w-full items-start gap-2 rounded-lg px-2.5 py-2 text-left transition-colors hover:bg-hover focus:bg-hover focus:outline-none"
               >

@@ -54,11 +54,14 @@ class QuantFactorResult:
     boll_lower: float = 0.0
     boll_pct_b: float = 0.5
     boll_bandwidth_pct: float = 0.0
+    prev_boll_bandwidth_pct: Optional[float] = None
     boll_squeeze: bool = False
+    boll_squeeze_prior: bool = False
+    boll_squeeze_breakout: bool = False
 
     # Donchian Channels (prior N bars to eliminate lookahead bias)
-    donchian_high_20: float = 0.0
-    donchian_low_20: float = 0.0
+    donchian_high_20: Optional[float] = None
+    donchian_low_20: Optional[float] = None
     donchian_high_10: float = 0.0
     donchian_low_10: float = 0.0
     donchian_signal: str = "inside"
@@ -67,6 +70,8 @@ class QuantFactorResult:
     atr_14: float = 0.0
     atr_pct: float = 0.0
     atr_stop_loss_long: float = 0.0
+    atr_trailing_stop_long: Optional[float] = None
+    atr_trailing_stop_breached: bool = False
     atr_take_profit_2r: float = 0.0
     hv_20_annualized_pct: Optional[float] = None
     vcp_contraction_ratio: Optional[float] = None
@@ -119,15 +124,20 @@ class QuantFactorResult:
             "boll_lower": _finite_float(self.boll_lower, 4) or 0.0,
             "boll_pct_b": _finite_float(self.boll_pct_b, 4) if _finite_float(self.boll_pct_b, 4) is not None else 0.5,
             "boll_bandwidth_pct": _finite_float(self.boll_bandwidth_pct, 2) or 0.0,
+            "prev_boll_bandwidth_pct": _finite_float(self.prev_boll_bandwidth_pct, 2),
             "boll_squeeze": bool(self.boll_squeeze),
-            "donchian_high_20": _finite_float(self.donchian_high_20, 4) or 0.0,
-            "donchian_low_20": _finite_float(self.donchian_low_20, 4) or 0.0,
+            "boll_squeeze_prior": bool(self.boll_squeeze_prior),
+            "boll_squeeze_breakout": bool(self.boll_squeeze_breakout),
+            "donchian_high_20": _finite_float(self.donchian_high_20, 4),
+            "donchian_low_20": _finite_float(self.donchian_low_20, 4),
             "donchian_high_10": _finite_float(self.donchian_high_10, 4) or 0.0,
             "donchian_low_10": _finite_float(self.donchian_low_10, 4) or 0.0,
             "donchian_signal": self.donchian_signal,
             "atr_14": _finite_float(self.atr_14, 4) or 0.0,
             "atr_pct": _finite_float(self.atr_pct, 2) or 0.0,
             "atr_stop_loss_long": _finite_float(self.atr_stop_loss_long, 4) or 0.0,
+            "atr_trailing_stop_long": _finite_float(self.atr_trailing_stop_long, 4),
+            "atr_trailing_stop_breached": bool(self.atr_trailing_stop_breached),
             "atr_take_profit_2r": _finite_float(self.atr_take_profit_2r, 4) or 0.0,
             "hv_20_annualized_pct": _finite_float(self.hv_20_annualized_pct, 2),
             "vcp_contraction_ratio": _finite_float(self.vcp_contraction_ratio, 4),
@@ -182,18 +192,32 @@ def format_quant_factors_summary(qf: Dict[str, Any]) -> str:
     mfi_str = f"MFI(14)={qf['mfi_14']:.1f}" if qf.get("mfi_14") is not None else "MFI(14)=N/A"
     roc20_str = f"{qf['roc_20_pct']:+.2f}%" if qf.get("roc_20_pct") is not None else "N/A"
     mdd_str = f"{qf['max_drawdown_60_pct']:.2f}%" if qf.get("max_drawdown_60_pct") is not None else "N/A"
-    squeeze_flag = " [Squeeze]" if qf.get("boll_squeeze") else ""
+    sharpe_str = f"{qf['sharpe_60']:.2f}" if qf.get("sharpe_60") is not None else "N/A"
+    vcp_str = f"{qf['vcp_contraction_ratio']:.2f}x" if qf.get("vcp_contraction_ratio") is not None else "N/A"
+    trail_stop = qf.get("atr_trailing_stop_long")
+    trail_str = (
+        f", 2xATR追踪止损={trail_stop:.2f}"
+        + (" [BREACHED]" if qf.get("atr_trailing_stop_breached") else "")
+        if trail_stop is not None
+        else ""
+    )
+    squeeze_flag = (
+        " [SqueezeBreakout]"
+        if qf.get("boll_squeeze_breakout")
+        else (" [Squeeze]" if qf.get("boll_squeeze") else (" [PriorSqueeze]" if qf.get("boll_squeeze_prior") else ""))
+    )
 
     lines = [
         f"   BOLL(20,2): {qf.get('boll_lower', 0.0):.2f} / {qf.get('boll_mid', 0.0):.2f} / "
         f"{qf.get('boll_upper', 0.0):.2f} (%B={qf.get('boll_pct_b', 0.5):.2f}, "
         f"BW={qf.get('boll_bandwidth_pct', 0.0):.2f}%{squeeze_flag})",
         f"   ATR(14): {qf.get('atr_14', 0.0):.2f} ({qf.get('atr_pct', 0.0):.2f}%), "
-        f"2xATR止损={qf.get('atr_stop_loss_long', 0.0):.2f}, 唐奇安={qf.get('donchian_signal', 'inside')}",
+        f"2xATR止损={qf.get('atr_stop_loss_long', 0.0):.2f}{trail_str}, VCP={vcp_str}, "
+        f"唐奇安={qf.get('donchian_signal', 'inside')}",
         f"   KDJ(9,3,3): K={qf.get('kdj_k', 50.0):.1f} D={qf.get('kdj_d', 50.0):.1f} "
         f"J={qf.get('kdj_j', 50.0):.1f} ({qf.get('kdj_status', 'neutral')}) | {adx_str}",
         f"   量价/动量: {vwap_str}, OBV={qf.get('obv_trend', 'flat')}, {mfi_str}, "
-        f"ROC20={roc20_str}, 60日最大回撤={mdd_str}",
+        f"ROC20={roc20_str}, 60日最大回撤={mdd_str}, Sharpe60={sharpe_str}",
         f"   量化状态: {qf.get('quant_regime', 'neutral')} | 因子综合分: {qf.get('quant_composite_score', 50)}/100",
     ]
     return "\n".join(lines)
@@ -213,9 +237,11 @@ def _prepare_ohlcv_frame(df: pd.DataFrame) -> pd.DataFrame:
     if work.empty:
         return pd.DataFrame()
 
+    # Replace non-finite or non-positive placeholders (e.g. missing low=0.0) with valid close
     for col in ("open", "high", "low"):
         if col in work.columns:
-            work[col] = pd.to_numeric(work[col], errors="coerce").fillna(work["close"])
+            vals = pd.to_numeric(work[col], errors="coerce")
+            work[col] = np.where(np.isfinite(vals) & (vals > 0), vals, work["close"])
         else:
             work[col] = work["close"]
 
@@ -297,12 +323,28 @@ def compute_quant_factors(df: pd.DataFrame, code: str) -> QuantFactorResult:
     else:
         boll_squeeze = curr_bw < 6.0
 
+    # Prior-bar squeeze state (excludes current bar so breakout expansion doesn't mask setup)
+    prev_boll_bw: Optional[float] = None
+    boll_squeeze_prior = False
+    if n >= 21:
+        raw_prev_bw = boll_bw_series.iloc[-2]
+        if np.isfinite(raw_prev_bw):
+            prev_boll_bw = float(raw_prev_bw)
+            prior_bws = boll_bw_series.iloc[:-1].dropna().tail(60)
+            if len(prior_bws) >= 5:
+                q25_prior_bw = float(np.percentile(prior_bws.to_numpy(dtype=float), 25))
+                boll_squeeze_prior = prev_boll_bw <= max(6.0, q25_prior_bw * 1.1) and prev_boll_bw < 12.0
+            else:
+                boll_squeeze_prior = prev_boll_bw < 6.0
+
     result.boll_upper = boll_upper
     result.boll_mid = boll_mid
     result.boll_lower = boll_lower
     result.boll_pct_b = boll_pct_b
     result.boll_bandwidth_pct = curr_bw
+    result.prev_boll_bandwidth_pct = prev_boll_bw
     result.boll_squeeze = boll_squeeze
+    result.boll_squeeze_prior = boll_squeeze_prior
     if boll_squeeze:
         signals.append("Bollinger bandwidth squeeze (volatility breakout setup)")
     elif boll_pct_b >= 1.0:
@@ -310,33 +352,43 @@ def compute_quant_factors(df: pd.DataFrame, code: str) -> QuantFactorResult:
     elif boll_pct_b <= 0.0:
         signals.append("Price stretched below lower Bollinger Band")
 
-    # 2. Donchian Channels (exclude current bar to eliminate lookahead)
-    prior_highs_20 = high[max(0, n - 21):n - 1]
-    prior_lows_20 = low[max(0, n - 21):n - 1]
+    # 2. Donchian Channels (exclude current bar to eliminate lookahead; 20d requires >= 21 bars)
     prior_highs_10 = high[max(0, n - 11):n - 1]
     prior_lows_10 = low[max(0, n - 11):n - 1]
-    d_high_20 = float(np.max(prior_highs_20))
-    d_low_20 = float(np.min(prior_lows_20))
     d_high_10 = float(np.max(prior_highs_10))
     d_low_10 = float(np.min(prior_lows_10))
-
-    result.donchian_high_20 = d_high_20
-    result.donchian_low_20 = d_low_20
     result.donchian_high_10 = d_high_10
     result.donchian_low_10 = d_low_10
-    if curr_close > d_high_20:
-        result.donchian_signal = "breakout_20_high"
-        signals.append("20-day Donchian high breakout")
-    elif curr_close < d_low_20:
-        result.donchian_signal = "breakdown_20_low"
-        signals.append("20-day Donchian low breakdown")
+
+    if n >= 21:
+        prior_highs_20 = high[n - 21:n - 1]
+        prior_lows_20 = low[n - 21:n - 1]
+        d_high_20 = float(np.max(prior_highs_20))
+        d_low_20 = float(np.min(prior_lows_20))
+        result.donchian_high_20 = d_high_20
+        result.donchian_low_20 = d_low_20
+        if curr_close > d_high_20:
+            result.donchian_signal = "breakout_20_high"
+            signals.append("20-day Donchian high breakout")
+        elif curr_close < d_low_20:
+            result.donchian_signal = "breakdown_20_low"
+            signals.append("20-day Donchian low breakdown")
+        elif curr_close < d_low_10:
+            result.donchian_signal = "breakdown_10_low"
+            signals.append("10-day Donchian trailing stop breach")
+        else:
+            result.donchian_signal = "inside"
     elif curr_close < d_low_10:
         result.donchian_signal = "breakdown_10_low"
         signals.append("10-day Donchian trailing stop breach")
     else:
         result.donchian_signal = "inside"
 
-    # 3. ATR(14), HV20 & VCP Contraction Ratio
+    if boll_squeeze_prior and (boll_pct_b >= 0.8 or result.donchian_signal == "breakout_20_high"):
+        result.boll_squeeze_breakout = True
+        signals.append("Bollinger squeeze release breakout")
+
+    # 3. ATR(14), Chandelier Trailing Stop, HV20 & Lookahead-Free VCP Contraction Ratio
     prev_close = np.empty_like(close)
     prev_close[0] = close[0]
     prev_close[1:] = close[:-1]
@@ -352,15 +404,35 @@ def compute_quant_factors(df: pd.DataFrame, code: str) -> QuantFactorResult:
     result.atr_take_profit_2r = curr_close + 4.0 * result.atr_14
 
     if n >= 21:
+        raw_prev_atr = atr_series.iloc[-2]
+        prev_atr = float(raw_prev_atr) if np.isfinite(raw_prev_atr) else float(np.mean(tr[-15:-1]))
+        prev_atr = max(0.0, prev_atr)
+        prior_peak_20 = float(np.max(high[n - 21:n - 1]))
+        trailing_stop = max(0.0, prior_peak_20 - 2.0 * prev_atr)
+        result.atr_trailing_stop_long = trailing_stop
+        if trailing_stop > 0 and curr_close < trailing_stop:
+            result.atr_trailing_stop_breached = True
+            signals.append("Chandelier 2xATR trailing stop breached")
+
+    if n >= 21:
         log_ret = np.diff(np.log(close[-21:]))
         hv_20 = float(np.std(log_ret, ddof=1) * math.sqrt(252.0) * 100.0) if len(log_ret) >= 2 else 0.0
         result.hv_20_annualized_pct = hv_20
 
-    if n >= 30:
-        recent_mean = float(np.mean(close[-10:]))
-        prior_mean = float(np.mean(close[-30:-10]))
-        recent_range = (float(np.max(high[-10:])) - float(np.min(low[-10:]))) / recent_mean if recent_mean > 0 else 0.0
-        prior_range = (float(np.max(high[-30:-10])) - float(np.min(low[-30:-10]))) / prior_mean if prior_mean > 0 else 0.0
+    if n >= 31:
+        # Exclude current bar so breakout-day expansion does not mask pre-breakout VCP tightness
+        recent_mean = float(np.mean(close[-11:-1]))
+        prior_mean = float(np.mean(close[-31:-11]))
+        recent_range = (
+            (float(np.max(high[-11:-1])) - float(np.min(low[-11:-1]))) / recent_mean
+            if recent_mean > 0
+            else 0.0
+        )
+        prior_range = (
+            (float(np.max(high[-31:-11])) - float(np.min(low[-31:-11]))) / prior_mean
+            if prior_mean > 0
+            else 0.0
+        )
         if prior_range > 1e-9:
             ratio = recent_range / prior_range
             result.vcp_contraction_ratio = ratio
@@ -531,7 +603,7 @@ def compute_quant_factors(df: pd.DataFrame, code: str) -> QuantFactorResult:
             else:
                 result.mfi_status = "neutral"
 
-    # 7. Momentum & Drawdown Risk
+    # 7. Momentum & Drawdown Risk (60-day metrics require >= 60 bars)
     if n >= 6:
         result.roc_5_pct = (curr_close / float(close[-6]) - 1.0) * 100.0
     if n >= 21:
@@ -539,22 +611,23 @@ def compute_quant_factors(df: pd.DataFrame, code: str) -> QuantFactorResult:
     if n >= 61:
         result.roc_60_pct = (curr_close / float(close[-61]) - 1.0) * 100.0
 
-    win_close = close[-60:]
-    win_high = high[-60:]
-    running_max = np.maximum.accumulate(win_close)
-    drawdowns = (win_close / running_max - 1.0) * 100.0
-    result.max_drawdown_60_pct = float(np.min(drawdowns))
-    peak_high_60 = float(np.max(win_high))
-    if peak_high_60 > 0:
-        result.dist_from_high_60_pct = (curr_close / peak_high_60 - 1.0) * 100.0
+    if n >= 60:
+        win_close = close[-60:]
+        win_high = high[-60:]
+        running_max = np.maximum.accumulate(win_close)
+        drawdowns = (win_close / running_max - 1.0) * 100.0
+        result.max_drawdown_60_pct = float(np.min(drawdowns))
+        peak_high_60 = float(np.max(win_high))
+        if peak_high_60 > 0:
+            result.dist_from_high_60_pct = (curr_close / peak_high_60 - 1.0) * 100.0
 
-    win_ret = np.diff(win_close) / win_close[:-1]
-    if len(win_ret) >= 2:
-        std_ret = float(np.std(win_ret, ddof=1))
-        if std_ret > 1e-12:
-            result.sharpe_60 = float(np.mean(win_ret) / std_ret * math.sqrt(252.0))
-        else:
-            result.sharpe_60 = 0.0
+        win_ret = np.diff(win_close) / win_close[:-1]
+        if len(win_ret) >= 2:
+            std_ret = float(np.std(win_ret, ddof=1))
+            if std_ret > 1e-12:
+                result.sharpe_60 = float(np.mean(win_ret) / std_ret * math.sqrt(252.0))
+            else:
+                result.sharpe_60 = 0.0
 
     # 8. Composite Regime & Score (0-100)
     score = 50.0
@@ -606,7 +679,7 @@ def compute_quant_factors(df: pd.DataFrame, code: str) -> QuantFactorResult:
     if result.max_drawdown_60_pct is not None and result.max_drawdown_60_pct < -20.0:
         score -= 5.0
 
-    if boll_squeeze:
+    if boll_squeeze or result.boll_squeeze_breakout:
         score += 3.0
 
     result.quant_composite_score = max(0, min(100, int(round(score))))

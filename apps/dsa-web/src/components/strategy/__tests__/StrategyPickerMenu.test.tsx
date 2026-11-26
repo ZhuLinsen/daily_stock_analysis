@@ -166,4 +166,47 @@ describe('StrategyPickerMenu', () => {
     fireEvent.keyDown(screen.getByRole('menu'), { key: 'Tab' });
     expect(onTabClose).toHaveBeenCalledTimes(1);
   });
+
+  it('keeps panel open when Tab moves through search/categories and closes only when Tab/Shift+Tab exits panel', () => {
+    const onSelect = vi.fn();
+    const onTabClose = vi.fn();
+    render(
+      <StrategyPickerMenu
+        options={SAMPLE_OPTIONS}
+        selectedId="vcp_breakout"
+        language="en"
+        onSelect={onSelect}
+        onTabClose={onTabClose}
+      />,
+    );
+
+    const searchInput = screen.getByRole('textbox', { name: 'Search analysis strategies' });
+    const allCategoryBtn = screen.getByRole('button', { name: 'All (5)' });
+    const rovingItem = screen.getByRole('menuitemradio', { name: /VCP 波动收敛突破/ });
+    const firstItem = screen.getByRole('menuitemradio', { name: /默认多头趋势/ });
+
+    expect(rovingItem).toHaveAttribute('tabindex', '0');
+    expect(firstItem).toHaveAttribute('tabindex', '-1');
+
+    // Tab forward from search input -> internal category buttons, so do NOT close menu.
+    searchInput.focus();
+    fireEvent.keyDown(searchInput, { key: 'Tab' });
+    expect(onTabClose).not.toHaveBeenCalled();
+
+    // Tab across category buttons stays inside panel.
+    allCategoryBtn.focus();
+    fireEvent.keyDown(allCategoryBtn, { key: 'Tab' });
+    fireEvent.keyDown(allCategoryBtn, { key: 'Tab', shiftKey: true });
+    expect(onTabClose).not.toHaveBeenCalled();
+
+    // Shift+Tab from first control (searchInput) exits panel -> closes menu.
+    searchInput.focus();
+    fireEvent.keyDown(searchInput, { key: 'Tab', shiftKey: true });
+    expect(onTabClose).toHaveBeenCalledTimes(1);
+
+    // Tab forward from roving menuitem exits panel -> closes menu.
+    rovingItem.focus();
+    fireEvent.keyDown(rovingItem, { key: 'Tab' });
+    expect(onTabClose).toHaveBeenCalledTimes(2);
+  });
 });

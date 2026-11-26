@@ -547,8 +547,10 @@ analyze_pattern_tool = ToolDefinition(
 
 def _handle_calculate_quant_factors(stock_code: str, days: int = 120) -> dict:
     """Compute quantitative multi-factor indicators (BOLL, Donchian, ATR, KDJ, ADX, OBV/VWAP/MFI, Momentum)."""
+    import pandas as pd
+
     from src.quant_factors import compute_quant_factors
-    from src.services.history_loader import load_history_df
+    from src.services.history_loader import get_frozen_target_date, load_history_df
 
     if not (stock_code and str(stock_code).strip()):
         return {"error": "stock_code is required"}
@@ -558,9 +560,19 @@ def _handle_calculate_quant_factors(stock_code: str, days: int = 120) -> dict:
     except (TypeError, ValueError):
         lookback = 120
 
-    df, source = load_history_df(stock_code, days=lookback)
+    df, source = load_history_df(stock_code, days=lookback, min_records=min(lookback, 60))
     if df is None or df.empty:
         return {"error": f"No historical data available for quant factor analysis on {stock_code}"}
+
+    if "date" in df.columns:
+        frozen = get_frozen_target_date()
+        if frozen is not None:
+            parsed_dates = pd.to_datetime(df["date"], errors="coerce").dt.date
+            df = df[parsed_dates.isna() | (parsed_dates <= frozen)].copy()
+        df = df.sort_values("date").reset_index(drop=True)
+
+    if len(df) > lookback:
+        df = df.tail(lookback).reset_index(drop=True)
 
     if len(df) < 20:
         return {"error": f"Insufficient data for quant factor analysis on {stock_code} (need >= 20 days)"}

@@ -20,20 +20,20 @@ instructions: |
 
   ## 量化因子判据
 
-  调用 `calculate_quant_factors` 与 `analyze_trend`：
+  优先读取上下文中预计算的 `quant_factors` 字段；仅在具备工具调用能力的 Agent 会话且上下文缺失时调用 `calculate_quant_factors` 与 `analyze_trend`（若历史不足60日导致 `roc_60_pct` / `dist_from_high_60_pct` 为 `N/A`，必须如实说明样本窗口限制，不得臆测）：
 
   1. **趋势模板前置（Stage-2 确认）**
      - 现价站上 MA20/MA60 且处于多头趋势（MA20 向上，`roc_60_pct > 0`）。
      - 距离近60日高点不能过远：`dist_from_high_60_pct >= -12%`（紧贴高位右侧蓄势，排除深水反弹股）。
 
-  2. **振幅收敛与缩量（Contraction Quality）**
-     - `vcp_contraction_ratio < 0.70`（近10日振幅相对前20日明显收窄），理想值 `< 0.55`。
-     - 配合 `boll_squeeze == true` 与收缩末端缩量（`volume_ratio_5d <= 0.85` 筑底或突破当日 `>= 1.5`）。
+  2. **振幅收敛与缩量（Contraction Quality — 突破前窗口）**
+     - `vcp_contraction_ratio < 0.70`（统计突破前10日相对再前20日振幅，已排除突破当日放量冲击，理想值 `< 0.55`）。
+     - 配合 `boll_squeeze_prior == true`（突破前布林已收口）或 `boll_squeeze == true`，以及收缩末端缩量（`volume_ratio_5d <= 0.85` 筑底或突破当日 `>= 1.5`）。
 
   3. **枢轴突破与窄止损执行**
-     - 若今日放量上穿枢轴高点（`donchian_signal == "breakout_20_high"` 或 `boll_pct_b >= 0.85` 且 `obv_trend == "rising"`），可右侧积极跟进，止损设在最后一次紧缩区下沿或 `atr_stop_loss_long`（极紧凑止损是 VCP 高盈亏比的核心）。
+     - 若今日放量上穿枢轴高点（`donchian_signal == "breakout_20_high"` 或 `boll_squeeze_breakout == true` 且 `obv_trend == "rising"`），可右侧积极跟进，入场日将最后一次紧缩区下沿或 `atr_stop_loss_long` 固定记为初始止损；持仓防守关注 `atr_trailing_stop_long`。
 
   评分调整建议：
   - 多头Stage-2 + `vcp_contraction_ratio < 0.65` + 放量枢轴突破（`volume_ratio_5d >= 1.5`）：`sentiment_score +15`
   - 紧贴高点（`dist_from_high_60_pct >= -10%`）缩量收敛等待触发：`sentiment_score +9`
-  - 跌破前高下方 -15% 以上或波动反扩（`vcp_contraction_ratio > 1.2`）：`sentiment_score -10`
+  - 跌破前高下方 -15% 以上或突破前结构波动反扩（`vcp_contraction_ratio > 1.2`）：`sentiment_score -10`

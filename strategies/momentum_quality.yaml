@@ -20,7 +20,7 @@ instructions: |
 
   ## 量化因子判据
 
-  调用 `calculate_quant_factors` 与 `analyze_trend`：
+  优先读取上下文中预计算的 `quant_factors` 字段；仅在具备工具调用能力的 Agent 会话且上下文缺失时调用 `calculate_quant_factors` 与 `analyze_trend`（当有效交易日不足60日导致 `roc_60_pct` / `sharpe_60` / `max_drawdown_60_pct` 为 `N/A` 时如实标注样本受限，不得将短样本视作完整60日风险指标）：
 
   1. **动量因子（Trend & Persistence）**
      - `roc_20_pct > 0` 且 `roc_60_pct > 0`（中短期动量同向）；关注 `sharpe_60 >= 1.0` 代表收益风险比优异。

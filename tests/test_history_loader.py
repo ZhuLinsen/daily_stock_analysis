@@ -77,7 +77,47 @@ class HistoryLoaderTestCase(unittest.TestCase):
 
         self.assertIsNotNone(df)
         self.assertEqual(source, "eastmoney")
-        mock_fm.get_daily_data.assert_called_once_with("600519", days=60)
+        mock_fm.get_daily_data.assert_called_once_with(
+            "600519",
+            end_date="2026-04-18",
+            days=60,
+        )
+
+    @patch("src.services.history_loader._get_fetcher_manager")
+    @patch("src.storage.get_db")
+    def test_fallback_drops_post_freeze_rows_when_cache_misses(self, mock_get_db, mock_get_fm):
+        from src.services.history_loader import (
+            load_history_df,
+            reset_frozen_target_date,
+            set_frozen_target_date,
+        )
+
+        frozen_date = date(2026, 4, 15)
+        token = set_frozen_target_date(frozen_date)
+        try:
+            mock_db = MagicMock()
+            mock_db.get_data_range.return_value = []
+            mock_get_db.return_value = mock_db
+
+            provider_df = pd.DataFrame([
+                {"date": "2026-04-14", "close": 99.0},
+                {"date": "2026-04-15", "close": 100.0},
+                {"date": "2026-04-16", "close": 130.0},
+            ])
+            mock_fm = MagicMock()
+            mock_fm.get_daily_data.return_value = (provider_df, "akshare")
+            mock_get_fm.return_value = mock_fm
+
+            df, source = load_history_df("600519", days=60, min_records=60)
+            self.assertEqual(source, "akshare")
+            mock_fm.get_daily_data.assert_called_once_with(
+                "600519",
+                end_date="2026-04-15",
+                days=60,
+            )
+            self.assertEqual(list(df["date"]), ["2026-04-14", "2026-04-15"])
+        finally:
+            reset_frozen_target_date(token)
 
     # ------------------------------------------------------------------
     # ContextVar integration

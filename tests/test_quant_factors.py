@@ -55,7 +55,7 @@ class TestComputeQuantFactors:
         _assert_json_finite(res.to_dict())
 
     def test_flat_zero_volume_series_never_produces_nan_or_inf(self):
-        flat_df = _make_ohlcv([50.0] * 40, volumes=[0.0] * 40, spread=0.0)
+        flat_df = _make_ohlcv([50.0] * 60, volumes=[0.0] * 60, spread=0.0)
         res = compute_quant_factors(flat_df, "000001")
         assert res.sufficient_data is True
         assert res.boll_bandwidth_pct == 0.0
@@ -75,7 +75,7 @@ class TestComputeQuantFactors:
 
         res = compute_quant_factors(df, "600519")
         assert res.sufficient_data is True
-        assert res.donchian_high_20 < 125.0  # prior bars exclude current bar
+        assert res.donchian_high_20 is not None and res.donchian_high_20 < 125.0  # prior bars exclude current bar
         assert res.donchian_signal == "breakout_20_high"
         assert res.atr_stop_loss_long < res.current_price < res.atr_take_profit_2r
         assert res.roc_20_pct is not None and res.roc_20_pct > 10.0
@@ -88,7 +88,7 @@ class TestComputeQuantFactors:
         _assert_json_finite(res.to_dict())
 
     def test_volatility_squeeze_and_vcp_contraction_detected(self):
-        # Wide oscillation first 30 days (+-8%), then tight flat range for last 15 days (+-0.2%)
+        # Wide oscillation first 30 days (+-8%), then tight flat range for last 20 days (+-0.2%)
         wide = [100.0 + ((-1) ** i) * 6.0 for i in range(30)]
         tight = [100.5 + ((-1) ** i) * 0.15 for i in range(20)]
         rows = []
@@ -113,8 +113,8 @@ class TestComputeQuantFactors:
         assert res.quant_regime == "volatility_squeeze"
 
     def test_downtrend_triggers_oversold_and_negative_momentum(self):
-        closes = [120.0 - i * 1.2 for i in range(45)]
-        vols = [1_500_000.0] * 45
+        closes = [120.0 - i * 1.0 for i in range(60)]
+        vols = [1_500_000.0] * 60
         df = _make_ohlcv(closes, volumes=vols, spread=0.01)
 
         res = compute_quant_factors(df, "688001")
@@ -125,6 +125,94 @@ class TestComputeQuantFactors:
         assert res.kdj_status in ("oversold", "death_cross_high", "death_cross")
         assert res.adx_direction == "bearish"
         assert res.quant_composite_score < 45
+
+    def test_window_sufficiency_gates_short_20d_and_60d_metrics(self):
+        # Exactly 20 bars: insufficient for full 20-bar prior Donchian or 60-day risk metrics
+        df_20 = _make_ohlcv([100.0 + i * 0.5 for i in range(20)], spread=0.01)
+        res_20 = compute_quant_factors(df_20, "600519")
+        assert res_20.sufficient_data is True
+        assert res_20.donchian_high_20 is None
+        assert res_20.donchian_low_20 is None
+        assert res_20.donchian_signal != "breakout_20_high"
+        assert res_20.max_drawdown_60_pct is None
+        assert res_20.dist_from_high_60_pct is None
+        assert res_20.sharpe_60 is None
+
+        # 35 bars: enough for 20d Donchian (>=21) and VCP (>=31), NOT enough for 60d risk metrics
+        df_35 = _make_ohlcv([100.0 + i * 0.4 for i in range(35)], spread=0.01)
+        res_35 = compute_quant_factors(df_35, "600519")
+        assert res_35.donchian_high_20 is not None
+        assert res_35.vcp_contraction_ratio is not None
+        assert res_35.max_drawdown_60_pct is None
+        assert res_35.dist_from_high_60_pct is None
+        assert res_35.sharpe_60 is None
+
+    def test_chandelier_trailing_stop_detects_post_entry_drawdown_breach(self):
+        # 60 flat bars at 100 -> breakout day at 110 -> next day pullback to 104
+        # Entry day 2N stop is >104; next-day Chandelier stop anchored to prior peak 110 detects breach.
+        closes = [100.0] * 60 + [110.0, 104.0]
+        df = _make_ohlcv(closes, spread=0.0)
+        res = compute_quant_factors(df, "600519")
+        assert res.atr_trailing_stop_long is not None
+        assert res.atr_trailing_stop_long > 104.0
+        assert res.atr_trailing_stop_breached is True
+        assert any("trailing stop breached" in s.lower() for s in res.factor_signals)
+
+    def test_prior_bar_squeeze_and_vcp_preserved_on_breakout_day(self):
+        wide = [100.0 + ((-1) ** i) * 6.0 for i in range(30)]
+        tight = [100.2 + ((-1) ** i) * 0.1 for i in range(20)]
+        rows = []
+        start = date(2026, 1, 1)
+        for idx, c in enumerate(wide + tight):
+            spread = 0.03 if idx < 30 else 0.002
+            rows.append(
+                {
+                    "date": (start + timedelta(days=idx)).isoformat(),
+                    "open": c,
+                    "high": c * (1.0 + spread),
+                    "low": c * (1.0 - spread),
+                    "close": c,
+                    "volume": 2_000_000.0 if idx < 30 else 600_000.0,
+                }
+            )
+        # Breakout day expands strongly on high volume -> today's BW widens, prior squeeze & VCP stay True
+        rows.append(
+            {
+                "date": (start + timedelta(days=50)).isoformat(),
+                "open": 100.5,
+                "high": 112.0,
+                "low": 100.5,
+                "close": 112.0,
+                "volume": 3_000_000.0,
+            }
+        )
+        df = pd.DataFrame(rows)
+        res = compute_quant_factors(df, "300750")
+        assert res.donchian_signal == "breakout_20_high"
+        assert res.prev_boll_bandwidth_pct is not None and res.prev_boll_bandwidth_pct < 6.0
+        assert res.boll_squeeze_prior is True
+        assert res.boll_squeeze_breakout is True
+        assert res.vcp_contraction_ratio is not None and res.vcp_contraction_ratio < 0.70
+
+    def test_missing_zero_low_placeholder_is_sanitized_to_close(self):
+        rows = []
+        start = date(2026, 1, 1)
+        for idx in range(25):
+            close = 100.0 if idx < 24 else 95.0
+            rows.append(
+                {
+                    "date": (start + timedelta(days=idx)).isoformat(),
+                    "open": close,
+                    "high": close + 1.0,
+                    "low": 0.0 if idx == 20 else close - 1.0,  # AlphaVantage missing low=0.0 placeholder
+                    "close": close,
+                    "volume": 1_000_000.0,
+                }
+            )
+        res = compute_quant_factors(pd.DataFrame(rows), "AAPL")
+        assert res.donchian_low_20 is not None
+        assert res.donchian_low_20 >= 99.0
+        assert res.donchian_signal == "breakdown_20_low"
 
 
 class TestStockAnalyzerIntegration:
@@ -158,18 +246,63 @@ class TestQuantAgentToolAndStrategies:
         assert td is not None
         assert td.category == "analysis"
 
-        sample_df = _make_ohlcv([50.0 + i * 0.4 for i in range(50)])
+        sample_df = _make_ohlcv([50.0 + i * 0.4 for i in range(65)])
         with mock.patch("src.services.history_loader.load_history_df", return_value=(sample_df, "akshare")) as mock_loader:
             out = _handle_calculate_quant_factors("600519", days=999)
 
-        mock_loader.assert_called_once_with("600519", days=365)
+        mock_loader.assert_called_once_with("600519", days=365, min_records=60)
         assert out["sufficient_data"] is True
         assert out["source"] == "akshare"
         assert "atr_stop_loss_long" in out
 
+        # Verify days truncation slices returned buffered frame to requested lookback window
+        with mock.patch("src.services.history_loader.load_history_df", return_value=(sample_df, "db_cache")):
+            out_30 = _handle_calculate_quant_factors("600519", days=30)
+        assert out_30["bars_analyzed"] == 30
+        assert out_30["max_drawdown_60_pct"] is None
+
+        # Verify frozen date cutoff defensively drops post-freeze rows
+        from src.services.history_loader import reset_frozen_target_date, set_frozen_target_date
+
+        frozen = date(2026, 2, 15)
+        token = set_frozen_target_date(frozen)
+        try:
+            post_row_df = sample_df.copy()
+            post_row_df.loc[len(post_row_df)] = {
+                "date": "2026-03-30",
+                "open": 130.0,
+                "high": 130.0,
+                "low": 130.0,
+                "close": 130.0,
+                "volume": 2_000_000.0,
+            }
+            with mock.patch("src.services.history_loader.load_history_df", return_value=(post_row_df, "akshare")):
+                out_frozen = _handle_calculate_quant_factors("600519", days=60)
+            assert out_frozen["current_price"] < 120.0
+        finally:
+            reset_frozen_target_date(token)
+
         with mock.patch("src.services.history_loader.load_history_df", return_value=(pd.DataFrame(), "akshare")):
             err = _handle_calculate_quant_factors("600519")
         assert "error" in err
+
+    def test_normal_analysis_prompt_receives_precomputed_quant_factors_when_available(self):
+        from src.analyzer import _format_quant_factors_prompt_section
+        from src.stock_analyzer import StockTrendAnalyzer
+
+        df = _make_ohlcv([100.0 + i * 0.5 for i in range(65)])
+        trend_res = StockTrendAnalyzer().analyze(df, "600519")
+        assert trend_res.quant_factors is not None
+
+        zh_block = _format_quant_factors_prompt_section(trend_res.quant_factors, english=False)
+        en_block = _format_quant_factors_prompt_section(trend_res.quant_factors, english=True)
+        assert "量化多因子指标" in zh_block
+        assert "atr_trailing_stop_long=" in zh_block
+        assert "atr_trailing_stop_breached=" in zh_block
+        assert "boll_squeeze_prior=" in zh_block
+        assert "sharpe_60=" in zh_block
+        assert "Quantitative Multi-Factor Indicators" in en_block
+        assert "sharpe_60=" in en_block
 
     def test_five_new_quant_strategies_load_group_and_localize(self):
         from src.agent.skills.base import SkillManager
