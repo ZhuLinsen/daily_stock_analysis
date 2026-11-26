@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { MemoryRouter, useLocation } from 'react-router-dom';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { useState } from 'react';
 import { CommandPalette } from '../CommandPalette';
 
@@ -116,67 +116,5 @@ describe('CommandPalette', () => {
     fireEvent.keyDown(window, { key: 'k', ctrlKey: true });
 
     expect(screen.getByRole('dialog', { name: 'Blocking modal' })).toBeInTheDocument();
-  });
-
-  it('opens the AlphaSift daily screener external shortcut in a safe new tab', () => {
-    const windowOpenSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
-    try {
-      render(<PaletteHarness />);
-      fireEvent.keyDown(window, { key: 'k', ctrlKey: true });
-
-      const input = screen.getByRole('textbox');
-      fireEvent.change(input, { target: { value: 'alphasift' } });
-      expect(screen.getByText('AlphaSift 每日选股榜单')).toBeInTheDocument();
-
-      fireEvent.keyDown(input, { key: 'Enter' });
-
-      expect(windowOpenSpy).toHaveBeenCalledWith(
-        'https://alphasift.zhulinsen.tech/?utm_source=dsa_web_palette',
-        '_blank',
-        'noopener,noreferrer',
-      );
-      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-    } finally {
-      windowOpenSpy.mockRestore();
-    }
-  });
-
-  it('keeps ticker analysis shortcut first when typing a ticker like PICK without opening external links', () => {
-    const windowOpenSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
-    try {
-      render(<PaletteHarness />);
-      fireEvent.keyDown(window, { key: 'k', ctrlKey: true });
-
-      const input = screen.getByRole('textbox');
-      fireEvent.change(input, { target: { value: 'PICK' } });
-      expect(screen.getByText('前往首页分析 PICK')).toBeInTheDocument();
-
-      fireEvent.keyDown(input, { key: 'Enter' });
-
-      expect(windowOpenSpy).not.toHaveBeenCalled();
-      expect(screen.getByTestId('current-route')).toHaveTextContent('/?stock=PICK');
-    } finally {
-      windowOpenSpy.mockRestore();
-    }
-  });
-
-  it('prioritizes ticker shortcut on Enter for short tickers like SIF even when substring-matching AlphaSift', () => {
-    const windowOpenSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
-    try {
-      render(<PaletteHarness />);
-      fireEvent.keyDown(window, { key: 'k', ctrlKey: true });
-
-      const input = screen.getByRole('textbox');
-      fireEvent.change(input, { target: { value: 'SIF' } });
-      expect(screen.getByText('前往首页分析 SIF')).toBeInTheDocument();
-      expect(screen.getByText('AlphaSift 每日选股榜单')).toBeInTheDocument();
-
-      fireEvent.keyDown(input, { key: 'Enter' });
-
-      expect(windowOpenSpy).not.toHaveBeenCalled();
-      expect(screen.getByTestId('current-route')).toHaveTextContent('/?stock=SIF');
-    } finally {
-      windowOpenSpy.mockRestore();
-    }
   });
 });

@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowRight, ExternalLink, Search, Sparkles } from 'lucide-react';
+import { ArrowRight, Search, Sparkles } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useUiLanguage } from '../../contexts/UiLanguageContext';
 
@@ -17,7 +17,6 @@ interface PaletteItem {
   subtitleEn: string;
   keywords: string;
   to: string;
-  external?: boolean;
 }
 
 const STATIC_COMMANDS: PaletteItem[] = [
@@ -33,7 +32,6 @@ const STATIC_COMMANDS: PaletteItem[] = [
   { id: 'nav-settings', titleZh: '系统设置', titleEn: 'Settings', subtitleZh: '全局参数搜索与系统体检', subtitleEn: 'System configuration & Doctor', keywords: 'settings config env doctor 设置 配置 体检', to: '/settings' },
   { id: 'cfg-llm', titleZh: '设置 -> AI 模型接入', titleEn: 'Settings -> AI Models', subtitleZh: '管理 Gemini / DeepSeek / Modelflare / 多渠道', subtitleEn: 'Configure LLM channels & keys', keywords: 'llm model api key gemini deepseek modelflare 模型 渠道', to: '/settings?category=ai_model' },
   { id: 'cfg-notify', titleZh: '设置 -> 推送通知', titleEn: 'Settings -> Notifications', subtitleZh: '配置微信/飞书/Telegram/Discord 并一键测试', subtitleEn: 'Configure & test webhooks', keywords: 'notify webhook wechat feishu telegram discord 通知 推送 飞书 微信', to: '/settings?category=notification' },
-  { id: 'ext-alphasift', titleZh: 'AlphaSift 每日选股榜单', titleEn: 'AlphaSift Screener', subtitleZh: '多市场每日自动选股与公开 T+N 纸面策略跟踪（新窗口打开）', subtitleEn: 'Multi-market daily stock screening & public T+N paper track record', keywords: 'alphasift screener 选股 榜单 生态', to: 'https://alphasift.zhulinsen.tech/?utm_source=dsa_web_palette', external: true },
 ];
 
 const TICKER_PATTERN = /^[A-Za-z0-9.]{2,12}$/;
@@ -107,35 +105,18 @@ const CommandPaletteDialog: React.FC<{ onClose: () => void }> = ({ onClose }) =>
   const items = useMemo(() => {
     const trimmed = query.trim();
     const lowered = trimmed.toLowerCase();
-    const internalCommands: Array<{ id: string; title: string; subtitle: string; to: string; isTicker?: boolean; external?: boolean }> = [];
-    const exactExternalCommands: Array<{ id: string; title: string; subtitle: string; to: string; isTicker?: boolean; external?: boolean }> = [];
-    const otherExternalCommands: Array<{ id: string; title: string; subtitle: string; to: string; isTicker?: boolean; external?: boolean }> = [];
+    const list: Array<{ id: string; title: string; subtitle: string; to: string; isTicker?: boolean }> = [];
 
     for (const cmd of STATIC_COMMANDS) {
       const title = language === 'en' ? cmd.titleEn : cmd.titleZh;
       const subtitle = language === 'en' ? cmd.subtitleEn : cmd.subtitleZh;
-      const searchHaystack = cmd.external
-        ? `${cmd.titleZh} ${cmd.titleEn} ${cmd.keywords}`
-        : `${cmd.titleZh} ${cmd.titleEn} ${cmd.subtitleZh} ${cmd.subtitleEn} ${cmd.keywords}`;
       if (
         !lowered
-        || searchHaystack.toLowerCase().includes(lowered)
+        || `${cmd.titleZh} ${cmd.titleEn} ${cmd.subtitleZh} ${cmd.subtitleEn} ${cmd.keywords}`.toLowerCase().includes(lowered)
       ) {
-        const entry = { id: cmd.id, title, subtitle, to: cmd.to, ...(cmd.external ? { external: true } : {}) };
-        if (!cmd.external) {
-          internalCommands.push(entry);
-        } else if (
-          lowered.length >= 6
-          && cmd.keywords.toLowerCase().split(/\s+/).includes(lowered)
-        ) {
-          exactExternalCommands.push(entry);
-        } else {
-          otherExternalCommands.push(entry);
-        }
+        list.push({ id: cmd.id, title, subtitle, to: cmd.to });
       }
     }
-
-    const list = [...internalCommands, ...exactExternalCommands];
 
     if (trimmed && TICKER_PATTERN.test(trimmed)) {
       const upper = trimmed.toUpperCase();
@@ -148,18 +129,14 @@ const CommandPaletteDialog: React.FC<{ onClose: () => void }> = ({ onClose }) =>
       });
     }
 
-    return [...list, ...otherExternalCommands];
+    return list;
   }, [language, query, t]);
 
   const activeIndex = items.length > 0 ? Math.min(selectedIndex, items.length - 1) : 0;
 
-  const executeItem = (item: { to: string; external?: boolean }) => {
+  const executeItem = (to: string) => {
     onClose();
-    if (item.external) {
-      window.open(item.to, '_blank', 'noopener,noreferrer');
-      return;
-    }
-    navigate(item.to);
+    navigate(to);
   };
 
   const handleInputKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
@@ -176,7 +153,7 @@ const CommandPaletteDialog: React.FC<{ onClose: () => void }> = ({ onClose }) =>
     } else if (event.key === 'Enter' && items.length > 0) {
       event.preventDefault();
       const target = items[activeIndex];
-      if (target) executeItem(target);
+      if (target) executeItem(target.to);
     }
   };
 
@@ -233,7 +210,7 @@ const CommandPaletteDialog: React.FC<{ onClose: () => void }> = ({ onClose }) =>
                 <button
                   key={item.id}
                   type="button"
-                  onClick={() => executeItem(item)}
+                  onClick={() => executeItem(item.to)}
                   onMouseEnter={() => setSelectedIndex(idx)}
                   className={`flex w-full items-center justify-between rounded-xl px-3 py-2.5 text-left transition-colors ${
                     active
@@ -248,9 +225,7 @@ const CommandPaletteDialog: React.FC<{ onClose: () => void }> = ({ onClose }) =>
                     </div>
                     <p className="truncate text-xs text-muted-text">{item.subtitle}</p>
                   </div>
-                  {item.external
-                    ? <ExternalLink className="h-3.5 w-3.5 shrink-0 text-muted-text" aria-hidden="true" />
-                    : <ArrowRight className="h-3.5 w-3.5 shrink-0 text-muted-text" aria-hidden="true" />}
+                  <ArrowRight className="h-3.5 w-3.5 shrink-0 text-muted-text" aria-hidden="true" />
                 </button>
               );
             })
