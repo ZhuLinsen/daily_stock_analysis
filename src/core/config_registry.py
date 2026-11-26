@@ -155,6 +155,45 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         ],
         "warning_codes": [],
     },
+    "LLM_TRANSPORT_MODE": {
+        "title": "LLM HTTP Transport",
+        "description": (
+            "Select the HTTP execution transport for standard API model requests. "
+            "auto uses native HTTPX for OpenAI, Anthropic, and Gemini while falling back to LiteLLM for bedrock/vertex/azure; "
+            "native runs purely on HTTPX without importing litellm."
+        ),
+        "category": "ai_model",
+        "data_type": "string",
+        "ui_control": "select",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": "litellm",
+        "options": [
+            {"label": "LiteLLM (default)", "value": "litellm"},
+            {"label": "Auto (Native HTTPX + IAM fallback)", "value": "auto"},
+            {"label": "Native HTTPX only", "value": "native"},
+        ],
+        "validation": {"enum": ["litellm", "auto", "native"]},
+        "display_order": 2,
+        "help_key": "settings.ai_model.LLM_TRANSPORT_MODE",
+        "examples": [
+            "LLM_TRANSPORT_MODE=litellm",
+            "LLM_TRANSPORT_MODE=auto",
+            "LLM_TRANSPORT_MODE=native",
+        ],
+        "docs": [
+            {
+                "label": "Native HTTPX 传输说明",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/llm-native-transport.md",
+            },
+            {
+                "label": "LLM 配置指南",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/LLM_CONFIG_GUIDE.md",
+            },
+        ],
+        "warning_codes": [],
+    },
     "OPENCODE_CLI_MODEL": {
         "title": "OpenCode CLI Model",
         "description": "Optional model override passed to OpenCode CLI when GENERATION_BACKEND=opencode_cli. Leave empty to use OpenCode's default model.",

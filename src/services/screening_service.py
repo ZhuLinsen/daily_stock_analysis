@@ -3045,6 +3045,52 @@ def _build_screening_context(
     }
 
 
+class _ScreeningHeaderTransportProxy:
+    """Wrap a non-LiteLLM transport to inject screening route headers cleanly."""
+
+    def __init__(self, delegate: Any, header_routes: List[Dict[str, Any]]) -> None:
+        self._delegate = delegate
+        self._header_routes = [route.copy() for route in header_routes]
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._delegate, name)
+
+    def completion(self, *args: Any, **kwargs: Any) -> Any:
+        headers = _match_screening_litellm_headers(args, kwargs, self._header_routes)
+        if headers:
+            existing_headers = kwargs.get("extra_headers")
+            if isinstance(existing_headers, dict):
+                merged_headers = dict(headers)
+                merged_headers.update(existing_headers)
+                kwargs = dict(kwargs)
+                kwargs["extra_headers"] = merged_headers
+            elif existing_headers in (None, ""):
+                kwargs = dict(kwargs)
+                kwargs["extra_headers"] = dict(headers)
+        return self._delegate.completion(*args, **kwargs)
+
+    def create_router(self, model_list: List[Dict[str, Any]], **kwargs: Any) -> Any:
+        patched_list: List[Dict[str, Any]] = []
+        for entry in model_list or []:
+            if not isinstance(entry, dict):
+                patched_list.append(entry)
+                continue
+            params = dict(entry.get("litellm_params") or {})
+            headers = _match_screening_litellm_headers((), params, self._header_routes)
+            if headers:
+                existing_headers = params.get("extra_headers")
+                if isinstance(existing_headers, dict):
+                    merged_headers = dict(headers)
+                    merged_headers.update(existing_headers)
+                    params["extra_headers"] = merged_headers
+                elif existing_headers in (None, ""):
+                    params["extra_headers"] = dict(headers)
+            copied = dict(entry)
+            copied["litellm_params"] = params
+            patched_list.append(copied)
+        return self._delegate.create_router(patched_list, **kwargs)
+
+
 @contextmanager
 def _screening_litellm_headers(config: Config) -> Iterator[None]:
     header_routes = _build_screening_litellm_header_routes(config)
@@ -3052,8 +3098,17 @@ def _screening_litellm_headers(config: Config) -> Iterator[None]:
         yield
         return
 
+    from src.llm.transport import LiteLLMTransport, get_transport, resolve_litellm_module, use_transport
+
+    active_transport = get_transport()
+    if not isinstance(active_transport, LiteLLMTransport):
+        proxy = _ScreeningHeaderTransportProxy(active_transport, header_routes)
+        with use_transport(proxy):
+            yield
+        return
+
     try:
-        litellm_module = importlib.import_module("litellm")
+        litellm_module = resolve_litellm_module(load=True)
     except Exception:
         yield
         return

@@ -6,12 +6,12 @@
 import copy
 import json
 import logging
-import os
 from dataclasses import dataclass
 
 from src.config import apply_litellm_api_surface
 from src.llm.errors import call_litellm_with_param_recovery
 from src.llm.generation_params import apply_litellm_generation_params
+from src.llm.transport import get_transport
 from src.services.screening.models import Pick
 from src.services.screening.normalize import (
     bounded_float as _bounded_float,
@@ -576,11 +576,11 @@ def _call_llm(
     timeout_sec: float = 60.0,
     max_tokens: int | None = 2048,
 ) -> str:
-    """Call LLM via litellm with fallback models and channel configs."""
-    import litellm
+    """Call LLM via configured transport with fallback models and channel configs."""
+    transport = get_transport()
 
     if silent:
-        _silence_litellm_logs(litellm)
+        transport.silence_logs()
 
     messages = [
         {"role": "system", "content": _RANKING_SYSTEM_INSTRUCTIONS},
@@ -591,7 +591,7 @@ def _call_llm(
 
     if config_path:
         router_result = _call_litellm_router(
-            litellm,
+            transport,
             config_path=config_path,
             model_chain=model_chain,
             messages=messages,
@@ -624,7 +624,7 @@ def _call_llm(
             )
             try:
                 response = _call_screening_litellm_completion(
-                    lambda request_kwargs: litellm.completion(**request_kwargs),
+                    lambda request_kwargs: transport.completion(**request_kwargs),
                     model=candidate_model,
                     call_kwargs=kwargs,
                 )
@@ -970,7 +970,7 @@ def _extract_partial_ranking_array(response: str, errors: list[str]):
 
 
 def _call_litellm_router(
-    litellm,
+    transport,
     *,
     config_path: str,
     model_chain: list[str],
@@ -988,7 +988,7 @@ def _call_litellm_router(
         model_list = data.get("model_list")
         if not isinstance(model_list, list) or not model_list:
             return None
-        router = litellm.Router(model_list=model_list)
+        router = transport.create_router(model_list=model_list)
         for model in model_chain:
             kwargs = {
                 "model": model,
@@ -1072,17 +1072,6 @@ def _call_screening_litellm_completion(
             logger=logger,
             log_label="[Screening LiteLLM]",
         )
-
-
-def _silence_litellm_logs(litellm) -> None:
-    os.environ.setdefault("LITELLM_LOG", "ERROR")
-    try:
-        litellm.set_verbose = False
-        litellm.suppress_debug_info = True
-    except Exception:
-        pass
-    for logger_name in ("LiteLLM", "litellm"):
-        logging.getLogger(logger_name).setLevel(logging.WARNING)
 
 
 def _build_litellm_attempts(

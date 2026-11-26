@@ -1426,11 +1426,13 @@ class SystemConfigService:
         )
 
         try:
-            import litellm
             from src.agent.llm_adapter import (
                 resolve_fallback_litellm_wire_models,
                 register_fallback_model_pricing,
             )
+            from src.llm.transport import get_transport
+
+            transport = get_transport()
 
             # Register fallback pricing for OpenAI-compatible models to prevent cost calculation errors
             config_model_list = None
@@ -1456,7 +1458,7 @@ class SystemConfigService:
                     hermes_call_kwargs.pop("api_key", None)
                     hermes_call_kwargs.pop("api_base", None)
                     response = call_litellm_with_param_recovery(
-                        lambda kwargs: litellm.completion(**kwargs),
+                        lambda kwargs: transport.completion(**kwargs),
                         model=wire_model,
                         call_kwargs=hermes_call_kwargs,
                         logger=logger,
@@ -1464,7 +1466,7 @@ class SystemConfigService:
                     )
             else:
                 response = call_litellm_with_param_recovery(
-                    lambda kwargs: litellm.completion(**kwargs),
+                    lambda kwargs: transport.completion(**kwargs),
                     model=wire_model,
                     call_kwargs=call_kwargs,
                     logger=logger,
@@ -1502,7 +1504,7 @@ class SystemConfigService:
             capability_results: Dict[str, Any] = {}
             if requested_capabilities and is_reserved_hermes_name(channel_name):
                 capability_results = self._run_hermes_capability_checks(
-                    litellm_module=litellm,
+                    litellm_module=transport,
                     resolved_model=resolved_model,
                     selected_api_key=selected_api_key,
                     base_url=base_url,
@@ -1512,7 +1514,7 @@ class SystemConfigService:
                 )
             elif requested_capabilities:
                 capability_results = self._run_llm_capability_checks(
-                    litellm_module=litellm,
+                    litellm_module=transport,
                     resolved_model=wire_model,
                     selected_api_key=selected_api_key,
                     base_url=base_url,

@@ -49,6 +49,17 @@ const settingsHelpZhCN: SettingsHelpMap = {
     ],
     examples: [],
   },
+  'settings.ai_model.LLM_TRANSPORT_MODE': {
+    title: 'LLM HTTP 传输引擎',
+    summary: '控制标准 API 模型请求使用的底层 HTTP 传输层（litellm / auto / native）。',
+    usage: '默认 litellm 保持现有行为；推荐先切换 auto 验证原生 HTTPX（OpenAI / Anthropic / Gemini 走原生，云 IAM 自动回退 LiteLLM），确认稳定后再切 native 完全零依赖启动。',
+    valueNotes: [
+      'litellm（默认）：使用现有 LiteLLM SDK。',
+      'auto：4 类标准协议走原生 HTTPX，bedrock / vertex_ai / azure 自动回退 LiteLLM。',
+      'native：强制纯原生 HTTPX，全程不导入 litellm。',
+    ],
+    examples: ['LLM_TRANSPORT_MODE=auto', 'LLM_TRANSPORT_MODE=native'],
+  },
   'settings.ai_model.GENERATION_FALLBACK_BACKEND': {
     title: '备用生成方式',
     showFieldKey: false,
@@ -1388,6 +1399,17 @@ const settingsHelpEnUS: SettingsHelpMap = {
       'Default model settings continue to use your existing API keys, model channels, and fallback model settings.',
     ],
     examples: [],
+  },
+  'settings.ai_model.LLM_TRANSPORT_MODE': {
+    title: 'LLM HTTP Transport',
+    summary: 'Select the HTTP transport implementation for standard API model requests (litellm / auto / native).',
+    usage: 'litellm (default) keeps legacy SDK routing; auto uses native HTTPX for OpenAI, Anthropic, and Gemini while falling back to LiteLLM for bedrock/vertex_ai/azure; native enforces pure HTTPX with zero litellm import.',
+    valueNotes: [
+      'litellm (default): routes requests via the LiteLLM SDK.',
+      'auto: native HTTPX for 4 standard protocols with automatic LiteLLM fallback for cloud IAM providers.',
+      'native: pure HTTPX only; never imports litellm at startup or inference time.',
+    ],
+    examples: ['LLM_TRANSPORT_MODE=auto', 'LLM_TRANSPORT_MODE=native'],
   },
   'settings.ai_model.GENERATION_FALLBACK_BACKEND': {
     title: 'Fallback Generation Method',

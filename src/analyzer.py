@@ -18,9 +18,13 @@ import time
 from dataclasses import dataclass
 from typing import Optional, Dict, Any, List, Tuple, Callable, Union
 
-import litellm
 from json_repair import repair_json
-from litellm import Router
+
+from src.llm.transport import (
+    create_litellm_compat_proxy,
+    create_router,
+    dispatch_completion,
+)
 
 from src.agent.llm_adapter import (
     apply_thinking_extra_body_to_model_list,
@@ -112,6 +116,8 @@ from src.market_phase_prompt import format_market_phase_prompt_section
 from src.market_structure_prompt import format_market_structure_prompt_section
 
 logger = logging.getLogger(__name__)
+litellm = create_litellm_compat_proxy()
+Router = create_router
 
 
 def _describe_llm_result_model(
@@ -3387,7 +3393,7 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                 hermes_kwargs["extra_body"] = merged_hermes_extra
             with open_hermes_no_proxy_client(api_key=api_key, base_url=base_url, timeout=timeout) as client:
                 hermes_kwargs["client"] = client
-                return litellm.completion(**hermes_kwargs)
+                return dispatch_completion(compat_proxy=litellm, **hermes_kwargs)
 
         wire_models = resolve_fallback_litellm_wire_models(model, config.llm_model_list)
         register_fallback_model_pricing(wire_models)
@@ -3401,7 +3407,7 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
         if keys:
             effective_kwargs["api_key"] = keys[0]
         effective_kwargs.update(extra_litellm_params(model, config))
-        return litellm.completion(**effective_kwargs)
+        return dispatch_completion(compat_proxy=litellm, **effective_kwargs)
 
     def _normalize_usage(
         self,

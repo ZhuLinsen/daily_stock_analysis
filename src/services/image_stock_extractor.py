@@ -15,24 +15,18 @@ import json
 import logging
 import random
 import re
-import sys
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from src.config import Config, channel_allows_empty_api_key, get_config
 from src.llm.hermes import route_has_hermes
+from src.llm.transport import create_litellm_compat_proxy, dispatch_completion
 
 logger = logging.getLogger(__name__)
 
 
-class _LiteLLMPlaceholder:
-    """Provide a patchable placeholder before litellm is imported."""
-
-    completion = None
-
-
 # Keep a patchable module attribute while still avoiding a hard import at module load.
-litellm = sys.modules.get("litellm") or _LiteLLMPlaceholder()
+litellm = create_litellm_compat_proxy()
 
 EXTRACT_PROMPT = """请分析这张股票市场截图或图片，提取其中所有可见的股票代码及名称。
 
@@ -269,7 +263,6 @@ def _deployment_allows_empty_api_key(deployment: Dict[str, Any]) -> bool:
 
 def _call_litellm_vision(image_b64: str, mime_type: str, api_key: Optional[str] = None) -> str:
     """Extract stock codes from an image using litellm (all providers via OpenAI vision format)."""
-    global litellm
     cfg = get_config()
     model = _resolve_vision_model()
     if not model:
@@ -333,10 +326,7 @@ def _call_litellm_vision(image_b64: str, mime_type: str, api_key: Optional[str] 
         if cfg.openai_base_url and "aihubmix.com" in cfg.openai_base_url:
             call_kwargs["extra_headers"] = {"APP-Code": "GPIJ3886"}
 
-    if getattr(litellm, "completion", None) is None:
-        import litellm as litellm_module
-        litellm = litellm_module
-    response = litellm.completion(**call_kwargs)
+    response = dispatch_completion(compat_proxy=litellm, **call_kwargs)
     if response and response.choices and response.choices[0].message.content:
         return response.choices[0].message.content
     raise ValueError("LiteLLM vision returned empty response")

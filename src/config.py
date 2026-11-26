@@ -451,37 +451,48 @@ def is_supported_llm_channel_api_surface_value(value: Optional[str]) -> bool:
     return not canonical or canonical in SUPPORTED_LLM_CHANNEL_API_SURFACES
 
 
-@lru_cache(maxsize=1)
-def get_litellm_model_providers() -> frozenset[str]:
-    """Return provider identifiers from the installed LiteLLM routing enum.
-
-    LiteLLM adds direct providers independently of this repository. Loading
-    its enum keeps channel validation aligned with the actual router instead
-    of relying on a permanently incomplete local allow-list. The fallback is
-    only for lightweight test stubs or a broken optional import; a production
-    installation gets the complete provider set from its pinned LiteLLM.
-    """
+@lru_cache(maxsize=4)
+def _get_cached_litellm_model_providers_for_mode(mode: str) -> frozenset[str]:
+    del mode
     providers = set(_FALLBACK_LITELLM_MODEL_PROVIDERS)
-    had_litellm = "litellm" in sys.modules
-    prev_cost_map_env = os.environ.get("LITELLM_LOCAL_MODEL_COST_MAP")
-    if not had_litellm and prev_cost_map_env is None:
-        # Prevent litellm.__init__ from fetching GitHub's model_prices JSON
-        # during offline config/doctor initialization.
-        os.environ["LITELLM_LOCAL_MODEL_COST_MAP"] = "True"
     try:
-        from litellm.types.utils import LlmProviders
+        from src.llm.transport import get_transport
 
-        providers.update(
-            str(provider.value).strip().lower()
-            for provider in LlmProviders
-            if str(getattr(provider, "value", "")).strip()
-        )
+        resolved = get_transport().get_model_providers()
+        if resolved:
+            providers.update(resolved)
+        else:
+            logger.debug("LiteLLM provider metadata unavailable; using the compatibility fallback")
     except (ImportError, AttributeError, TypeError):
         logger.debug("LiteLLM provider metadata unavailable; using the compatibility fallback")
-    finally:
-        if not had_litellm and prev_cost_map_env is None:
-            os.environ.pop("LITELLM_LOCAL_MODEL_COST_MAP", None)
     return frozenset(providers)
+
+
+def get_litellm_model_providers() -> frozenset[str]:
+    """Return supported provider identifiers from the active LLM transport backend.
+
+    Under default ``litellm`` mode this loads LiteLLM's routing enum; under
+    ``native`` / ``auto`` HTTPX modes it reads native provider registries without
+    eagerly importing LiteLLM.
+    """
+    from src.llm.transport import get_transport_override, resolve_llm_transport_mode
+
+    override = get_transport_override()
+    if override is not None:
+        providers = set(_FALLBACK_LITELLM_MODEL_PROVIDERS)
+        try:
+            resolved = override.get_model_providers()
+            if resolved:
+                providers.update(resolved)
+            else:
+                logger.debug("LiteLLM provider metadata unavailable; using the compatibility fallback")
+        except (ImportError, AttributeError, TypeError):
+            logger.debug("LiteLLM provider metadata unavailable; using the compatibility fallback")
+        return frozenset(providers)
+    return _get_cached_litellm_model_providers_for_mode(resolve_llm_transport_mode())
+
+
+get_litellm_model_providers.cache_clear = _get_cached_litellm_model_providers_for_mode.cache_clear
 
 
 def get_explicit_llm_channel_model_provider(model: str) -> str:
@@ -1044,6 +1055,8 @@ class Config:
     generation_backend_max_concurrency: int = DEFAULT_GENERATION_BACKEND_MAX_CONCURRENCY
     local_cli_backend_max_concurrency: int = DEFAULT_LOCAL_CLI_BACKEND_MAX_CONCURRENCY
     opencode_cli_model: str = ""
+    # LLM transport engine: "litellm" (default), "auto" (native HTTPX + LiteLLM fallback), or "native"
+    llm_transport_mode: str = "litellm"
     # LiteLLM unified model config (provider/model format, e.g. gemini/gemini-3.6-flash)
     litellm_model: str = ""  # Primary model; must include provider prefix when set explicitly
     litellm_fallback_models: List[str] = field(default_factory=list)  # Cross-model fallback list
@@ -1676,6 +1689,10 @@ class Config:
             openai_api_keys = list(anspire_api_keys)
             openai_base_url = anspire_llm_base_url
 
+        from src.llm.transport import resolve_llm_transport_mode
+
+        llm_transport_mode = resolve_llm_transport_mode(os.getenv('LLM_TRANSPORT_MODE'))
+
         # LITELLM_MODEL / LITELLM_FALLBACK_MODELS explicit values are recorded
         # before YAML/channels are parsed, but legacy inference is delayed until
         # the higher-priority sources and Hermes blocking issues are known.
@@ -1993,6 +2010,7 @@ class Config:
             generation_backend_max_concurrency=generation_backend_max_concurrency,
             local_cli_backend_max_concurrency=local_cli_backend_max_concurrency,
             opencode_cli_model=opencode_cli_model,
+            llm_transport_mode=llm_transport_mode,
             litellm_model=litellm_model,
             litellm_fallback_models=litellm_fallback_models,
             llm_temperature=resolve_unified_llm_temperature(litellm_model),

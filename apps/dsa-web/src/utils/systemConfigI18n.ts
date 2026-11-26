@@ -82,6 +82,7 @@ const fieldTitleMap: Record<string, string> = {
   PYTDX_SERVERS: 'Pytdx 服务器列表',
   BIAS_THRESHOLD: 'BIAS 阈值',
   GENERATION_BACKEND: '分析生成方式',
+  LLM_TRANSPORT_MODE: 'LLM HTTP 传输引擎',
   GENERATION_FALLBACK_BACKEND: '备用生成方式',
   OPENCODE_CLI_MODEL: 'OpenCode CLI 模型',
   GENERATION_BACKEND_TIMEOUT_SECONDS: '生成超时（秒）',
@@ -260,6 +261,7 @@ const fieldDescriptionMap: Record<string, string> = {
   PYTDX_SERVERS: 'Pytdx 自定义节点列表，支持 host:port 逗号分隔。',
   BIAS_THRESHOLD: 'BIAS 偏离阈值，超过后用于增强超买超卖提示。',
   GENERATION_BACKEND: '用于个股分析、大盘复盘和普通文本生成。本地 CLI 生成方式需要本机已安装并登录对应 CLI，仍可能调用对应云服务，不是离线模型。',
+  LLM_TRANSPORT_MODE: '选择标准 API 模型的 HTTP 传输实现。默认 litellm 保留原有 SDK 路由；auto 对 OpenAI、Anthropic 和 Gemini 使用原生 HTTPX，bedrock/vertex/azure 自动回退 LiteLLM；native 强制纯原生 HTTPX 且不导入 litellm。',
   GENERATION_FALLBACK_BACKEND: '本地 CLI 生成失败后的处理方式：禁用表示直接报错，默认模型配置表示再尝试普通模型。',
   OPENCODE_CLI_MODEL: 'OpenCode CLI 的可选模型覆盖；留空时使用本机 OpenCode 默认模型。认证和模型可用性由本机 OpenCode 配置负责。',
   GENERATION_BACKEND_TIMEOUT_SECONDS: '单次生成最多等待多少秒，默认 300；主要用于本地 CLI 这类命令行方式。',
@@ -442,6 +444,11 @@ const fieldOptionLabelMap: Record<string, Record<string, string>> = {
     claude_code_cli: 'Claude Code CLI（实验）',
     opencode_cli: 'OpenCode CLI（实验）',
   },
+  LLM_TRANSPORT_MODE: {
+    litellm: 'LiteLLM SDK（默认）',
+    auto: '自动（原生 HTTPX + 云 IAM 回退）',
+    native: '纯原生 HTTPX',
+  },
   GENERATION_FALLBACK_BACKEND: {
     '': '禁用',
     litellm: '默认模型配置',
@@ -524,6 +531,11 @@ const fieldOptionLabelMapEn: Record<string, Record<string, string>> = {
     codex_cli: 'Codex CLI (experimental)',
     claude_code_cli: 'Claude Code CLI (experimental)',
     opencode_cli: 'OpenCode CLI (experimental)',
+  },
+  LLM_TRANSPORT_MODE: {
+    litellm: 'LiteLLM (default)',
+    auto: 'Auto (Native HTTPX + IAM fallback)',
+    native: 'Native HTTPX only',
   },
   GENERATION_FALLBACK_BACKEND: {
     '': 'Disabled',

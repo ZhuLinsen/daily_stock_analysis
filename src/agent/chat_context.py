@@ -85,11 +85,10 @@ def estimate_text_tokens(text: str, config: Any) -> int:
     """Estimate tokens deterministically enough for compression decisions."""
     normalized_text = text or ""
     try:
-        import litellm  # type: ignore
+        from src.llm.transport import token_counter
 
         model = get_effective_agent_primary_model(config)
-        count = litellm.token_counter(model=model, text=normalized_text)
-        return max(0, int(count or 0))
+        return token_counter(model=model, text=normalized_text)
     except Exception as exc:
         logger.debug("Token counter failed; using character heuristic: %s", exc)
         return int(math.ceil(len(normalized_text) / 3))

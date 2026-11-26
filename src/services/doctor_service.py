@@ -9,6 +9,7 @@ from typing import Any, Dict, Iterable, List
 
 from src.config import Config, get_configured_llm_models
 from src.core.config_registry import _is_sensitive_key, get_field_definition
+from src.llm.transport import resolve_llm_transport_mode_for_config
 from src.llm.backend_registry import (
     LOCAL_CLI_GENERATION_BACKEND_IDS,
     SUPPORTED_GENERATION_BACKENDS,
@@ -304,6 +305,7 @@ def run_doctor_diagnostics(config: Config) -> Dict[str, Any]:
         if generation_backend_raw in SUPPORTED_GENERATION_BACKENDS
         else "invalid"
     )
+    llm_transport_mode = resolve_llm_transport_mode_for_config(config)
     configured_models = get_configured_llm_models(getattr(config, "llm_model_list", []) or [])
     llm_ready = not has_llm_config_error
 
@@ -486,6 +488,7 @@ def run_doctor_diagnostics(config: Config) -> Dict[str, Any]:
             "llm": {
                 "status": llm_status,
                 "generation_backend": generation_backend,
+                "llm_transport_mode": llm_transport_mode,
                 "configured_models_count": len(configured_models),
                 "ready": llm_ready,
             },
@@ -523,6 +526,7 @@ def format_doctor_report(report: Dict[str, Any]) -> str:
     llm = checks.get("llm", {})
     lines.append(
         f"[llm] status={llm.get('status')} backend={llm.get('generation_backend')} "
+        f"transport={llm.get('llm_transport_mode')} "
         f"models={llm.get('configured_models_count')} ready={llm.get('ready')}"
     )
 
