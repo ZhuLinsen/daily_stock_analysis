@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { analysisApi, DuplicateTaskError } from '../api/analysis';
 import type { ParsedApiError } from '../api/error';
-import { getParsedApiError } from '../api/error';
+import { createLocalizedParsedApiError, getParsedApiError } from '../api/error';
 import { historyApi } from '../api/history';
 import type { AnalysisReport, HistoryItem, HistoryListResponse, ReportLanguage, StockBarItem, StockHistoryFilters, StockHistoryRange, TaskInfo } from '../types/analysis';
 import { getRecentStartDate, getTodayInShanghai, resolveActiveUiLanguage } from '../utils/format';
@@ -998,9 +998,13 @@ export const useStockPoolStore = create<StockPoolState>((set, get) => ({
 
   syncTaskFailed: (task) => {
     get().syncTaskUpdated(task);
-    const language = resolveActiveUiLanguage();
-    const fallbackError = language === 'en' ? 'Analysis failed' : '分析失败';
-    set({ error: getParsedApiError(task.error || fallbackError, language) });
+    const error = task.error
+      ? getParsedApiError(task.error)
+      : createLocalizedParsedApiError((language) => getParsedApiError(
+          language === 'en' ? 'Analysis failed' : '分析失败',
+          language,
+        ));
+    set({ error });
   },
 
   refreshActiveTasks: async () => {

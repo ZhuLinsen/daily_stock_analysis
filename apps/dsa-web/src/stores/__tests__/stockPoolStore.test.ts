@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { analysisApi, DuplicateTaskError } from '../../api/analysis';
+import { localizeParsedApiError } from '../../api/error';
 import { historyApi } from '../../api/history';
 import type {
   AnalysisReport,
@@ -1481,6 +1482,10 @@ describe('stockPoolStore', () => {
       expect(useStockPoolStore.getState().error).toMatchObject({
         title: 'Request Failed',
         message: 'Analysis failed',
+      });
+      expect(localizeParsedApiError(useStockPoolStore.getState().error!, 'zh')).toMatchObject({
+        title: '请求失败',
+        message: '分析失败',
       });
     });
 
