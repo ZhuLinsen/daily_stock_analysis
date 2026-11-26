@@ -10,7 +10,7 @@ from src.llm.model_source import CHATGPT_SIWC
 from src.llm.provider_cache import filter_prompt_cache_telemetry
 from src.llm.usage import normalize_litellm_usage, should_persist_usage_telemetry
 from src.storage import persist_llm_usage
-from src.services.chatgpt_oauth_service import ChatGPTError, RESOURCE
+from src.services.chatgpt_oauth_service import ChatGPTError, RESOURCE, USAGE_LIMIT_PAUSED
 
 
 @dataclass
@@ -66,10 +66,12 @@ def consume_responses(stream, progress=None, request_id=None, on_completed=None)
                     on_completed(usage, completed.model)
         elif event.type in {"response.failed", "response.incomplete", "error"}:
             response = getattr(event, "response", None)
-            detail = getattr(response, "error", None) or getattr(response, "incomplete_details", None) or event
+            error = getattr(response, "error", None)
+            detail = error or getattr(response, "incomplete_details", None) or event
             raise ChatGPTError.upstream(
                 "chatgpt_inference_failed", "ChatGPT did not complete the response",
                 _dump(detail), request_id=request_id or getattr(response, "id", None),
+                classify_usage_limit=event.type == "error" or (event.type == "response.failed" and error is not None),
             )
         elif progress and event.type == "response.output_text.delta":
             characters += len(event.delta)
@@ -109,9 +111,16 @@ def _stream(service, source, items, instructions, timeout, tools, progress, reco
 
     client = None
     request_id = None
+    pause_usage = None
 
-    def dispatch(bearer):
-        nonlocal client
+    def record_error(error):
+        if error.code == USAGE_LIMIT_PAUSED:
+            pause_usage()
+        return error
+
+    def dispatch(bearer, record_pause):
+        nonlocal client, pause_usage
+        pause_usage = record_pause
         client = openai.OpenAI(
             api_key=bearer, base_url=RESOURCE, max_retries=0,
             http_client=httpx.Client(trust_env=False, follow_redirects=False, timeout=timeout),
@@ -119,25 +128,32 @@ def _stream(service, source, items, instructions, timeout, tools, progress, reco
         # The SDK otherwise looks up organization and project in the legacy environment.
         client.organization = None
         client.project = None
-        return client.responses.create(**payload, timeout=timeout)
+        try:
+            return client.responses.create(**payload, timeout=timeout)
+        except openai.APIStatusError as exc:
+            raise record_error(ChatGPTError.upstream(
+                "chatgpt_http_error", "OpenAI rejected the request", exc.body,
+                status=exc.status_code, request_id=exc.request_id,
+                classify_usage_limit=exc.status_code == 429,
+            )) from None
 
     try:
         with service.start_request(source, dispatch) as stream:
             request_id = stream.response.headers.get("x-request-id")
-            result = consume_responses(stream, progress, request_id, record_usage)
+            try:
+                result = consume_responses(stream, progress, request_id, record_usage)
+            except ChatGPTError as exc:
+                record_error(exc)
+                raise
         service.ensure_active(source)
         return result
-    except openai.APIStatusError as exc:
-        raise ChatGPTError.upstream(
-            "chatgpt_http_error", "OpenAI rejected the request", exc.body,
-            status=exc.status_code, request_id=exc.request_id,
-        ) from None
     except (openai.APITimeoutError, httpx.TimeoutException):
         raise ChatGPTError("chatgpt_timeout", "ChatGPT request timed out", request_id=request_id) from None
     except openai.APIError as exc:
-        raise ChatGPTError.upstream(
+        raise record_error(ChatGPTError.upstream(
             "chatgpt_inference_failed", "ChatGPT request failed", exc.body, request_id=request_id,
-        ) from None
+            classify_usage_limit=True,
+        )) from None
     except (httpx.HTTPError, ValueError):
         raise ChatGPTError("chatgpt_stream_error", "Could not read the ChatGPT response", request_id=request_id) from None
     finally:

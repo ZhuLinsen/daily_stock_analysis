@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [修复] ChatGPT 问股切换时统一提示词、工具和会话标的，套餐达限后暂停新请求并支持在设置中手动恢复。
 - [修复] ChatGPT 补授权时继续使用当前已验证账号，设置页可退出尚未开通套餐权限的本机登录。
 - [新功能] macOS 本机源码 Web 可连接 ChatGPT，在普通单股分析和单 Agent 问股中按次选用已授权的模型。
 - [修复] ChatGPT 按注册切换账号，断开和取消绑定到指定目标，修复目录乱序、已完成调用漏记和问股历史来源丢失。

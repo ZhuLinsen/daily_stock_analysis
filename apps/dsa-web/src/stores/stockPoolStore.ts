@@ -1,3 +1,4 @@
+import { useChatGPTStore } from './chatgptStore';
 import type { ChatGPTModelSource } from '../types/modelSource';
 import { create } from 'zustand';
 import { analysisApi, DuplicateTaskError } from '../api/analysis';
@@ -951,6 +952,7 @@ export const useStockPoolStore = create<StockPoolState>((set, get) => ({
         return;
       }
 
+      if (options?.modelSource) void useChatGPTStore.getState().recheckStatus();
       if (error instanceof DuplicateTaskError) {
         set({
           duplicateError: `股票 ${error.stockCode} 正在分析中，请等待完成`,
@@ -991,6 +993,7 @@ export const useStockPoolStore = create<StockPoolState>((set, get) => ({
   },
 
   syncTaskFailed: (task) => {
+    if (task.modelProvider === 'chatgpt_siwc') void useChatGPTStore.getState().recheckStatus();
     get().syncTaskUpdated(task);
     set({ error: getParsedApiError(task.error || '分析失败') });
   },

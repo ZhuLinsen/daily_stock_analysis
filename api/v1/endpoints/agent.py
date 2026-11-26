@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-from api.deps import get_agent_chat_session_service, require_chatgpt_access
+from api.deps import chatgpt_inference_http_status, get_agent_chat_session_service, require_chatgpt_access
 from api.v1.schemas.system_config import AgentBackendStatusResponse
 from src.config import get_config
 from src.llm.model_source import ChatGPTModelSource, ChatGPTModelSourceInput
@@ -150,14 +150,19 @@ def _accept_chat_request(request, config, session_id, session_service, resolved)
 
 
 def _prepare_confirmed_request(request, config, session_id, session_service):
-    from src.services.chatgpt_oauth_service import get_chatgpt_service
+    from src.services.chatgpt_oauth_service import ChatGPTError, get_chatgpt_service
 
     service = get_chatgpt_service()
-    connection_id = request.model_source.connection_id
     backend_id = _select_agent_chat_backend(config, model_source=request.model_source)
     with service.lock:
-        if service.status()["connection_id"] != connection_id:
-            raise HTTPException(409, detail={"error": "chatgpt_target_changed", "message": "ChatGPT connection changed"})
+        try:
+            service.ensure_inference_allowed(request.model_source)
+        except ChatGPTError as exc:
+            if exc.code == "chatgpt_connection_inactive":
+                raise HTTPException(409, detail={"error": "chatgpt_target_changed", "message": "ChatGPT connection changed"}) from None
+            if exc.code == "chatgpt_store_unavailable":
+                raise HTTPException(503, detail={"error": exc.code, "message": str(exc)}) from None
+            raise HTTPException(chatgpt_inference_http_status(exc.code), detail={"error": exc.code, "message": str(exc)}) from None
         try:
             resolved = session_service.prepare_chatgpt_turn(config, request, session_id)
             return backend_id, _accept_chat_request(request, config, session_id, session_service, resolved)
@@ -490,7 +495,7 @@ def _select_agent_chat_backend(config, *, model_source=None) -> str:
     evaluation = evaluate_agent_backend_config(config, model_source=model_source)
     if not evaluation["available"]:
         raise HTTPException(
-            status_code=409 if evaluation["error_code"] == "chatgpt_connection_inactive" else 400,
+            status_code=409 if evaluation["error_code"] == "chatgpt_connection_inactive" else chatgpt_inference_http_status(evaluation["error_code"]),
             detail={
                 "error": "chatgpt_target_changed" if evaluation["error_code"] == "chatgpt_connection_inactive" else evaluation["error_code"],
                 "message": evaluation["message"],

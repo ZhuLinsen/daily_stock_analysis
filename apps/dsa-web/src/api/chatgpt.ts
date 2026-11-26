@@ -27,6 +27,7 @@ export interface ChatGPTStatus {
   connection_id?: string;
   disconnect_retry_connection_id?: string | null;
   account_label?: string;
+  usage_pause_id?: string | null;
   actions?: ChatGPTAction[];
   revocations?: Revocation[];
   reauth_reason?: 'scope_required' | 'credential_invalid' | 'legacy_import' | null;
@@ -53,6 +54,9 @@ export const chatgptApi = {
     return (await apiClient.get<{ models: ChatGPTModel[] }>('/api/v1/chatgpt/models', {
       params: { connection_id: connectionId, refresh },
     })).data.models;
+  },
+  async resumeUsage(connectionId: string, pauseId: string) {
+    await apiClient.post('/api/v1/chatgpt/usage/resume', { connection_id: connectionId, usage_pause_id: pauseId });
   },
   async disconnect(target: DisconnectTarget) {
     return (await apiClient.post<{ disconnected: true; revocation_confirmed: boolean | null }>(

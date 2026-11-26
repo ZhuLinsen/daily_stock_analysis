@@ -552,6 +552,7 @@ export interface TaskInfo {
   skills?: string[];
   region?: string;
   assetType?: 'stock' | 'index';
+  modelProvider?: 'chatgpt_siwc';
 }
 
 /** Task list response */

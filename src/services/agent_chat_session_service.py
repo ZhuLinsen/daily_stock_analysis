@@ -195,16 +195,18 @@ class AgentChatSessionService:
 
     def prepare_chatgpt_turn(self, config, request, session_id):
         snapshot = self.db.read_chat_session_snapshot(session_id)
-        hint = request.context or {}
-        preview = self.chatgpt_preview(snapshot, request.model_source.connection_id, hint if hint.get("stock_code") else None)
+        hint = request.context if (request.context or {}).get("stock_code") else None
+        preview = self.chatgpt_preview(snapshot, request.model_source.connection_id, hint)
         if request.snapshot_id != preview["snapshot_id"] or (
             request.session_generation and request.session_generation != snapshot["session_generation"]
         ):
             raise ChatSessionStateConflict()
+        context = {"report_language": config.report_language}
+        if hint is not None:
+            context.update(preview["stock"])
         turn = self._resolve_session_turn(config, snapshot, request.message, request.effective_skills,
-                                         context=preview["stock"], approved_preview=preview)
-        # Only the displayed stock may accompany approved history as external context.
-        return replace(turn, chatgpt_preview=preview, effective_context=dict(preview["stock"] or {}))
+                                         context=context, approved_preview=preview)
+        return replace(turn, chatgpt_preview=preview)
 
     def prepare_session_turn(
         self, config: Any, session_id: str, message: str,

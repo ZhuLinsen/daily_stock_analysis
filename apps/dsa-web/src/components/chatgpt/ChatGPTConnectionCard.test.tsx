@@ -2,11 +2,11 @@ import { act, fireEvent, render, screen } from '@testing-library/react';
 import { AxiosError } from 'axios';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { chatgptApi, type ChatGPTModel, type ChatGPTStatus } from '../../api/chatgpt';
-import { useChatGPTStore } from '../../stores/chatgptStore';
+import { currentChatGPTSource, useChatGPTStore } from '../../stores/chatgptStore';
 import { ChatGPTConnectionCard } from './ChatGPTConnectionCard';
 
 vi.mock('../../api/chatgpt', () => ({
-  chatgptApi: { status: vi.fn(), models: vi.fn(), disconnect: vi.fn(), connect: vi.fn() },
+  chatgptApi: { status: vi.fn(), models: vi.fn(), disconnect: vi.fn(), connect: vi.fn(), resumeUsage: vi.fn() },
 }));
 
 const connected: ChatGPTStatus = { actions: [{kind:"disconnect", target:{connection_id:"old"}, label:null}], available: true, connected: true, connection_id: 'old', account_label: 'Test', pending: false };
@@ -40,6 +40,28 @@ describe('ChatGPT connection status', () => {
     useChatGPTStore.setState({ status: null, models: [], model: '', error: null });
     api.status.mockResolvedValue(connected);
     api.models.mockResolvedValue([model]);
+  });
+
+  it('resumes a paused plan with the current target and only reads local status', async () => {
+    api.status.mockResolvedValueOnce({ ...connected, usage_pause_id: 'pause' });
+    await openConnectionCard();
+    const resume = screen.getByRole('button', { name: '已查看，继续尝试' });
+    expect(screen.getByRole('link', { name: '管理 ChatGPT 用量' })).toHaveAttribute('href', 'https://chatgpt.com/settings/usage');
+    const currentSource = () => {
+      const { status, model } = useChatGPTStore.getState();
+      return currentChatGPTSource(status, model);
+    };
+    expect(currentSource()).toBeUndefined();
+
+    api.status.mockClear();
+    api.models.mockClear();
+    api.resumeUsage.mockResolvedValue(undefined);
+    await act(async () => { fireEvent.click(resume); });
+    expect(api.resumeUsage).toHaveBeenCalledExactlyOnceWith('old', 'pause');
+    expect(api.status).toHaveBeenCalledTimes(1);
+    expectOnlyStatusReads();
+    expect(currentSource()).toMatchObject({ connection_id: 'old', model: model.slug });
+    expect(resume).not.toBeInTheDocument();
   });
 
   it('rechecks the local status once and publishes the recovered account without fetching models', async () => {

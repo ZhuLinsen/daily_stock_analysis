@@ -5,6 +5,7 @@ import asyncio
 import base64
 import hashlib
 from concurrent.futures import Future, TimeoutError as FutureTimeout
+from functools import partial
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
 import logging
@@ -36,6 +37,10 @@ SCOPES = "openid profile email offline_access resource.invoke chatgpt.tokens.use
 REQUIRED_SCOPES = {"resource.invoke", "chatgpt.tokens.use.direct", "offline_access"}
 APP_NAME = "Daily Stock Analysis"
 PLAN_PERMISSION_REQUIRED = "chatgpt_plan_permission_required"
+USAGE_LIMIT_PAUSED = "chatgpt_usage_limit_paused"
+UPSTREAM_USAGE_LIMIT = "subscription_sharing_usage_limit_exceeded"
+USAGE_LIMIT_MESSAGE = "Check ChatGPT usage in Settings before continuing"
+UsageOwner = tuple[str, str, str]
 DISCONNECT_TIMEOUT = 20
 DISCONNECT_LOCK_TIMEOUT = 2
 logger = logging.getLogger(__name__)
@@ -71,9 +76,11 @@ class ChatGPTError(Exception):
         super().__init__(" · ".join(details))
 
     @classmethod
-    def upstream(cls, code, message, body, *, status=None, request_id=None):
+    def upstream(cls, code, message, body, *, status=None, request_id=None, classify_usage_limit=False):
         body = body if isinstance(body, dict) else {}
         error = body.get("error", body)
+        if classify_usage_limit and isinstance(error, dict) and error.get("code") == UPSTREAM_USAGE_LIMIT:
+            code, message = USAGE_LIMIT_PAUSED, USAGE_LIMIT_MESSAGE
         return cls(
             code, message, status=status, request_id=request_id,
             upstream_code=(error.get("code") or error.get("reason")) if isinstance(error, dict) else error,
@@ -91,6 +98,9 @@ class ChatGPTOAuthService:
         self.retry_target = None
         self.disconnect_retry_id = None
         self._unconfirmed_digest = None
+        self._unconfirmed_usage_only = False
+        self._unconfirmed_resume: tuple[UsageOwner, str] | None = None
+        self._pending_usage_pauses: dict[UsageOwner, str] = {}
         self.revoking: dict[str, Future] = {}
         self.loop = loop
         self.error = None
@@ -131,12 +141,19 @@ class ChatGPTOAuthService:
             data = json.load(stream)
         return data
 
-    def _save(self, data):
+    def _save(self, data, *, usage_only=False, resume_owner=None):
         if self._unconfirmed_digest is not None:
             raise OSError("ChatGPT credential write has not been reconciled")
         revision = self.data.get("revision", 0)
         if data.get("revision", 0) != revision:
             raise ChatGPTError("chatgpt_target_changed", "ChatGPT session state changed")
+        if self._pending_usage_pauses:
+            registrations = dict(data.get("registrations", {}))
+            for owner, pause_id in self._pending_usage_pauses.items():
+                registration = self._usage_registration(registrations, owner)
+                if owner != resume_owner and registration is not None:
+                    registrations[owner[1]] = {**registration, "usage_pause_id": pause_id}
+            data = {**data, "registrations": registrations}
         data = {**data, "revision": revision + 1}
         if self.directory_lock.closed:
             raise ChatGPTError("chatgpt_unavailable", "ChatGPT session storage is closed")
@@ -146,6 +163,7 @@ class ChatGPTOAuthService:
         except OSError:
             # Under the directory lock these are the only two attributable file images.
             self._unconfirmed_digest = digest
+            self._unconfirmed_usage_only = usage_only
             try:
                 observed_digest = _record_digest(self._load())
             except (OSError, ValueError) as exc:
@@ -153,10 +171,13 @@ class ChatGPTOAuthService:
             if observed_digest != digest:
                 if observed_digest == self._stored_digest:
                     self._unconfirmed_digest = None
+                    self._unconfirmed_usage_only = False
                 raise
             self._unconfirmed_digest = None
+            self._unconfirmed_usage_only = False
         self.data = data
         self._stored_digest = digest
+        self._pending_usage_pauses.clear()
 
     def _reconcile_write(self):
         # Let callbacks finish projecting their outcomes before recovering orphaned operations.
@@ -166,11 +187,21 @@ class ChatGPTOAuthService:
         digest = _record_digest(observed)
         if digest == self._unconfirmed_digest:
             current = observed
+            if self._unconfirmed_resume is not None:
+                owner, pause_id = self._unconfirmed_resume
+                if self._pending_usage_pauses.get(owner) == pause_id:
+                    del self._pending_usage_pauses[owner]
         elif digest == self._stored_digest:
             current = self.data
         else:
             return False
+        for owner, pause_id in list(self._pending_usage_pauses.items()):
+            registration = self._usage_registration(observed.get("registrations", {}), owner)
+            if registration is not None and registration.get("usage_pause_id") == pause_id:
+                del self._pending_usage_pauses[owner]
         self._unconfirmed_digest = None
+        self._unconfirmed_usage_only = False
+        self._unconfirmed_resume = None
         self.data = observed
         self._stored_digest = digest
         recovered = state.recover(current, ISSUER)
@@ -203,8 +234,8 @@ class ChatGPTOAuthService:
             self.error = "chatgpt_store_unavailable"
             raise
 
-    def _enabled(self):
-        if self._unconfirmed_digest is not None:
+    def _enabled(self, *, dispatched=False):
+        if self._unconfirmed_digest is not None and not (dispatched and self._unconfirmed_usage_only):
             raise ChatGPTError("chatgpt_store_unavailable", "Check ChatGPT credential storage and refresh status", status=503)
         if self.closed or not is_auth_enabled():
             raise ChatGPTError("chatgpt_unavailable", "ChatGPT requires the local server and administrator authentication")
@@ -229,12 +260,19 @@ class ChatGPTOAuthService:
                     reconciled = self._reconcile_write()
                 except (OSError, ValueError):
                     reconciled = False
-                if not reconciled:
-                    return {
-                        "available": False, "connected": False, "connection_id": None,
-                        "error": "chatgpt_store_unavailable", "actions": [],
-                        "revocations": state.public_revocations(self.data),
-                    }
+            else:
+                reconciled = True
+            if reconciled and self._pending_usage_pauses:
+                try:
+                    self._save(self.data, usage_only=True)
+                except OSError:
+                    reconciled = self._unconfirmed_digest is None
+            if not reconciled:
+                return {
+                    "available": False, "connected": False, "connection_id": None,
+                    "error": "chatgpt_store_unavailable", "actions": [],
+                    "revocations": state.public_revocations(self.data),
+                }
             connection = self._active_connection() or {}
             identity = self.data.get("identity") or {}
             attempt_id = self.pending["id"] if self.pending else None
@@ -268,6 +306,7 @@ class ChatGPTOAuthService:
             return {
                 "available": True, "connected": bool(connection), "plan_authorized": bool(connection),
                 "connection_id": connection.get("id"), "disconnect_retry_connection_id": self.disconnect_retry_id,
+                "usage_pause_id": self._usage_pause_id(self._usage_owner()) if connection else None,
                 "account_label": state.registration_label(registration) if registration else None,
                 "reauth_reason": reason, "revocations": state.public_revocations(self.data), "actions": actions,
                 "retry_id": self.retry_target["id"] if self.retry_target else None,
@@ -525,11 +564,14 @@ class ChatGPTOAuthService:
                     if operation.get("id") != attempt["id"] or time.monotonic() >= attempt["deadline"]:
                         raise ChatGPTError("chatgpt_target_changed", "Authorization has expired")
                     registrations = dict(self._registrations())
+                    latest = self._usage_registration(registrations, (ISSUER, client_id, claims["sub"]))
                     registrations[client_id] = {
                         "client_id": client_id, "issuer": ISSUER, "sub": claims["sub"],
                         "reauth_reason": None if complete else "scope_required",
                         "label": ((saved or {}).get("label") or claims.get("email") or claims.get("name") or "ChatGPT")[:160],
                     }
+                    if latest and latest.get("usage_pause_id"):
+                        registrations[client_id]["usage_pause_id"] = latest["usage_pause_id"]
                     self._save({
                         **self.data, "registrations": registrations, "current_registration": client_id,
                         "identity": {"id": attempt["id"], "client_id": client_id, "id_token": body["id_token"]},
@@ -579,8 +621,8 @@ class ChatGPTOAuthService:
             return connection
         return None
 
-    def _connection(self, connection_id):
-        self._enabled()
+    def _connection(self, connection_id, *, dispatched=False):
+        self._enabled(dispatched=dispatched)
         connection = self._active_connection()
         if not connection or connection["id"] != connection_id:
             raise ChatGPTError("chatgpt_connection_inactive", "Connect ChatGPT and select a model again")
@@ -654,18 +696,81 @@ class ChatGPTOAuthService:
             self.models_cache = (connection_id, models)
         return models
 
+    def _usage_owner(self) -> UsageOwner:
+        client_id = self.data["current_registration"]
+        registration = self._registrations()[client_id]
+        return registration["issuer"], client_id, registration["sub"]
+
+    @staticmethod
+    def _usage_registration(registrations, owner: UsageOwner):
+        issuer, client_id, sub = owner
+        registration = registrations.get(client_id)
+        if registration and (registration.get("issuer"), registration.get("sub")) == (issuer, sub):
+            return registration
+        return None
+
+    def _usage_pause_id(self, owner: UsageOwner):
+        pending = self._pending_usage_pauses.get(owner)
+        return pending or self._registrations()[owner[1]].get("usage_pause_id")
+
+    def _pause_usage(self, owner: UsageOwner):
+        with self.lock:
+            if self.closed or self._usage_registration(self._registrations(), owner) is None:
+                return
+            pause_id = self._usage_pause_id(owner)
+            if self._unconfirmed_resume == (owner, pause_id):
+                # A later cap must survive readback of the earlier resume.
+                pause_id = None
+            if pause_id:
+                return
+            self._pending_usage_pauses[owner] = uuid4().hex
+            try:
+                self._save(self.data, usage_only=True)
+            except OSError:
+                logger.warning("Could not persist the ChatGPT usage pause")
+
+    def resume_usage(self, *, connection_id: str, usage_pause_id: str):
+        with self.lock:
+            self._enabled()
+            connection = self._active_connection()
+            if not connection or connection["id"] != connection_id:
+                raise ChatGPTError("chatgpt_target_changed", "The ChatGPT connection changed")
+            owner = self._usage_owner()
+            if self._usage_pause_id(owner) != usage_pause_id:
+                raise ChatGPTError("chatgpt_target_changed", "The ChatGPT usage pause changed")
+            registrations = dict(self._registrations())
+            registration = dict(registrations[owner[1]])
+            registration.pop("usage_pause_id", None)
+            registrations[owner[1]] = registration
+            try:
+                self._save({**self.data, "registrations": registrations}, usage_only=True, resume_owner=owner)
+            except OSError:
+                if self._unconfirmed_digest is not None:
+                    self._unconfirmed_resume = (owner, usage_pause_id)
+                raise
+            return {"resumed": True}
+
+    def ensure_inference_allowed(self, source: ChatGPTModelSource):
+        with self.lock:
+            self._connection(source.connection_id)
+            if self._usage_pause_id(self._usage_owner()):
+                raise ChatGPTError(USAGE_LIMIT_PAUSED, USAGE_LIMIT_MESSAGE, status=429)
+
     def validate(self, source: ChatGPTModelSource):
+        self.ensure_inference_allowed(source)
         if not any(item["slug"] == source.model for item in self.models(source.connection_id)):
             raise ChatGPTError("chatgpt_model_unavailable", "The selected model is absent from this ChatGPT connection")
 
     def ensure_active(self, source):
         with self.lock:
-            self._connection(source.connection_id)
+            self._connection(source.connection_id, dispatched=True)
 
     def start_request(self, source, dispatch):
         self.validate(source)
         with self.lock:
-            return dispatch(self._bearer(source.connection_id))
+            self.ensure_inference_allowed(source)
+            pause_usage = partial(self._pause_usage, self._usage_owner())
+            return dispatch(self._bearer(source.connection_id), pause_usage)
 
     def _end_session(self, loop, client_id, token, deadline, *, connection_id=None, operation_id=None,
                      reason=None, verified_registration=None):

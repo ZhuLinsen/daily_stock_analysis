@@ -159,6 +159,8 @@ class TaskInfo:
             "selection_source": self.selection_source,
             "skills": self.skills,
         }
+        if self.status == TaskStatus.FAILED and self.model_source is not None:
+            payload["model_provider"] = self.model_source.provider
         if self.region is not None:
             payload["region"] = self.region
         if self.asset_type is not None:

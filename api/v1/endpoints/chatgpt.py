@@ -38,6 +38,12 @@ class DisconnectRequest(BaseModel):
         return self
 
 
+class ResumeUsageRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    connection_id: str = Field(min_length=1)
+    usage_pause_id: str = Field(min_length=1)
+
+
 def _operation(request, action, *args, **kwargs):
     require_chatgpt_access(request)
     try:
@@ -78,3 +84,8 @@ def models(request: Request, connection_id: str, refresh: bool = False):
 @router.post("/disconnect")
 async def disconnect(request: Request, options: DisconnectRequest):
     return await run_in_threadpool(_operation, request, "disconnect", asyncio.get_running_loop(), **options.model_dump())
+
+
+@router.post("/usage/resume")
+async def resume_usage(request: Request, options: ResumeUsageRequest):
+    return await run_in_threadpool(_operation, request, "resume_usage", **options.model_dump())

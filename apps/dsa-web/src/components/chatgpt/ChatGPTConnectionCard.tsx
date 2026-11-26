@@ -101,6 +101,21 @@ export function ChatGPTConnectionCard() {
     }
   }
 
+  async function resumeUsage(connectionId: string, pauseId: string) {
+    setWorking(true);
+    setNotice(null);
+    try {
+      await chatgptApi.resumeUsage(connectionId, pauseId);
+    } catch (error) {
+      setNotice(getParsedApiError(error).message);
+    } finally {
+      await recheckStatus();
+      setWorking(false);
+    }
+  }
+
+  const connectionId = status?.connection_id;
+  const pauseId = status?.usage_pause_id;
   const retryId = status?.retry_id;
   const currentLabel = status?.account_label;
   const identityOnly = status?.actions?.some(action => action.kind === 'sign_out');
@@ -135,6 +150,18 @@ export function ChatGPTConnectionCard() {
         <div className="flex flex-wrap items-center gap-2">
           {status.connected ? (
             <>
+              {pauseId && connectionId && (
+                <div role="status" className="flex w-full flex-wrap items-center gap-2 text-sm">
+                  <span>{t('chat.usagePaused')}</span>
+                  <a href="https://chatgpt.com/settings/usage" target="_blank" rel="noreferrer" className="underline">
+                    {t('chat.manageUsage')}
+                  </a>
+                  <button type="button" className={button} disabled={working || manualRead !== null}
+                    onClick={() => void resumeUsage(connectionId, pauseId)}>
+                    {t('chat.resumeUsage')}
+                  </button>
+                </div>
+              )}
               <label className="flex flex-wrap items-center gap-2 text-sm">
                 模型
                 <select className="max-w-full rounded-lg border border-subtle bg-surface px-2 py-1.5" value={model} onChange={(event) => selectModel(event.target.value)}>
@@ -168,7 +195,11 @@ export function ChatGPTConnectionCard() {
                 </button>;
             }
           })}
-          <a href="https://chatgpt.com/settings/usage" target="_blank" rel="noreferrer" className="text-sm underline">管理 ChatGPT 用量</a>
+          {!status.usage_pause_id && (
+            <a href="https://chatgpt.com/settings/usage" target="_blank" rel="noreferrer" className="text-sm underline">
+              {t('chat.manageUsage')}
+            </a>
+          )}
         </div>
       )}
       {status?.revocations?.map(record => (

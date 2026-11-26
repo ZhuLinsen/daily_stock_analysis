@@ -91,6 +91,7 @@ const ChatPage: React.FC = () => {
   const chatgptStatus = useChatGPTStore((state) => state.status);
   const chatgptModel = useChatGPTStore((state) => state.model);
   const refreshChatGPT = useChatGPTStore((state) => state.refresh);
+  const recheckChatGPT = useChatGPTStore((state) => state.recheckStatus);
   useEffect(() => { void refreshChatGPT(); }, [refreshChatGPT]);
 
   const { language, t } = useUiLanguage();
@@ -364,14 +365,15 @@ const ChatPage: React.FC = () => {
       });
     return () => { current = false; };
   }, [connectionId, loading, previewKey, refreshChatGPT, sessionId, stockCode, stockName, t, useChatGPT]);
-  const sourceKey = useChatGPT ? JSON.stringify([connectionId, chatgptModel]) : 'default';
+  const usagePauseId = chatgptStatus?.usage_pause_id;
+  const sourceKey = useChatGPT ? JSON.stringify([connectionId, chatgptModel, usagePauseId]) : 'default';
   const [checkedSource, setCheckedSource] = useState('');
   const loadAgentStatus = useCallback(async () => {
     const requestId = agentStatusRequestIdRef.current + 1;
     agentStatusRequestIdRef.current = requestId;
     setAgentStatusChecking(true);
     try {
-      if (useChatGPT && (!connectionId || !chatgptModel)) {
+      if (useChatGPT && (!connectionId || !chatgptModel || usagePauseId)) {
         setAgentStatus(null);
         setAgentStatusError(null);
         return;
@@ -383,6 +385,7 @@ const ChatPage: React.FC = () => {
       setAgentStatus(status);
       setCheckedSource(sourceKey);
       setAgentStatusError(null);
+      if (useChatGPT && status.errorCode === 'chatgpt_usage_limit_paused') void recheckChatGPT();
     } catch (error: unknown) {
       if (!isMountedRef.current || agentStatusRequestIdRef.current !== requestId) return;
       setAgentStatus(null);
@@ -392,7 +395,7 @@ const ChatPage: React.FC = () => {
         setAgentStatusChecking(false);
       }
     }
-  }, [chatgptModel, connectionId, sourceKey, useChatGPT]);
+  }, [chatgptModel, connectionId, recheckChatGPT, sourceKey, usagePauseId, useChatGPT]);
 
   useEffect(() => {
     void loadAgentStatus();
@@ -665,10 +668,10 @@ const ChatPage: React.FC = () => {
       if (useChatGPT) {
         const error = useAgentChatStore.getState().chatError;
         if (error?.code === 'session_state_conflict') await refreshSession();
-        else if (error?.status === 409) await refreshChatGPT();
+        if (error) await recheckChatGPT();
       }
     },
-    [agentAvailable, agentStatus, preview, hint, refreshChatGPT, refreshSession, chatgptModel, chatgptStatus, getSkillNames, input, loading, normalizeSelectedSkillIds, requestScrollToBottom, selectedSkillIds, sessionId, sessionSelectedSkillIds, startStream, t, useChatGPT],
+    [agentAvailable, agentStatus, preview, hint, recheckChatGPT, refreshSession, chatgptModel, chatgptStatus, getSkillNames, input, loading, normalizeSelectedSkillIds, requestScrollToBottom, selectedSkillIds, sessionId, sessionSelectedSkillIds, startStream, t, useChatGPT],
   );
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {

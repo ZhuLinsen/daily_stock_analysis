@@ -141,7 +141,7 @@ class AnalysisService:
             if model_source is not None:
                 from src.services.chatgpt_oauth_service import get_chatgpt_service
 
-                get_chatgpt_service().ensure_active(model_source)
+                get_chatgpt_service().ensure_inference_allowed(model_source)
 
             # 创建分析流水线
             pipeline = StockAnalysisPipeline(

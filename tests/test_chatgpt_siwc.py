@@ -5,7 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 from threading import Event, RLock
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import ANY, Mock
 from urllib.parse import parse_qs, urlsplit
 
 import httpx
@@ -26,7 +26,7 @@ from src.services.chatgpt_oauth_service import ChatGPTError, ChatGPTOAuthService
 
 
 SOURCE = ChatGPTModelSource(provider="chatgpt_siwc", connection_id="local", model="test-model")
-REGISTRATION = {"client_id": "issued", "sub": "account", "label": "Test account"}
+REGISTRATION = {"issuer": chatgpt_oauth_service.ISSUER, "client_id": "issued", "sub": "account", "label": "Test account"}
 MESSAGES = [{"role": "system", "content": "Instructions"}, {"role": "user", "content": "Question"}]
 TOOLS = [{"type": "function", "function": {"name": "quote", "parameters": {"type": "object"}}}]
 
@@ -157,7 +157,7 @@ def test_refresh_uses_existing_credentials_only_for_omitted_fields(
         dispatch.assert_not_called()
     else:
         assert oauth.start_request(SOURCE, dispatch) == "started"
-        dispatch.assert_called_once_with("access-new")
+        dispatch.assert_called_once_with("access-new", ANY)
     stored = json.loads((oauth.directory / "connection.json").read_text())["connection"]
     assert (stored or {}).get("refresh_token") == saved_refresh
     if stored:
@@ -198,7 +198,7 @@ def test_refresh_and_disconnect_serialize_and_reconnect_changes_reference(oauth,
     monkeypatch.setattr(oauth, "_request", Mock(side_effect=AssertionError("Unexpected synchronous HTTP request")))
     mock_revocation_transport(monkeypatch, revoke)
     with ThreadPoolExecutor() as executor:
-        dispatch = executor.submit(oauth.start_request, SOURCE, lambda bearer: bearer)
+        dispatch = executor.submit(oauth.start_request, SOURCE, lambda bearer, pause_usage: bearer)
         try:
             assert refreshing.wait(5)
             disconnect = executor.submit(asyncio.run, disconnect_in_worker(oauth))
@@ -337,7 +337,7 @@ def test_uncertain_refresh_write_blocks_second_request_until_reconciled(oauth, m
         # Reconciliation invalidates the catalog cache; use the account's catalog fixture.
         grant.side_effect = [token_body(), {"models": [{"slug": SOURCE.model, "visibility": "list"}]}]
         oauth.start_request(SOURCE, dispatch)
-        dispatch.assert_called_once_with("access-new")
+        dispatch.assert_called_once_with("access-new", ANY)
 
 
 @pytest.fixture
@@ -796,7 +796,7 @@ def test_sdk_sends_only_selected_model_and_reuses_complete_done_item(monkeypatch
 
     monkeypatch.setattr("src.llm.chatgpt_responses.httpx.Client", MockClient)
     ensure_active = Mock()
-    service = SimpleNamespace(start_request=lambda source, dispatch: dispatch("test-access"), ensure_active=ensure_active)
+    service = SimpleNamespace(start_request=lambda source, dispatch: dispatch("test-access", Mock()), ensure_active=ensure_active)
     db = DatabaseManager(f"sqlite:///{tmp_path / 'usage.db'}")
     monkeypatch.setattr(DatabaseManager, "get_instance", lambda: db)
     response = request_responses(
@@ -871,7 +871,7 @@ def test_chat_explicit_source_uses_real_status_factory_and_persists_failure(tmp_
     monkeypatch.setattr("src.auth.is_auth_enabled", lambda: True)
     monkeypatch.setattr("src.auth.verify_session", lambda cookie: cookie == "valid")
     monkeypatch.setattr(agent, "get_config", lambda: Config())
-    service = SimpleNamespace(validate=Mock(), lock=RLock(), status=lambda: {"connection_id": SOURCE.connection_id, "account_label": "Fixture"})
+    service = SimpleNamespace(validate=Mock(), ensure_inference_allowed=Mock(), lock=RLock(), status=lambda: {"connection_id": SOURCE.connection_id, "account_label": "Fixture"})
     monkeypatch.setattr(chatgpt_oauth_service, "get_chatgpt_service", lambda: service)
     monkeypatch.setattr("src.services.agent_backend_status_service.get_chatgpt_service", lambda: service)
     monkeypatch.setattr("src.agent.chatgpt_adapter.get_chatgpt_service", lambda: service)
@@ -1081,7 +1081,7 @@ def test_completed_calls_reach_ledger_before_local_validation(monkeypatch, tmp_p
     db = DatabaseManager(f"sqlite:///{tmp_path / 'completed.db'}")
     monkeypatch.setattr(Config, "_instance", config)
     monkeypatch.setattr(DatabaseManager, "get_instance", lambda: db)
-    service = SimpleNamespace(start_request=lambda source, send: send("fixture"), ensure_active=Mock())
+    service = SimpleNamespace(start_request=lambda source, send: send("fixture", Mock()), ensure_active=Mock())
     monkeypatch.setattr("src.llm.chatgpt_generation_backend.get_chatgpt_service", lambda: service)
     monkeypatch.setattr("src.agent.chatgpt_adapter.get_chatgpt_service", lambda: service)
     completions = iter([('{"sentiment_score":50}', 13), ('{"sentiment_score":60}', 21), ("invalid", 8), ("", 34)])
@@ -1205,6 +1205,8 @@ def test_legacy_import_discards_tokens_and_preserves_registration_and_warning(tm
 
 def test_chatgpt_preview_matches_sdk_payload_and_conflicts_before_accept(oauth, tmp_path, monkeypatch):
     from api.v1.endpoints import agent
+    from src.agent.chat_executor import AgentChatExecutor
+    from src.market_context import get_market_guidelines
     from src.auth import COOKIE_NAME
     from src.services.agent_chat_session_service import AgentChatSessionService
     from src.storage import DatabaseManager
@@ -1217,12 +1219,23 @@ def test_chatgpt_preview_matches_sdk_payload_and_conflicts_before_accept(oauth, 
     app.include_router(agent.router)
     db = DatabaseManager(f"sqlite:///{tmp_path / 'preview.db'}")
     session_id = "long-session"
+    config = Config(report_language="en")
+    sessions = AgentChatSessionService(db)
+    lookup_rows = {
+        "600519": (("600519.SH", "贵州茅台", "stock"),),
+        "300750": (("300750.SZ", "宁德时代", "stock"),),
+    }
+    monkeypatch.setattr("src.services.agent_chat_session_service.get_chat_stock_lookup", lambda: {
+        "codes": {**lookup_rows, "600519.SH": lookup_rows["600519"], "300750.SZ": lookup_rows["300750"]},
+        "names": {"贵州茅台": lookup_rows["600519"], "宁德时代": lookup_rows["300750"]},
+        "index_rows": [],
+    })
     for n in range(120):
         db.save_conversation_message(session_id, "user" if n % 2 == 0 else "assistant", f"history-{n}")
-    app.dependency_overrides[agent.get_agent_chat_session_service] = lambda: AgentChatSessionService(db)
+    app.dependency_overrides[agent.get_agent_chat_session_service] = lambda: sessions
     monkeypatch.setattr("src.auth.is_auth_enabled", lambda: True)
     monkeypatch.setattr("src.auth.verify_session", lambda cookie: cookie == "fixture")
-    monkeypatch.setattr(agent, "get_config", lambda: Config())
+    monkeypatch.setattr(agent, "get_config", lambda: config)
     monkeypatch.setattr(chatgpt_oauth_service, "get_chatgpt_service", lambda: oauth)
     monkeypatch.setattr("src.services.agent_backend_status_service.get_chatgpt_service", lambda: oauth)
     monkeypatch.setattr("src.agent.chatgpt_adapter.get_chatgpt_service", lambda: oauth)
@@ -1245,13 +1258,22 @@ def test_chatgpt_preview_matches_sdk_payload_and_conflicts_before_accept(oauth, 
 
     monkeypatch.setattr("src.llm.chatgpt_responses.httpx.Client", FixtureClient)
 
-    def read():
-        return client.get("/chat/sessions/" + session_id, params={"chatgpt_connection_id": SOURCE.connection_id}).json()["chatgpt_preview"]
+    original_execute = AgentChatExecutor.execute_turn
+    scopes = []
 
-    def send(preview, endpoint="/chat"):
+    def execute(executor, turn, **kwargs):
+        scopes.append(turn.prepared.stock_scope.expected_stock_code)
+        return original_execute(executor, turn, **kwargs)
+
+    monkeypatch.setattr(AgentChatExecutor, "execute_turn", execute)
+
+    def read(hint=None):
+        return client.get("/chat/sessions/" + session_id, params={"chatgpt_connection_id": SOURCE.connection_id, **(hint or {})}).json()["chatgpt_preview"]
+
+    def send(preview, endpoint="/chat", message="你好", hint=None):
         return client.post(endpoint, headers={"Origin": origin}, json={
-            "message": "你好", "session_id": session_id, "snapshot_id": preview["snapshot_id"],
-            "model_source": SOURCE.model_dump(), "context": {"previous_analysis_summary": "NOT_APPROVED"},
+            "message": message, "session_id": session_id, "snapshot_id": preview["snapshot_id"],
+            "model_source": SOURCE.model_dump(), "context": {"previous_analysis_summary": "NOT_APPROVED", **(hint or {})},
         })
 
     preview = read()
@@ -1285,10 +1307,192 @@ def test_chatgpt_preview_matches_sdk_payload_and_conflicts_before_accept(oauth, 
     assert calls[0]["input"] == [{"role": row["role"], "content": row["content"]} for row in preview["messages"]] + [
         {"role": "user", "content": "你好"},
     ]
+    for endpoint in ("/chat", "/chat/stream"):
+        sessions.commit_user_turn(sessions.prepare_session_turn(config, session_id, "切换到 600519"))
+        confirmed = read()
+        assert confirmed["stock"]["stock_code"] == "600519"
+        response = send(confirmed, endpoint, "切换到 AAPL")
+        assert response.status_code == 200 and "fixture visible reply" in response.text
+        inbound = response.json() if endpoint == "/chat" else json.loads(response.text.split("\n")[0][6:])
+        assert inbound["active_stock_context"]["stock_code"] == scopes[-1] == "AAPL"
+        assert db.read_chat_session_snapshot(session_id)["active_stock_context"]["stock_code"] == "AAPL"
+        payload = calls[-1]
+        assert '"stock_code": "AAPL"' in payload["instructions"]
+        assert '"stock_code": "600519"' not in payload["instructions"]
+        assert get_market_guidelines("AAPL", "en") in payload["instructions"]
+        assert "Reply in English." in payload["instructions"] and "NOT_APPROVED" not in json.dumps(payload)
+        assert payload["input"] == [{"role": row["role"], "content": row["content"]} for row in confirmed["messages"]] + [
+            {"role": "user", "content": "切换到 AAPL"},
+        ]
+
+    named = send(read(), message="切换到宁德时代")
+    assert named.json()["active_stock_context"]["stock_code"] == scopes[-1] == "300750"
+    assert '"stock_code": "300750"' in calls[-1]["instructions"]
+    count = len(calls)
+    explicit = {"stock_code": "300750", "stock_name": "宁德时代"}
+    conflict = send(read(explicit), message="切换到贵州茅台", hint=explicit)
+    assert conflict.json()["active_stock_context"]["stock_code"] == "300750"
+    assert conflict.json()["answer_backend"] is None and len(calls) == count
+
     bound = read()
     db.delete_conversation_session(session_id)
     db.ensure_chat_session_generation(session_id)
     assert send(bound).status_code == 409 and not db.read_chat_session_snapshot(session_id)["messages"]
     preview = read()
     oauth.disconnect(None, connection_id=SOURCE.connection_id)
-    assert send(preview).status_code == 409 and len(calls) == 1
+    assert send(preview).status_code == 409 and len(calls) == count
+
+
+@pytest.mark.parametrize("error_transport", ["http", "sse"])
+def test_usage_pause_rejects_new_reports_and_chat_until_explicit_resume(oauth, tmp_path, monkeypatch, error_transport):
+    from api.v1.endpoints import agent, analysis
+    from src.auth import COOKIE_NAME
+    from src.llm.chatgpt_responses import request_responses
+    from src.services.agent_chat_session_service import AgentChatSessionService
+    from src.storage import DatabaseManager
+
+    expire_connection(oauth)
+    oauth._save({**oauth.data, "connection": {**oauth.data["connection"], "expires_at": 9999999999}})
+    origin = "http://127.0.0.1:8765"
+    app = FastAPI()
+    app.state.chatgpt_origin = origin
+    app.include_router(agent.router)
+    app.include_router(analysis.router, prefix="/analysis")
+    app.include_router(chatgpt.router, prefix="/chatgpt")
+    db = DatabaseManager(f"sqlite:///{tmp_path / 'usage-pause.db'}")
+    config = Config()
+    app.dependency_overrides[agent.get_agent_chat_session_service] = lambda: AgentChatSessionService(db)
+    app.dependency_overrides[analysis.get_config_dep] = lambda: config
+    monkeypatch.setattr(agent, "get_config", lambda: config)
+    monkeypatch.setattr("src.auth.is_auth_enabled", lambda: True)
+    monkeypatch.setattr("src.auth.verify_session", lambda cookie: cookie == "fixture")
+    monkeypatch.setattr(chatgpt_oauth_service, "get_chatgpt_service", lambda: service)
+    monkeypatch.setattr(chatgpt, "get_chatgpt_service", lambda: service)
+    monkeypatch.setattr("src.services.agent_backend_status_service.get_chatgpt_service", lambda: service)
+    queue = Mock()
+    monkeypatch.setattr(analysis, "get_task_queue", queue)
+    service = oauth
+
+    def limit():
+        error = {"code": chatgpt_oauth_service.UPSTREAM_USAGE_LIMIT, "message": "Fixture cap"}
+        if error_transport == "http":
+            return httpx.Response(429, json={"error": error})
+        event = {"type": "response.failed", "sequence_number": 1, "response": {
+            "id": "fixture-cap", "status": "failed", "model": SOURCE.model, "output": [], "error": error,
+        }}
+        return httpx.Response(200, headers={"Content-Type": "text/event-stream"},
+                              content=f"data: {json.dumps(event)}\n\n")
+
+    def ask():
+        return request_responses(service, SOURCE, call_type="analysis", items=MESSAGES[1:], instructions="fixture", timeout=5)
+
+    class AlreadyDispatched(httpx.SyncByteStream):
+        def __iter__(self):
+            with pytest.raises(ChatGPTError, match="chatgpt_usage_limit_paused"):
+                ask()
+            event = {"type": "response.completed", "sequence_number": 1, "response": {
+                "id": "accepted-before-cap", "status": "completed", "model": SOURCE.model,
+                "output": [item("still completes")],
+            }}
+            yield f"data: {json.dumps(event)}\n\n".encode()
+
+    replies = [
+        httpx.Response(429, json={"error": {"code": "rate_limit_exceeded", "message": "Fixture rate limit"}}),
+        limit(),
+        httpx.Response(200, headers={"content-type": "text/event-stream"}, stream=AlreadyDispatched()),
+        limit(),
+    ]
+    post = Mock(side_effect=replies)
+
+    def transport(_, request):
+        assert request.method == "POST" and request.url.path == "/v1/responses"
+        return post()
+
+    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", transport)
+    client = TestClient(app, base_url=origin)
+    client.cookies.set(COOKIE_NAME, "fixture")
+    headers = {"Origin": origin}
+    report = {"stock_code": "600519", "async_mode": True, "notify": False, "model_source": SOURCE.model_dump()}
+    preview = client.get("/chat/sessions/limited", params={"chatgpt_connection_id": SOURCE.connection_id}).json()["chatgpt_preview"]
+    chat = {"session_id": "limited", "message": "分析 600519", "snapshot_id": preview["snapshot_id"], "model_source": SOURCE.model_dump()}
+
+    with pytest.raises(ChatGPTError, match="rate_limit_exceeded"):
+        ask()
+    assert service.status()["usage_pause_id"] is None
+    with monkeypatch.context() as disk:
+        disk.setattr(oauth, "_replace_file", Mock(side_effect=OSError("readable old file")))
+        with pytest.raises(ChatGPTError, match="chatgpt_usage_limit_paused"):
+            ask()
+        pause_id = client.get("/chatgpt/status").json()["usage_pause_id"]
+        assert pause_id and "usage_pause_id" not in oauth._load()["registrations"]["issued"]
+        service.models_cache = None
+        for route, payload in (("/analysis/analyze", report), ("/chat/stream", chat)):
+            rejected = client.post(route, json=payload, headers=headers)
+            assert rejected.status_code == 429
+            assert rejected.json()["detail"]["error"] == "chatgpt_usage_limit_paused"
+        assert not db.get_visible_conversation_messages("limited")
+        queue.assert_not_called()
+        assert post.call_count == 2
+        target = {"connection_id": SOURCE.connection_id, "usage_pause_id": pause_id}
+        assert client.post("/chatgpt/usage/resume", json=target, headers=headers).status_code == 503
+        assert service.status()["usage_pause_id"] == pause_id
+
+    assert client.get("/chatgpt/status").json()["usage_pause_id"] == pause_id
+    assert oauth._load()["registrations"]["issued"]["usage_pause_id"] == pause_id
+    revision = oauth.data["revision"]
+    oauth.close()
+    service = ChatGPTOAuthService(tmp_path / "private")
+    try:
+        assert client.get("/chatgpt/status").json()["usage_pause_id"] == pause_id
+        assert client.post("/analysis/analyze", json=report, headers=headers).status_code == 429
+        assert client.post("/chatgpt/usage/resume", json=target, headers=headers).status_code == 200
+        assert service.data["revision"] == revision + 1 and service.status()["usage_pause_id"] is None
+        assert post.call_count == 2
+        service.models_cache = (SOURCE.connection_id, ({"slug": SOURCE.model},))
+        # Land the next cap after model validation and before accepting the turn.
+        select_backend = agent._select_agent_chat_backend
+        def select_and_hit_cap(*args, **kwargs):
+            backend = select_backend(*args, **kwargs)
+            assert ask().final_text() == "still completes"
+            return backend
+
+        with monkeypatch.context() as race:
+            race.setattr(agent, "_select_agent_chat_backend", select_and_hit_cap)
+            rejected = client.post("/chat/stream", json=chat, headers=headers)
+        assert rejected.status_code == 429 and rejected.json()["detail"]["error"] == "chatgpt_usage_limit_paused"
+        assert not db.get_visible_conversation_messages("limited")
+        assert post.call_count == 4
+        assert service.status()["usage_pause_id"] != pause_id
+        assert client.post("/chatgpt/usage/resume", json=target, headers=headers).status_code == 409
+    finally:
+        service.close()
+
+
+def test_usage_pause_wins_over_late_readback_of_resume(oauth, monkeypatch):
+    expire_connection(oauth)
+    owner = oauth._usage_owner()
+    oauth._pause_usage(owner)
+    pause_id = oauth.status()["usage_pause_id"]
+    replace = oauth._replace_file
+
+    def lose_readback(data):
+        replace(data)
+        raise OSError("uncertain rename result")
+
+    with monkeypatch.context() as disk:
+        disk.setattr(oauth, "_replace_file", lose_readback)
+        disk.setattr(oauth, "_load", Mock(side_effect=OSError("unreadable")))
+        with pytest.raises(OSError):
+            oauth.resume_usage(connection_id=SOURCE.connection_id, usage_pause_id=pause_id)
+        oauth._pause_usage(owner)
+        new_pause_id = oauth._usage_pause_id(owner)
+        assert new_pause_id != pause_id
+        oauth._pause_usage(owner)
+        assert oauth._usage_pause_id(owner) == new_pause_id
+        # An already dispatched success still uses the same live connection.
+        oauth.ensure_active(SOURCE)
+
+    assert oauth.status()["usage_pause_id"] == new_pause_id
+    assert oauth._load()["registrations"]["issued"]["usage_pause_id"] == new_pause_id
+    with pytest.raises(ChatGPTError, match="chatgpt_usage_limit_paused"):
+        oauth.validate(SOURCE)

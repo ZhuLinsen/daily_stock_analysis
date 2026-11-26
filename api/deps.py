@@ -115,6 +115,12 @@ def require_chatgpt_access(request: Request):
         raise HTTPException(401, detail={"error": "unauthorized", "message": "Login required"})
 
 
+def chatgpt_inference_http_status(code: str) -> int:
+    from src.services.chatgpt_oauth_service import USAGE_LIMIT_PAUSED
+
+    return 429 if code == USAGE_LIMIT_PAUSED else 400
+
+
 def validate_chatgpt_source(request: Request, source):
     from fastapi import HTTPException
     from src.services.chatgpt_oauth_service import ChatGPTError, get_chatgpt_service
@@ -123,4 +129,4 @@ def validate_chatgpt_source(request: Request, source):
     try:
         get_chatgpt_service().validate(source)
     except ChatGPTError as exc:
-        raise HTTPException(400, detail={"error": exc.code, "message": str(exc)}) from None
+        raise HTTPException(chatgpt_inference_http_status(exc.code), detail={"error": exc.code, "message": str(exc)}) from None

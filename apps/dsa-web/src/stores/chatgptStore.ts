@@ -124,7 +124,7 @@ export const useChatGPTStore = create<ChatGPTState>((set, get) => {
 });
 
 export function currentChatGPTSource(status: ChatGPTStatus | null, model: string): ChatGPTModelSource | undefined {
-  if (status?.connected && status.connection_id && model) {
+  if (status?.connected && status.connection_id && model && !status.usage_pause_id) {
     return { provider: 'chatgpt_siwc', connection_id: status.connection_id, model };
   }
 }

@@ -1081,7 +1081,7 @@ def test_mixed_chat_answer_sources_survive_session_reload(actual_chat_api, monke
     monkeypatch.setattr("src.services.agent_backend_status_service.get_chatgpt_service", lambda: Mock())
     from threading import RLock
     from types import SimpleNamespace
-    oauth = SimpleNamespace(lock=RLock(), status=lambda: {"connection_id": "fixture", "account_label": "Fixture"})
+    oauth = SimpleNamespace(lock=RLock(), ensure_inference_allowed=Mock(), status=lambda: {"connection_id": "fixture", "account_label": "Fixture"})
     monkeypatch.setattr("src.services.chatgpt_oauth_service.get_chatgpt_service", lambda: oauth)
     session_id = "mixed-provenance"
     payload = {"session_id": session_id, "message": "分析600519"}
