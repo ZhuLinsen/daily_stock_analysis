@@ -2438,13 +2438,15 @@ describe('PortfolioPage FX refresh', () => {
     fireEvent.change(accountSelect, { target: { value: '1' } });
 
     await waitFor(() => expect(getSnapshot).toHaveBeenLastCalledWith({ accountId: 1, costMethod: 'fifo', includeRealtime: false }));
-    fireEvent.click(screen.getByRole('button', { name: '删除账户' }));
+    const deleteButton = screen.getByRole('button', { name: '删除账户' });
+    await waitFor(() => expect(deleteButton).toBeEnabled());
+    fireEvent.click(deleteButton);
 
-    const dialog = await screen.findByText('删除持仓账户');
-    expect(dialog.closest('[role="dialog"]') ?? document.body).toHaveTextContent(
+    const dialog = await screen.findByRole('dialog', { name: '删除持仓账户' });
+    expect(dialog).toHaveTextContent(
       '删除后该账户会从默认列表、快照、风险和录入入口隐藏',
     );
-    fireEvent.click(screen.getByRole('button', { name: '确认删除' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: '确认删除' }));
 
     await waitFor(() => expect(deleteAccount).toHaveBeenCalledWith(1));
     await waitFor(() => expect(getAccounts).toHaveBeenCalledTimes(2));

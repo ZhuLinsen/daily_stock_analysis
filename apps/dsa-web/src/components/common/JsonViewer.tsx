@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useUiLanguage } from '../../contexts/UiLanguageContext';
+import { copyTextToClipboard } from '../../utils/clipboard';
 
 interface JsonViewerProps {
   data: Record<string, unknown> | unknown[] | null | undefined;
@@ -56,8 +57,40 @@ export const JsonViewer: React.FC<JsonViewerProps> = ({
   maxHeight = '400px',
   className = '',
 }) => {
-  const [copied, setCopied] = useState(false);
+  const jsonString = data ? JSON.stringify(data, null, 2) : '';
+  const [copyState, setCopyState] = useState<{ key: string; status: 'idle' | 'copied' | 'failed' }>({
+    key: jsonString,
+    status: 'idle',
+  });
+  const [prevJsonString, setPrevJsonString] = useState(jsonString);
+  if (prevJsonString !== jsonString) {
+    setPrevJsonString(jsonString);
+    setCopyState({ key: jsonString, status: 'idle' });
+  }
+  const resetTimerRef = useRef<number | null>(null);
+  const mountedRef = useRef(true);
+  const copyTokenRef = useRef(0);
   const { t } = useUiLanguage();
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      copyTokenRef.current += 1;
+      if (resetTimerRef.current !== null) {
+        window.clearTimeout(resetTimerRef.current);
+        resetTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    copyTokenRef.current += 1;
+    if (resetTimerRef.current !== null) {
+      window.clearTimeout(resetTimerRef.current);
+      resetTimerRef.current = null;
+    }
+  }, [jsonString]);
 
   if (!data) {
     return (
@@ -65,13 +98,35 @@ export const JsonViewer: React.FC<JsonViewerProps> = ({
     );
   }
 
-  const jsonString = JSON.stringify(data, null, 2);
-
   const handleCopy = async () => {
-    await navigator.clipboard.writeText(jsonString);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    const token = ++copyTokenRef.current;
+    const targetKey = jsonString;
+    const ok = await copyTextToClipboard(jsonString, {
+      shouldFallback: () => mountedRef.current && copyTokenRef.current === token,
+    });
+    if (!mountedRef.current || copyTokenRef.current !== token) {
+      return;
+    }
+    setCopyState({ key: targetKey, status: ok ? 'copied' : 'failed' });
+    if (resetTimerRef.current !== null) {
+      window.clearTimeout(resetTimerRef.current);
+    }
+    resetTimerRef.current = window.setTimeout(() => {
+      resetTimerRef.current = null;
+      if (!mountedRef.current || copyTokenRef.current !== token) {
+        return;
+      }
+      setCopyState({ key: targetKey, status: 'idle' });
+    }, 2000);
   };
+
+  const copyStatus = copyState.key === jsonString ? copyState.status : 'idle';
+  const copyLabel =
+    copyStatus === 'copied'
+      ? t('common.copied')
+      : copyStatus === 'failed'
+        ? t('common.copyFailed')
+        : t('common.copy');
 
   const highlightJson = (json: string): React.ReactNode => {
     return json.split('\n').map((line, index) => {
@@ -87,12 +142,15 @@ export const JsonViewer: React.FC<JsonViewerProps> = ({
     <div className={`relative ${className}`}>
       {/* 复制按钮 */}
       <button
-        onClick={handleCopy}
-        className="absolute top-2 right-2 px-2 py-1 text-xs rounded
-          bg-slate-700 hover:bg-slate-600 text-gray-300
-          transition-colors z-10"
+        type="button"
+        onClick={() => void handleCopy()}
+        aria-label={copyLabel}
+        className={`absolute top-2 right-2 px-2 py-1 text-xs rounded
+          bg-slate-700 hover:bg-slate-600 transition-colors z-10 ${
+            copyStatus === 'failed' ? 'text-rose-300' : 'text-gray-300'
+          }`}
       >
-        {copied ? t('common.copied') : t('common.copy')}
+        {copyLabel}
       </button>
 
       {/* JSON 内容 */}

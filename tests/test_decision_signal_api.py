@@ -1727,6 +1727,45 @@ def test_reassess_persist_writes_authoritative_item_and_deduplicates(client_and_
     assert [signal["id"] for signal in timeline.json()["items"]] == [item["id"]]
 
 
+@pytest.mark.skipif(not hasattr(time, "tzset"), reason="requires a switchable process timezone")
+@pytest.mark.parametrize(
+    ("report_local", "expected_utc"),
+    [
+        (datetime(2024, 1, 16, 15, 55), datetime(2024, 1, 16, 20, 55)),
+        (datetime(2024, 7, 16, 15, 55), datetime(2024, 7, 16, 19, 55)),
+    ],
+    ids=["standard-time", "daylight-time"],
+)
+def test_history_signals_use_offset_at_report_time(client_and_db, report_local, expected_utc) -> None:
+    client, db = client_and_db
+    context = _valid_reassess_context()
+    context["market_phase_summary"]["minutes_to_close"] = 5
+    record_id = _save_reassess_history(
+        db,
+        raw_result=_valid_reassess_raw(horizon="intraday", invalidation="Below support"),
+        context_snapshot=context,
+    )
+    _set_reassess_history_created_at(db, record_id, report_local)
+
+    with _temporary_tz("America/New_York"):
+        backfill = client.get(
+            "/api/v1/decision-signals",
+            params={"source_type": "analysis", "source_report_id": record_id},
+        )
+        reassess = client.post(
+            "/api/v1/decision-signals/reassess",
+            json={"source_report_id": record_id, "decision_profile": "aggressive", "persist": True},
+        )
+
+    assert backfill.status_code == 200, backfill.text
+    assert reassess.status_code == 200, reassess.text
+    (backfilled,) = backfill.json()["items"]
+    assert datetime.fromisoformat(backfilled["created_at"]) == expected_utc
+    reassessed = reassess.json()["item"]
+    assert datetime.fromisoformat(reassessed["created_at"]) == expected_utc
+    assert datetime.fromisoformat(reassessed["expires_at"]) == expected_utc + timedelta(minutes=5)
+
+
 def test_reassess_persist_anchors_expired_signal_to_report_lifecycle(client_and_db) -> None:
     client, db = client_and_db
     report_created_at = utc_naive_now().replace(microsecond=0) - timedelta(days=30)
