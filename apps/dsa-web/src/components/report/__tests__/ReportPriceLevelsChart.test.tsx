@@ -1,7 +1,9 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import React from 'react';
 import { describe, expect, it, vi } from 'vitest';
+import type { StockKLineItem } from '../../../api/stocks';
 import {
+  computeQuantTelemetry,
   enrichBarsWithMovingAverages,
   formatChartAxisPrice,
   parseStrategyPriceLevel,
@@ -12,8 +14,10 @@ vi.mock('recharts', () => ({
   ResponsiveContainer: ({ children }: { children: React.ReactNode }) => <div data-testid="recharts-container">{children}</div>,
   ComposedChart: ({ children }: { children: React.ReactNode }) => <div data-testid="composed-chart">{children}</div>,
   CartesianGrid: () => null,
-  XAxis: () => null,
-  YAxis: () => null,
+  XAxis: ({ dataKey }: { dataKey?: string }) => <div data-testid="chart-xaxis" data-key={dataKey} />,
+  YAxis: ({ domain }: { domain?: unknown }) => (
+    <div data-testid="chart-yaxis" data-domain={JSON.stringify(domain)} />
+  ),
   Legend: () => null,
   Tooltip: ({ content }: { content: React.ReactElement<{ active?: boolean; payload?: unknown }> }) => (
     <div data-testid="levels-tooltip">
@@ -24,10 +28,20 @@ vi.mock('recharts', () => ({
     </div>
   ),
   Area: () => null,
-  Line: () => null,
-  ReferenceLine: ({ y, label }: { y?: number; label?: { value: string } }) => (
-    <div data-testid={`ref-line-${y}`}>{label?.value}</div>
+  Bar: ({ dataKey, children }: { dataKey?: string; children?: React.ReactNode }) => (
+    <div data-testid={`chart-bar-${dataKey}`}>{children}</div>
   ),
+  Cell: ({ fill }: { fill?: string }) => <span data-testid="chart-bar-cell" data-fill={fill} />,
+  Line: () => null,
+  ReferenceLine: ({ x, y, label }: { x?: string; y?: number; label?: { value: string } }) => {
+    if (y != null) {
+      return <div data-testid={`ref-line-${y}`}>{label?.value}</div>;
+    }
+    if (x != null) {
+      return <div data-testid={`ref-line-x-${x}`}>{label?.value}</div>;
+    }
+    return null;
+  },
 }));
 
 describe('ReportPriceLevelsChart helpers & component', () => {
@@ -307,5 +321,258 @@ describe('ReportPriceLevelsChart helpers & component', () => {
     expect(screen.getByRole('status')).toHaveTextContent('2026-08-02');
     expect(screen.getByTestId('ref-line-47.47')).toHaveTextContent('次/损 47.47');
     expect(screen.getByTestId('ref-line-55.13')).toHaveTextContent('盈 55.13');
+  });
+
+  it('computes BOLL, MA60, RSI(14), MACD, KDJ, ATR, and quantitative risk telemetry accurately', () => {
+    const uptrendBars: StockKLineItem[] = Array.from({ length: 75 }, (_, i) => {
+      const date = new Date(Date.UTC(2026, 0, i + 1)).toISOString().slice(0, 10);
+      const wave = (i % 5 === 0 ? -0.4 : 0.9);
+      const close = Number((100 + i * 0.75 + wave).toFixed(2));
+      return {
+        date,
+        open: close - 0.5,
+        high: close + 1.2,
+        low: close - 1.1,
+        close,
+        volume: 100000 + i * 500,
+      };
+    });
+
+    const enriched = enrichBarsWithMovingAverages(uptrendBars, 60);
+    expect(enriched).toHaveLength(60);
+    const last = enriched[enriched.length - 1];
+    expect(last.ma60).not.toBeNull();
+    expect(last.bollUpper).not.toBeNull();
+    expect(last.bollMid).toBeCloseTo(last.ma20 ?? 0, 8);
+    expect(last.bollLower).not.toBeNull();
+    expect((last.bollUpper ?? 0)).toBeGreaterThan((last.bollLower ?? 0));
+    expect(last.rsi14).toBeGreaterThan(55);
+    expect(last.rsi14).toBeLessThanOrEqual(100);
+    expect(last.macdDif).not.toBeNull();
+    expect(last.macdDea).not.toBeNull();
+    expect(last.macdHist).not.toBeNull();
+    expect(last.kdjK).not.toBeNull();
+    expect(last.kdjD).not.toBeNull();
+    expect(last.kdjJ).not.toBeNull();
+    expect(last.atrPct).toBeGreaterThan(0);
+
+    const flatBars: StockKLineItem[] = Array.from({ length: 25 }, (_, i) => ({
+      date: `2026-03-${String(i + 1).padStart(2, '0')}`,
+      open: 50,
+      high: 50.2,
+      low: 49.8,
+      close: 50,
+    }));
+    const flatTelemetry = computeQuantTelemetry(enrichBarsWithMovingAverages(flatBars, 60));
+    expect(flatTelemetry.bollBandwidthPct).toBe(0);
+    expect(flatTelemetry.bollSqueeze).toBe(true);
+    expect(flatTelemetry.rsi14).toBe(50);
+
+    const telemetry = computeQuantTelemetry(enriched, {
+      idealBuy: 140,
+      stopLoss: 130,
+      takeProfit: 165,
+    });
+    expect(telemetry.riskRewardRatio).toBeCloseTo(2.5, 5);
+    expect(telemetry.upsidePct).toBeGreaterThan(17);
+    expect(telemetry.downsidePct).toBeGreaterThan(7);
+    expect(telemetry.annualizedVolPct).toBeGreaterThan(0);
+    expect(telemetry.maxDrawdownPct).toBeLessThanOrEqual(0);
+    expect(telemetry.ma20BiasPct).not.toBeNull();
+  });
+
+  it('supports interactive timeframe switching, MA60/BOLL overlays, sub-panels, and trilingual governance without native title attrs', () => {
+    const bars: StockKLineItem[] = Array.from({ length: 70 }, (_, i) => {
+      const date = new Date(Date.UTC(2026, 0, i + 1)).toISOString().slice(0, 10);
+      const close = Number((80 + i * 0.6 + Math.sin(i / 3) * 2).toFixed(2));
+      return {
+        date,
+        open: close - 0.3,
+        high: close + 1.0,
+        low: close - 0.9,
+        close,
+      };
+    });
+
+    const { container, rerender } = render(
+      <ReportPriceLevelsChart
+        bars={bars}
+        strategy={{ idealBuy: '115', stopLoss: '105', takeProfit: '140' }}
+        language="zh"
+      />,
+    );
+
+    // Zero native HTML title attributes (ui_governance)
+    expect(container.querySelectorAll('[title]')).toHaveLength(0);
+
+    // Default telemetry strip & single chart (sub-panel Off by default)
+    expect(screen.getByTestId('quant-telemetry-strip')).toHaveTextContent('盈亏比');
+    expect(screen.getByTestId('quant-telemetry-strip')).toHaveTextContent('1:2.5');
+    expect(screen.queryByTestId(/^quant-subpanel-/)).not.toBeInTheDocument();
+
+    // Switch timeframe 60D -> 20D -> All
+    fireEvent.click(screen.getByRole('button', { name: '20D' }));
+    expect(screen.getByText(/\(20D\)/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '全部' }));
+    expect(screen.getByText(/\(70D\)/)).toBeInTheDocument();
+
+    // Toggle MA60 & BOLL overlays
+    const ma60Btn = screen.getByRole('button', { name: 'MA60' });
+    const bollBtn = screen.getByRole('button', { name: 'BOLL' });
+    expect(ma60Btn).toHaveAttribute('aria-pressed', 'false');
+    fireEvent.click(ma60Btn);
+    fireEvent.click(bollBtn);
+    expect(ma60Btn).toHaveAttribute('aria-pressed', 'true');
+    expect(bollBtn).toHaveAttribute('aria-pressed', 'true');
+
+    // Toggle synchronized sub-panels RSI -> MACD -> KDJ -> Off
+    fireEvent.click(screen.getByRole('button', { name: 'RSI(14)' }));
+    expect(screen.getByTestId('quant-subpanel-rsi')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'MACD' }));
+    expect(screen.getByTestId('quant-subpanel-macd')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'KDJ' }));
+    expect(screen.getByTestId('quant-subpanel-kdj')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '关闭' }));
+    expect(screen.queryByTestId(/^quant-subpanel-/)).not.toBeInTheDocument();
+
+    // Verify EN & KO localization
+    rerender(
+      <ReportPriceLevelsChart
+        bars={bars}
+        strategy={{ idealBuy: '115', stopLoss: '105', takeProfit: '140' }}
+        language="en"
+      />,
+    );
+    expect(screen.getByTestId('quant-telemetry-strip')).toHaveTextContent('R:R:');
+    expect(screen.getByRole('button', { name: 'All' })).toBeInTheDocument();
+
+    rerender(
+      <ReportPriceLevelsChart
+        bars={bars}
+        strategy={{ idealBuy: '115', stopLoss: '105', takeProfit: '140' }}
+        language="ko"
+      />,
+    );
+    expect(screen.getByTestId('quant-telemetry-strip')).toHaveTextContent('손익비:');
+    expect(screen.getByRole('button', { name: '전체' })).toBeInTheDocument();
+    expect(container.querySelectorAll('[title]')).toHaveLength(0);
+  });
+
+  it('deduplicates duplicate dates, normalizes inverted OHLC bounds, and guards micro stop distances', () => {
+    const rawBars: StockKLineItem[] = Array.from({ length: 16 }, (_, i) => ({
+      date: `2026-04-${String(i + 1).padStart(2, '0')}`,
+      open: 100 + i,
+      // Intentionally invert high/low on later bars
+      high: 98 + i,
+      low: 103 + i,
+      close: 100 + i,
+    }));
+    rawBars.push({
+      date: '2026-04-16',
+      open: 118,
+      high: 112,
+      low: 121,
+      close: 120,
+    });
+
+    const enriched = enrichBarsWithMovingAverages(rawBars, 0);
+    expect(enriched).toHaveLength(16);
+    const last = enriched[enriched.length - 1];
+    expect(last.close).toBe(120);
+    expect(last.high).toBe(121);
+    expect(last.low).toBe(112);
+    expect(last.kdjK).toBeGreaterThanOrEqual(0);
+    expect(last.kdjK).toBeLessThanOrEqual(100);
+    expect(last.atr14).toBeGreaterThan(0);
+
+    const microStopTelemetry = computeQuantTelemetry(enriched, {
+      idealBuy: 100.001,
+      stopLoss: 100.0,
+      takeProfit: 130,
+    });
+    expect(microStopTelemetry.riskRewardRatio).toBeNull();
+  });
+
+  it('preserves sub-cent yDomain and adaptive price precision for micro-priced tickers', () => {
+    const bars = Array.from({ length: 20 }, (_, i) => ({
+      date: `2026-01-${String(i + 1).padStart(2, '0')}`,
+      open: 0.0056,
+      high: 0.0056,
+      low: 0.0056,
+      close: 0.0056,
+    }));
+
+    render(<ReportPriceLevelsChart bars={bars} language="zh" />);
+
+    expect(screen.getByText('0.0056')).toBeInTheDocument();
+    const yAxis = screen.getByTestId('chart-yaxis');
+    const domain = JSON.parse(yAxis.getAttribute('data-domain') || '[]') as number[];
+    expect(domain[0]).toBeLessThan(0.0056);
+    expect(domain[1]).toBeGreaterThan(0.0056);
+  });
+
+  it('anchors cross-year historical report markers by full ISO date and plots positive/negative MACD histogram bars', () => {
+    const crossYearBars: StockKLineItem[] = [
+      ...Array.from({ length: 25 }, (_, i) => ({
+        date: `2025-11-${String(i + 1).padStart(2, '0')}`,
+        open: 50 + i * 0.8,
+        close: 50 + i * 0.8,
+        high: 51 + i * 0.8,
+        low: 49 + i * 0.8,
+      })),
+      ...Array.from({ length: 25 }, (_, i) => ({
+        date: `2026-11-${String(i + 1).padStart(2, '0')}`,
+        open: 70 - i * 0.9,
+        close: 70 - i * 0.9,
+        high: 71 - i * 0.9,
+        low: 69 - i * 0.9,
+      })),
+    ];
+
+    render(
+      <ReportPriceLevelsChart
+        bars={crossYearBars}
+        reportDate="2025-11-20"
+        language="zh"
+      />,
+    );
+
+    expect(screen.getByTestId('chart-xaxis')).toHaveAttribute('data-key', 'date');
+    expect(screen.getByTestId('ref-line-x-2025-11-20')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'MACD' }));
+    const histBar = screen.getByTestId('chart-bar-macdHist');
+    const cellFills = Array.from(histBar.querySelectorAll('[data-testid="chart-bar-cell"]')).map((el) =>
+      el.getAttribute('data-fill'),
+    );
+    expect(cellFills.some((f) => f === 'rgba(16, 185, 129, 0.65)')).toBe(true);
+    expect(cellFills.some((f) => f === 'rgba(244, 63, 94, 0.65)')).toBe(true);
+  });
+
+  it('shows localized insufficient-session status messages in sub-panels on short history without native title attributes', () => {
+    const shortBars: StockKLineItem[] = Array.from({ length: 5 }, (_, i) => ({
+      date: `2026-05-0${i + 1}`,
+      open: 100 + i,
+      high: 101 + i,
+      low: 99 + i,
+      close: 100 + i,
+    }));
+
+    const { container, rerender } = render(<ReportPriceLevelsChart bars={shortBars} language="zh" />);
+    fireEvent.click(screen.getByRole('button', { name: 'RSI(14)' }));
+    expect(screen.getByTestId('quant-subpanel-rsi')).toHaveTextContent('至少需要 15 个交易日以计算 RSI(14)');
+
+    fireEvent.click(screen.getByRole('button', { name: 'MACD' }));
+    expect(screen.getByTestId('quant-subpanel-macd')).toHaveTextContent('至少需要 13 个交易日以计算 MACD');
+
+    fireEvent.click(screen.getByRole('button', { name: 'KDJ' }));
+    expect(screen.getByTestId('quant-subpanel-kdj')).toHaveTextContent('至少需要 9 个交易日以计算 KDJ');
+
+    rerender(<ReportPriceLevelsChart bars={shortBars} language="en" />);
+    expect(screen.getByTestId('quant-subpanel-kdj')).toHaveTextContent('Needs at least 9 sessions to compute KDJ');
+
+    rerender(<ReportPriceLevelsChart bars={shortBars} language="ko" />);
+    expect(screen.getByTestId('quant-subpanel-kdj')).toHaveTextContent('KDJ 계산에 최소 9거래일 필요');
+    expect(container.querySelectorAll('[title]')).toHaveLength(0);
   });
 });
