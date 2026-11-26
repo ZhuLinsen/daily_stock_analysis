@@ -2594,6 +2594,29 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
         self.assertTrue(ok)
         mock_post.assert_called_once()
 
+    @mock.patch("time.sleep")
+    @mock.patch("src.notification.get_config")
+    @mock.patch("requests.post")
+    def test_send_to_pushover_splits_a_section_longer_than_the_limit(
+        self, mock_post: mock.MagicMock, mock_get_config: mock.MagicMock, _mock_sleep: mock.MagicMock
+    ):
+        mock_get_config.return_value = _make_config(
+            pushover_user_key="USER",
+            pushover_api_token="TOKEN",
+        )
+        mock_post.return_value = _make_response(200, {"status": 1})
+        lines = [f"第{i:02d}行：缩量回踩均线获得支撑，等待放量确认后再加仓。" for i in range(40)]
+        content = "开头\n\n---\n\n" + "\n".join(lines) + "\n\n---\n\n结尾"
+
+        ok = NotificationService().send_to_pushover(content)
+
+        self.assertTrue(ok)
+        messages = [c.kwargs["data"]["message"] for c in mock_post.call_args_list]
+        self.assertTrue(all(len(m) <= 1024 for m in messages), [len(m) for m in messages])
+        delivered = "".join(messages)
+        for line in lines:
+            self.assertIn(line, delivered)
+
     @mock.patch("src.notification.get_config")
     @mock.patch("requests.post")
     def test_send_to_pushplus_via_notification_service(

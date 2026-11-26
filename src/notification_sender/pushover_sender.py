@@ -11,7 +11,7 @@ from datetime import datetime
 import requests
 
 from src.config import Config
-from src.formatters import markdown_to_plain_text
+from src.formatters import chunk_content_by_max_words, markdown_to_plain_text
 
 
 logger = logging.getLogger(__name__)
@@ -194,6 +194,16 @@ class PushoverSender:
             else:
                 # 第一个元素，不需要分隔符
                 new_length = len(section)
+
+            # 单个 section 本身超长（一只股票的完整分析常超过 1024 字符），
+            # 原样发送会被 Pushover 以 HTTP 400 拒收，需再切分
+            if len(section) > max_length:
+                if current_chunk:
+                    chunks.append(separator.join(current_chunk))
+                    current_chunk = []
+                    current_length = 0
+                chunks.extend(chunk_content_by_max_words(section, max_length, special_char_len=1))
+                continue
             
             if new_length > max_length:
                 if current_chunk:
