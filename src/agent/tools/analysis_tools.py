@@ -6,6 +6,7 @@ Tools:
 - analyze_trend: comprehensive technical trend analysis
 """
 
+from datetime import date
 import logging
 import math
 from typing import Optional
@@ -23,16 +24,31 @@ _ANALYSIS_READ_POLICY = ToolPolicy.declared(
 )
 
 
+def _extract_latest_bar_date(df) -> Optional[date]:
+    """Return the latest valid calendar date present in `df['date']`, or None."""
+    if df is None or getattr(df, "empty", True) or "date" not in df.columns:
+        return None
+    import pandas as pd
+
+    parsed = pd.to_datetime(df["date"], errors="coerce").dropna()
+    if parsed.empty:
+        return None
+    return parsed.max().date()
+
+
 def _fetch_trend_data(stock_code: str):
     """Fetch historical OHLCV (DataFrame) for trend analysis. DB first, then DataFetcher fallback."""
     from src.services.history_loader import load_history_df
 
-    df, _ = load_history_df(stock_code, days=60)
+    df, source = load_history_df(stock_code, days=60)
+    if df is not None:
+        df.attrs["_history_source"] = source
     return df
 
 
 def _handle_analyze_trend(stock_code: str) -> dict:
     """Run technical trend analysis on a stock."""
+    from src.services.history_loader import get_frozen_target_date
     from src.stock_analyzer import StockTrendAnalyzer
 
     if not (stock_code and str(stock_code).strip()):
@@ -52,7 +68,16 @@ def _handle_analyze_trend(stock_code: str) -> dict:
         logger.warning("analyze_trend(%s): Trend analysis failed", stock_code, exc_info=True)
         return {"error": f"Trend analysis failed for {stock_code}"}
 
-    return {
+    source = getattr(df, "attrs", {}).get("_history_source")
+    latest_bar_date = _extract_latest_bar_date(df)
+    effective_target = get_frozen_target_date() or date.today()
+    is_stale = (source == "db_cache_stale") or (
+        latest_bar_date is not None
+        and source in ("db_cache", "db_cache_stale")
+        and latest_bar_date < effective_target
+    )
+
+    payload = {
         "code": result.code,
         "trend_status": result.trend_status.value,
         "ma_alignment": result.ma_alignment,
@@ -86,7 +111,17 @@ def _handle_analyze_trend(stock_code: str) -> dict:
         "signal_score": result.signal_score,
         "signal_reasons": result.signal_reasons,
         "risk_factors": result.risk_factors,
+        "data_date": latest_bar_date.isoformat() if latest_bar_date else None,
+        "source": source,
+        "is_stale": bool(is_stale),
     }
+    if is_stale:
+        date_text = latest_bar_date.isoformat() if latest_bar_date else "unknown"
+        payload["stale_warning"] = (
+            f"Provider fallback unavailable; computed from cached bars as of {date_text} "
+            f"(target date {effective_target.isoformat()})"
+        )
+    return payload
 
 
 analyze_trend_tool = ToolDefinition(
@@ -560,12 +595,12 @@ def _handle_calculate_quant_factors(stock_code: str, days: int = 120) -> dict:
     except (TypeError, ValueError):
         lookback = 120
 
-    df, source = load_history_df(stock_code, days=lookback, min_records=min(lookback, 60))
+    df, source = load_history_df(stock_code, days=lookback, min_records=min(lookback, 61))
     if df is None or df.empty:
         return {"error": f"No historical data available for quant factor analysis on {stock_code}"}
 
+    frozen = get_frozen_target_date()
     if "date" in df.columns:
-        frozen = get_frozen_target_date()
         if frozen is not None:
             parsed_dates = pd.to_datetime(df["date"], errors="coerce").dt.date
             df = df[parsed_dates.isna() | (parsed_dates <= frozen)].copy()
@@ -586,7 +621,23 @@ def _handle_calculate_quant_factors(stock_code: str, days: int = 120) -> dict:
     payload = result.to_dict()
     if not payload.get("sufficient_data"):
         return {"error": f"Insufficient valid OHLCV bars for quant factor analysis on {stock_code}"}
+
+    latest_bar_date = _extract_latest_bar_date(df)
+    effective_target = frozen or date.today()
+    is_stale = (source == "db_cache_stale") or (
+        latest_bar_date is not None
+        and source in ("db_cache", "db_cache_stale")
+        and latest_bar_date < effective_target
+    )
+    payload["data_date"] = latest_bar_date.isoformat() if latest_bar_date else None
     payload["source"] = source
+    payload["is_stale"] = bool(is_stale)
+    if is_stale:
+        date_text = latest_bar_date.isoformat() if latest_bar_date else "unknown"
+        payload["stale_warning"] = (
+            f"Provider fallback unavailable; computed from cached bars as of {date_text} "
+            f"(target date {effective_target.isoformat()})"
+        )
     return payload
 
 

@@ -827,13 +827,23 @@ def _filter_conflicting_trend_items(items: List[str], conflict_hints: Tuple[str,
     return [item for item in items if not _contains_trend_hint(item, conflict_hints)]
 
 
-def _format_quant_factors_prompt_section(qf: Any, *, english: bool = False) -> str:
-    """Format pre-computed quantitative multi-factor indicators for the analysis prompt."""
-    if not isinstance(qf, dict) or not qf.get("sufficient_data"):
+def _format_quant_factors_prompt_section(
+    qf: Any,
+    *,
+    english: bool = False,
+    trend: Any = None,
+) -> str:
+    """Format pre-computed quantitative multi-factor indicators and trend complements."""
+    has_qf = isinstance(qf, dict) and bool(qf.get("sufficient_data"))
+    trend_dict = trend if isinstance(trend, dict) else {}
+    has_trend_extras = any(
+        trend_dict.get(k) is not None for k in ("ma60", "volume_ratio_5d", "rsi_6", "rsi_12", "rsi_24")
+    )
+    if not has_qf and not has_trend_extras:
         return ""
 
-    def _opt(key: str, suffix: str = "", fmt: str = ".2f") -> str:
-        val = qf.get(key)
+    def _opt_from(mapping: Dict[str, Any], key: str, suffix: str = "", fmt: str = ".2f") -> str:
+        val = mapping.get(key)
         if val is None or isinstance(val, bool):
             return "N/A"
         try:
@@ -845,28 +855,64 @@ def _format_quant_factors_prompt_section(qf: Any, *, english: bool = False) -> s
         return f"{format(num, fmt)}{suffix}"
 
     title = "#### Quantitative Multi-Factor Indicators" if english else "#### 量化多因子指标（预计算）"
-    trail_bool = bool(qf.get("atr_trailing_stop_breached"))
-    if english:
-        return f"""
-{title}
-- bars_analyzed={qf.get('bars_analyzed', 'N/A')} | quant_regime={qf.get('quant_regime', 'N/A')} | quant_composite_score={qf.get('quant_composite_score', 'N/A')}/100
-- BOLL(20,2): lower={_opt('boll_lower')} / mid={_opt('boll_mid')} / upper={_opt('boll_upper')} | boll_pct_b={_opt('boll_pct_b')} | boll_bandwidth_pct={_opt('boll_bandwidth_pct', '%')} (prev_boll_bandwidth_pct={_opt('prev_boll_bandwidth_pct', '%')}, boll_squeeze={bool(qf.get('boll_squeeze'))}, boll_squeeze_prior={bool(qf.get('boll_squeeze_prior'))}, boll_squeeze_breakout={bool(qf.get('boll_squeeze_breakout'))})
-- Donchian: donchian_high_20={_opt('donchian_high_20')} / donchian_low_20={_opt('donchian_low_20')} | donchian_high_10={_opt('donchian_high_10')} / donchian_low_10={_opt('donchian_low_10')} | donchian_signal={qf.get('donchian_signal', 'inside')}
-- ATR & Vol: atr_14={_opt('atr_14')} (atr_pct={_opt('atr_pct', '%')}) | atr_stop_loss_long={_opt('atr_stop_loss_long')} | atr_trailing_stop_long={_opt('atr_trailing_stop_long')} (atr_trailing_stop_breached={trail_bool}) | atr_take_profit_2r={_opt('atr_take_profit_2r')} | hv_20_annualized_pct={_opt('hv_20_annualized_pct', '%')} | vcp_contraction_ratio={_opt('vcp_contraction_ratio')}
-- KDJ & ADX: kdj_k={_opt('kdj_k', fmt='.1f')} kdj_d={_opt('kdj_d', fmt='.1f')} kdj_j={_opt('kdj_j', fmt='.1f')} (kdj_status={qf.get('kdj_status', 'neutral')}) | adx_14={_opt('adx_14', fmt='.1f')} (plus_di_14={_opt('plus_di_14', fmt='.1f')}, minus_di_14={_opt('minus_di_14', fmt='.1f')}, adx_regime={qf.get('adx_regime', 'unknown')}, adx_direction={qf.get('adx_direction', 'neutral')})
-- Flow & Momentum: obv_trend={qf.get('obv_trend', 'flat')} (obv_divergence={qf.get('obv_divergence', 'none')}) | vwap_20={_opt('vwap_20')} (vwap_bias_pct={_opt('vwap_bias_pct', '%', '+.2f')}) | mfi_14={_opt('mfi_14', fmt='.1f')} (mfi_status={qf.get('mfi_status', 'neutral')}) | roc_5_pct={_opt('roc_5_pct', '%', '+.2f')} roc_20_pct={_opt('roc_20_pct', '%', '+.2f')} roc_60_pct={_opt('roc_60_pct', '%', '+.2f')} | max_drawdown_60_pct={_opt('max_drawdown_60_pct', '%')} | dist_from_high_60_pct={_opt('dist_from_high_60_pct', '%', '+.2f')} | sharpe_60={_opt('sharpe_60')}
-"""
+    lines: List[str] = ["", title]
 
-    trail_cn = "已跌破" if trail_bool else "未跌破"
-    return f"""
-{title}
-- 有效K线(bars_analyzed): {qf.get('bars_analyzed', 'N/A')} | quant_regime={qf.get('quant_regime', 'N/A')} | quant_composite_score={qf.get('quant_composite_score', 'N/A')}/100
-- BOLL(20,2): 下轨={_opt('boll_lower')} / 中轨={_opt('boll_mid')} / 上轨={_opt('boll_upper')} | boll_pct_b={_opt('boll_pct_b')} | boll_bandwidth_pct={_opt('boll_bandwidth_pct', '%')} (prev_boll_bandwidth_pct={_opt('prev_boll_bandwidth_pct', '%')}, boll_squeeze={bool(qf.get('boll_squeeze'))}, boll_squeeze_prior={bool(qf.get('boll_squeeze_prior'))}, boll_squeeze_breakout={bool(qf.get('boll_squeeze_breakout'))})
-- Donchian通道: donchian_high_20={_opt('donchian_high_20')} / donchian_low_20={_opt('donchian_low_20')} | donchian_high_10={_opt('donchian_high_10')} / donchian_low_10={_opt('donchian_low_10')} | donchian_signal={qf.get('donchian_signal', 'inside')}
-- ATR与波动收敛: atr_14={_opt('atr_14')} (atr_pct={_opt('atr_pct', '%')}) | atr_stop_loss_long={_opt('atr_stop_loss_long')} | atr_trailing_stop_long={_opt('atr_trailing_stop_long')} ({trail_cn}, atr_trailing_stop_breached={trail_bool}) | 2R目标={_opt('atr_take_profit_2r')} | hv_20_annualized_pct={_opt('hv_20_annualized_pct', '%')} | vcp_contraction_ratio={_opt('vcp_contraction_ratio')}
-- KDJ与ADX: kdj_k={_opt('kdj_k', fmt='.1f')} kdj_d={_opt('kdj_d', fmt='.1f')} kdj_j={_opt('kdj_j', fmt='.1f')} (kdj_status={qf.get('kdj_status', 'neutral')}) | adx_14={_opt('adx_14', fmt='.1f')} (plus_di_14={_opt('plus_di_14', fmt='.1f')}, minus_di_14={_opt('minus_di_14', fmt='.1f')}, adx_regime={qf.get('adx_regime', 'unknown')}, adx_direction={qf.get('adx_direction', 'neutral')})
-- 量价与风控: obv_trend={qf.get('obv_trend', 'flat')} (obv_divergence={qf.get('obv_divergence', 'none')}) | vwap_20={_opt('vwap_20')} (vwap_bias_pct={_opt('vwap_bias_pct', '%', '+.2f')}) | mfi_14={_opt('mfi_14', fmt='.1f')} (mfi_status={qf.get('mfi_status', 'neutral')}) | roc_5_pct={_opt('roc_5_pct', '%', '+.2f')} roc_20_pct={_opt('roc_20_pct', '%', '+.2f')} roc_60_pct={_opt('roc_60_pct', '%', '+.2f')} | max_drawdown_60_pct={_opt('max_drawdown_60_pct', '%')} | dist_from_high_60_pct={_opt('dist_from_high_60_pct', '%', '+.2f')} | sharpe_60={_opt('sharpe_60')}
-"""
+    if has_qf:
+        trail_bool = bool(qf.get("atr_trailing_stop_breached"))
+        if english:
+            lines.extend(
+                [
+                    f"- bars_analyzed={qf.get('bars_analyzed', 'N/A')} | quant_regime={qf.get('quant_regime', 'N/A')} | quant_composite_score={qf.get('quant_composite_score', 'N/A')}/100",
+                    f"- BOLL(20,2): lower={_opt_from(qf, 'boll_lower')} / mid={_opt_from(qf, 'boll_mid')} / upper={_opt_from(qf, 'boll_upper')} | boll_pct_b={_opt_from(qf, 'boll_pct_b')} | boll_bandwidth_pct={_opt_from(qf, 'boll_bandwidth_pct', '%')} (prev_boll_bandwidth_pct={_opt_from(qf, 'prev_boll_bandwidth_pct', '%')}, boll_squeeze={bool(qf.get('boll_squeeze'))}, boll_squeeze_prior={bool(qf.get('boll_squeeze_prior'))}, boll_squeeze_breakout={bool(qf.get('boll_squeeze_breakout'))})",
+                    f"- Donchian: donchian_high_20={_opt_from(qf, 'donchian_high_20')} / donchian_low_20={_opt_from(qf, 'donchian_low_20')} | donchian_high_10={_opt_from(qf, 'donchian_high_10')} / donchian_low_10={_opt_from(qf, 'donchian_low_10')} | donchian_signal={qf.get('donchian_signal', 'inside')}",
+                    f"- ATR & Vol: atr_14={_opt_from(qf, 'atr_14')} (atr_pct={_opt_from(qf, 'atr_pct', '%')}) | atr_stop_loss_long={_opt_from(qf, 'atr_stop_loss_long')} | atr_trailing_stop_long={_opt_from(qf, 'atr_trailing_stop_long')} (atr_trailing_stop_breached={trail_bool}) | atr_take_profit_2r={_opt_from(qf, 'atr_take_profit_2r')} | hv_20_annualized_pct={_opt_from(qf, 'hv_20_annualized_pct', '%')} | vcp_contraction_ratio={_opt_from(qf, 'vcp_contraction_ratio')}",
+                    f"- KDJ & ADX: kdj_k={_opt_from(qf, 'kdj_k', fmt='.1f')} kdj_d={_opt_from(qf, 'kdj_d', fmt='.1f')} kdj_j={_opt_from(qf, 'kdj_j', fmt='.1f')} (kdj_status={qf.get('kdj_status', 'neutral')}) | adx_14={_opt_from(qf, 'adx_14', fmt='.1f')} (plus_di_14={_opt_from(qf, 'plus_di_14', fmt='.1f')}, minus_di_14={_opt_from(qf, 'minus_di_14', fmt='.1f')}, adx_regime={qf.get('adx_regime', 'unknown')}, adx_direction={qf.get('adx_direction', 'neutral')})",
+                    f"- Flow & Momentum: obv_trend={qf.get('obv_trend', 'flat')} (obv_divergence={qf.get('obv_divergence', 'none')}) | vwap_20={_opt_from(qf, 'vwap_20')} (vwap_bias_pct={_opt_from(qf, 'vwap_bias_pct', '%', '+.2f')}) | mfi_14={_opt_from(qf, 'mfi_14', fmt='.1f')} (mfi_status={qf.get('mfi_status', 'neutral')}) | roc_5_pct={_opt_from(qf, 'roc_5_pct', '%', '+.2f')} roc_20_pct={_opt_from(qf, 'roc_20_pct', '%', '+.2f')} roc_60_pct={_opt_from(qf, 'roc_60_pct', '%', '+.2f')} | max_drawdown_60_pct={_opt_from(qf, 'max_drawdown_60_pct', '%')} | dist_from_high_60_pct={_opt_from(qf, 'dist_from_high_60_pct', '%', '+.2f')} | sharpe_60={_opt_from(qf, 'sharpe_60')}",
+                ]
+            )
+        else:
+            trail_cn = "已跌破" if trail_bool else "未跌破"
+            lines.extend(
+                [
+                    f"- 有效K线(bars_analyzed): {qf.get('bars_analyzed', 'N/A')} | quant_regime={qf.get('quant_regime', 'N/A')} | quant_composite_score={qf.get('quant_composite_score', 'N/A')}/100",
+                    f"- BOLL(20,2): 下轨={_opt_from(qf, 'boll_lower')} / 中轨={_opt_from(qf, 'boll_mid')} / 上轨={_opt_from(qf, 'boll_upper')} | boll_pct_b={_opt_from(qf, 'boll_pct_b')} | boll_bandwidth_pct={_opt_from(qf, 'boll_bandwidth_pct', '%')} (prev_boll_bandwidth_pct={_opt_from(qf, 'prev_boll_bandwidth_pct', '%')}, boll_squeeze={bool(qf.get('boll_squeeze'))}, boll_squeeze_prior={bool(qf.get('boll_squeeze_prior'))}, boll_squeeze_breakout={bool(qf.get('boll_squeeze_breakout'))})",
+                    f"- Donchian通道: donchian_high_20={_opt_from(qf, 'donchian_high_20')} / donchian_low_20={_opt_from(qf, 'donchian_low_20')} | donchian_high_10={_opt_from(qf, 'donchian_high_10')} / donchian_low_10={_opt_from(qf, 'donchian_low_10')} | donchian_signal={qf.get('donchian_signal', 'inside')}",
+                    f"- ATR与波动收敛: atr_14={_opt_from(qf, 'atr_14')} (atr_pct={_opt_from(qf, 'atr_pct', '%')}) | atr_stop_loss_long={_opt_from(qf, 'atr_stop_loss_long')} | atr_trailing_stop_long={_opt_from(qf, 'atr_trailing_stop_long')} ({trail_cn}, atr_trailing_stop_breached={trail_bool}) | 2R目标={_opt_from(qf, 'atr_take_profit_2r')} | hv_20_annualized_pct={_opt_from(qf, 'hv_20_annualized_pct', '%')} | vcp_contraction_ratio={_opt_from(qf, 'vcp_contraction_ratio')}",
+                    f"- KDJ与ADX: kdj_k={_opt_from(qf, 'kdj_k', fmt='.1f')} kdj_d={_opt_from(qf, 'kdj_d', fmt='.1f')} kdj_j={_opt_from(qf, 'kdj_j', fmt='.1f')} (kdj_status={qf.get('kdj_status', 'neutral')}) | adx_14={_opt_from(qf, 'adx_14', fmt='.1f')} (plus_di_14={_opt_from(qf, 'plus_di_14', fmt='.1f')}, minus_di_14={_opt_from(qf, 'minus_di_14', fmt='.1f')}, adx_regime={qf.get('adx_regime', 'unknown')}, adx_direction={qf.get('adx_direction', 'neutral')})",
+                    f"- 量价与风控: obv_trend={qf.get('obv_trend', 'flat')} (obv_divergence={qf.get('obv_divergence', 'none')}) | vwap_20={_opt_from(qf, 'vwap_20')} (vwap_bias_pct={_opt_from(qf, 'vwap_bias_pct', '%', '+.2f')}) | mfi_14={_opt_from(qf, 'mfi_14', fmt='.1f')} (mfi_status={qf.get('mfi_status', 'neutral')}) | roc_5_pct={_opt_from(qf, 'roc_5_pct', '%', '+.2f')} roc_20_pct={_opt_from(qf, 'roc_20_pct', '%', '+.2f')} roc_60_pct={_opt_from(qf, 'roc_60_pct', '%', '+.2f')} | max_drawdown_60_pct={_opt_from(qf, 'max_drawdown_60_pct', '%')} | dist_from_high_60_pct={_opt_from(qf, 'dist_from_high_60_pct', '%', '+.2f')} | sharpe_60={_opt_from(qf, 'sharpe_60')}",
+                ]
+            )
+
+    if has_trend_extras:
+        bars_analyzed = qf.get("bars_analyzed") if isinstance(qf, dict) else None
+        raw_ma60 = trend_dict.get("ma60")
+        if (
+            bars_analyzed is not None
+            and isinstance(bars_analyzed, (int, float))
+            and not isinstance(bars_analyzed, bool)
+            and int(bars_analyzed) < 60
+        ) or not raw_ma60:
+            ma60_str = "N/A"
+        else:
+            ma60_str = _opt_from(trend_dict, "ma60")
+        vr5_str = _opt_from(trend_dict, "volume_ratio_5d")
+        rsi6_str = _opt_from(trend_dict, "rsi_6")
+        rsi12_str = _opt_from(trend_dict, "rsi_12")
+        rsi24_str = _opt_from(trend_dict, "rsi_24")
+        rsi_status = trend_dict.get("rsi_status", "neutral")
+        if english:
+            lines.append(
+                f"- Trend Complements: MA60={ma60_str} | volume_ratio_5d={vr5_str} | "
+                f"RSI(6/12/24)={rsi6_str} / {rsi12_str} / {rsi24_str} (rsi_status={rsi_status})"
+            )
+        else:
+            lines.append(
+                f"- 趋势补充指标: MA60={ma60_str} | 五日量比(volume_ratio_5d)={vr5_str} | "
+                f"RSI(6/12/24)={rsi6_str} / {rsi12_str} / {rsi24_str} (rsi_status={rsi_status})"
+            )
+
+    lines.append("")
+    return "\n".join(lines)
 
 
 def _sanitize_trend_analysis_for_prompt(
@@ -5218,6 +5264,7 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
             quant_section = _format_quant_factors_prompt_section(
                 trend.get('quant_factors'),
                 english=english,
+                trend=trend,
             )
             if quant_section:
                 prompt += quant_section

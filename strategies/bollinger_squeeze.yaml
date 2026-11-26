@@ -40,7 +40,7 @@ instructions: |
   - 若仍处于极度缩口但未放量选择方向，给出“观察突破触发价（上轨或20日高点）”的右侧触发条件。
 
   评分调整建议：
-  - `(boll_squeeze_breakout == true 或 (boll_squeeze_prior == true 且 boll_pct_b >= 0.8))` + `obv_trend == "rising"`：`sentiment_score +14`
+  - `boll_squeeze_breakout == true` + `obv_trend == "rising"`：`sentiment_score +14`
   - `boll_squeeze == true` 且缩口期贴近中轨蓄势待变盘：`sentiment_score +6`
   - 宽幅扩张高位且乖离过大（`boll_pct_b > 1.05` + `kdj_status == "overbought"`）：`sentiment_score -6`
   - 放量跌破布林下轨且 `adx_direction == "bearish"`：`sentiment_score -15`

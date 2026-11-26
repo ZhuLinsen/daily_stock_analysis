@@ -384,7 +384,12 @@ def compute_quant_factors(df: pd.DataFrame, code: str) -> QuantFactorResult:
     else:
         result.donchian_signal = "inside"
 
-    if boll_squeeze_prior and (boll_pct_b >= 0.8 or result.donchian_signal == "breakout_20_high"):
+    if (
+        boll_squeeze_prior
+        and prev_boll_bw is not None
+        and curr_bw > prev_boll_bw * 1.05
+        and ((band_span > 1e-12 and curr_close > boll_upper) or result.donchian_signal == "breakout_20_high")
+    ):
         result.boll_squeeze_breakout = True
         signals.append("Bollinger squeeze release breakout")
 

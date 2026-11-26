@@ -208,5 +208,19 @@ describe('StrategyPickerMenu', () => {
     rovingItem.focus();
     fireEvent.keyDown(rovingItem, { key: 'Tab' });
     expect(onTabClose).toHaveBeenCalledTimes(2);
+
+    // ArrowUp moves roving tabIndex="0" to the newly focused non-selected item, and Shift+Tab keeps menu open.
+    rovingItem.focus();
+    fireEvent.keyDown(rovingItem, { key: 'ArrowUp' });
+    const movedItem = document.activeElement as HTMLElement;
+    expect(movedItem).not.toBe(rovingItem);
+    expect(movedItem).toHaveAttribute('role', 'menuitemradio');
+    expect(movedItem).toHaveAttribute('tabindex', '0');
+
+    fireEvent.keyDown(movedItem, { key: 'Tab', shiftKey: true });
+    expect(onTabClose).toHaveBeenCalledTimes(2);
+
+    fireEvent.keyDown(movedItem, { key: 'Tab' });
+    expect(onTabClose).toHaveBeenCalledTimes(3);
   });
 });

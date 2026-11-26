@@ -250,7 +250,7 @@ class TestQuantAgentToolAndStrategies:
         with mock.patch("src.services.history_loader.load_history_df", return_value=(sample_df, "akshare")) as mock_loader:
             out = _handle_calculate_quant_factors("600519", days=999)
 
-        mock_loader.assert_called_once_with("600519", days=365, min_records=60)
+        mock_loader.assert_called_once_with("600519", days=365, min_records=61)
         assert out["sufficient_data"] is True
         assert out["source"] == "akshare"
         assert "atr_stop_loss_long" in out
@@ -360,3 +360,151 @@ class TestQuantAgentToolAndStrategies:
         ):
             assert sid in by_id
             assert by_id[sid].category == "quant"
+
+    def test_calculate_quant_factors_requires_61_bars_from_cache_and_fetches_longer_window(self):
+        from src.agent.tools.analysis_tools import _handle_calculate_quant_factors
+        from src.services.history_loader import reset_frozen_target_date, set_frozen_target_date
+
+        target = date(2026, 4, 24)
+        closes_60 = [100.0 + i * 0.2 for i in range(60)]
+        db_df = _make_ohlcv(closes_60)
+        db_df["date"] = [(target - timedelta(days=59 - i)).isoformat() for i in range(60)]
+        db_bars = []
+        for row in db_df.to_dict("records"):
+            bar = mock.MagicMock()
+            bar.to_dict.return_value = row
+            bar.date = date.fromisoformat(row["date"])
+            db_bars.append(bar)
+
+        closes_65 = [98.0 + i * 0.25 for i in range(65)]
+        provider_df = _make_ohlcv(closes_65)
+        provider_df["date"] = [(target - timedelta(days=64 - i)).isoformat() for i in range(65)]
+
+        mock_db = mock.MagicMock()
+        mock_db.get_data_range.return_value = db_bars
+        mock_fm = mock.MagicMock()
+        mock_fm.get_daily_data.return_value = (provider_df, "akshare")
+
+        token = set_frozen_target_date(target)
+        try:
+            with (
+                mock.patch("src.storage.get_db", return_value=mock_db),
+                mock.patch("src.services.history_loader._get_fetcher_manager", return_value=mock_fm),
+            ):
+                out_120 = _handle_calculate_quant_factors("600519", days=120)
+                out_61 = _handle_calculate_quant_factors("600519", days=61)
+        finally:
+            reset_frozen_target_date(token)
+
+        assert mock_fm.get_daily_data.call_count == 2
+        assert out_120["source"] == "akshare"
+        assert out_120["bars_analyzed"] == 65
+        assert out_120["roc_60_pct"] is not None
+        assert out_61["source"] == "akshare"
+        assert out_61["bars_analyzed"] == 61
+        assert out_61["roc_60_pct"] is not None
+
+    def test_stale_cache_fallback_attaches_date_and_warning_on_trend_and_quant_tools(self):
+        from src.agent.tools.analysis_tools import _handle_analyze_trend, _handle_calculate_quant_factors
+        from src.services.history_loader import reset_frozen_target_date, set_frozen_target_date
+
+        stale_end = date(2026, 11, 24)
+        frozen_target = date(2026, 11, 25)
+        stale_df = _make_ohlcv([100.0 + i * 0.25 for i in range(60)])
+        stale_df["date"] = [(stale_end - timedelta(days=59 - i)).isoformat() for i in range(60)]
+        stale_bars = []
+        for row in stale_df.to_dict("records"):
+            bar = mock.MagicMock()
+            bar.to_dict.return_value = row
+            bar.date = date.fromisoformat(row["date"])
+            stale_bars.append(bar)
+
+        mock_db = mock.MagicMock()
+        mock_db.get_data_range.return_value = stale_bars
+        mock_fm = mock.MagicMock()
+        mock_fm.get_daily_data.return_value = (pd.DataFrame(), "AkshareFetcher")
+
+        token = set_frozen_target_date(frozen_target)
+        try:
+            with (
+                mock.patch("src.storage.get_db", return_value=mock_db),
+                mock.patch("src.services.history_loader._get_fetcher_manager", return_value=mock_fm),
+            ):
+                trend_out = _handle_analyze_trend("600519")
+                quant_out = _handle_calculate_quant_factors("600519", days=60)
+        finally:
+            reset_frozen_target_date(token)
+
+        for payload in (trend_out, quant_out):
+            assert payload["source"] == "db_cache_stale"
+            assert payload["data_date"] == "2026-11-24"
+            assert payload["is_stale"] is True
+            assert "2026-11-24" in payload["stale_warning"]
+            assert "2026-11-25" in payload["stale_warning"]
+
+    def test_slow_steady_drift_during_squeeze_does_not_trigger_boll_squeeze_breakout(self):
+        start = date(2026, 1, 1)
+        rows = []
+        for idx in range(65):
+            c = 100.0 + idx * 0.10
+            rows.append(
+                {
+                    "date": (start + timedelta(days=idx)).isoformat(),
+                    "open": c,
+                    "high": c + 0.40,
+                    "low": c - 0.40,
+                    "close": c,
+                    "volume": 1_000_000.0,
+                }
+            )
+        res = compute_quant_factors(pd.DataFrame(rows), "600519")
+        assert res.donchian_signal == "inside"
+        assert res.boll_squeeze_breakout is False
+
+    def test_non_agent_prompt_and_pipeline_context_expose_ma60_volume_ratio_and_rsi6(self):
+        from src.analyzer import _format_quant_factors_prompt_section
+        from src.config import Config
+        from src.core.pipeline import StockAnalysisPipeline
+        from src.stock_analyzer import StockTrendAnalyzer
+
+        df_65 = _make_ohlcv([100.0 + i * 0.4 for i in range(65)])
+        trend_65 = StockTrendAnalyzer().analyze(df_65, "600519")
+        pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
+        pipeline.config = Config()
+        pipeline.search_service = None
+
+        enhanced = pipeline._enhance_context(
+            {"code": "600519"},
+            None,
+            None,
+            trend_65,
+            stock_name="贵州茅台",
+            fundamental_context={},
+        )
+        ta = enhanced["trend_analysis"]
+        for key in ("ma60", "volume_ratio_5d", "rsi_6", "rsi_12", "rsi_24", "rsi_status"):
+            assert key in ta
+
+        zh_block = _format_quant_factors_prompt_section(trend_65.quant_factors, english=False, trend=ta)
+        en_block = _format_quant_factors_prompt_section(trend_65.quant_factors, english=True, trend=ta)
+        for block in (zh_block, en_block):
+            assert "MA60=" in block
+            assert "MA60=N/A" not in block
+            assert "volume_ratio_5d" in block
+            assert "1.00" in block
+            assert "RSI(6/12/24)=" in block
+
+        df_35 = _make_ohlcv([100.0 + i * 0.4 for i in range(35)])
+        trend_35 = StockTrendAnalyzer().analyze(df_35, "600519")
+        short_ta = {
+            "ma60": trend_35.ma60,
+            "volume_ratio_5d": trend_35.volume_ratio_5d,
+            "rsi_6": trend_35.rsi_6,
+            "rsi_12": trend_35.rsi_12,
+            "rsi_24": trend_35.rsi_24,
+            "rsi_status": trend_35.rsi_status.value,
+        }
+        short_block = _format_quant_factors_prompt_section(trend_35.quant_factors, english=True, trend=short_ta)
+        assert "MA60=N/A" in short_block
+        assert "volume_ratio_5d=" in short_block
+        assert "RSI(6/12/24)=" in short_block

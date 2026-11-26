@@ -227,6 +227,6 @@ def load_history_df(
         logger.warning("load_history_df(%s): DataFetcherManager failed: %s", stock_code, e)
 
     if db_df is not None and not db_df.empty:
-        return db_df, "db_cache"
+        return db_df, ("db_cache" if db_latest_date >= end else "db_cache_stale")
 
     return None, "none"

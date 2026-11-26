@@ -72,6 +72,7 @@ export const StrategyPickerMenu: React.FC<StrategyPickerMenuProps> = ({
 }) => {
   const [query, setQuery] = useState('');
   const [activeCategory, setActiveCategory] = useState<StrategyCategoryId>('all');
+  const [focusedId, setFocusedId] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const itemRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
@@ -129,9 +130,10 @@ export const StrategyPickerMenu: React.FC<StrategyPickerMenuProps> = ({
         return;
       }
       const bounded = ((index % visibleOptions.length) + visibleOptions.length) % visibleOptions.length;
+      setFocusedId(visibleOptions[bounded].id);
       itemRefs.current[bounded]?.focus();
     },
-    [visibleOptions.length],
+    [visibleOptions],
   );
 
   useEffect(() => {
@@ -159,9 +161,15 @@ export const StrategyPickerMenu: React.FC<StrategyPickerMenuProps> = ({
   }, [focusItem, initialFocusTarget, selectedId, visibleOptions]);
 
   const rovingIndex = useMemo(() => {
+    if (focusedId !== null) {
+      const focusedIdx = visibleOptions.findIndex((option) => option.id === focusedId);
+      if (focusedIdx >= 0) {
+        return focusedIdx;
+      }
+    }
     const selectedIdx = visibleOptions.findIndex((option) => option.id === selectedId);
     return selectedIdx >= 0 ? selectedIdx : 0;
-  }, [selectedId, visibleOptions]);
+  }, [focusedId, selectedId, visibleOptions]);
 
   const handleContainerKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
     if (event.key === 'Tab') {
@@ -174,8 +182,10 @@ export const StrategyPickerMenu: React.FC<StrategyPickerMenuProps> = ({
       // Allow Tab/Shift+Tab to move between search input, clear button, category
       // tabs, empty reset button, and roving menu option; close only on exit.
       const isMenuItem = activeEl.getAttribute('role') === 'menuitemradio';
-      if (isMenuItem && !event.shiftKey) {
-        onTabClose?.();
+      if (isMenuItem) {
+        if (!event.shiftKey) {
+          onTabClose?.();
+        }
         return;
       }
       const focusables = Array.from(
@@ -346,6 +356,7 @@ export const StrategyPickerMenu: React.FC<StrategyPickerMenuProps> = ({
                 role="menuitemradio"
                 aria-checked={selected}
                 tabIndex={index === rovingIndex ? 0 : -1}
+                onFocus={() => setFocusedId(option.id)}
                 onClick={() => onSelect(option.id)}
                 className="flex w-full items-start gap-2 rounded-lg px-2.5 py-2 text-left transition-colors hover:bg-hover focus:bg-hover focus:outline-none"
               >
