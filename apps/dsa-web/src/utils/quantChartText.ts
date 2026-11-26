@@ -17,6 +17,7 @@ export interface QuantChartText {
   subMacd: string;
   subKdj: string;
   subPanelInsufficientData: string;
+  subPanelMissingHighLow: string;
   riskReward: string;
   ma20Bias: string;
   annualizedVol: string;
@@ -52,6 +53,7 @@ const QUANT_CHART_TEXT: Record<ReportLanguage, QuantChartText> = {
     subMacd: 'MACD',
     subKdj: 'KDJ',
     subPanelInsufficientData: '至少需要 {minBars} 个交易日以计算 {indicator}',
+    subPanelMissingHighLow: '缺少有效最高/最低价数据，暂无法计算 {indicator}',
     riskReward: '盈亏比',
     ma20Bias: 'MA20乖离',
     annualizedVol: '年化波动',
@@ -85,6 +87,7 @@ const QUANT_CHART_TEXT: Record<ReportLanguage, QuantChartText> = {
     subMacd: 'MACD',
     subKdj: 'KDJ',
     subPanelInsufficientData: 'Needs at least {minBars} sessions to compute {indicator}',
+    subPanelMissingHighLow: 'Valid high/low range data is unavailable to compute {indicator}',
     riskReward: 'R:R',
     ma20Bias: 'MA20 Bias',
     annualizedVol: 'Ann.Vol',
@@ -118,6 +121,7 @@ const QUANT_CHART_TEXT: Record<ReportLanguage, QuantChartText> = {
     subMacd: 'MACD',
     subKdj: 'KDJ',
     subPanelInsufficientData: '{indicator} 계산에 최소 {minBars}거래일 필요',
+    subPanelMissingHighLow: '유효한 고가/저가 데이터가 없어 {indicator}를 계산할 수 없습니다',
     riskReward: '손익비',
     ma20Bias: 'MA20 이격',
     annualizedVol: '연율 변동성',

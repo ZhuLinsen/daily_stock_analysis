@@ -78,7 +78,12 @@ const LevelsTooltip: React.FC<{
     return null;
   }
   const d = payload[0].payload;
-  const hasRange = Number.isFinite(d.high) && Number.isFinite(d.low) && d.high > 0 && d.low > 0;
+  const hasRange =
+    d.hasValidRange !== false
+    && Number.isFinite(d.high)
+    && Number.isFinite(d.low)
+    && d.high > 0
+    && d.low > 0;
   return (
     <div className="min-w-[152px] rounded-xl border border-border/80 bg-card/95 px-3 py-2 text-[11px] shadow-lg backdrop-blur-sm">
       <div className="border-b border-border/50 pb-1 font-mono font-semibold text-foreground">{d.date}</div>
@@ -508,7 +513,7 @@ export const ReportPriceLevelsChart: React.FC<ReportPriceLevelsChartProps> = ({
     : subPanel === 'rsi'
       ? { hasData: data.some((d) => d.rsi14 != null), minBars: 15, label: qText.subRsi }
       : subPanel === 'macd'
-        ? { hasData: data.some((d) => d.macdDif != null), minBars: 13, label: qText.subMacd }
+        ? { hasData: data.some((d) => d.macdDif != null), minBars: 26, label: qText.subMacd }
         : { hasData: data.some((d) => d.kdjK != null), minBars: 9, label: qText.subKdj };
 
   return (
@@ -840,9 +845,10 @@ export const ReportPriceLevelsChart: React.FC<ReportPriceLevelsChartProps> = ({
               role="status"
               className="flex h-full items-center justify-center text-[11px] text-muted-text"
             >
-              {qText.subPanelInsufficientData
-                .replace('{minBars}', String(subPanelMeta.minBars))
-                .replace('{indicator}', subPanelMeta.label)}
+              {(data.length < subPanelMeta.minBars
+                ? qText.subPanelInsufficientData.replace('{minBars}', String(subPanelMeta.minBars))
+                : qText.subPanelMissingHighLow
+              ).replace('{indicator}', subPanelMeta.label)}
             </p>
           ) : (
             <ResponsiveContainer width="100%" height="100%">

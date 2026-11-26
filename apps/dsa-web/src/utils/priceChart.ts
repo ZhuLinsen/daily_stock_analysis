@@ -7,6 +7,7 @@ export interface PriceChartDatum {
   close: number;
   high: number;
   low: number;
+  hasValidRange?: boolean;
   volume?: number | null;
   ma5: number | null;
   ma20: number | null;
@@ -290,29 +291,43 @@ export function enrichBarsWithMovingAverages(
   let kdjD = 50;
   let atr14State = 0;
   let sumTr14 = 0;
+  let atrValidCount = 0;
 
   const k12 = 2 / 13;
   const k26 = 2 / 27;
   const k20 = 2 / 21;
   const k9 = 2 / 10;
 
-  const enriched: PriceChartDatum[] = sorted.map((bar, idx) => {
+  const normalized = sorted.map((bar) => {
     const close = Number(bar.close);
-    const rawHigh = Number.isFinite(Number(bar.high)) && Number(bar.high) > 0 ? Number(bar.high) : close;
-    const rawLow = Number.isFinite(Number(bar.low)) && Number(bar.low) > 0 ? Number(bar.low) : close;
-    const high = Math.max(rawHigh, rawLow, close);
-    const low = Math.min(rawHigh, rawLow, close);
-    const open = bar.open != null && Number.isFinite(Number(bar.open)) && Number(bar.open) > 0 ? Number(bar.open) : null;
+    const validHigh =
+      bar.high != null && Number.isFinite(Number(bar.high)) && Number(bar.high) > 0
+        ? Number(bar.high)
+        : null;
+    const validLow =
+      bar.low != null && Number.isFinite(Number(bar.low)) && Number(bar.low) > 0
+        ? Number(bar.low)
+        : null;
+    const hasValidRange = validHigh != null && validLow != null;
+    const high = hasValidRange ? Math.max(validHigh, validLow, close) : close;
+    const low = hasValidRange ? Math.min(validHigh, validLow, close) : close;
+    const open =
+      bar.open != null && Number.isFinite(Number(bar.open)) && Number(bar.open) > 0
+        ? Number(bar.open)
+        : null;
     const volume =
       bar.volume != null && Number.isFinite(Number(bar.volume)) && Number(bar.volume) >= 0
         ? Number(bar.volume)
         : null;
+    return { bar, close, high, low, hasValidRange, open, volume };
+  });
 
+  const enriched: PriceChartDatum[] = normalized.map(({ bar, close, high, low, hasValidRange, open, volume }, idx) => {
     let ma5: number | null = null;
     if (idx >= 4) {
       let sum5 = 0;
       for (let i = idx - 4; i <= idx; i += 1) {
-        sum5 += Number(sorted[i].close);
+        sum5 += normalized[i].close;
       }
       ma5 = sum5 / 5;
     }
@@ -326,12 +341,12 @@ export function enrichBarsWithMovingAverages(
     if (idx >= 19) {
       let sum20 = 0;
       for (let i = idx - 19; i <= idx; i += 1) {
-        sum20 += Number(sorted[i].close);
+        sum20 += normalized[i].close;
       }
       ma20 = sum20 / 20;
       let variance = 0;
       for (let i = idx - 19; i <= idx; i += 1) {
-        const diff = Number(sorted[i].close) - ma20;
+        const diff = normalized[i].close - ma20;
         variance += diff * diff;
       }
       const std = Math.sqrt(variance / 20);
@@ -346,7 +361,7 @@ export function enrichBarsWithMovingAverages(
     if (idx >= 59) {
       let sum60 = 0;
       for (let i = idx - 59; i <= idx; i += 1) {
-        sum60 += Number(sorted[i].close);
+        sum60 += normalized[i].close;
       }
       ma60 = sum60 / 60;
     }
@@ -358,13 +373,13 @@ export function enrichBarsWithMovingAverages(
     }
     const rawDif = ema12 - ema26;
     dea = idx === 0 ? rawDif : rawDif * k9 + dea * (1 - k9);
-    const macdDif = idx >= 12 ? rawDif : null;
-    const macdDea = idx >= 12 ? dea : null;
-    const macdHist = idx >= 12 ? 2 * (rawDif - dea) : null;
+    const macdDif = idx >= 25 ? rawDif : null;
+    const macdDea = idx >= 25 ? dea : null;
+    const macdHist = idx >= 25 ? 2 * (rawDif - dea) : null;
 
     let rsi14: number | null = null;
     if (idx > 0) {
-      const prevClose = Number(sorted[idx - 1].close);
+      const prevClose = normalized[idx - 1].close;
       const change = close - prevClose;
       const gain = change > 0 ? change : 0;
       const loss = change < 0 ? -change : 0;
@@ -393,41 +408,53 @@ export function enrichBarsWithMovingAverages(
     if (idx >= 8) {
       let low9 = Number.POSITIVE_INFINITY;
       let high9 = Number.NEGATIVE_INFINITY;
+      let windowRangeValid = true;
       for (let i = idx - 8; i <= idx; i += 1) {
-        const b = sorted[i];
-        const bClose = Number(b.close);
-        const bRawHigh = Number.isFinite(Number(b.high)) && Number(b.high) > 0 ? Number(b.high) : bClose;
-        const bRawLow = Number.isFinite(Number(b.low)) && Number(b.low) > 0 ? Number(b.low) : bClose;
-        const bHigh = Math.max(bRawHigh, bRawLow, bClose);
-        const bLow = Math.min(bRawHigh, bRawLow, bClose);
-        if (bHigh > high9) high9 = bHigh;
-        if (bLow < low9) low9 = bLow;
+        const b = normalized[i];
+        if (!b.hasValidRange) {
+          windowRangeValid = false;
+          break;
+        }
+        if (b.high > high9) high9 = b.high;
+        if (b.low < low9) low9 = b.low;
       }
-      const rsv = high9 === low9 ? 50 : ((close - low9) / (high9 - low9)) * 100;
-      kdjK = (2 * kdjK + rsv) / 3;
-      kdjD = (2 * kdjD + kdjK) / 3;
-      kOut = kdjK;
-      dOut = kdjD;
-      jOut = 3 * kdjK - 2 * kdjD;
+      if (!windowRangeValid) {
+        kdjK = 50;
+        kdjD = 50;
+      } else {
+        const rsv = high9 === low9 ? 50 : ((close - low9) / (high9 - low9)) * 100;
+        kdjK = (2 * kdjK + rsv) / 3;
+        kdjD = (2 * kdjD + kdjK) / 3;
+        kOut = kdjK;
+        dOut = kdjD;
+        jOut = 3 * kdjK - 2 * kdjD;
+      }
     }
 
     let atr14: number | null = null;
     let atrPct: number | null = null;
     if (idx > 0) {
-      const prevClose = Number(sorted[idx - 1].close);
-      const tr = Math.max(high - low, Math.abs(high - prevClose), Math.abs(low - prevClose));
-      if (idx <= 14) {
-        sumTr14 += tr;
-        if (idx === 14) {
-          atr14State = sumTr14 / 14;
+      if (!hasValidRange) {
+        atrValidCount = 0;
+        sumTr14 = 0;
+        atr14State = 0;
+      } else {
+        const prevClose = normalized[idx - 1].close;
+        const tr = Math.max(high - low, Math.abs(high - prevClose), Math.abs(low - prevClose));
+        if (atrValidCount < 14) {
+          sumTr14 += tr;
+          atrValidCount += 1;
+          if (atrValidCount === 14) {
+            atr14State = sumTr14 / 14;
+            atr14 = atr14State;
+          }
+        } else {
+          atr14State = (atr14State * 13 + tr) / 14;
           atr14 = atr14State;
         }
-      } else {
-        atr14State = (atr14State * 13 + tr) / 14;
-        atr14 = atr14State;
-      }
-      if (atr14 != null && close > 0) {
-        atrPct = (atr14 / close) * 100;
+        if (atr14 != null && close > 0) {
+          atrPct = (atr14 / close) * 100;
+        }
       }
     }
 
@@ -438,6 +465,7 @@ export function enrichBarsWithMovingAverages(
       close,
       high,
       low,
+      hasValidRange,
       volume,
       ma5,
       ma20,
@@ -586,19 +614,22 @@ export function computeQuantTelemetry(
   if (latest.macdDif != null && latest.macdDea != null) {
     const diff = latest.macdDif - latest.macdDea;
     const prev = data.length >= 2 ? data[data.length - 2] : null;
-    if (Math.abs(diff) <= MACD_EPSILON) {
-      macdSignal = 'neutral';
-    } else if (prev?.macdDif != null && prev?.macdDea != null) {
+    if (prev?.macdDif != null && prev?.macdDea != null) {
       const prevDiff = prev.macdDif - prev.macdDea;
-      if (prevDiff <= MACD_EPSILON && diff > MACD_EPSILON) {
+      if (prevDiff <= 0 && diff > MACD_EPSILON) {
         macdSignal = 'bullish_cross';
-      } else if (prevDiff >= -MACD_EPSILON && diff < -MACD_EPSILON) {
+      } else if (prevDiff >= 0 && diff < -MACD_EPSILON) {
         macdSignal = 'bearish_cross';
-      } else {
-        macdSignal = diff > MACD_EPSILON ? 'bullish' : 'bearish';
       }
-    } else {
-      macdSignal = diff > MACD_EPSILON ? 'bullish' : 'bearish';
+    }
+    if (macdSignal == null) {
+      if (latest.macdDif > MACD_EPSILON && latest.macdDea > MACD_EPSILON) {
+        macdSignal = 'bullish';
+      } else if (latest.macdDif < -MACD_EPSILON && latest.macdDea < -MACD_EPSILON) {
+        macdSignal = 'bearish';
+      } else {
+        macdSignal = 'neutral';
+      }
     }
   }
 

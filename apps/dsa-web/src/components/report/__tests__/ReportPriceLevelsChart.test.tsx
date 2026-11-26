@@ -10,39 +10,53 @@ import {
 } from '../../../utils/priceChart';
 import { ReportPriceLevelsChart } from '../ReportPriceLevelsChart';
 
-vi.mock('recharts', () => ({
-  ResponsiveContainer: ({ children }: { children: React.ReactNode }) => <div data-testid="recharts-container">{children}</div>,
-  ComposedChart: ({ children }: { children: React.ReactNode }) => <div data-testid="composed-chart">{children}</div>,
-  CartesianGrid: () => null,
-  XAxis: ({ dataKey }: { dataKey?: string }) => <div data-testid="chart-xaxis" data-key={dataKey} />,
-  YAxis: ({ domain }: { domain?: unknown }) => (
-    <div data-testid="chart-yaxis" data-domain={JSON.stringify(domain)} />
-  ),
-  Legend: () => null,
-  Tooltip: ({ content }: { content: React.ReactElement<{ active?: boolean; payload?: unknown }> }) => (
-    <div data-testid="levels-tooltip">
-      {React.cloneElement(content, {
-        active: true,
-        payload: [{ payload: { date: '2026-11-20', close: 225 } }],
-      })}
-    </div>
-  ),
-  Area: () => null,
-  Bar: ({ dataKey, children }: { dataKey?: string; children?: React.ReactNode }) => (
-    <div data-testid={`chart-bar-${dataKey}`}>{children}</div>
-  ),
-  Cell: ({ fill }: { fill?: string }) => <span data-testid="chart-bar-cell" data-fill={fill} />,
-  Line: () => null,
-  ReferenceLine: ({ x, y, label }: { x?: string; y?: number; label?: { value: string } }) => {
-    if (y != null) {
-      return <div data-testid={`ref-line-${y}`}>{label?.value}</div>;
-    }
-    if (x != null) {
-      return <div data-testid={`ref-line-x-${x}`}>{label?.value}</div>;
-    }
-    return null;
-  },
-}));
+vi.mock('recharts', async () => {
+  const ReactMod = await vi.importActual<typeof import('react')>('react');
+  const ChartDataContext = ReactMod.createContext<unknown[]>([]);
+  return {
+    ResponsiveContainer: ({ children }: { children: React.ReactNode }) => (
+      <div data-testid="recharts-container">{children}</div>
+    ),
+    ComposedChart: ({ data = [], children }: { data?: unknown[]; children: React.ReactNode }) => (
+      <ChartDataContext.Provider value={data}>
+        <div data-testid="composed-chart">{children}</div>
+      </ChartDataContext.Provider>
+    ),
+    CartesianGrid: () => null,
+    XAxis: ({ dataKey }: { dataKey?: string }) => <div data-testid="chart-xaxis" data-key={dataKey} />,
+    YAxis: ({ domain }: { domain?: unknown }) => (
+      <div data-testid="chart-yaxis" data-domain={JSON.stringify(domain)} />
+    ),
+    Legend: () => null,
+    Tooltip: ({ content }: { content: React.ReactElement<{ active?: boolean; payload?: unknown }> }) => {
+      const data = ReactMod.useContext(ChartDataContext);
+      const latest = data.length > 0 ? data[data.length - 1] : null;
+      return (
+        <div data-testid="levels-tooltip">
+          {ReactMod.cloneElement(content, {
+            active: latest != null,
+            payload: latest != null ? [{ payload: latest }] : [],
+          })}
+        </div>
+      );
+    },
+    Area: () => null,
+    Bar: ({ dataKey, children }: { dataKey?: string; children?: React.ReactNode }) => (
+      <div data-testid={`chart-bar-${dataKey}`}>{children}</div>
+    ),
+    Cell: ({ fill }: { fill?: string }) => <span data-testid="chart-bar-cell" data-fill={fill} />,
+    Line: () => null,
+    ReferenceLine: ({ x, y, label }: { x?: string; y?: number; label?: { value: string } }) => {
+      if (y != null) {
+        return <div data-testid={`ref-line-${y}`}>{label?.value}</div>;
+      }
+      if (x != null) {
+        return <div data-testid={`ref-line-x-${x}`}>{label?.value}</div>;
+      }
+      return null;
+    },
+  };
+});
 
 describe('ReportPriceLevelsChart helpers & component', () => {
   it('parses strategy price strings while ignoring MA periods and percentage-only text', () => {
@@ -504,7 +518,7 @@ describe('ReportPriceLevelsChart helpers & component', () => {
 
     render(<ReportPriceLevelsChart bars={bars} language="zh" />);
 
-    expect(screen.getByText('0.0056')).toBeInTheDocument();
+    expect(screen.getAllByText('0.0056').length).toBeGreaterThanOrEqual(1);
     const yAxis = screen.getByTestId('chart-yaxis');
     const domain = JSON.parse(yAxis.getAttribute('data-domain') || '[]') as number[];
     expect(domain[0]).toBeLessThan(0.0056);
@@ -563,7 +577,7 @@ describe('ReportPriceLevelsChart helpers & component', () => {
     expect(screen.getByTestId('quant-subpanel-rsi')).toHaveTextContent('至少需要 15 个交易日以计算 RSI(14)');
 
     fireEvent.click(screen.getByRole('button', { name: 'MACD' }));
-    expect(screen.getByTestId('quant-subpanel-macd')).toHaveTextContent('至少需要 13 个交易日以计算 MACD');
+    expect(screen.getByTestId('quant-subpanel-macd')).toHaveTextContent('至少需要 26 个交易日以计算 MACD');
 
     fireEvent.click(screen.getByRole('button', { name: 'KDJ' }));
     expect(screen.getByTestId('quant-subpanel-kdj')).toHaveTextContent('至少需要 9 个交易日以计算 KDJ');
@@ -576,7 +590,7 @@ describe('ReportPriceLevelsChart helpers & component', () => {
     expect(container.querySelectorAll('[title]')).toHaveLength(0);
   });
 
-  it('keeps missing or zero open prices as null instead of substituting close and omits open from Tooltip', () => {
+  it('keeps missing or zero open prices as null instead of substituting close and renders Tooltip accurately via real chart data', () => {
     const barsWithMissingOpen: StockKLineItem[] = [
       { date: '2026-05-01', open: 0, high: 101, low: 99, close: 100 },
       { date: '2026-05-02', open: Number.NaN, high: 103, low: 98, close: 102 },
@@ -589,10 +603,17 @@ describe('ReportPriceLevelsChart helpers & component', () => {
     expect(enriched[2].open).toBeNull();
     expect(enriched[3].open).toBe(101.5);
 
-    render(<ReportPriceLevelsChart bars={barsWithMissingOpen} language="zh" />);
-    const tooltip = screen.getByTestId('levels-tooltip');
-    expect(tooltip).toHaveTextContent('收盘');
-    expect(tooltip).not.toHaveTextContent('开盘');
+    const { rerender } = render(<ReportPriceLevelsChart bars={barsWithMissingOpen.slice(0, 3)} language="zh" />);
+    const tooltipMissing = screen.getByTestId('levels-tooltip');
+    expect(tooltipMissing).toHaveTextContent('2026-05-03');
+    expect(tooltipMissing).toHaveTextContent('101.00');
+    expect(tooltipMissing).not.toHaveTextContent('开盘');
+
+    rerender(<ReportPriceLevelsChart bars={barsWithMissingOpen} language="zh" />);
+    const tooltipValid = screen.getByTestId('levels-tooltip');
+    expect(tooltipValid).toHaveTextContent('2026-05-04');
+    expect(tooltipValid).toHaveTextContent('开盘:');
+    expect(tooltipValid).toHaveTextContent('101.50');
   });
 
   it('falls back to secondaryBuy instead of latest close when idealBuy is absent for R:R telemetry', () => {
@@ -646,5 +667,150 @@ describe('ReportPriceLevelsChart helpers & component', () => {
     rerender(<ReportPriceLevelsChart bars={flatBars} language="en" />);
     expect(strip).toHaveTextContent('MACD:Neutral');
     expect(strip).not.toHaveTextContent('Bullish');
+  });
+
+  it('excludes zero/missing high-low bars from ATR and KDJ and shows localized range-unavailable notice', () => {
+    const noRangeBars: StockKLineItem[] = Array.from({ length: 15 }, (_, i) => ({
+      date: `2026-06-${String(i + 1).padStart(2, '0')}`,
+      open: 100,
+      high: 0,
+      low: 0,
+      close: 100,
+    }));
+
+    const enrichedNoRange = enrichBarsWithMovingAverages(noRangeBars, 60);
+    expect(enrichedNoRange[14].hasValidRange).toBe(false);
+    expect(enrichedNoRange[14].atr14).toBeNull();
+    expect(enrichedNoRange[14].atrPct).toBeNull();
+    expect(enrichedNoRange[14].kdjK).toBeNull();
+    expect(enrichedNoRange[14].kdjD).toBeNull();
+    expect(enrichedNoRange[14].kdjJ).toBeNull();
+    expect(computeQuantTelemetry(enrichedNoRange).atrPct).toBeNull();
+
+    const { rerender } = render(<ReportPriceLevelsChart bars={noRangeBars} language="zh" />);
+    expect(screen.getByTestId('levels-tooltip')).not.toHaveTextContent('最高/最低');
+    expect(screen.getByTestId('quant-telemetry-strip')).not.toHaveTextContent('ATR%');
+
+    fireEvent.click(screen.getByRole('button', { name: 'KDJ' }));
+    expect(screen.getByTestId('quant-subpanel-kdj')).toHaveTextContent(
+      '缺少有效最高/最低价数据，暂无法计算 KDJ',
+    );
+
+    rerender(<ReportPriceLevelsChart bars={noRangeBars} language="en" />);
+    expect(screen.getByTestId('quant-subpanel-kdj')).toHaveTextContent(
+      'Valid high/low range data is unavailable to compute KDJ',
+    );
+
+    rerender(<ReportPriceLevelsChart bars={noRangeBars} language="ko" />);
+    expect(screen.getByTestId('quant-subpanel-kdj')).toHaveTextContent(
+      '유효한 고가/저가 데이터가 없어 KDJ를 계산할 수 없습니다',
+    );
+
+    // A mid-series missing high/low bar resets ATR and KDJ until fresh valid windows complete.
+    const midMissingBars: StockKLineItem[] = Array.from({ length: 30 }, (_, i) => ({
+      date: `2026-07-${String(i + 1).padStart(2, '0')}`,
+      open: 100 + i,
+      high: i === 15 ? 0 : 102 + i,
+      low: i === 15 ? 0 : 98 + i,
+      close: 100 + i,
+    }));
+    const enrichedMid = enrichBarsWithMovingAverages(midMissingBars, 60);
+    expect(enrichedMid[15].hasValidRange).toBe(false);
+    expect(enrichedMid[15].kdjK).toBeNull();
+    expect(enrichedMid[15].atr14).toBeNull();
+    expect(enrichedMid[23].kdjK).toBeNull();
+    expect(enrichedMid[24].kdjK).not.toBeNull();
+    expect(enrichedMid[28].atr14).toBeNull();
+    expect(enrichedMid[29].atr14).not.toBeNull();
+  });
+
+  it('aligns MACD below-zero rebound regime and crossing rules with TrendAnalyzer semantics', () => {
+    const reboundBars: StockKLineItem[] = Array.from({ length: 35 }, (_, i) => {
+      const close = i < 28 ? 150 - i * 2 : 96 + (i - 28);
+      return {
+        date: new Date(Date.UTC(2026, 0, i + 1)).toISOString().slice(0, 10),
+        open: close,
+        high: close + 1,
+        low: close - 1,
+        close,
+      };
+    });
+
+    const enriched = enrichBarsWithMovingAverages(reboundBars, 60);
+    const prev = enriched[33];
+    const last = enriched[34];
+    expect(last.macdDif!).toBeLessThan(0);
+    expect(last.macdDea!).toBeLessThan(0);
+    expect(prev.macdHist!).toBeGreaterThan(0);
+    expect(last.macdHist!).toBeGreaterThan(0);
+
+    const telemetry = computeQuantTelemetry(enriched);
+    expect(telemetry.macdSignal).toBe('bearish');
+
+    const { rerender } = render(<ReportPriceLevelsChart bars={reboundBars} language="zh" />);
+    const strip = screen.getByTestId('quant-telemetry-strip');
+    expect(strip).toHaveTextContent('MACD:空头');
+    expect(strip).not.toHaveTextContent('MACD:多头');
+
+    rerender(<ReportPriceLevelsChart bars={reboundBars} language="en" />);
+    expect(strip).toHaveTextContent('MACD:Bearish');
+    expect(strip).not.toHaveTextContent('MACD:Bullish');
+
+    const baseDatum = enriched[34];
+    expect(
+      computeQuantTelemetry([
+        { ...baseDatum, macdDif: 0.2, macdDea: -0.1 },
+        { ...baseDatum, macdDif: 0.3, macdDea: -0.05 },
+      ]).macdSignal,
+    ).toBe('neutral');
+    expect(
+      computeQuantTelemetry([
+        { ...baseDatum, macdDif: -0.5, macdDea: -0.3 },
+        { ...baseDatum, macdDif: -0.2, macdDea: -0.25 },
+      ]).macdSignal,
+    ).toBe('bullish_cross');
+    expect(
+      computeQuantTelemetry([
+        { ...baseDatum, macdDif: 0.5, macdDea: 0.3 },
+        { ...baseDatum, macdDif: 0.2, macdDea: 0.25 },
+      ]).macdSignal,
+    ).toBe('bearish_cross');
+  });
+
+  it('withholds MACD signals and curves until at least 26 trading sessions are available', () => {
+    const makeRising = (len: number): StockKLineItem[] =>
+      Array.from({ length: len }, (_, i) => ({
+        date: `2026-08-${String(i + 1).padStart(2, '0')}`,
+        open: 100 + i,
+        high: 101 + i,
+        low: 99 + i,
+        close: 100 + i,
+      }));
+
+    const enriched20 = enrichBarsWithMovingAverages(makeRising(20), 60);
+    expect(enriched20.every((d) => d.macdDif === null && d.macdDea === null && d.macdHist === null)).toBe(true);
+    expect(computeQuantTelemetry(enriched20).macdSignal).toBeNull();
+
+    const enriched25 = enrichBarsWithMovingAverages(makeRising(25), 60);
+    expect(enriched25[24].macdDif).toBeNull();
+    expect(computeQuantTelemetry(enriched25).macdSignal).toBeNull();
+
+    const { rerender } = render(<ReportPriceLevelsChart bars={makeRising(20)} language="zh" />);
+    expect(screen.getByTestId('quant-telemetry-strip')).not.toHaveTextContent('MACD:');
+    fireEvent.click(screen.getByRole('button', { name: 'MACD' }));
+    expect(screen.getByTestId('quant-subpanel-macd')).toHaveTextContent('至少需要 26 个交易日以计算 MACD');
+
+    rerender(<ReportPriceLevelsChart bars={makeRising(20)} language="en" />);
+    expect(screen.getByTestId('quant-subpanel-macd')).toHaveTextContent('Needs at least 26 sessions to compute MACD');
+
+    const bars26 = makeRising(26);
+    const enriched26 = enrichBarsWithMovingAverages(bars26, 60);
+    expect(enriched26[24].macdDif).toBeNull();
+    expect(enriched26[25].macdDif).not.toBeNull();
+    expect(computeQuantTelemetry(enriched26).macdSignal).toBe('bullish');
+
+    rerender(<ReportPriceLevelsChart bars={bars26} language="zh" />);
+    expect(screen.getByTestId('quant-telemetry-strip')).toHaveTextContent('MACD:多头');
+    expect(screen.getByTestId('chart-bar-macdHist')).toBeInTheDocument();
   });
 });
