@@ -183,6 +183,30 @@ def sync_ibkr_portfolio(
         "errors": [],
     }
 
+    if not dry_run:
+        # The ledger replays by (trade_date, id), so rows already stored for a
+        # symbol on a date we are about to import cannot be interleaved in
+        # execution-time order: their ids decide. Refuse rather than guess, except
+        # for rows this sync would only duplicate.
+        pending = [
+            record
+            for record in trades
+            if not service.has_trade_uid(
+                account_id=resolved_account_id, trade_uid=record.trade_uid
+            )
+        ]
+        conflicts = service.find_same_day_trade_conflicts(
+            account_id=resolved_account_id,
+            wanted=[(record.symbol, record.trade_date) for record in pending],
+        )
+        if conflicts:
+            listed = ", ".join(f"{symbol}@{day.isoformat()}" for symbol, day in conflicts[:5])
+            more = f" (+{len(conflicts) - 5} more)" if len(conflicts) > 5 else ""
+            raise IbkrPortfolioError(
+                "IBKR 同步拒绝写入：账本已存在同日成交，无法保证同日成交顺序（"
+                f"{listed}{more}）。请先清理这些同日的本地成交记录，或分批导入"
+            )
+
     blocked_symbols: Set[str] = set()
 
     for record in trades:

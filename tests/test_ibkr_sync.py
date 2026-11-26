@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import unittest
 from datetime import date, time
 from unittest.mock import MagicMock, patch
@@ -49,6 +50,8 @@ class IbkrSyncTest(unittest.TestCase):
     def _service(self) -> MagicMock:
         service = MagicMock()
         service.list_accounts.return_value = [{"id": 1, "broker": "IBKR"}]
+        service.has_trade_uid.return_value = False
+        service.find_same_day_trade_conflicts.return_value = []
         service.record_trade.return_value = {"id": 1}
         service.record_cash_ledger.return_value = {"id": 1}
         return service
@@ -226,6 +229,8 @@ class IbkrSyncShortSymmetryTest(unittest.TestCase):
     def _service(self):
         service = MagicMock()
         service.list_accounts.return_value = [{"id": 1, "broker": "IBKR"}]
+        service.has_trade_uid.return_value = False
+        service.find_same_day_trade_conflicts.return_value = []
         service.record_trade.return_value = {"id": 1}
         service.record_cash_ledger.return_value = {"id": 1}
         return service
@@ -270,6 +275,8 @@ class IbkrSyncShortOpenThenLongTest(unittest.TestCase):
     def test_cover_then_open_long_imports_the_long(self) -> None:
         service = MagicMock()
         service.list_accounts.return_value = [{"id": 1, "broker": "IBKR"}]
+        service.has_trade_uid.return_value = False
+        service.find_same_day_trade_conflicts.return_value = []
         service.record_trade.return_value = {"id": 1}
         service.record_cash_ledger.return_value = {"id": 1}
         statement = _statement(
@@ -303,6 +310,8 @@ class IbkrSameDayOrderingTest(unittest.TestCase):
     def _service(self):
         service = MagicMock()
         service.list_accounts.return_value = [{"id": 1, "broker": "IBKR"}]
+        service.has_trade_uid.return_value = False
+        service.find_same_day_trade_conflicts.return_value = []
         service.record_trade.return_value = {"id": 1}
         service.record_cash_ledger.return_value = {"id": 1}
         return service
@@ -371,3 +380,126 @@ class IbkrSameDayOrderingTest(unittest.TestCase):
             sorted([late, next_day, early], key=sync._trade_sort_key),
             [early, late, next_day],
         )
+
+
+class IbkrSameDayLedgerConflictTest(unittest.TestCase):
+    """Guard against mixing a new import with same-day rows already in the ledger.
+
+    These run against a real SQLite ledger, because the ordering the guard
+    protects is decided by stored ids on replay, not by the import batch.
+    """
+
+    def setUp(self) -> None:
+        self.env = patch.dict(
+            "os.environ",
+            {"IBKR_FLEX_TOKEN": "tok", "IBKR_FLEX_STATEMENT_QUERY_ID": "1712897"},
+            clear=False,
+        )
+        self.env.start()
+
+        import tempfile
+        from pathlib import Path
+
+        from src.config import Config
+        from src.storage import DatabaseManager
+
+        self.temp_dir = tempfile.TemporaryDirectory()
+        env_path = Path(self.temp_dir.name) / ".env"
+        db_path = Path(self.temp_dir.name) / "ibkr_guard.db"
+        env_path.write_text(
+            "\n".join(
+                [
+                    "STOCK_LIST=AAPL",
+                    "GEMINI_API_KEY=test",
+                    "ADMIN_AUTH_ENABLED=false",
+                    f"DATABASE_PATH={db_path}",
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        os.environ["ENV_FILE"] = str(env_path)
+        os.environ["DATABASE_PATH"] = str(db_path)
+        Config.reset_instance()
+        DatabaseManager.reset_instance()
+        self.db = DatabaseManager.get_instance()
+
+    def tearDown(self) -> None:
+        from src.config import Config
+        from src.storage import DatabaseManager
+
+        self.env.stop()
+        os.environ.pop("ENV_FILE", None)
+        os.environ.pop("DATABASE_PATH", None)
+        Config.reset_instance()
+        DatabaseManager.reset_instance()
+        self.temp_dir.cleanup()
+
+    def _ledger(self):
+        from src.services.portfolio_service import PortfolioService
+
+        service = PortfolioService()
+        account = service.create_account(name="IBKR", broker="IBKR", market="us", base_currency="USD")
+        return service, account["id"]
+
+    def _sync(self, *trades):
+        with patch.object(sync, "download_flex_statement", side_effect=[_statement(*trades), _statement()]):
+            return sync.sync_ibkr_portfolio()
+
+    def test_existing_same_day_row_refuses_the_import(self) -> None:
+        from src.brokers.ibkr.flex import IbkrPortfolioError
+
+        service, account_id = self._ledger()
+        # A row already in the ledger for that symbol and date, written earlier
+        # and therefore with a lower id than anything this import would add.
+        service.record_trade(
+            account_id=account_id, symbol="AAPL", trade_date=date(2026, 1, 2),
+            side="buy", quantity=10, price=200.0, trade_uid="manual-1",
+        )
+
+        with self.assertRaises(IbkrPortfolioError) as ctx:
+            self._sync(_trade("AAPL", "BUY", "900", trade_time="093000"))
+
+        self.assertIn("AAPL@2026-01-02", str(ctx.exception))
+        self.assertEqual(len(service.repo.list_trades(account_id, date(2026, 1, 2))), 1)
+
+    def test_other_date_or_symbol_does_not_refuse(self) -> None:
+        service, account_id = self._ledger()
+        service.record_trade(
+            account_id=account_id, symbol="AAPL", trade_date=date(2025, 12, 31),
+            side="buy", quantity=10, price=200.0, trade_uid="older",
+        )
+        service.record_trade(
+            account_id=account_id, symbol="MSFT", trade_date=date(2026, 1, 2),
+            side="buy", quantity=5, price=300.0, trade_uid="other-symbol",
+        )
+
+        summary = self._sync(_trade("AAPL", "BUY", "900", trade_time="093000"))
+
+        self.assertEqual(summary["trades_inserted"], 1)
+        self.assertEqual(summary["errors"], [])
+
+    def test_rerun_of_the_same_trades_is_still_idempotent(self) -> None:
+        # Everything this sync would write already exists, so there is nothing to
+        # order: the guard must not turn a no-op re-run into a failure.
+        service, account_id = self._ledger()
+        service.record_trade(
+            account_id=account_id, symbol="AAPL", trade_date=date(2026, 1, 2),
+            side="buy", quantity=10, price=230.5, trade_uid="100",
+        )
+
+        summary = self._sync(_trade("AAPL", "BUY", "100", trade_time="093000"))
+
+        self.assertEqual(summary["trades_inserted"], 0)
+        self.assertEqual(summary["trades_duplicate"], 1)
+        self.assertEqual(summary["errors"], [])
+
+    def test_dry_run_never_touches_the_ledger_or_the_guard(self) -> None:
+        statement = _statement(_trade("AAPL", "BUY", "900", trade_time="093000"))
+        with patch.object(sync, "PortfolioService") as service_cls, patch.object(
+            sync, "download_flex_statement", side_effect=[statement, _statement()]
+        ):
+            summary = sync.sync_ibkr_portfolio(dry_run=True)
+
+        service_cls.assert_not_called()
+        self.assertEqual(summary["trades_inserted"], 1)

@@ -1672,6 +1672,42 @@ class PortfolioService:
             return self.repo.has_trade_uid(account_id, trade_uid)
         return self.repo.has_trade_uid_in_session(session=session, account_id=account_id, trade_uid=trade_uid)
 
+    def has_trade_uid(self, *, account_id: int, trade_uid: str) -> bool:
+        """Public idempotency probe used by broker imports before writing."""
+        if not trade_uid:
+            return False
+        return self._has_trade_uid(account_id=account_id, trade_uid=trade_uid)
+
+    def find_same_day_trade_conflicts(
+        self,
+        *,
+        account_id: int,
+        wanted: Iterable[Tuple[str, date]],
+    ) -> List[Tuple[str, date]]:
+        """Return ``(symbol, date)`` pairs that already hold ledger trades.
+
+        The ledger replays by ``(trade_date, id)``, so a symbol's same-day rows
+        that already exist cannot be interleaved with new ones in execution-time
+        order — the stored ids decide. Broker imports use this to refuse the
+        ambiguous case instead of silently producing a wrong FIFO order.
+        """
+        pairs = {
+            (str(symbol or "").strip().upper(), day)
+            for symbol, day in wanted
+            if symbol and day
+        }
+        if not pairs:
+            return []
+        dates = {day for _, day in pairs}
+        rows = self.repo.list_trades(account_id, max(dates))
+        conflicts = {
+            (str(row.symbol or "").strip().upper(), row.trade_date)
+            for row in rows
+            if row.trade_date in dates
+            and (str(row.symbol or "").strip().upper(), row.trade_date) in pairs
+        }
+        return sorted(conflicts)
+
     def _has_trade_dedup_hash(
         self,
         *,
