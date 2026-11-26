@@ -36,6 +36,7 @@ export interface ScreeningQuantText {
   compareClear: string;
   compareMetric: string;
   compareScore: string;
+  compareFactorScore: string;
   compareLlmScore: string;
   compareChange: string;
   compareRisk: string;
@@ -81,6 +82,7 @@ export const SCREENING_QUANT_TEXT: Record<UiLanguage, ScreeningQuantText> = {
     compareClear: '清空对比',
     compareMetric: '评估维度',
     compareScore: '综合得分',
+    compareFactorScore: '综合因子分',
     compareLlmScore: 'AI 重排分',
     compareChange: '今日涨跌幅',
     compareRisk: '风险等级',
@@ -125,7 +127,7 @@ export const SCREENING_QUANT_TEXT: Record<UiLanguage, ScreeningQuantText> = {
     riskHigh: 'High risk only',
     sortLabel: 'Sort candidates',
     sortDefault: 'Default rank',
-    sortScoreDesc: 'Composite Score ↓',
+    sortScoreDesc: 'Factor Score ↓',
     sortLlmDesc: 'AI Score ↓',
     sortChangeDesc: 'Change % ↓',
     sortMomentumDesc: 'Momentum Factor ↓',
@@ -145,6 +147,7 @@ export const SCREENING_QUANT_TEXT: Record<UiLanguage, ScreeningQuantText> = {
     compareClear: 'Clear compare',
     compareMetric: 'Metric / Factor',
     compareScore: 'Composite Score',
+    compareFactorScore: 'Factor Score',
     compareLlmScore: 'AI Score',
     compareChange: 'Daily Change',
     compareRisk: 'Risk Level',

@@ -299,4 +299,92 @@ describe('StockScreeningPage Quant Factor Explorer', () => {
     expect(escapeCsvCell('-cmd|calc')).toBe('"\'-cmd|calc"');
     expect(escapeCsvCell('@SUM(1,2)')).toBe('"\'@SUM(1,2)"');
   });
+
+  it('sorts score_desc by screenScore (factor composite) rather than blended score and exports matching CSV rows', async () => {
+    let capturedBlob: Blob | null = null;
+    const createObjectUrlSpy = vi.spyOn(URL, 'createObjectURL').mockImplementation((obj: Blob | MediaSource) => {
+      capturedBlob = obj as Blob;
+      return 'blob:mock-factor-csv';
+    });
+    const revokeObjectUrlSpy = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+    const anchorClickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+
+    screenStocks.mockResolvedValueOnce({
+      enabled: true,
+      candidateCount: 2,
+      strategy: 'momentum_quality',
+      market: 'cn',
+      rankingMode: 'llm',
+      llmRanked: true,
+      candidates: [
+        {
+          rank: 1,
+          code: '600519',
+          name: '贵州茅台',
+          industry: '白酒',
+          price: 1520.0,
+          changePct: 1.0,
+          score: 90.0,
+          screenScore: 84.0,
+          llmScore: 99.0,
+          riskLevel: 'low',
+          reason: '模型高分领先',
+          factorScores: { momentum: 84.0, value: 84.0 },
+          raw: {},
+        },
+        {
+          rank: 2,
+          code: '300750',
+          name: '宁德时代',
+          industry: '新能源',
+          price: 215.6,
+          changePct: 2.0,
+          score: 75.0,
+          screenScore: 85.0,
+          llmScore: 60.0,
+          riskLevel: 'medium',
+          reason: '因子总分更高',
+          factorScores: { momentum: 85.0, value: 85.0 },
+          raw: {},
+        },
+      ],
+    });
+
+    try {
+      render(<StockScreeningPage />);
+      expect(await screen.findByText('策略因子权重与画像蓝图')).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: /运行选股/ }));
+      expect(await screen.findByText('贵州茅台')).toBeInTheDocument();
+
+      // Default rank keeps rank 1 (600519, final score 90) first
+      let rows = screen.getAllByRole('row');
+      expect(within(rows[1]).getByText('600519')).toBeInTheDocument();
+
+      // Switch to 综合因子分 ↓ (score_desc) -> 300750 (screenScore 85) overtakes 600519 (screenScore 84)
+      fireEvent.change(screen.getByLabelText('候选排序'), {
+        target: { value: 'score_desc' },
+      });
+      rows = screen.getAllByRole('row');
+      expect(within(rows[1]).getByText('300750')).toBeInTheDocument();
+      expect(within(rows[2]).getByText('600519')).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('button', { name: '导出 CSV' }));
+      await waitFor(() => {
+        expect(capturedBlob).not.toBeNull();
+        expect(anchorClickSpy).toHaveBeenCalledTimes(1);
+      });
+
+      const csvText = await (capturedBlob as unknown as Blob).text();
+      const lines = csvText.replace(/^\uFEFF/, '').split('\r\n');
+      expect(lines).toHaveLength(3);
+      expect(lines[0]).toContain('"评分","综合因子分","AI 重排分"');
+      // Row 1 in exported CSV must match sorted order (300750 with original rank 2, score 75.00, screenScore 85.00)
+      expect(lines[1]).toContain('"2","300750","宁德时代","新能源","215.60","2.00","75.00","85.00","60.00"');
+      expect(lines[2]).toContain('"1","600519","贵州茅台","白酒","1520.00","1.00","90.00","84.00","99.00"');
+    } finally {
+      createObjectUrlSpy.mockRestore();
+      revokeObjectUrlSpy.mockRestore();
+      anchorClickSpy.mockRestore();
+    }
+  });
 });

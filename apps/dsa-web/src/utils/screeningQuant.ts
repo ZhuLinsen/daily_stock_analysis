@@ -43,6 +43,16 @@ export function getFactorLabel(language: UiLanguage, key: string): string {
   return labelKey ? SCREENING_TEXT[language][labelKey] : key;
 }
 
+export function getCandidateFactorCompositeScore(candidate: ScreeningCandidate): number | null {
+  if (typeof candidate.screenScore === 'number' && Number.isFinite(candidate.screenScore)) {
+    return candidate.screenScore;
+  }
+  if (typeof candidate.score === 'number' && Number.isFinite(candidate.score)) {
+    return candidate.score;
+  }
+  return null;
+}
+
 export function getCandidateFactorValue(
   candidate: ScreeningCandidate,
   canonicalKey: string,
@@ -106,28 +116,33 @@ export function exportCandidatesCsv(
     copy.price,
     copy.change,
     copy.score,
+    qcopy.compareFactorScore,
     qcopy.compareLlmScore,
     copy.risk,
     ...factorKeys.map((k) => getFactorLabel(language, k)),
     copy.summary,
   ];
 
-  const rows = candidates.map((item) => [
-    item.rank,
-    item.code,
-    item.name,
-    item.industry || '',
-    item.price != null ? item.price.toFixed(2) : '',
-    item.changePct != null ? item.changePct.toFixed(2) : '',
-    item.score != null ? item.score.toFixed(2) : '',
-    item.llmScore != null ? item.llmScore.toFixed(2) : '',
-    item.riskLevel || '',
-    ...factorKeys.map((k) => {
-      const v = getCandidateFactorValue(item, k);
-      return v != null ? v.toFixed(2) : '';
-    }),
-    item.reason || '',
-  ]);
+  const rows = candidates.map((item) => {
+    const factorComposite = getCandidateFactorCompositeScore(item);
+    return [
+      item.rank,
+      item.code,
+      item.name,
+      item.industry || '',
+      item.price != null ? item.price.toFixed(2) : '',
+      item.changePct != null ? item.changePct.toFixed(2) : '',
+      item.score != null ? item.score.toFixed(2) : '',
+      factorComposite != null ? factorComposite.toFixed(2) : '',
+      item.llmScore != null ? item.llmScore.toFixed(2) : '',
+      item.riskLevel || '',
+      ...factorKeys.map((k) => {
+        const v = getCandidateFactorValue(item, k);
+        return v != null ? v.toFixed(2) : '';
+      }),
+      item.reason || '',
+    ];
+  });
 
   const csvBody =
     '\uFEFF' +

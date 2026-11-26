@@ -1660,7 +1660,7 @@ def _normalize_strategy(raw: Any) -> Dict[str, Any]:
     name = str(item.get("display_name") or item.get("name") or item.get("title") or strategy_id)
     category = str(item.get("category") or item.get("tag") or "")
     raw_weights = item.get("factor_weights") or item.get("factorWeights") or {}
-    factor_weights: Dict[str, float] = {}
+    parsed_weights: Dict[str, float] = {}
     if isinstance(raw_weights, dict):
         for k, v in raw_weights.items():
             if isinstance(v, bool):
@@ -1668,7 +1668,13 @@ def _normalize_strategy(raw: Any) -> Dict[str, Any]:
             key_str = str(k or "").strip()
             num = _safe_float(v)
             if key_str and num is not None and num >= 0:
-                factor_weights[key_str] = round(num, 4)
+                parsed_weights[key_str] = num
+    total_weight = sum(parsed_weights.values())
+    factor_weights: Dict[str, float] = (
+        {k: v / total_weight for k, v in parsed_weights.items() if v > 0}
+        if total_weight > 0
+        else {}
+    )
 
     raw_style = _to_plain(item.get("style"))
     style: Dict[str, Any] = {}

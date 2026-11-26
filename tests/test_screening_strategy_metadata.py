@@ -4,13 +4,19 @@
 from __future__ import annotations
 
 import math
+import os
+from pathlib import Path
 from unittest.mock import patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+import pytest
 
 from api.v1.endpoints.screening import router as screening_router
 from src.config import Config
+from src.services.screening.filter import check_hard_filters
+from src.services.screening.models import HardFilterConfig, ScreeningConfig
+from src.services.screening.scorer import normalized_factor_weights
 from src.services.screening_service import ScreeningService, _normalize_strategy
 
 
@@ -68,8 +74,18 @@ def test_normalize_strategy_sanitizes_bool_nonfinite_weights_and_scalar_market_r
             },
         }
     )
-    assert normalized["factor_weights"] == {"momentum": 0.75}
+    assert normalized["factor_weights"] == {"momentum": 1.0}
     assert normalized["style"]["market_regime"] == ["trend"]
+
+    tiny = _normalize_strategy(
+        {
+            "id": "tiny_quant",
+            "name": "Tiny Quant",
+            "factor_weights": {"value": 0.00004, "momentum": 0.00006},
+        }
+    )
+    assert tiny["factor_weights"]["value"] == pytest.approx(0.4)
+    assert tiny["factor_weights"]["momentum"] == pytest.approx(0.6)
 
     camel_style = _normalize_strategy(
         {
@@ -80,6 +96,73 @@ def test_normalize_strategy_sanitizes_bool_nonfinite_weights_and_scalar_market_r
     )
     assert camel_style["style"]["market_regime"] == ["rotation"]
     assert "marketRegime" not in camel_style["style"]
+
+
+def test_custom_yaml_strategies_expose_effective_normalized_weights_and_active_filters(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (tmp_path / "tiny_weights.yaml").write_text(
+        """
+name: tiny_weights
+display_name: 微小权重策略
+description: tiny positive weights
+screening:
+  enabled: true
+  market_scope: [cn]
+  hard_filters:
+    exclude_st: false
+    price_min: 10
+    macd_status_whitelist: []
+    rsi_status_whitelist: []
+  factor_weights:
+    value: 0.00004
+    momentum: 0.00006
+  max_output: 5
+""".strip(),
+        encoding="utf-8",
+    )
+    (tmp_path / "default_weights.yaml").write_text(
+        """
+name: default_weights
+display_name: 默认权重策略
+description: omitted factor weights fall back to scorer defaults
+screening:
+  enabled: true
+  market_scope: [cn]
+  tech_weight: 0.4
+  hard_filters:
+    exclude_st: false
+  max_output: 5
+""".strip(),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("STRATEGIES_DIR", str(tmp_path))
+    cfg = Config(screening_enabled=True)
+    payload = ScreeningService(config=cfg).strategies()
+    by_id = {item["id"]: item for item in payload["strategies"]}
+
+    tiny = by_id["tiny_weights"]
+    assert tiny["factor_weights"]["value"] == pytest.approx(0.4)
+    assert tiny["factor_weights"]["momentum"] == pytest.approx(0.6)
+    assert tiny["active_filters"] == ["price_min"]
+    snapshot_checks = check_hard_filters(
+        {"price": 15.0},
+        HardFilterConfig(
+            exclude_st=False,
+            price_min=10.0,
+            macd_status_whitelist=[],
+            rsi_status_whitelist=[],
+        ),
+    )
+    assert [item["filter"] for item in snapshot_checks] == tiny["active_filters"]
+
+    defaulted = by_id["default_weights"]
+    assert defaulted["factor_weights"] == pytest.approx(
+        normalized_factor_weights(ScreeningConfig(tech_weight=0.4))
+    )
+    assert defaulted["active_filters"] == []
 
 
 def test_screening_strategies_endpoint_tolerates_legacy_minimal_strategy_dict() -> None:

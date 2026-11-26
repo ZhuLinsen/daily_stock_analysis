@@ -52,6 +52,7 @@ import {
 import {
   exportCandidatesCsv,
   factorBarColorClass,
+  getCandidateFactorCompositeScore,
   getCandidateFactorValue,
   type CandidateRiskFilter,
   type CandidateSortKey,
@@ -1027,7 +1028,7 @@ const StockScreeningPage: React.FC = () => {
     copyList.sort((a, b) => {
       switch (candidateSortKey) {
         case 'score_desc':
-          return numVal(b.score) - numVal(a.score);
+          return numVal(getCandidateFactorCompositeScore(b)) - numVal(getCandidateFactorCompositeScore(a));
         case 'llm_desc':
           return numVal(b.llmScore) - numVal(a.llmScore);
         case 'change_desc':

@@ -288,6 +288,7 @@ def list_strategies(strategies_dir: Path | None = None) -> list[StrategyInfo]:
     """List available screening strategies."""
     from src.services.screening.config import Config
     from src.services.screening.filter import requires_daily_features
+    from src.services.screening.scorer import normalized_factor_weights
 
     if strategies_dir is None:
         strategies_dir = Config.from_env().strategies_dir
@@ -310,7 +311,7 @@ def list_strategies(strategies_dir: Path | None = None) -> list[StrategyInfo]:
             required_snapshot_fields=_required_snapshot_fields(s.screening.hard_filters),
             required_daily_fields=_required_daily_fields(s.screening.hard_filters),
             active_filters=_active_hard_filters(s.screening.hard_filters),
-            factor_weights={key: float(value) for key, value in s.screening.factor_weights.items()},
+            factor_weights=normalized_factor_weights(s.screening),
             profile_keys=_strategy_profile_keys(s.screening),
             style=_style_to_dict(s.style),
         ))
@@ -782,6 +783,8 @@ def _active_hard_filters(filters_config: HardFilterConfig) -> list[str]:
         if name == "exclude_st":
             if bool(value):
                 active.append(name)
+            continue
+        if isinstance(value, (list, tuple, set, dict)) and len(value) == 0:
             continue
         if value != default and value is not None and value is not False:
             active.append(name)

@@ -141,4 +141,17 @@ describe('ScreeningQuantExplorer components & helpers', () => {
     expect(escapeCsvCell('\n=1+1')).toBe('"\'\n=1+1"');
     expect(escapeCsvCell('-2.35')).toBe('"-2.35"');
   });
+
+  it('displays <1% instead of 0% for small positive factor weights in StrategyFactorBlueprint', () => {
+    const strategy: ScreeningStrategy = {
+      id: 'sub_percent',
+      name: 'Tiny Weight',
+      description: 'sub-1% weight test',
+      factorWeights: { value: 0.002, momentum: 0.998 },
+    };
+
+    render(<StrategyFactorBlueprint strategy={strategy} language="en" />);
+    expect(screen.getByText('<1%')).toBeInTheDocument();
+    expect(screen.getByText('100%')).toBeInTheDocument();
+  });
 });

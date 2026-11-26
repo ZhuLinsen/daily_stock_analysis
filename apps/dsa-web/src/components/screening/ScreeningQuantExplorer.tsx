@@ -108,7 +108,8 @@ export const StrategyFactorBlueprint: React.FC<{
       {weightEntries.length > 0 ? (
         <div className="mt-2.5 flex flex-wrap gap-2">
           {weightEntries.map(([key, weight]) => {
-            const pct = Math.round((weight / totalWeight) * 100);
+            const rawPct = (weight / totalWeight) * 100;
+            const pctText = rawPct > 0 && rawPct < 1 ? '<1%' : `${Math.round(rawPct)}%`;
             return (
               <div
                 key={key}
@@ -116,12 +117,12 @@ export const StrategyFactorBlueprint: React.FC<{
               >
                 <div className="flex items-center justify-between text-[11px]">
                   <span className="text-secondary-text">{getFactorLabel(language, key)}</span>
-                  <span className="font-mono font-semibold text-cyan">{pct}%</span>
+                  <span className="font-mono font-semibold text-cyan">{pctText}</span>
                 </div>
                 <div className="h-1 w-full overflow-hidden rounded-full bg-surface">
                   <div
                     className="h-full rounded-full bg-cyan"
-                    style={{ width: `${Math.min(100, Math.max(4, pct))}%` }}
+                    style={{ width: `${Math.min(100, Math.max(4, rawPct))}%` }}
                   />
                 </div>
               </div>
