@@ -26,15 +26,27 @@ from dataclasses import dataclass, field
 import math
 from typing import Dict, List, Optional, Sequence, Tuple
 
+import numpy as np
 import pandas as pd
 
 REBALANCE_CHOICES = ("weekly", "monthly")
+SCORING_MODES = ("return", "vol_adjusted", "composite", "trend_r2")
+WEIGHTING_MODES = ("equal", "inverse_vol")
 CASH = "CASH"
 EXECUTION_LAG_DAYS = 1
 TRADING_DAYS_PER_YEAR = 244
 DAYS_PER_YEAR = 365.25
 MAX_FORWARD_FILL_DAYS = 5
+DEFAULT_VOL_LOOKBACK_DAYS = 20
+MIN_VOL_FLOOR = 0.05
+MIN_TREND_R2_WINDOW = 5
 DEFAULT_SWEEP_LOOKBACKS = (20, 40, 60, 90, 120, 150, 200)
+STRATEGY_PRESETS = (
+    ("return_equal", "return", "equal"),
+    ("vol_adjusted_equal", "vol_adjusted", "equal"),
+    ("composite_equal", "composite", "equal"),
+    ("trend_r2_inv_vol", "trend_r2", "inverse_vol"),
+)
 
 Weights = Dict[str, float]
 
@@ -46,6 +58,9 @@ class RotationParams:
     top_n: int = 1
     switch_buffer_pct: float = 2.0
     cost_bps: float = 10.0  # one-way cost per unit of turnover
+    scoring_mode: str = "return"
+    weighting: str = "equal"
+    vol_lookback_days: int = DEFAULT_VOL_LOOKBACK_DAYS
 
     def __post_init__(self) -> None:
         if self.lookback_days < 1:
@@ -56,6 +71,12 @@ class RotationParams:
             raise ValueError("top_n must be >= 1")
         if self.switch_buffer_pct < 0 or self.cost_bps < 0:
             raise ValueError("switch_buffer_pct and cost_bps must be >= 0")
+        if self.scoring_mode not in SCORING_MODES:
+            raise ValueError(f"scoring_mode must be one of {SCORING_MODES}")
+        if self.weighting not in WEIGHTING_MODES:
+            raise ValueError(f"weighting must be one of {WEIGHTING_MODES}")
+        if self.vol_lookback_days < 2:
+            raise ValueError("vol_lookback_days must be >= 2")
 
 
 @dataclass(frozen=True)
@@ -91,6 +112,103 @@ def momentum_scores(closes: pd.DataFrame, lookback_days: int) -> pd.DataFrame:
     return closes / closes.shift(lookback_days) - 1.0
 
 
+def annualized_volatility(
+    closes: pd.DataFrame,
+    vol_lookback_days: int = DEFAULT_VOL_LOOKBACK_DAYS,
+) -> pd.DataFrame:
+    """Trailing realized annualized volatility from daily simple returns."""
+    if vol_lookback_days < 2:
+        raise ValueError("vol_lookback_days must be >= 2")
+    rets = closes.pct_change(fill_method=None)
+    return rets.rolling(vol_lookback_days, min_periods=vol_lookback_days).std(ddof=0) * math.sqrt(
+        TRADING_DAYS_PER_YEAR
+    )
+
+
+def trend_regression_stats(
+    closes: pd.DataFrame,
+    window: int,
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Causal trailing log-price OLS annualized slope and R^2 per column."""
+    w = max(int(window), MIN_TREND_R2_WINDOW)
+    nan_df = pd.DataFrame(np.nan, index=closes.index, columns=closes.columns, dtype=float)
+    if closes.empty or len(closes) < w or len(closes.columns) == 0:
+        return nan_df, nan_df.copy()
+
+    arr = closes.to_numpy(dtype=float)
+    valid_pos = np.isfinite(arr) & (arr > 0)
+    safe = np.where(valid_pos, arr, 1.0)
+    logs = np.where(valid_pos, np.log(safe), np.nan)
+
+    win = np.lib.stride_tricks.sliding_window_view(logs, window_shape=w, axis=0)
+    win_valid = np.isfinite(win).all(axis=-1)
+    win_clean = np.where(win_valid[..., None], win, 0.0)
+
+    x_c = np.arange(w, dtype=float) - (w - 1) / 2.0
+    s_xx = float(np.dot(x_c, x_c))
+    s_xy = np.einsum("ncw,w->nc", win_clean, x_c)
+    y_c = win_clean - win_clean.mean(axis=-1, keepdims=True)
+    s_yy = np.sum(y_c * y_c, axis=-1)
+
+    denom = s_xx * s_yy
+    valid_denom = denom > 1e-18
+    raw_r2 = np.where(valid_denom, (s_xy * s_xy) / np.where(valid_denom, denom, 1.0), 0.0)
+    r2_tail = np.where(win_valid, np.clip(raw_r2, 0.0, 1.0), np.nan)
+    slope_tail = s_xy / s_xx
+    ann_slope_tail = np.where(
+        win_valid,
+        np.expm1(np.clip(slope_tail * TRADING_DAYS_PER_YEAR, -20.0, 20.0)),
+        np.nan,
+    )
+
+    ann_slope_full = np.full(arr.shape, np.nan, dtype=float)
+    r2_full = np.full(arr.shape, np.nan, dtype=float)
+    ann_slope_full[w - 1 :] = ann_slope_tail
+    r2_full[w - 1 :] = r2_tail
+    return (
+        pd.DataFrame(ann_slope_full, index=closes.index, columns=closes.columns),
+        pd.DataFrame(r2_full, index=closes.index, columns=closes.columns),
+    )
+
+
+def composite_momentum_scores(closes: pd.DataFrame, lookback_days: int) -> pd.DataFrame:
+    """Blended multi-horizon momentum (short/mid/long = 0.4/0.4/0.2)."""
+    if lookback_days < 3:
+        return momentum_scores(closes, lookback_days)
+
+    horizon_weights: Dict[int, float] = {}
+    for w, wt in (
+        (max(5, lookback_days // 3), 0.4),
+        (lookback_days, 0.4),
+        (lookback_days * 2, 0.2),
+    ):
+        horizon_weights[w] = horizon_weights.get(w, 0.0) + wt
+
+    total = pd.DataFrame(0.0, index=closes.index, columns=closes.columns, dtype=float)
+    valid = pd.DataFrame(True, index=closes.index, columns=closes.columns, dtype=bool)
+    for w, wt in horizon_weights.items():
+        component = momentum_scores(closes, w)
+        valid &= component.notna()
+        total = total + component.fillna(0.0) * wt
+    return total.where(valid)
+
+
+def compute_factor_scores(closes: pd.DataFrame, params: RotationParams) -> pd.DataFrame:
+    """Compute causal ranking scores according to ``params.scoring_mode``."""
+    if params.scoring_mode == "return":
+        return momentum_scores(closes, params.lookback_days)
+    if params.scoring_mode == "vol_adjusted":
+        raw = momentum_scores(closes, params.lookback_days)
+        vol = annualized_volatility(closes, params.vol_lookback_days)
+        return raw.where(raw.notna() & vol.notna()) / vol.clip(lower=MIN_VOL_FLOOR)
+    if params.scoring_mode == "composite":
+        return composite_momentum_scores(closes, params.lookback_days)
+    if params.scoring_mode == "trend_r2":
+        ann_slope, r2 = trend_regression_stats(closes, params.lookback_days)
+        return ann_slope * r2
+    raise ValueError(f"scoring_mode must be one of {SCORING_MODES}")
+
+
 def _period_code(rebalance: str) -> str:
     if rebalance not in REBALANCE_CHOICES:
         raise ValueError(f"rebalance must be one of {REBALANCE_CHOICES}")
@@ -113,19 +231,28 @@ def is_rebalance_day(day: pd.Timestamp, next_session: pd.Timestamp, rebalance: s
     return pd.Timestamp(day).to_period(period) != pd.Timestamp(next_session).to_period(period)
 
 
+def _unique_risk_assets(closes: pd.DataFrame, risk_assets: Sequence[str]) -> List[str]:
+    """Preserve caller ordering while dropping duplicates and missing symbols."""
+    return list(dict.fromkeys(c for c in risk_assets if c in closes.columns))
+
+
 def select_holdings(
     scores: pd.Series,
     current: Sequence[str],
     params: RotationParams,
 ) -> Tuple[str, ...]:
     """Pick up to ``top_n`` risk assets; an empty tuple means fully defensive."""
-    eligible = scores.dropna()
+    eligible = scores.replace([math.inf, -math.inf], math.nan).dropna()
     eligible = eligible[eligible > 0].sort_values(ascending=False)
     if eligible.empty:
         return ()
 
     slots = min(params.top_n, len(eligible))
-    cutoff = eligible.iloc[slots - 1] - params.switch_buffer_pct / 100.0
+    anchor = float(eligible.iloc[slots - 1])
+    if params.scoring_mode in ("vol_adjusted", "trend_r2"):
+        cutoff = anchor * max(0.0, 1.0 - params.switch_buffer_pct / 100.0)
+    else:
+        cutoff = anchor - params.switch_buffer_pct / 100.0
     kept = [code for code in current if code in eligible.index and eligible[code] >= cutoff]
     kept = sorted(kept, key=lambda code: eligible[code], reverse=True)[:slots]
     newcomers = [code for code in eligible.index if code not in kept][: slots - len(kept)]
@@ -137,10 +264,35 @@ def holdings_to_weights(
     holdings: Sequence[str],
     top_n: int,
     safe_asset: Optional[str],
+    *,
+    weighting: str = "equal",
+    vols: Optional[pd.Series] = None,
 ) -> Weights:
-    """Each slot is 1/top_n; unfilled slots go to the safe asset (or cash)."""
+    """Allocate risk budget across ``holdings`` and route unfilled slots to safe/cash."""
+    if weighting not in WEIGHTING_MODES:
+        raise ValueError(f"weighting must be one of {WEIGHTING_MODES}")
     slot = 1.0 / top_n
-    weights: Weights = {code: slot for code in holdings}
+    weights: Weights = {}
+    if holdings:
+        risk_budget = slot * len(holdings)
+        use_inverse_vol = False
+        inv_vols: Dict[str, float] = {}
+        if weighting == "inverse_vol" and vols is not None:
+            for code in holdings:
+                v = vols.get(code)
+                if v is not None and pd.notna(v) and math.isfinite(float(v)) and float(v) > 0:
+                    inv_vols[code] = 1.0 / max(float(v), 1e-6)
+                else:
+                    inv_vols.clear()
+                    break
+            use_inverse_vol = len(inv_vols) == len(holdings)
+
+        if use_inverse_vol:
+            inv_sum = sum(inv_vols.values())
+            weights = {code: risk_budget * inv_vols[code] / inv_sum for code in holdings}
+        else:
+            weights = {code: slot for code in holdings}
+
     spare = 1.0 - slot * len(holdings)
     if spare > 1e-12:
         defensive = safe_asset or CASH
@@ -177,7 +329,7 @@ def run_backtest(
     curves begin at that fill with value 1.0; the entry cost shows up in the
     next bar's return. Without any fill the curves hold only the last bar.
     """
-    risk = [c for c in risk_assets if c in closes.columns]
+    risk = _unique_risk_assets(closes, risk_assets)
     if not risk:
         raise ValueError("no risk asset has price data")
     if safe_asset and safe_asset not in closes.columns:
@@ -185,7 +337,12 @@ def run_backtest(
 
     frame = prepare_closes(closes)
     quoted = _valid_closes(closes)
-    scores = momentum_scores(frame[risk], params.lookback_days).where(quoted[risk].notna())
+    scores = compute_factor_scores(frame[risk], params).where(quoted[risk].notna())
+    vols = (
+        annualized_volatility(frame[risk], params.vol_lookback_days).where(quoted[risk].notna())
+        if params.weighting == "inverse_vol"
+        else None
+    )
     valid_rows = scores.notna().any(axis=1)
     if not valid_rows.any():
         raise ValueError(
@@ -195,6 +352,8 @@ def run_backtest(
     frame = frame.loc[start:]
     scores = scores.loc[start:]
     quoted = quoted.loc[start:]
+    if vols is not None:
+        vols = vols.loc[start:]
     # Carry the last known mark for valuation, never for execution. On quote
     # recovery the full change from that mark belongs to existing holders.
     valuation = _valid_closes(closes).ffill().loc[start:]
@@ -206,7 +365,7 @@ def run_backtest(
 
     weights: Weights = {CASH: 1.0}
     holdings: Tuple[str, ...] = ()
-    pending: Optional[Tuple[int, pd.Timestamp, Tuple[str, ...]]] = None
+    pending: Optional[Tuple[int, pd.Timestamp, Tuple[str, ...], Optional[pd.Series]]] = None
     entry: Optional[int] = None
     trades: List[Trade] = []
     equity_values: List[float] = []
@@ -223,10 +382,16 @@ def run_backtest(
             bench *= 1.0 + (float(row[listed].mean()) if listed else 0.0)
 
         if pending is not None and pending[0] == i:
-            _, signal_day, new_holdings = pending
+            _, signal_day, new_holdings, signal_vols = pending
             pending = None
             available_safe = safe_asset if safe_asset and pd.notna(quoted.loc[day, safe_asset]) else None
-            target = holdings_to_weights(new_holdings, params.top_n, available_safe)
+            target = holdings_to_weights(
+                new_holdings,
+                params.top_n,
+                available_safe,
+                weighting=params.weighting,
+                vols=signal_vols,
+            )
             # Do not fabricate a buy or sell at a carried-forward price. Keep
             # the current portfolio until a later scheduled signal can trade.
             involved = (set(weights) | set(target)) - {CASH}
@@ -243,7 +408,8 @@ def run_backtest(
 
         if day in rebal and i + EXECUTION_LAG_DAYS < len(dates):
             chosen = select_holdings(scores.loc[day], holdings, params)
-            pending = (i + EXECUTION_LAG_DAYS, day, chosen)
+            signal_vols = vols.loc[day] if vols is not None else None
+            pending = (i + EXECUTION_LAG_DAYS, day, chosen, signal_vols)
 
         equity_values.append(equity)
         bench_values.append(bench)
@@ -288,6 +454,86 @@ def compute_metrics(equity: pd.Series) -> Dict[str, float]:
     }
 
 
+def compute_extended_metrics(
+    equity: pd.Series,
+    benchmark_equity: Optional[pd.Series] = None,
+    trades: Optional[Sequence[Trade]] = None,
+) -> Dict[str, float]:
+    """Institutional risk/turnover metrics layered atop ``compute_metrics``."""
+    base = compute_metrics(equity)
+    out = dict(base)
+    out.update(
+        {
+            "sortino": math.nan,
+            "max_drawdown_days": math.nan,
+            "monthly_win_rate": math.nan,
+            "excess_cagr": math.nan,
+            "information_ratio": math.nan,
+            "annual_turnover": math.nan,
+            "trade_count": float(len(trades)) if trades is not None else math.nan,
+        }
+    )
+
+    series = equity.dropna()
+    if len(series) < 2 or series.iloc[0] <= 0:
+        return out
+
+    rets = series.pct_change(fill_method=None).dropna()
+    if len(rets) > 0:
+        downside = np.minimum(rets.to_numpy(dtype=float), 0.0)
+        downside_vol = float(np.sqrt(np.mean(downside * downside)) * math.sqrt(TRADING_DAYS_PER_YEAR))
+        if math.isfinite(downside_vol) and downside_vol > 0:
+            out["sortino"] = float(rets.mean() * TRADING_DAYS_PER_YEAR / downside_vol)
+
+    underwater = (series < series.cummax()).to_numpy(dtype=bool)
+    cur_streak = 0
+    max_streak = 0
+    for is_underwater in underwater:
+        if is_underwater:
+            cur_streak += 1
+            if cur_streak > max_streak:
+                max_streak = cur_streak
+        else:
+            cur_streak = 0
+    out["max_drawdown_days"] = float(max_streak)
+
+    month_groups = series.groupby([series.index.year, series.index.month])
+    month_counts = month_groups.size()
+    month_end = month_groups.last()
+    if len(month_end) > 0:
+        prev = month_end.shift(1)
+        prev.iloc[0] = series.iloc[0]
+        monthly_rets = month_end / prev - 1.0
+        # A curve starting on a month-end session has zero holding days in that initial month.
+        if len(monthly_rets) > 1 and int(month_counts.iloc[0]) == 1:
+            monthly_rets = monthly_rets.iloc[1:]
+        out["monthly_win_rate"] = float((monthly_rets > 0).mean())
+
+    years = (series.index[-1] - series.index[0]).days / DAYS_PER_YEAR
+    if trades is not None and years > 0:
+        out["annual_turnover"] = float(sum(t.turnover for t in trades) / years)
+
+    if benchmark_equity is not None:
+        bench_metrics = compute_metrics(benchmark_equity)
+        if not math.isnan(base["cagr"]) and not math.isnan(bench_metrics["cagr"]):
+            out["excess_cagr"] = float(base["cagr"] - bench_metrics["cagr"])
+
+        joined = pd.concat([series, benchmark_equity.dropna()], axis=1).dropna()
+        if len(joined) >= 2:
+            joined.columns = ["strategy", "benchmark"]
+            s_rets = joined["strategy"].pct_change(fill_method=None).dropna()
+            b_rets = joined["benchmark"].pct_change(fill_method=None).dropna()
+            active = (s_rets - b_rets).dropna()
+            if len(active) > 0:
+                tracking_error = float(active.std(ddof=0) * math.sqrt(TRADING_DAYS_PER_YEAR))
+                if tracking_error > 0:
+                    out["information_ratio"] = float(
+                        active.mean() * TRADING_DAYS_PER_YEAR / tracking_error
+                    )
+
+    return out
+
+
 def annual_returns(equity: pd.Series) -> pd.Series:
     """Calendar-year returns; the first year is measured from the curve start."""
     series = equity.dropna()
@@ -316,7 +562,7 @@ def parameter_sweep(
     common window below ``min_years``.
     """
     frame = prepare_closes(closes)
-    risk = [c for c in risk_assets if c in frame.columns]
+    risk = _unique_risk_assets(frame, risk_assets)
     if not risk:
         return []
 
@@ -328,6 +574,9 @@ def parameter_sweep(
             top_n=params.top_n,
             switch_buffer_pct=params.switch_buffer_pct,
             cost_bps=params.cost_bps,
+            scoring_mode=params.scoring_mode,
+            weighting=params.weighting,
+            vol_lookback_days=params.vol_lookback_days,
         )
         try:
             runs.append((lookback, run_backtest(closes, risk, safe_asset, swept)))
@@ -349,10 +598,113 @@ def latest_ranking(
     risk_assets: Sequence[str],
     params: RotationParams,
 ) -> Tuple[pd.Timestamp, pd.Series]:
-    """Momentum scores on the latest bar, sorted high to low (NaN last)."""
+    """Factor scores on the latest bar, sorted high to low (NaN last)."""
     frame = prepare_closes(closes)
-    risk = [c for c in risk_assets if c in frame.columns]
-    scores = momentum_scores(frame[risk], params.lookback_days)
+    risk = _unique_risk_assets(frame, risk_assets)
+    scores = compute_factor_scores(frame[risk], params)
     scores = scores.where(_valid_closes(closes)[risk].notna())
     as_of = frame.index[-1]
     return as_of, scores.loc[as_of].sort_values(ascending=False, na_position="last")
+
+
+def factor_snapshot(
+    closes: pd.DataFrame,
+    risk_assets: Sequence[str],
+    params: RotationParams,
+) -> Tuple[pd.Timestamp, pd.DataFrame]:
+    """Latest-bar factor breakdown for each asset in ``risk_assets``, ranked by ``score``."""
+    frame = prepare_closes(closes)
+    quoted = _valid_closes(closes)
+    risk = _unique_risk_assets(frame, risk_assets)
+    if not risk or frame.empty:
+        raise ValueError("no risk asset has price data")
+
+    as_of = frame.index[-1]
+    latest_valid = quoted[risk].loc[as_of].notna()
+
+    scores = compute_factor_scores(frame[risk], params).loc[as_of].where(latest_valid)
+    ret_20d = momentum_scores(frame[risk], 20).loc[as_of].where(latest_valid)
+    ret_lookback = momentum_scores(frame[risk], params.lookback_days).loc[as_of].where(latest_valid)
+    ret_120d = momentum_scores(frame[risk], 120).loc[as_of].where(latest_valid)
+    ann_vol = annualized_volatility(frame[risk], params.vol_lookback_days).loc[as_of].where(latest_valid)
+    _, trend_r2_df = trend_regression_stats(frame[risk], params.lookback_days)
+    trend_r2 = trend_r2_df.loc[as_of].where(latest_valid)
+    vol_adj_score = (ret_lookback / ann_vol.clip(lower=MIN_VOL_FLOOR)).where(
+        ret_lookback.notna() & ann_vol.notna()
+    )
+
+    df = pd.DataFrame(
+        {
+            "score": scores,
+            "ret_20d": ret_20d,
+            "ret_lookback": ret_lookback,
+            "ret_120d": ret_120d,
+            "ann_vol": ann_vol,
+            "trend_r2": trend_r2,
+            "vol_adj_score": vol_adj_score,
+        },
+        index=risk,
+    ).sort_values(by="score", ascending=False, na_position="last", kind="mergesort")
+    df["eligible"] = df["score"].notna() & (df["score"] > 0)
+    return as_of, df
+
+
+def compare_strategies(
+    closes: pd.DataFrame,
+    risk_assets: Sequence[str],
+    safe_asset: Optional[str],
+    params: RotationParams,
+    min_years: float = 0.0,
+) -> List[Tuple[str, Dict[str, float]]]:
+    """Compare all built-in factor/weighting presets (plus active custom combo) on a common window."""
+    frame = prepare_closes(closes)
+    risk = _unique_risk_assets(frame, risk_assets)
+    if not risk or frame.empty:
+        return []
+
+    specs = list(STRATEGY_PRESETS)
+    preset_combos = {(mode, wt) for _, mode, wt in STRATEGY_PRESETS}
+    if (params.scoring_mode, params.weighting) not in preset_combos:
+        specs.append(("current", params.scoring_mode, params.weighting))
+
+    runs: List[Tuple[str, BacktestResult]] = []
+    for preset_key, scoring_mode, weighting in specs:
+        preset_params = RotationParams(
+            lookback_days=params.lookback_days,
+            rebalance=params.rebalance,
+            top_n=params.top_n,
+            switch_buffer_pct=params.switch_buffer_pct,
+            cost_bps=params.cost_bps,
+            scoring_mode=scoring_mode,
+            weighting=weighting,
+            vol_lookback_days=params.vol_lookback_days,
+        )
+        try:
+            runs.append((preset_key, run_backtest(closes, risk, safe_asset, preset_params)))
+        except ValueError:
+            continue
+
+    last_day = frame.index[-1]
+    runs = [
+        (preset_key, result)
+        for preset_key, result in runs
+        if (last_day - result.equity.index[0]).days / DAYS_PER_YEAR >= min_years
+    ]
+    if not runs:
+        return []
+
+    common_start = max(result.equity.index[0] for _, result in runs)
+    results: List[Tuple[str, Dict[str, float]]] = []
+    for preset_key, result in runs:
+        sub_equity = result.equity.loc[common_start:]
+        if sub_equity.empty or float(sub_equity.iloc[0]) <= 0:
+            continue
+        sub_equity = sub_equity / float(sub_equity.iloc[0])
+        sub_bench = result.benchmark_equity.loc[common_start:]
+        if not sub_bench.empty and float(sub_bench.iloc[0]) > 0:
+            sub_bench = sub_bench / float(sub_bench.iloc[0])
+        sub_trades = [t for t in result.trades if t.exec_date >= common_start]
+        results.append(
+            (preset_key, compute_extended_metrics(sub_equity, sub_bench, sub_trades))
+        )
+    return results
