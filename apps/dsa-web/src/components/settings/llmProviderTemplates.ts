@@ -1,4 +1,4 @@
-export type ChannelProtocol = 'openai' | 'deepseek' | 'gemini' | 'anthropic' | 'vertex_ai' | 'ollama';
+export type ChannelProtocol = 'openai' | 'deepseek' | 'gemini' | 'anthropic' | 'vertex_ai' | 'azure' | 'ollama';
 export type LLMProviderCapability =
   | 'openai-compatible'
   | 'aggregator'
@@ -226,6 +226,18 @@ export const LLM_PROVIDER_TEMPLATES: LLMProviderTemplate[] = [
     officialSources: [{ label: 'OpenAI Models', url: 'https://platform.openai.com/docs/models' }],
   },
   {
+    channelId: 'azure',
+    label: 'Azure OpenAI',
+    protocol: 'azure',
+    baseUrl: '',
+    placeholderModels: '',
+    capabilities: ['official-api'],
+    configHint: '填写 Azure OpenAI 资源的 HTTPS 根地址和部署名称。API Key 留空时，后端使用 DefaultAzureCredential 登录 Microsoft Entra ID。',
+    officialSources: [
+      { label: 'Azure OpenAI API', url: 'https://learn.microsoft.com/azure/foundry/openai/reference' },
+    ],
+  },
+  {
     channelId: 'ollama',
     label: 'Ollama（本地）',
     protocol: 'ollama',
@@ -293,5 +305,6 @@ export const MODEL_PLACEHOLDERS_BY_PROTOCOL: Record<ChannelProtocol, string> = {
   gemini: 'gemini-3.6-flash,gemini-3.5-flash-lite',
   anthropic: 'claude-sonnet-4-6,claude-opus-4-7',
   vertex_ai: 'gemini-3.6-flash',
+  azure: 'Azure 部署名称',
   ollama: 'llama3.2,qwen2.5',
 };

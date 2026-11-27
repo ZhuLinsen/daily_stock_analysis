@@ -324,6 +324,9 @@ def _call_litellm_vision(image_b64: str, mime_type: str, api_key: Optional[str] 
         call_kwargs["api_key"] = effective_api_key
     if deployment_params.get("api_base"):
         call_kwargs["api_base"] = deployment_params["api_base"]
+    for azure_param in ("api_version", "azure_ad_token_provider", "azure_ad_token"):
+        if wire_model.startswith("azure/") and azure_param in deployment_params:
+            call_kwargs[azure_param] = deployment_params[azure_param]
     if deployment_params.get("extra_headers"):
         call_kwargs["extra_headers"] = dict(deployment_params["extra_headers"])
     # Add api_base and custom headers for OpenAI-compatible providers

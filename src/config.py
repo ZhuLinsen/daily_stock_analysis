@@ -39,6 +39,7 @@ from src.notification_contracts import (
     is_feishu_static_configured,
 )
 from src.services.stock_list_parser import split_stock_list
+from src.llm.azure_openai import AZURE_OPENAI_ENDPOINT_HINT, azure_openai_auth_params, is_azure_openai_endpoint
 from src.llm.backend_registry import (
     AUTO_AGENT_BACKEND_ID,
     GENERATION_ONLY_BACKEND_IDS,
@@ -99,7 +100,7 @@ class ConfigIssue:
 
 
 _MANAGED_LITELLM_KEY_PROVIDERS = {"gemini", "vertex_ai", "anthropic", "openai", "deepseek"}
-SUPPORTED_LLM_CHANNEL_PROTOCOLS = ("openai", "anthropic", "gemini", "vertex_ai", "deepseek", "ollama")
+SUPPORTED_LLM_CHANNEL_PROTOCOLS = ("openai", "anthropic", "gemini", "vertex_ai", "deepseek", "azure", "ollama")
 SUPPORTED_LLM_CHANNEL_API_SURFACES = ("chat_completions", "responses")
 _FALLBACK_LITELLM_MODEL_PROVIDERS = _MANAGED_LITELLM_KEY_PROVIDERS | set(SUPPORTED_LLM_CHANNEL_PROTOCOLS) | {
     "minimax",
@@ -628,6 +629,8 @@ def channel_allows_empty_api_key(protocol: Optional[str], base_url: Optional[str
     resolved_protocol = resolve_llm_channel_protocol(protocol, base_url=base_url)
     if resolved_protocol == "ollama":
         return True
+    if resolved_protocol == "azure":
+        return is_azure_openai_endpoint(base_url or "")
     parsed = _safe_urlparse(base_url)
     return parsed is not None and parsed.hostname in {"127.0.0.1", "localhost", "0.0.0.0"}
 
@@ -703,6 +706,25 @@ def normalize_llm_channel_model(model: str, protocol: Optional[str], base_url: O
     if not resolved_protocol:
         return normalized_model
     return f"{resolved_protocol}/{normalized_model}"
+
+
+def validate_azure_openai_channel(
+    base_url: Optional[str], models: List[str], field_prefix: str,
+) -> List[HermesConfigIssue]:
+    issues = []
+    if not is_azure_openai_endpoint(base_url or ""):
+        issues.append(HermesConfigIssue(
+            f"{field_prefix}_BASE_URL",
+            "invalid_azure_endpoint",
+            f"Azure OpenAI requires a resource endpoint such as {AZURE_OPENAI_ENDPOINT_HINT} (no API path)",
+        ))
+    if any(not model.startswith("azure/") or not model[6:] for model in models):
+        issues.append(HermesConfigIssue(
+            f"{field_prefix}_MODELS",
+            "invalid_azure_deployment",
+            "Azure OpenAI models must be Azure deployment names or azure/<deployment> routes",
+        ))
+    return issues
 
 
 def find_incompatible_llm_channel_models(
@@ -2786,6 +2808,13 @@ class Config:
                 )
                 continue
             models = [normalize_llm_channel_model(m, protocol, base_url) for m in raw_models]
+            if protocol == "azure":
+                azure_issues = validate_azure_openai_channel(base_url, models, f"LLM_{ch_upper}")
+                if azure_issues:
+                    issues.extend(azure_issues)
+                    for issue in azure_issues:
+                        _logger.warning("LLM channel '%s': %s; channel skipped", ch_name, issue.message)
+                    continue
 
             # Extra headers (JSON string, optional)
             extra_headers_raw = os.getenv(f'LLM_{ch_upper}_EXTRA_HEADERS', '').strip()
@@ -2892,6 +2921,7 @@ class Config:
                         litellm_params['api_key'] = api_key
                     if ch['base_url']:
                         litellm_params['api_base'] = ch['base_url']
+                    litellm_params.update(azure_openai_auth_params(wire_model, ch['base_url'] or "", api_key))
                     # Auto-inject aihubmix sponsored header
                     headers = dict(ch.get('extra_headers') or {})
                     if ch['base_url'] and 'aihubmix.com' in ch['base_url']:

@@ -28,6 +28,7 @@ from src.config import (
     resolve_llm_channel_api_keys,
     resolve_llm_channel_names,
     resolve_llm_channel_protocol,
+    validate_azure_openai_channel,
 )
 from src.llm.backend_registry import (
     LOCAL_CLI_GENERATION_BACKEND_IDS,
@@ -896,6 +897,8 @@ class GenerationBackendStatusService:
             if find_incompatible_llm_channel_models(raw_models, protocol, api_surface, base_url):
                 continue
             models = [normalize_llm_channel_model(model, protocol, base_url) for model in raw_models]
+            if protocol == "azure" and validate_azure_openai_channel(base_url, models, prefix):
+                continue
             if not api_keys and channel_allows_empty_api_key(protocol, base_url):
                 api_keys = [""]
             if not api_keys or not models:

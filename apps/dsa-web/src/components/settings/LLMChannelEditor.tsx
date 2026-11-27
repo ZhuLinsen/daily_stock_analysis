@@ -24,6 +24,7 @@ const PROTOCOL_OPTIONS: Array<{ value: ChannelProtocol; label: string }> = [
   { value: 'anthropic', label: 'Anthropic' },
   { value: 'vertex_ai', label: 'Vertex AI' },
   { value: 'ollama', label: 'Ollama' },
+  { value: 'azure', label: 'Azure OpenAI' },
 ];
 
 const API_SURFACE_OPTIONS: Array<{ value: LLMApiSurface; label: string }> = [
@@ -447,6 +448,7 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
   );
   const modelCount = selectedModels.length;
   const hasKey = channel.apiKey.length > 0;
+  const isAzure = channel.protocol === 'azure';
   const statusVariant = testState?.status === 'success'
     ? 'success'
     : testState?.status === 'error'
@@ -529,7 +531,8 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
               </span>
             </Tooltip>
           ) : null}
-          {!hasKey && channel.protocol !== 'ollama' ? <Badge variant="warning">未填 Key</Badge> : null}
+          {!hasKey && isAzure ? <Badge variant="default">Microsoft Entra ID</Badge> : null}
+          {!hasKey && !isAzure && channel.protocol !== 'ollama' ? <Badge variant="warning">未填 Key</Badge> : null}
           {testState?.status !== 'idle' ? (
             <Badge variant={statusVariant}>
               {testState?.status === 'success' ? '连接正常' : testState?.status === 'error' ? '连接失败' : '测试中'}
@@ -627,7 +630,7 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
             placeholder={
               channel.protocol === 'gemini' || channel.protocol === 'anthropic'
                 ? '官方接口可留空'
-                : preset?.baseUrl || 'https://api.example.com/v1'
+                : preset?.baseUrl || (isAzure ? 'https://example.openai.azure.com' : 'https://api.example.com/v1')
             }
           />
           </div>
@@ -692,13 +695,15 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
             value={channel.apiKey}
             disabled={busy}
             onChange={(e) => onUpdate(index, 'apiKey', e.target.value)}
-            placeholder={channel.protocol === 'ollama' ? '本地 Ollama 可留空' : '支持多个 Key 逗号分隔'}
+            placeholder={isAzure
+              ? '留空使用 DefaultAzureCredential'
+              : channel.protocol === 'ollama' ? '本地 Ollama 可留空' : '支持多个 Key 逗号分隔'}
           />
           </div>
 
           <div className="space-y-3 rounded-xl border border-[var(--settings-border)] bg-[var(--settings-surface-hover)] p-3">
             <div className="flex flex-wrap items-center gap-2">
-              <Button
+              {!isAzure ? <Button
                 type="button"
                 variant="settings-secondary"
                 size="sm"
@@ -707,7 +712,7 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
                 onClick={() => onDiscoverModels(channel)}
               >
                 {discoveryState?.status === 'loading' ? '获取中...' : '获取模型'}
-              </Button>
+              </Button> : null}
               <span className={`text-xs ${
                 discoveryState?.status === 'success'
                   ? 'text-success'
@@ -716,7 +721,9 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
                     : 'text-muted-text'
               }`}
               >
-                {discoveryState?.text || '支持 `/models` 的 OpenAI Compatible 渠道可自动拉取模型。'}
+                {isAzure
+                  ? '请手动输入 Azure 门户中的部署名称，不是基础模型名称。'
+                  : discoveryState?.text || '支持 `/models` 的 OpenAI Compatible 渠道可自动拉取模型。'}
               </span>
             </div>
             {discoveryState?.hint ? (
@@ -936,10 +943,13 @@ function normalizeProtocol(value: string): ChannelProtocol {
   if (normalized === 'ollama') {
     return 'ollama';
   }
+  if (normalized === 'azure') {
+    return 'azure';
+  }
   return 'openai';
 }
 
-function inferProtocol(protocol: string, baseUrl: string, models: string[]): ChannelProtocol {
+function inferProtocol(protocol: string, baseUrl: string, models: string[], channelName: string): ChannelProtocol {
   const explicit = normalizeProtocol(protocol);
   if (protocol.trim()) {
     return explicit;
@@ -952,6 +962,10 @@ function inferProtocol(protocol: string, baseUrl: string, models: string[]): Cha
   const firstPrefixedModel = models.find((model) => model.includes('/'));
   if (firstPrefixedModel) {
     return normalizeProtocol(firstPrefixedModel.split('/', 1)[0]);
+  }
+
+  if (channelName === 'azure') {
+    return 'azure';
   }
 
   if (baseUrl.includes('127.0.0.1') || baseUrl.includes('localhost')) {
@@ -1208,11 +1222,13 @@ const LLM_TROUBLESHOOTING_HINTS: Record<string, string> = {
   model_not_found: '请确认模型名与渠道协议匹配，并先用“获取模型”核对该渠道实际可用模型列表。',
   empty_response: '渠道已连通但未返回正文；可尝试切换兼容模型、关闭额外响应模式后再测试。',
   network_error: '请检查 Base URL、代理、TLS/证书、中转网关或本地网络策略，并可稍后重试。',
-  invalid_config: '先补齐协议、Base URL、API Key 和模型配置，再执行一键测试。',
+  invalid_config: '先检查渠道协议、Base URL、认证方式和模型配置，再测试连接。',
   unsupported_protocol: '当前仅对 OpenAI Compatible / DeepSeek 渠道提供自动模型发现，请改为手动维护模型列表。',
 };
 
 const LLM_REASON_HINTS: Record<string, string> = {
+  invalid_azure_endpoint: '请填写 https://<resource>.openai.azure.com，不要添加 API 路径。',
+  invalid_azure_deployment: '请填写 Azure 门户中的部署名称，不要使用其他渠道的模型前缀。',
   missing_api_key: 'API Key 为空，或逗号分隔后没有任何可用 Key；请填入至少一个有效 Key 后再测试。',
   api_key_rejected: '服务商拒绝了当前 API Key；请检查 Key、组织/项目权限、区域和账号状态。',
   rate_limit: '服务商触发 RPM/TPM 或并发限流；请降低请求频率或稍后重试。',
@@ -1510,7 +1526,7 @@ function parseChannelsFromItems(
     return {
       id: `parsed:${index}:${upperName}`,
       name: name.toLowerCase(),
-      protocol: inferProtocol(itemMap.get(`LLM_${upperName}_PROTOCOL`) || '', baseUrl, models),
+      protocol: inferProtocol(itemMap.get(`LLM_${upperName}_PROTOCOL`) || '', baseUrl, models, name),
       apiSurface: normalizeApiSurface(itemMap.get(`LLM_${upperName}_API_SURFACE`)),
       baseUrl,
       apiKey: resolveInitialChannelApiKeyValue(name, itemMap, itemSourceByKey),

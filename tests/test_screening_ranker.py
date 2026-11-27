@@ -6,7 +6,7 @@ from __future__ import annotations
 import json
 import sys
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -68,6 +68,26 @@ def test_screening_ranker_direct_call_omits_temperature_for_gpt5() -> None:
     assert result == "ok"
     assert "temperature" not in completion_calls[0]
     _assert_trust_messages(completion_calls)
+
+
+def test_screening_ranker_azure_channel_does_not_inherit_openai_key_or_base_url() -> None:
+    endpoint = "https://test.openai.azure.com"
+    completion = Mock(return_value={"choices": [{"message": {"content": "OK"}}]})
+    with patch.dict(sys.modules, {"litellm": Mock(completion=completion)}):
+        assert _call_llm(
+            "Rank these stocks",
+            api_key="unrelated-openai-key",
+            model="azure/my-deployment",
+            base_url="https://api.openai.com/v1",
+            channels=[
+                {"protocol": "openai", "models": ["my-deployment"], "api_keys": ["unrelated-key"]},
+                {"protocol": "azure", "models": ["my-deployment"], "base_url": endpoint, "api_keys": []},
+            ],
+        ) == "OK"
+
+    assert completion.call_args.kwargs["api_base"] == endpoint
+    assert "api_key" not in completion.call_args.kwargs
+    assert callable(completion.call_args.kwargs["azure_ad_token_provider"])
 
 
 def test_screening_ranker_direct_call_uses_responses_wire_model_for_matching_channel() -> None:

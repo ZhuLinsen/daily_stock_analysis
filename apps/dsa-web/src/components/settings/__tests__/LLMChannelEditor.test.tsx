@@ -144,6 +144,37 @@ describe('LLMChannelEditor', () => {
     });
   });
 
+  it('tests an Azure deployment without an API key or model discovery', async () => {
+    testLLMChannel.mockResolvedValue({ success: true });
+    render(
+      <LLMChannelEditor
+        items={[
+          { key: 'LLM_CHANNELS', value: 'azure' },
+          { key: 'LLM_AZURE_BASE_URL', value: 'https://test.openai.azure.com' },
+          { key: 'LLM_AZURE_MODELS', value: 'my-deployment' },
+        ]}
+        configVersion="v1"
+        maskToken="******"
+        onSaved={() => {}}
+      />
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /Azure OpenAI/i }));
+    expect(await screen.findByLabelText('协议')).toHaveValue('azure');
+    expect(screen.getByPlaceholderText('留空使用 DefaultAzureCredential')).toHaveValue('');
+    expect(screen.getByText('Microsoft Entra ID')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '获取模型' })).not.toBeInTheDocument();
+    expect(selectOptionValues('主模型')).toContain('azure/my-deployment');
+    fireEvent.click(screen.getByRole('button', { name: '测试连接' }));
+
+    await waitFor(() => expect(testLLMChannel).toHaveBeenCalledWith(expect.objectContaining({
+      protocol: 'azure',
+      baseUrl: 'https://test.openai.azure.com',
+      apiKey: '',
+      models: ['my-deployment'],
+    })));
+  });
+
   it('loads and tests a multi-model Responses API channel without changing public model names', async () => {
     testLLMChannel.mockResolvedValue({ success: true });
     render(

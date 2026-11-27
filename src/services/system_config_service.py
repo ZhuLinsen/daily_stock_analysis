@@ -48,7 +48,9 @@ from src.config import (
     resolve_llm_channel_protocol,
     route_discovered_llm_model,
     setup_env,
+    validate_azure_openai_channel,
 )
+from src.llm.azure_openai import azure_openai_auth_params
 from src.llm.hermes import (
     HERMES_DEFAULT_BASE_URL,
     HERMES_DEFAULT_MODEL,
@@ -1419,6 +1421,7 @@ class SystemConfigService:
             call_kwargs["api_key"] = selected_api_key
         if base_url.strip():
             call_kwargs["api_base"] = base_url.strip()
+        call_kwargs.update(azure_openai_auth_params(wire_model, base_url, selected_api_key))
         call_kwargs = apply_litellm_generation_params(
             call_kwargs,
             wire_model,
@@ -1996,6 +1999,7 @@ class SystemConfigService:
             call_kwargs["api_key"] = selected_api_key
         if base_url.strip():
             call_kwargs["api_base"] = base_url.strip()
+        call_kwargs.update(azure_openai_auth_params(resolved_model, base_url, selected_api_key))
         if extra:
             call_kwargs.update(extra)
         call_kwargs = apply_litellm_generation_params(
@@ -5796,10 +5800,26 @@ class SystemConfigService:
             models=list(model_values) if model_values else None,
             channel_name=channel_name,
         )
+        if resolved_protocol == "azure":
+            models = [normalize_llm_channel_model(model, resolved_protocol, base_url_value) for model in model_values]
+            issues.extend(
+                {
+                    "key": issue.field.removeprefix("test_channel_").lower()
+                    if field_prefix == "test_channel" else issue.field,
+                    "code": issue.code,
+                    "message": issue.message,
+                    "severity": issue.severity,
+                }
+                for issue in validate_azure_openai_channel(base_url_value, models, field_prefix)
+            )
         # Validate parsed key segments so that inputs like "," or " , " are
         # treated as empty (they produce zero usable keys after split+strip).
         _parsed_api_keys = [seg.strip() for seg in api_key_value.split(",") if seg.strip()]
-        if not _parsed_api_keys and not channel_allows_empty_api_key(resolved_protocol, base_url_value):
+        if (
+            not _parsed_api_keys
+            and resolved_protocol != "azure"
+            and not channel_allows_empty_api_key(resolved_protocol, base_url_value)
+        ):
             issues.append(
                 {
                     "key": api_key_key,

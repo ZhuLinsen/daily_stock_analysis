@@ -45,6 +45,7 @@ litellm>=1.80.10,!=1.82.7,!=1.82.8,<1.99.0; python_version >= "3.11"   # Unified
 litellm>=1.80.10,!=1.82.7,!=1.82.8,<1.98.0; python_version < "3.11"    # 1.98 imports typing.NotRequired, which needs Python 3.11
 tiktoken>=0.8.0,<0.12.0    # BPE tokenizer for LLM token counting (pin <0.12 to avoid plugin registration issues, #537)
 openai>=1.0.0               # OpenAI SDK (transitive dependency of litellm, kept explicit)
+azure-identity>=1.25.0,<2.0 # Azure OpenAI passwordless authentication
 PyYAML>=6.0                 # YAML parser for LITELLM_CONFIG support
 
 # Search engines for stock news

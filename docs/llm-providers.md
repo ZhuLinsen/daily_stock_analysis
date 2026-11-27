@@ -43,6 +43,22 @@ Codex App Server 问股后端已移除。`AGENT_BACKEND` 仅支持 `auto`（推�
 
 ## Channels 示例
 
+### Azure OpenAI（Microsoft Entra ID 或 API Key）
+
+在 Web/Desktop「AI 模型配置 → 快速添加渠道」选择 **Azure OpenAI**，填写 `https://<resource>.openai.azure.com` 和 Azure 门户中的**部署名称**（不是基础模型名称）。渠道使用 Chat Completions；不支持「获取模型」或 Responses。地址填写资源根地址，不拼接 `/openai/v1`、部署路径或查询参数。
+
+```env
+LLM_CHANNELS=azure
+LLM_AZURE_PROTOCOL=azure
+LLM_AZURE_BASE_URL=https://example.openai.azure.com
+LLM_AZURE_MODELS=my-deployment
+LITELLM_MODEL=azure/my-deployment
+```
+
+- **无密钥认证**：将 `LLM_AZURE_API_KEY` 和 `LLM_AZURE_API_KEYS` 留空。为运行后端的身份在 Azure OpenAI 资源上授予 `Cognitive Services OpenAI User`，本地可先运行 `az login`。后端的 `DefaultAzureCredential` 按需获取并刷新令牌，不需要把令牌写入配置。不要同时设置原生 SDK 的全局 Azure Key（如 `AZURE_API_KEY`、`AZURE_OPENAI_API_KEY`）或静态 Azure 令牌。
+- **部署**：凭据必须在后端进程可用，宿主机 `az login` 不会自动传入 Docker。Azure 托管环境建议使用托管标识，并用 `AZURE_TOKEN_CREDENTIALS=ManagedIdentityCredential` 将凭据链限制为托管标识。每日分析工作流透传 `LLM_AZURE_*`；默认 GitHub-hosted runner 不会自动登录 Azure。未单独配置 runner 身份时，可将 `LLM_AZURE_API_KEY` 或 `LLM_AZURE_API_KEYS` 存为 GitHub Secrets。
+- **API Key 认证**：在本渠道填写一个或多个资源 Key 即使用 Key，不启用该渠道的 `DefaultAzureCredential`。保存前可用「测试连接」确认部署和权限。
+
 ### Modelflare
 
 [注册 Modelflare](https://modelflare.dev/sign-up?utm_source=github&utm_campaign=daily_stock_analysis)，创建 API Key 后使用 OpenAI-compatible 渠道：

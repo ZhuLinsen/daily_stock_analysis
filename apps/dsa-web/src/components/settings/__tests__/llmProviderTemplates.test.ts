@@ -44,6 +44,7 @@ describe('llmProviderTemplates', () => {
       'gemini',
       'anthropic',
       'openai',
+      'azure',
       'ollama',
       'aihubmix',
       'anspire',
