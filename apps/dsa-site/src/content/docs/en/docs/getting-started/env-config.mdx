@@ -13,8 +13,8 @@ DSA is designed to run out of the box with free market data providers (`AkShare`
 | **One AI API Key** | Gemini, Anthropic, OpenAI-compatible, DeepSeek, or local Ollama | `GEMINI_API_KEY=...` or `OPENAI_API_KEY=...` |
 
 :::tip[DeepSeek & OpenAI-Compatible Gateways]
-- **Official DeepSeek API**: set `DEEPSEEK_API_KEY=...` (defaults to `deepseek/deepseek-v4-flash`), or specify `deepseek-v4-flash` / `deepseek-v4-pro` explicitly via channel routing.
-- **OpenAI-Compatible Gateways**: configure `OPENAI_API_KEY`, `OPENAI_BASE_URL` (usually ending with `/v1`), and `LITELLM_MODEL=openai/<model-name>` (or `OPENAI_MODEL`).
+- **Official DeepSeek API**: set `DEEPSEEK_API_KEY=...` (repository default `deepseek/deepseek-v4-flash`, a legacy compatibility alias routed to V4.1 Flash), or configure DeepSeek's current Flash model ID `deepseek-flash` / `deepseek-v4-pro` explicitly via channel routing or `LITELLM_MODEL`.
+- **OpenAI-Compatible Gateways**: configure `OPENAI_API_KEY`, `OPENAI_BASE_URL` (usually ending with `/v1`), and `LITELLM_MODEL=openai/<model-name>` (or `OPENAI_MODEL`). If the gateway model ID already contains a slash `/` (such as `Qwen/Qwen3-32B` on SiliconFlow or `anthropic/claude-sonnet-4-5` on OpenRouter), you **must** include the `openai/` prefix explicitly (`LITELLM_MODEL=openai/Qwen/Qwen3-32B` or `OPENAI_MODEL=openai/Qwen/Qwen3-32B`), because values with `/` keep their first segment as the LiteLLM provider rather than matching `OPENAI_API_KEY` and `OPENAI_BASE_URL`.
 
 See the [LLM Configuration Guide](/en/docs/configuration/llm-guide/) and [LLM Providers Reference](/en/docs/configuration/llm-providers/) for multi-model routing details.
 :::

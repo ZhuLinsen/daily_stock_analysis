@@ -218,6 +218,8 @@ test('landing page and docs honor review regression guards', () => {
 
   const enEnvConfig = fs.readFileSync(path.join(SITE_ROOT, 'src', 'content', 'docs', 'en', 'docs', 'getting-started', 'env-config.mdx'), 'utf8');
   assert.equal(enEnvConfig.includes('deepseek-chat'), false);
+  assert.equal(enEnvConfig.includes('openai/Qwen/Qwen3-32B'), true);
+  assert.equal(enEnvConfig.includes('deepseek-flash'), true);
 
   const webuiDoc = fs.readFileSync(path.join(SITE_ROOT, 'src', 'content', 'docs', 'docs', 'features', 'webui-and-agent.mdx'), 'utf8');
   assert.equal(webuiDoc.includes('/decision-signals'), true);
@@ -239,6 +241,8 @@ test('landing page and docs honor review regression guards', () => {
   assert.equal(enActionsDoc.includes('LLM_CHANNELS=x6ai'), true);
   assert.equal(enActionsDoc.includes('LLM_X6AI_BASE_URL=https://api.x6.ai/v1'), true);
   assert.equal(enActionsDoc.includes('LLM_X6AI_MODELS='), true);
+  assert.equal(enActionsDoc.includes('openai/Qwen/Qwen3-32B'), true);
+  assert.equal(enActionsDoc.includes('deepseek-flash'), true);
   assert.doesNotMatch(enActionsDoc, /\|\s*`LLM_X6AI_API_KEY`\s*\|/);
 
   assert.equal(fs.existsSync(path.join(SITE_ROOT, 'public', 'assets', 'dsa-vi-dark.png')), false);
@@ -251,6 +255,17 @@ test('prepareDocs generates English counterparts for beginner setup, market supp
     const fakeDsa = path.join(tmpRoot, 'dsa');
     const fakeSite = path.join(tmpRoot, 'site');
     writeMinimalFixtureDsaRepo(fakeDsa);
+
+    fs.writeFileSync(
+      path.join(fakeDsa, 'docs', 'full-guide_EN.md'),
+      [
+        '# Full Guide (EN)',
+        '- [Beginner](beginner-client-setup_EN.md)',
+        '- [Market](market-support_EN.md)',
+        '- [Notifications](notifications_EN.md)',
+      ].join('\n'),
+      'utf8',
+    );
 
     const meta = prepareDocs({ siteRoot: fakeSite, dsaRoot: fakeDsa, quiet: true });
     assert.equal(meta.syncedEnDocs >= 9, true);
@@ -265,6 +280,14 @@ test('prepareDocs generates English counterparts for beginner setup, market supp
       const content = fs.readFileSync(fullPath, 'utf8');
       assert.equal(content.includes(expectedTitle), true, `Expected EN title in ${relPath}`);
     }
+
+    const fullGuideEnContent = fs.readFileSync(
+      path.join(fakeSite, 'src', 'content', 'docs', 'en', 'docs', 'reference', 'full-guide.md'),
+      'utf8',
+    );
+    assert.equal(fullGuideEnContent.includes('/en/docs/getting-started/beginner-client/'), true);
+    assert.equal(fullGuideEnContent.includes('/en/docs/features/market-support/'), true);
+    assert.equal(fullGuideEnContent.includes('/en/docs/configuration/notifications/'), true);
   } finally {
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   }
