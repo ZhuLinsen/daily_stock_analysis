@@ -11,7 +11,7 @@ import pytest
 from src.services.stock_daily_window_resolver import resolve_stock_daily_window
 
 
-def _bar(day: date, close: float = 100.0):
+def _bar(day: date, close: float | None = 100.0):
     return SimpleNamespace(date=day, close=close)
 
 
@@ -96,6 +96,31 @@ def test_same_date_tie_preserves_candidate_order() -> None:
     )
 
     assert window.code == "first"
+
+
+@pytest.mark.parametrize(
+    ("entry", "end"),
+    [(0.0, 110.0), (float("nan"), 110.0), (100.0, None), (100.0, -1.0), (100.0, float("inf"))],
+)
+def test_complete_alias_with_usable_closes_outranks_invalid_prices(entry, end) -> None:
+    start_day, end_day = date(2024, 1, 5), date(2024, 1, 8)
+    window = _resolve(
+        starts={"first": _bar(start_day, entry), "second": _bar(start_day, 200.0)},
+        forwards={"first": [_bar(end_day, end)], "second": [_bar(end_day, 220.0)]},
+    )
+
+    assert window.code == "second"
+
+
+def test_missing_end_close_remains_available_to_evaluator_if_no_alias_can_supply_it() -> None:
+    start_day = date(2024, 1, 5)
+    window = _resolve(
+        starts={"first": _bar(start_day), "second": _bar(start_day)},
+        forwards={"first": [], "second": [_bar(date(2024, 1, 8), None)]},
+    )
+
+    assert window.code == "second"
+    assert window.forward_bars[0].close is None
 
 
 def test_partial_fallback_uses_more_bars_for_same_start_date() -> None:
