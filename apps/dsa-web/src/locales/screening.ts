@@ -250,7 +250,7 @@ const zh = {
   taskProcessing: "选股任务执行中",
   alphaSiftLabel: "AlphaSift 今日榜单",
   alphaSiftTooltip: "AlphaSift：多市场每日自动选股与公开 T+N 纸面跟踪",
-  alphaSiftAria: "访问 AlphaSift 每日选股与公开 T+N 纸面跟踪榜单（新窗口打开）"
+  alphaSiftAria: "AlphaSift 今日榜单：访问多市场每日选股与公开 T+N 纸面跟踪（新窗口打开）"
 };
 
 const en: Record<keyof typeof zh, string> = {
@@ -503,7 +503,7 @@ const en: Record<keyof typeof zh, string> = {
   taskProcessing: "Screening is in progress",
   alphaSiftLabel: "AlphaSift Daily Picks",
   alphaSiftTooltip: "AlphaSift: multi-market daily screening & public T+N paper track record",
-  alphaSiftAria: "Open AlphaSift daily stock screener (opens in a new tab)"
+  alphaSiftAria: "AlphaSift Daily Picks: open multi-market daily stock screener (opens in a new tab)"
 };
 
 export type ScreeningTextKey = keyof typeof zh;

@@ -209,12 +209,13 @@ describe('StockScreeningPage', () => {
       );
 
       const zhLink = await screen.findByRole('link', {
-        name: '访问 AlphaSift 每日选股与公开 T+N 纸面跟踪榜单（新窗口打开）',
+        name: 'AlphaSift 今日榜单：访问多市场每日选股与公开 T+N 纸面跟踪（新窗口打开）',
       });
       expect(zhLink).toHaveAttribute('href', 'https://alphasift.zhulinsen.tech/?lang=zh&utm_source=dsa_web_screening');
       expect(zhLink).toHaveAttribute('target', '_blank');
       expect(zhLink).toHaveAttribute('rel', 'noopener noreferrer');
       expect(zhLink).toHaveTextContent('AlphaSift 今日榜单');
+      expect(zhLink.getAttribute('aria-label')).toContain('AlphaSift 今日榜单');
 
       fireEvent.mouseEnter(zhLink.parentElement!);
       expect(await screen.findByRole('tooltip')).toHaveTextContent('AlphaSift：多市场每日自动选股与公开 T+N 纸面跟踪');
@@ -222,10 +223,20 @@ describe('StockScreeningPage', () => {
 
       fireEvent.click(screen.getByRole('button', { name: /切换界面语言|Switch UI language/ }));
       const enLink = await screen.findByRole('link', {
-        name: 'Open AlphaSift daily stock screener (opens in a new tab)',
+        name: 'AlphaSift Daily Picks: open multi-market daily stock screener (opens in a new tab)',
       });
       expect(enLink).toHaveAttribute('href', 'https://alphasift.zhulinsen.tech/?lang=en&utm_source=dsa_web_screening');
       expect(enLink).toHaveTextContent('AlphaSift Daily Picks');
+      expect(enLink.getAttribute('aria-label')).toContain('AlphaSift Daily Picks');
+
+      fireEvent.focus(enLink.parentElement!);
+      const enTooltip = await screen.findByRole('tooltip');
+      expect(enTooltip).toHaveTextContent('AlphaSift: multi-market daily screening & public T+N paper track record');
+      expect(enTooltip.className).not.toContain('min-w-max');
+      expect(enTooltip.className).toContain('w-max');
+      expect(enTooltip.className).toContain('max-w-[min(18rem,calc(100vw-1rem))]');
+      expect(enTooltip.className).toContain('whitespace-normal');
+      fireEvent.blur(enLink.parentElement!);
     } finally {
       localStorage.removeItem('dsa.uiLanguage');
     }
