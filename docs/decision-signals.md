@@ -131,6 +131,7 @@ Web 在原有“信号表现统计”卡片内提供“保守 / 均衡 / 进取�
 - Preview 成功返回 `preview`、`item=null`、`created=false`；它不写库，也不进入列表、latest 或时间线。
 - Persist 成功返回 `preview=null`、后端权威 `item` 和 `persist_status`。`persist_status=created` 表示新建；`existing` 表示同一字段化 identity 的记录已存在且未被改写；`refreshed` 表示按既有 expired refresh / dimension-fill 语义复用并刷新记录。兼容字段 `created` 只在 `created` 时为 `true`。`persist_status` 只描述本次写入 disposition，不代表 `item.status` 必然为 active；新建的历史信号也可能因到期或被较新相反信号取代而以 `expired/invalidated` 返回。
 - Reassess persist 与 lazy backfill 使用同一历史生命周期：`created_at` 锚定来源报告时间，`expires_at` 从报告时间、horizon、market 及持久化的 `market_phase_summary` 计算。阶段摘要只保留 `phase/session_date/minutes_to_open/minutes_to_close`；不会用保存当天或实时行情重新赋予有效期。
+- 如果来源报告的创建时间没有时区信息，系统会将它视为服务器本地时间，按报告生成当日的夏令时规则换算为 UTC。
 - 同 profile 相反信号的失效顺序同样按历史信号不可变的 `created_at` 判断，expired refresh 的 `updated_at` 不改变历史优先级。保存旧报告不得淘汰较新的相反信号；仍在有效期内但已被较新相反信号取代的历史 item 会以 `invalidated` 返回，且 API 返回失效处理后的最终数据库状态。
 - `created` item 写入 `source_type=analysis`、原 `source_report_id`、`source_agent=decision_profile_reassess`、`trigger_source=web:decision_profile_reassess` 和正式 `decision_profile`；metadata 保存 `profile_source=user_selected`、`profile_policy_version`、`signal_generation_version`、`scoring_version`、`scoring_breakdown`、`data_quality_level` 和完整 `guardrail_result`。
 - `existing` item 原样保留最初的 source fields 和 metadata。例如普通分析已经自动生成同 identity 的 `balanced/auto_default` 信号时，用户再次确认 balanced reassess 会返回该记录，不覆盖为 `user_selected`，也不会声称新建成功。终态 existing 不会重新激活。

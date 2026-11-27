@@ -702,13 +702,10 @@ class DecisionSignalService:
         if value.tzinfo is not None:
             return to_utc_naive_datetime(value)
 
-        local_tz = datetime.now().astimezone().tzinfo
-        if local_tz is None or local_tz.utcoffset(value) is None:
-            return to_utc_naive_datetime(value)
-
         try:
-            return value.replace(tzinfo=local_tz).astimezone(timezone.utc).replace(tzinfo=None)
-        except (OverflowError, OSError):
+            # Naive history timestamps are server-local. Use the offset on the report date.
+            return value.astimezone(timezone.utc).replace(tzinfo=None)
+        except (OverflowError, OSError, ValueError):
             return to_utc_naive_datetime(value)
 
     def _invalidate_history_bound_if_superseded(self, signal_id: int) -> None:

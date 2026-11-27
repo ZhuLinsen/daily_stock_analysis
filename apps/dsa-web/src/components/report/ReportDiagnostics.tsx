@@ -1,6 +1,6 @@
 import type React from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Activity, Check, ChevronDown, Copy, Workflow } from 'lucide-react';
+import { Activity, Check, ChevronDown, Copy, TriangleAlert, Workflow } from 'lucide-react';
 import { historyApi } from '../../api/history';
 import { formatUiText, UI_TEXT } from '../../i18n/uiText';
 import type {
@@ -10,6 +10,7 @@ import type {
   RunDiagnosticStatus,
   RunDiagnosticSummary,
 } from '../../types/analysis';
+import { copyTextToClipboard } from '../../utils/clipboard';
 import { normalizeReportLanguage } from '../../utils/reportLanguage';
 import { Badge, Button, Card, StatusDot } from '../common';
 
@@ -43,6 +44,7 @@ const TEXT = {
     advanced: '高级字段',
     copy: '复制排障信息',
     copied: '已复制',
+    copyFailed: '复制失败',
     scope: '抓取 / LLM / 保存 / 通知链路',
     trace: 'Trace',
     task: 'Task',
@@ -73,6 +75,7 @@ const TEXT = {
     advanced: 'Advanced Fields',
     copy: 'Copy diagnostics',
     copied: 'Copied',
+    copyFailed: 'Copy failed',
     scope: 'Fetch / LLM / save / notification path',
     trace: 'Trace',
     task: 'Task',
@@ -103,6 +106,7 @@ const TEXT = {
     advanced: '고급 필드',
     copy: '진단 정보 복사',
     copied: '복사됨',
+    copyFailed: '복사 실패',
     scope: '수집 / LLM / 저장 / 알림 경로',
     trace: 'Trace',
     task: 'Task',
@@ -179,8 +183,13 @@ export const ReportDiagnostics: React.FC<ReportDiagnosticsProps> = ({
     summary: null,
     failed: false,
   });
-  const [copied, setCopied] = useState(false);
+  const [copyState, setCopyState] = useState<{ key: string; status: 'idle' | 'copied' | 'failed' }>({
+    key: '',
+    status: 'idle',
+  });
   const resetCopiedTimerRef = useRef<number | null>(null);
+  const mountedRef = useRef(true);
+  const copyTokenRef = useRef(0);
 
   useEffect(() => {
     if (summary || !recordId) {
@@ -213,10 +222,16 @@ export const ReportDiagnostics: React.FC<ReportDiagnosticsProps> = ({
     };
   }, [recordId, summary]);
 
-  useEffect(() => () => {
-    if (resetCopiedTimerRef.current !== null) {
-      window.clearTimeout(resetCopiedTimerRef.current);
-    }
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      copyTokenRef.current += 1;
+      if (resetCopiedTimerRef.current !== null) {
+        window.clearTimeout(resetCopiedTimerRef.current);
+        resetCopiedTimerRef.current = null;
+      }
+    };
   }, []);
 
   const fetchedForRecord = recordId !== undefined && fetchState.recordId === recordId
@@ -244,6 +259,21 @@ export const ReportDiagnostics: React.FC<ReportDiagnosticsProps> = ({
       copyText: '',
     };
   }, [isLoading, loadFailed, loadedSummary, recordId, summary, text]);
+
+  const copyIdentity = `${recordId ?? ''}\u0000${visibleSummary?.copyText ?? ''}`;
+  const [prevCopyIdentity, setPrevCopyIdentity] = useState(copyIdentity);
+  if (prevCopyIdentity !== copyIdentity) {
+    setPrevCopyIdentity(copyIdentity);
+    setCopyState({ key: copyIdentity, status: 'idle' });
+  }
+
+  useEffect(() => {
+    copyTokenRef.current += 1;
+    if (resetCopiedTimerRef.current !== null) {
+      window.clearTimeout(resetCopiedTimerRef.current);
+      resetCopiedTimerRef.current = null;
+    }
+  }, [copyIdentity]);
 
   if (!visibleSummary) {
     return null;
@@ -281,24 +311,40 @@ export const ReportDiagnostics: React.FC<ReportDiagnosticsProps> = ({
   );
 
   const copyDiagnostics = async () => {
-    if (!hasCopyText || !navigator.clipboard?.writeText) {
+    if (!hasCopyText) {
       return;
     }
 
-    try {
-      await navigator.clipboard.writeText(visibleSummary.copyText);
-      setCopied(true);
-      if (resetCopiedTimerRef.current !== null) {
-        window.clearTimeout(resetCopiedTimerRef.current);
-      }
-      resetCopiedTimerRef.current = window.setTimeout(() => {
-        setCopied(false);
-        resetCopiedTimerRef.current = null;
-      }, 2000);
-    } catch (err) {
-      console.error('Copy diagnostics failed:', err);
+    const token = ++copyTokenRef.current;
+    const targetIdentity = copyIdentity;
+    const ok = await copyTextToClipboard(visibleSummary.copyText, {
+      shouldFallback: () => mountedRef.current && copyTokenRef.current === token,
+    });
+    if (!mountedRef.current || copyTokenRef.current !== token) {
+      return;
     }
+    setCopyState({ key: targetIdentity, status: ok ? 'copied' : 'failed' });
+    if (!ok) {
+      console.error('Copy diagnostics failed: clipboard unavailable');
+    }
+    if (resetCopiedTimerRef.current !== null) {
+      window.clearTimeout(resetCopiedTimerRef.current);
+    }
+    resetCopiedTimerRef.current = window.setTimeout(() => {
+      resetCopiedTimerRef.current = null;
+      if (!mountedRef.current || copyTokenRef.current !== token) {
+        return;
+      }
+      setCopyState({ key: targetIdentity, status: 'idle' });
+    }, 2000);
   };
+  const copyStatus = copyState.key === copyIdentity ? copyState.status : 'idle';
+  const copyButtonLabel =
+    copyStatus === 'copied'
+      ? text.copied
+      : copyStatus === 'failed'
+        ? text.copyFailed
+        : text.copy;
 
   return (
     <Card variant="bordered" padding="none" className="home-panel-card text-left">
@@ -376,11 +422,17 @@ export const ReportDiagnostics: React.FC<ReportDiagnosticsProps> = ({
                 size="xsm"
                 disabled={!hasCopyText}
                 onClick={() => void copyDiagnostics()}
-                aria-label={copied ? text.copied : text.copy}
-                className="shrink-0"
+                aria-label={copyButtonLabel}
+                className={`shrink-0 ${copyStatus === 'failed' ? 'text-danger' : ''}`}
               >
-                {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-                {copied ? text.copied : text.copy}
+                {copyStatus === 'copied' ? (
+                  <Check className="h-3.5 w-3.5" aria-hidden="true" />
+                ) : copyStatus === 'failed' ? (
+                  <TriangleAlert className="h-3.5 w-3.5" aria-hidden="true" />
+                ) : (
+                  <Copy className="h-3.5 w-3.5" aria-hidden="true" />
+                )}
+                {copyButtonLabel}
               </Button>
             </div>
           </div>
