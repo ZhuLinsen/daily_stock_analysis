@@ -1,5 +1,6 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { analysisApi } from '../analysis';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { DuplicateTaskError, analysisApi } from '../analysis';
+import { UI_LANGUAGE_STORAGE_KEY } from '../../utils/uiLanguage';
 
 const post = vi.hoisted(() => vi.fn());
 
@@ -54,5 +55,21 @@ describe('analysisApi.triggerMarketReview', () => {
       },
       expect.any(Object),
     );
+  });
+
+  afterEach(() => {
+    window.localStorage.removeItem(UI_LANGUAGE_STORAGE_KEY);
+    document.documentElement.lang = '';
+  });
+
+  it('localizes 409 market review conflict and DuplicateTaskError messages in English', async () => {
+    window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'en');
+    post.mockResolvedValueOnce({ status: 409, data: {} });
+
+    await expect(analysisApi.triggerMarketReview({ sendNotification: false }))
+      .rejects.toThrow('Market review is already running; please try again later');
+
+    const duplicate = new DuplicateTaskError('AAPL', 'task-9');
+    expect(duplicate.message).toBe('Stock AAPL is already being analyzed');
   });
 });

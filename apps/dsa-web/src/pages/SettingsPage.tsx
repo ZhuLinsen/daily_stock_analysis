@@ -5,7 +5,13 @@ import { useBlocker, useLocation } from 'react-router-dom';
 import type { Location } from 'react-router-dom';
 import { useAuth, useDesktopUpdate, useSystemConfig } from '../hooks';
 import { useUiLanguage } from '../contexts/UiLanguageContext';
-import { createParsedApiError, getParsedApiError, type ParsedApiError } from '../api/error';
+import { UI_TEXT } from '../i18n/uiText';
+import {
+  createLocalizedParsedApiError,
+  createParsedApiError,
+  getParsedApiError,
+  type ParsedApiError,
+} from '../api/error';
 import { analysisApi } from '../api/analysis';
 import { screeningApi, notifyScreeningConfigChanged, notifySystemConfigChanged } from '../api/screening';
 import { systemConfigApi } from '../api/systemConfig';
@@ -25,7 +31,7 @@ import {
   SettingsPanelErrorBoundary,
   SettingsSectionCard,
 } from '../components/settings';
-import { WEB_BUILD_INFO } from '../utils/constants';
+import { formatWebBuildTime, WEB_BUILD_INFO } from '../utils/constants';
 import { parseStockListValue } from '../utils/stockList';
 import { getCategoryDescription, getCategoryTitle, getFieldDescriptionZh, getFieldTitleZh } from '../utils/systemConfigI18n';
 import { getSettingsHelpContent } from '../locales/settingsHelp';
@@ -1156,12 +1162,12 @@ const SettingsPage: React.FC = () => {
       clearAllDrafts();
       const reloaded = await load();
       if (!reloaded) {
-        setEnvBackupActionError(createParsedApiError({
-          title: t('settings.envImportedRefreshFailedTitle'),
-          message: t('settings.envImportedRefreshFailedMessage'),
-          rawMessage: t('settings.envImportedRefreshFailedRaw'),
+        setEnvBackupActionError(createLocalizedParsedApiError((lang) => createParsedApiError({
+          title: UI_TEXT[lang]['settings.envImportedRefreshFailedTitle'],
+          message: UI_TEXT[lang]['settings.envImportedRefreshFailedMessage'],
+          rawMessage: UI_TEXT[lang]['settings.envImportedRefreshFailedRaw'],
           category: 'http_error',
-        }));
+        })));
         return;
       }
       if (importResult.updatedKeys.some((key) => SCHEDULER_SETTING_KEYS.has(key))) {
@@ -1268,22 +1274,22 @@ const SettingsPage: React.FC = () => {
     setSetupSmokeSuccess('');
 
     if (!setupStatus?.readyForSmoke) {
-      setSetupSmokeError(createParsedApiError({
-        title: t('settings.setupGuideSmokeUnavailableTitle'),
-        message: t('settings.setupGuideSmokeNotReady'),
-        rawMessage: t('settings.setupGuideSmokeNotReady'),
+      setSetupSmokeError(createLocalizedParsedApiError((lang) => createParsedApiError({
+        title: UI_TEXT[lang]['settings.setupGuideSmokeUnavailableTitle'],
+        message: UI_TEXT[lang]['settings.setupGuideSmokeNotReady'],
+        rawMessage: UI_TEXT[lang]['settings.setupGuideSmokeNotReady'],
         category: 'missing_params',
-      }));
+      })));
       return;
     }
 
     if (!firstSetupStockCode) {
-      setSetupSmokeError(createParsedApiError({
-        title: t('settings.setupGuideSmokeUnavailableTitle'),
-        message: t('settings.setupGuideSmokeNeedsStock'),
-        rawMessage: t('settings.setupGuideSmokeNeedsStock'),
+      setSetupSmokeError(createLocalizedParsedApiError((lang) => createParsedApiError({
+        title: UI_TEXT[lang]['settings.setupGuideSmokeUnavailableTitle'],
+        message: UI_TEXT[lang]['settings.setupGuideSmokeNeedsStock'],
+        rawMessage: UI_TEXT[lang]['settings.setupGuideSmokeNeedsStock'],
         category: 'missing_params',
-      }));
+      })));
       return;
     }
 
@@ -1682,7 +1688,7 @@ const SettingsPage: React.FC = () => {
                       {t('settings.versionBuildTime')}
                     </p>
                     <p className="mt-2 break-all font-mono text-sm text-foreground">
-                      {WEB_BUILD_INFO.buildTime}
+                      {formatWebBuildTime(WEB_BUILD_INFO.buildTime, uiLanguage)}
                     </p>
                   </div>
                   {shouldShowDesktopVersionCard ? (

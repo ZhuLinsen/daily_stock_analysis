@@ -1,0 +1,47 @@
+---
+title: "WebUI Workspace & Agent Strategy Q&A"
+description: "Explore the DSA React Web workspace, decision signal pool, Agent strategy Q&A, stock screening, backtesting, portfolio risk, and real-time alerts."
+---
+
+DSA ships a FastAPI + React visual workspace (also bundled inside the Electron desktop app) that unifies daily analysis, interactive strategy Q&A, historical review, and system settings.
+
+## Launching the Web Workspace
+
+```bash
+# Run one analysis batch and keep the Web service running
+python main.py --serve
+
+# Start the Web service and background queue without running immediate startup analysis (still restores saved schedules when SCHEDULE_ENABLED=true; default http://127.0.0.1:8000)
+python main.py --serve-only
+```
+
+:::note[Source-Checkout Frontend Prerequisite]
+Docker images and Desktop releases bundle prebuilt `static/` assets. When running `python main.py --serve` or `--serve-only` from a source checkout, DSA auto-builds `apps/dsa-web` into `static/` on first launch if **Node.js `>=20.19.0 <27`** and **npm `>=10`** are installed (or reuses prebuilt `static/` assets); otherwise FastAPI starts but `/` renders a `Frontend Not Built` page.
+:::
+
+## Core Workspace Routes
+
+| Route | Module | Purpose |
+| --- | --- | --- |
+| `/` | **Analysis Home** | Submit single or batch tasks, track real-time progress, inspect decision dashboards and 60-day sniper price charts |
+| `/chat` | **Agent Strategy Q&A** | Multi-turn research conversations on any ticker using 15 built-in strategies or custom YAML skills |
+| `/decision-signals` | **Decision Signal Pool** | Review structured AI signals, filter Buy/Watch/Risk calls, and inspect calibration outcomes |
+| `/screening` | **Stock Screening** | Market-wide multi-factor and theme scans producing explainable candidate shortlists |
+| `/portfolio` | **Portfolio & Risk** | Track multi-account positions, market/currency exposure, and valuation risk flags |
+| `/backtest` | **Backtesting** | Evaluate historical report directional accuracy and simulated returns over T+N horizons |
+| `/alerts` | **Real-Time Alerts** | Configure price breakout, MA cross, and MACD/RSI threshold alert rules |
+| `/settings` | **Visual Settings** | Edit `.env` configuration online with unsaved draft guards and single-channel notification testing |
+
+## Agent Strategy Q&A Capabilities
+
+After configuring a **model route with Agent tool-calling support** (`LITELLM_CONFIG`, `LLM_CHANNELS` paired with `AGENT_LITELLM_MODEL` / `LITELLM_MODEL`, or legacy `GEMINI_API_KEY` / `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `DEEPSEEK_API_KEY`), `/chat` is enabled automatically (set `AGENT_MODE=false` to disable it explicitly):
+
+- Includes **15 built-in strategies** covering MA golden cross, Chan Theory, Elliott Wave, bull trend, hot themes, event-driven catalysts, growth quality, expectation re-rating, and more;
+- Dynamically fetches live quotes, K-line technicals, financial news, and risk context during conversation turns;
+- Supports exporting sessions to Markdown, pushing summaries to notification channels, background streaming, and multi-agent bull/bear debate + mandatory risk review when `AGENT_ARCH=multi` and `AGENT_DEBATE_ENABLED=true` (default `AGENT_ARCH=single` runs single-agent chat without multi-agent debate or risk review; debate triggers when upstream strategy opinions disagree or a buy/strong-buy opinion reaches 0.75 confidence).
+
+:::note[Limitations When Using Only the Local Hermes Channel]
+If the environment configures only the reserved local generation channel `LLM_CHANNELS=hermes` (Hermes HTTP Generation), standard stock analysis works normally, while Agent `/chat` does not fall back to legacy models and reports the Agent backend as unavailable (returning HTTP `400`). Configure an Agent-capable tool-calling route in Settings to enable strategy Q&A. See [LLM Configuration Guide](/en/docs/configuration/llm-guide/) for details.
+:::
+
+See [15 Built-In Agent Strategies & Custom Skills](/en/docs/features/strategies/) for authoring custom YAML strategies.

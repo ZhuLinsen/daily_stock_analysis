@@ -563,7 +563,9 @@ def get_stock_history(
             stock_code=stock_code,
             stock_name=result.get("stock_name"),
             period=period,
-            data=data
+            data=data,
+            price_adjustment=result.get("price_adjustment"),
+            ohlc_synthesized=result.get("ohlc_synthesized"),
         )
     
     except ValueError as e:

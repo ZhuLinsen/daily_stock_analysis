@@ -295,4 +295,35 @@ describe('ReportStrategy Levels Chart', () => {
     await waitFor(() => expect(mockGetStockHistory).toHaveBeenCalledTimes(2));
     expect(await screen.findByText('1505.00')).toBeInTheDocument();
   });
+
+  it('forwards priceAdjustment and ohlcSynthesized metadata to ReportPriceLevelsChart', async () => {
+    const splitBars = Array.from({ length: 15 }, (_, i) => ({
+      date: `2026-10-${String(i + 1).padStart(2, '0')}`,
+      open: 0,
+      high: 0,
+      low: 0,
+      close: i === 14 ? 50 : 100,
+    }));
+    mockGetStockHistory.mockResolvedValueOnce({
+      stockCode: 'AAPL',
+      period: 'daily',
+      priceAdjustment: 'unadjusted',
+      ohlcSynthesized: true,
+      data: splitBars,
+    });
+
+    render(
+      <ReportStrategy
+        recordId={99}
+        stockCode="AAPL"
+        language="zh"
+        strategy={{ idealBuy: '48', stopLoss: '45', takeProfit: '60' }}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '价格点位图' }));
+    expect(await screen.findByText(/未复权历史行情/)).toBeInTheDocument();
+    expect(screen.queryByText(/年化波动:/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/回撤:/)).not.toBeInTheDocument();
+  });
 });

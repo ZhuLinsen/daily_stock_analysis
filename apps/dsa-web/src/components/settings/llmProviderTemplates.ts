@@ -1,3 +1,5 @@
+import type { UiLanguage } from '../../i18n/uiText';
+
 export type ChannelProtocol = 'openai' | 'deepseek' | 'gemini' | 'anthropic' | 'vertex_ai' | 'ollama';
 export type LLMProviderCapability =
   | 'openai-compatible'
@@ -104,8 +106,10 @@ export const LLM_PROVIDER_TEMPLATES: LLMProviderTemplate[] = [
     label: 'DeepSeek 官方',
     protocol: 'deepseek',
     baseUrl: 'https://api.deepseek.com',
-    placeholderModels: 'deepseek-v4-flash,deepseek-v4-pro',
+    placeholderModels: 'deepseek-flash,deepseek-v4-pro',
     capabilities: ['official-api', 'openai-compatible'],
+    configHint:
+      '推荐使用官方当前模型名 deepseek-flash（也可搭配 deepseek-v4-pro）；旧名 deepseek-v4-flash 已退役，仅作为兼容别名临时转发。',
     officialSources: [{ label: 'DeepSeek API Docs', url: 'https://api-docs.deepseek.com/' }],
   },
   {
@@ -289,9 +293,146 @@ export function isKnownProviderTemplate(channelId: string): boolean {
 
 export const MODEL_PLACEHOLDERS_BY_PROTOCOL: Record<ChannelProtocol, string> = {
   openai: 'gpt-6.1-sol,qwen3.6-plus',
-  deepseek: 'deepseek-v4-flash,deepseek-v4-pro',
+  deepseek: 'deepseek-flash,deepseek-v4-pro',
   gemini: 'gemini-3.6-flash,gemini-3.5-flash-lite',
   anthropic: 'claude-sonnet-4-6,claude-opus-4-7',
   vertex_ai: 'gemini-3.6-flash',
   ollama: 'llama3.2,qwen2.5',
 };
+
+const EN_CAPABILITY_LABELS: Record<LLMProviderCapability, { label: string; hint: string }> = {
+  'openai-compatible': {
+    label: 'OpenAI Compatible',
+    hint: 'Configure Base URL as an OpenAI-compatible endpoint without appending /chat/completions.',
+  },
+  aggregator: {
+    label: 'Aggregator',
+    hint: 'Model availability, routing, and pricing may vary by account permissions and platform policy.',
+  },
+  'official-api': {
+    label: 'Official API',
+    hint: 'Uses the provider official protocol or official compatible endpoint.',
+  },
+  'model-discovery': {
+    label: 'Model Discovery',
+    hint: 'Supports querying /models to fetch available models; actual results still depend on account permissions and API Key.',
+  },
+  vision: {
+    label: 'Vision Hint',
+    hint: 'Template indicates this provider is commonly used for Vision workflows; actual model capabilities depend on your account and model list.',
+  },
+  'local-runtime': {
+    label: 'Local Runtime',
+    hint: 'Requires the current runtime environment to reach the local service endpoint.',
+  },
+};
+
+const EN_TEMPLATE_LABELS: Record<string, string> = {
+  modelflare: 'Modelflare (Aggregator)',
+  x6ai: 'x6.ai (Aggregator)',
+  deepseek: 'DeepSeek Official',
+  dashscope: 'Qwen (DashScope)',
+  zhipu: 'Zhipu GLM',
+  moonshot: 'Moonshot (Kimi)',
+  minimax: 'MiniMax Official',
+  volcengine: 'Volcengine Ark (Doubao)',
+  siliconflow: 'SiliconFlow',
+  openrouter: 'OpenRouter',
+  requesty: 'Requesty',
+  gemini: 'Gemini Official',
+  anthropic: 'Anthropic Official',
+  openai: 'OpenAI Official',
+  ollama: 'Ollama (Local)',
+  aihubmix: 'AIHubmix (Aggregator)',
+  anspire: 'Anspire Open',
+  custom: 'Custom Channel',
+};
+
+const EN_TEMPLATE_CONFIG_HINTS: Record<string, string> = {
+  modelflare:
+    'The API Key routing group must support your selected models; verify exact model IDs in the Modelflare console or via Fetch Models. Leaving Base URL blank defaults to /v1 and can be overridden without appending /chat/completions.',
+  x6ai: 'Use "Fetch Models" to query model IDs available to your account, then select models and test the connection; refer to the x6.ai console for actual capabilities and pricing.',
+  deepseek:
+    'Recommended current Flash model ID is deepseek-flash (optionally alongside deepseek-v4-pro); legacy deepseek-v4-flash is retired and only accepted temporarily for compatibility.',
+  volcengine: 'Ensure the online inference endpoint/region is not mixed up with dedicated Coding Plan endpoints.',
+  siliconflow: 'Model list and model visibility depend on account permissions and your API Key.',
+  openrouter: 'Model list and model visibility depend on account permissions and your API Key.',
+  requesty: 'Model list and model visibility depend on account permissions and your API Key; for the EU region, set Base URL to https://router.eu.requesty.ai/v1.',
+  ollama: 'Requires the local machine, Docker container, or self-hosted runner to reach the Ollama service.',
+  anspire:
+    'The same ANSPIRE_API_KEYS can be reused for both search and LLM channels. These models and gateway are configuration examples; verify availability against your account permissions and console, and click "Test Connection" first.',
+};
+
+const EN_TEMPLATE_REGISTRATION_LABELS: Record<string, string> = {
+  modelflare: 'Sign up for Modelflare',
+  x6ai: 'Sign up for x6.ai',
+};
+
+const EN_OFFICIAL_SOURCE_LABELS: Record<string, string> = {
+  'Modelflare 专属注册': 'Modelflare Exclusive Sign-up',
+  'x6.ai 专属注册': 'x6.ai Exclusive Sign-up',
+  'x6.ai API 文档': 'x6.ai API Docs',
+  'x6.ai 模型列表': 'x6.ai Model List',
+};
+
+export function getProviderCapabilityMeta(
+  capability: LLMProviderCapability,
+  language: UiLanguage,
+): { label: string; hint: string } {
+  if (language === 'en') {
+    return EN_CAPABILITY_LABELS[capability] ?? LLM_PROVIDER_CAPABILITY_LABELS[capability];
+  }
+  return LLM_PROVIDER_CAPABILITY_LABELS[capability];
+}
+
+export function getProviderTemplateLabel(
+  template: LLMProviderTemplate,
+  language: UiLanguage,
+): string {
+  if (language === 'en') {
+    return EN_TEMPLATE_LABELS[template.channelId] ?? template.label;
+  }
+  return template.label;
+}
+
+export function getProviderTemplateConfigHint(
+  template: LLMProviderTemplate,
+  language: UiLanguage,
+): string | undefined {
+  if (!template.configHint) {
+    return undefined;
+  }
+  if (language === 'en') {
+    return EN_TEMPLATE_CONFIG_HINTS[template.channelId] ?? template.configHint;
+  }
+  return template.configHint;
+}
+
+export function getProviderTemplateRegistration(
+  template: LLMProviderTemplate,
+  language: UiLanguage,
+): { label: string; url: string } | undefined {
+  if (!template.registration) {
+    return undefined;
+  }
+  if (language === 'en') {
+    return {
+      ...template.registration,
+      label: EN_TEMPLATE_REGISTRATION_LABELS[template.channelId] ?? template.registration.label,
+    };
+  }
+  return template.registration;
+}
+
+export function getProviderTemplateOfficialSources(
+  template: LLMProviderTemplate,
+  language: UiLanguage,
+): Array<{ label: string; url: string }> {
+  if (language === 'en') {
+    return template.officialSources.map((source) => ({
+      ...source,
+      label: EN_OFFICIAL_SOURCE_LABELS[source.label] ?? source.label,
+    }));
+  }
+  return template.officialSources;
+}
