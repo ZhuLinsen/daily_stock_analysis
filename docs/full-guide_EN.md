@@ -63,7 +63,7 @@ Go to your forked repo → `Settings` → `Secrets and variables` → `Actions` 
 | `ANTHROPIC_API_KEY` | Anthropic Claude API Key | Optional |
 | `OPENAI_API_KEY` | OpenAI-compatible API Key (supports DeepSeek, Qwen, etc.) | Optional |
 | `OPENAI_BASE_URL` | OpenAI-compatible API endpoint (e.g., `https://api.deepseek.com`) | Optional |
-| `OPENAI_MODEL` | Model name (e.g., `deepseek-v4-flash`) | Optional |
+| `OPENAI_MODEL` | Model name (e.g., `deepseek-flash`) | Optional |
 | `AIHUBMIX_KEY` | [AIHubMix](https://inferera.com/?aff=CfMq) API key (auto-sets Base URL) | Optional |
 | `ANSPIRE_API_KEYS` | [Anspire](https://open.anspire.cn/dsa?share_code=QFBC0FYC) API key (optional; shared by LLM and search; availability depends on account permissions) | Optional |
 
@@ -1366,7 +1366,7 @@ GEMINI_MODEL=gemini-3.6-flash
 # OpenAI compatible (backup)
 OPENAI_API_KEY=xxx
 OPENAI_BASE_URL=https://api.deepseek.com
-OPENAI_MODEL=deepseek-v4-flash
+OPENAI_MODEL=deepseek-flash
 # DeepSeek announced the shutdown of deepseek-chat / deepseek-reasoner on 2026/07/24; please migrate
 ```
 
@@ -1592,7 +1592,7 @@ FastAPI provides RESTful API service for configuration management and triggering
 - **Market review history dedicated entry** - Market review history is shown in a dedicated history entry and isolated from regular stock history; use `stock_code=MARKET` and `report_type=market_review` to view and replay only market-review records.
 - **Market review history replay** - Market review results are persisted with `report_type=market_review` and can be reopened from history list/detail or Markdown endpoints directly, without re-triggering a fresh analysis run.
 - **Reading report tables** - In the full stock report and market review, long text wraps within Markdown table cells. Scroll wide tables horizontally to see the remaining columns.
-- **Levels Chart** - Open a saved stock report in Web or Desktop and click **Levels Chart** in the **Action Levels** card to request daily price history. The chart shows closing prices for up to the latest 60 trading sessions with MA5, MA20, and any usable ideal entry, secondary entry, stop-loss, and take-profit levels. If the saved report price and current history show a clear price-scale mismatch, the chart keeps the price series but hides reference lines and explains why, avoiding overlays between adjusted history and older report levels. Select **Retry** when history is unavailable or the request fails. The feature requires no configuration.
+- **Levels Chart** - Open a saved stock report in Web or Desktop and click **Levels Chart** in the **Action Levels** card to fetch daily price history on demand. It defaults to `60D` (switchable across `20D`, `40D`, `60D`, and `All`, where `All` includes every session returned by the current daily-history response), plotting close prices with MA5, MA20, optional main overlays (MA60, BOLL, off by default), default-off sub-panels (`RSI(14)`, `MACD`, `KDJ`), quantitative telemetry badges (R:R, RSI, BOLL bandwidth/squeeze, MACD, MA20 bias, annualized volatility, max drawdown, ATR%), and usable ideal entry, secondary entry, stop-loss, and take-profit levels. If the saved report price and current history show a clear price-scale mismatch, the chart keeps the price series but hides reference lines and explains why, avoiding overlays between adjusted history and older report levels; missing open/high/low values, close-synthesized fallback OHLC (`ohlc_synthesized=true`), or unadjusted history (`price_adjustment=unadjusted`) automatically omit unavailable Tooltip/KDJ/ATR readings or pause cross-session return/volatility/indicator calculations with a status notice. Select **Retry** when history is unavailable or the request fails. The feature requires no configuration.
 - **Market-position card** - A-share stock reports show a market theme layer and a stock position layer, separating market themes, primary theme, theme phase, stock role, and missing evidence.
 - **Input data-block visibility** - Regular analysis reports expose a low-sensitivity `AnalysisContextPack` overview through history details, sync responses, and completed task status; the Web report page shows the data-block summary collapsed after Strategy and News, with block status, source, missing reasons, and fallback summaries available on expansion.
 - **Ask-stock discussion object** - The server saves an accepted explicit code or a unique indexed name. Follow-ups, reloads, reopening and session switches restore server state. Explicit switches change the main object; comparisons only expand the current turn's scope, and an initial comparison does not select a main object. A report link is a hint, not confirmation. Execution failure or stopping does not undo accepted state.

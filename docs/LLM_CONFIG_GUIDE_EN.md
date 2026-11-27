@@ -1,6 +1,6 @@
 # LLM Configuration Guide
 
-> **Platform boundary (2026-11-08):** Gemini API and Vertex AI have different model lifecycles. The Vertex AI `gemini-3.6-flash` placeholder is an input example; [Google Cloud documents](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/gemini/3-6-flash) retirement on 2026-11-19 for that platform. Confirm model availability for your project and region; Gemini API validation does not validate Vertex AI. A DeepSeek key alone infers `deepseek/deepseek-v4-flash`; explicit models and higher-priority configuration still take precedence.
+> **Platform boundary (2026-11-08):** Gemini API and Vertex AI have different model lifecycles. The Vertex AI `gemini-3.6-flash` placeholder is an input example; [Google Cloud documents](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/gemini/3-6-flash) retirement on 2026-11-19 for that platform. Confirm model availability for your project and region; Gemini API validation does not validate Vertex AI. A DeepSeek key alone infers `deepseek/deepseek-flash` (legacy alias `deepseek-v4-flash` remains accepted temporarily for compatibility); explicit models and higher-priority configuration still take precedence.
 
 Welcome! Whether you are a beginner newly exposed to AI or a veteran skilled with various APIs, this guide will help you set up Large Language Models (LLMs) quickly.
 
@@ -119,8 +119,8 @@ LITELLM_MODEL=openai/deepseek-ai/DeepSeek-V3
 # Fill in the API Key requested from the official DeepSeek platform
 DEEPSEEK_API_KEY=sk-xxxxxxxxxxxxxxxx
 ```
-*With only this line, the system defaults to `deepseek/deepseek-v4-flash`.*
-DeepSeek announced the shutdown of `deepseek-chat` / `deepseek-reasoner` on 2026/07/24; please migrate old configs. New configs should migrate through the Web quick channel or explicitly set `LITELLM_MODEL=deepseek/deepseek-v4-flash` for `deepseek-v4-flash` / `deepseek-v4-pro`.
+*With only this line, the system defaults to `deepseek/deepseek-flash` (legacy alias `deepseek/deepseek-v4-flash` remains accepted temporarily for compatibility).*
+DeepSeek announced the shutdown of `deepseek-chat` / `deepseek-reasoner` on 2026/07/24; please migrate old configs. New configs should migrate through the Web quick channel or explicitly set `LITELLM_MODEL=deepseek/deepseek-flash` for `deepseek-flash` / `deepseek-v4-pro`.
 
 ### Example 3: Using the Free Gemini API
 ```env
@@ -262,7 +262,7 @@ LLM_CHANNELS=deepseek,aihubmix
 # 2. Channel 1: Configure Official DeepSeek
 LLM_DEEPSEEK_BASE_URL=https://api.deepseek.com
 LLM_DEEPSEEK_API_KEY=sk-1111111111111
-LLM_DEEPSEEK_MODELS=deepseek-v4-flash,deepseek-v4-pro
+LLM_DEEPSEEK_MODELS=deepseek-flash,deepseek-v4-pro
 
 # 3. Channel 2: Configure a common relay/proxy API
 LLM_AIHUBMIX_BASE_URL=https://api.aihubmix.com/v1
@@ -271,7 +271,7 @@ LLM_AIHUBMIX_MODELS=gpt-6.1-sol,claude-sonnet-4-6
 
 # 4. [Key Step] Specify the primary model and fallback list
 # Set your primary model:
-LITELLM_MODEL=deepseek/deepseek-v4-flash
+LITELLM_MODEL=deepseek/deepseek-flash
 # Optional: set an Agent-only primary model (empty = inherit the primary model)
 AGENT_LITELLM_MODEL=deepseek/deepseek-v4-pro
 # If the primary model crashes, try these fallbacks sequentially:
@@ -376,7 +376,7 @@ Example `litellm_config.yaml`:
 model_list:
   - model_name: my-smart-model
     litellm_params:
-      model: deepseek/deepseek-v4-flash
+      model: deepseek/deepseek-flash
       api_base: https://api.deepseek.com
       api_key: "os.environ/MY_CUSTOM_SECRET_KEY"  # Fetch from environment vars for security
 

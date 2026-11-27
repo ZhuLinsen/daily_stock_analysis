@@ -2,12 +2,14 @@ import { create } from 'zustand';
 import { agentApi, decodeChatState, isAbortError } from '../api/agent';
 import type { ActiveStockContext, ChatSessionItem, ChatStateFields, ChatStreamRequest, DecodedChatState } from '../api/agent';
 import {
+  createLocalizedParsedApiError,
   createParsedApiError,
   getParsedApiError,
   isApiRequestError,
   isParsedApiError,
   type ParsedApiError,
 } from '../api/error';
+import { resolveActiveUiLanguage } from '../utils/format';
 import { generateUUID } from '../utils/uuid';
 
 const STORAGE_KEY_SESSION = 'dsa_chat_session_id';
@@ -90,22 +92,32 @@ function getFirstMeaningfulStreamError(...candidates: Array<unknown>): unknown {
   return undefined;
 }
 
+type LocalizedFallback = {
+  zh: string;
+  en: string;
+};
+
 function getStreamFailureError(
   event: StreamFailureEvent,
-  fallbackMessage: string,
+  fallbackMessage: LocalizedFallback,
 ): ParsedApiError {
   if (event.error_code === 'session_state_conflict') {
     return getParsedApiError({ code: event.error_code, message: event.message });
   }
-  const parsed = getParsedApiError(
-    getFirstMeaningfulStreamError(
-      event.error,
-      event.message,
-      event.content,
-      fallbackMessage,
-    ),
+  const meaningful = getFirstMeaningfulStreamError(
+    event.error,
+    event.message,
+    event.content,
   );
-  return event.error_code ? { ...parsed, code: event.error_code } : parsed;
+  return createLocalizedParsedApiError((language) => {
+    const parsed = getParsedApiError(
+      meaningful !== undefined
+        ? meaningful
+        : (language === 'en' ? fallbackMessage.en : fallbackMessage.zh),
+      language,
+    );
+    return event.error_code ? { ...parsed, code: event.error_code } : parsed;
+  });
 }
 
 interface AgentChatState {
@@ -330,6 +342,8 @@ export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set,
       terminalStatus: null,
     });
 
+    const isCurrentlyEnglish = () => resolveActiveUiLanguage() === 'en';
+    const startIsEnglish = isCurrentlyEnglish();
     const streamSessionId = payload.session_id || storeSessionId;
     const ownsStream = () => {
       const state = get();
@@ -339,8 +353,8 @@ export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set,
     };
     const skillNames = meta?.skillNames?.length
       ? meta.skillNames
-      : [meta?.skillName ?? '通用'];
-    const skillName = skillNames.join('、');
+      : [meta?.skillName ?? (startIsEnglish ? 'General' : '通用')];
+    const skillName = skillNames.join(startIsEnglish ? ', ' : '、');
 
     const userMessage: Message = {
       id: Date.now().toString(),
@@ -372,11 +386,16 @@ export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set,
       let receivedDoneEvent = false;
       let acceptedEvent: StreamAcceptedEvent | null = null;
       const currentProgressSteps: ProgressStep[] = [];
-      const protocolError = (message: string) => createParsedApiError({
-        title: '请求未被接受',
-        message: 'Agent 没有确认接收本次问题，请保留当前内容后重试。',
-        rawMessage: message,
-        category: 'upstream_network',
+      const protocolError = (message: string) => createLocalizedParsedApiError((language) => {
+        const currentIsEnglish = language === 'en';
+        return createParsedApiError({
+          title: currentIsEnglish ? 'Request not accepted' : '请求未被接受',
+          message: currentIsEnglish
+            ? 'The Agent did not acknowledge this message. Keep your input and try again.'
+            : 'Agent 没有确认接收本次问题，请保留当前内容后重试。',
+          rawMessage: message,
+          category: 'upstream_network',
+        });
       });
       const processLine = (line: string) => {
         if (!line.startsWith('data: ') || !ownsStream() || ac.signal.aborted) return;
@@ -429,7 +448,7 @@ export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set,
           const failureEvent = event as unknown as StreamFailureEvent;
           throw getStreamFailureError(
             failureEvent,
-            '分析出错',
+            { zh: '分析出错', en: 'Analysis error' },
           );
         }
         if (!acceptedEvent) {
@@ -445,7 +464,10 @@ export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set,
           if (doneEvent.success === false) {
             throw getStreamFailureError(
               doneEvent,
-              '大模型调用出错，请检查 API Key 配置',
+              {
+                zh: '大模型调用出错，请检查 API Key 配置',
+                en: 'LLM call failed; please check your API Key configuration',
+              },
             );
           }
           finalContent = doneEvent.content ?? '';
@@ -489,11 +511,16 @@ export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set,
       }
 
       if (!receivedDoneEvent && !ac.signal.aborted) {
-        throw createParsedApiError({
-          title: '回复未完整返回',
-          message: 'Agent 流式响应在完成前中断，请重试。',
-          rawMessage: 'Agent stream ended before a done event was received.',
-          category: 'upstream_network',
+        throw createLocalizedParsedApiError((language) => {
+          const currentIsEnglish = language === 'en';
+          return createParsedApiError({
+            title: currentIsEnglish ? 'Incomplete response' : '回复未完整返回',
+            message: currentIsEnglish
+              ? 'The Agent stream was interrupted before completion. Please try again.'
+              : 'Agent 流式响应在完成前中断，请重试。',
+            rawMessage: 'Agent stream ended before a done event was received.',
+            category: 'upstream_network',
+          });
         });
       }
 
@@ -507,7 +534,7 @@ export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set,
             {
               id: (Date.now() + 1).toString(),
               role: 'assistant',
-              content: finalContent || '（无内容）',
+              content: finalContent || (isCurrentlyEnglish() ? '(No content)' : '（无内容）'),
               skills: payload.skills,
               skill: payload.skills?.[0],
               skillNames,

@@ -1,14 +1,20 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { systemConfigApi } from '../systemConfig';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  SystemConfigConflictError,
+  SystemConfigValidationError,
+  systemConfigApi,
+} from '../systemConfig';
+import { UI_LANGUAGE_STORAGE_KEY } from '../../utils/uiLanguage';
 
 const get = vi.hoisted(() => vi.fn());
 const post = vi.hoisted(() => vi.fn());
+const put = vi.hoisted(() => vi.fn());
 
 vi.mock('../index', () => ({
   default: {
     get,
     post,
-    put: vi.fn(),
+    put,
   },
 }));
 
@@ -16,6 +22,9 @@ describe('systemConfigApi', () => {
   beforeEach(() => {
     get.mockReset();
     post.mockReset();
+    put.mockReset();
+    window.localStorage.removeItem(UI_LANGUAGE_STORAGE_KEY);
+    document.documentElement.lang = '';
     post.mockResolvedValue({
       data: {
         success: true,
@@ -363,5 +372,41 @@ describe('systemConfigApi', () => {
     });
     expect(result.errorCode).toBe('backend_removed');
     expect(result.message).toBe('Codex App Server has been removed');
+  });
+
+  afterEach(() => {
+    window.localStorage.removeItem(UI_LANGUAGE_STORAGE_KEY);
+    document.documentElement.lang = '';
+  });
+
+  it('localizes default notification test payloads and config error classes in English', async () => {
+    window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'en');
+
+    await systemConfigApi.testNotificationChannel({ channel: 'email' });
+    expect(post).toHaveBeenCalledWith(
+      '/api/v1/system/config/notification/test-channel',
+      expect.objectContaining({
+        title: 'DSA Notification Test',
+        content: 'This is a test notification message from DSA Web Settings.',
+      }),
+    );
+
+    const validationError = new SystemConfigValidationError('Invalid item', []);
+    expect(validationError.parsedError.title).toBe('Configuration validation failed');
+
+    const conflictError = new SystemConfigConflictError('Stale config version', 'v2');
+    expect(conflictError.parsedError.title).toBe('Configuration version conflict');
+
+    put.mockRejectedValueOnce({ response: { status: 400 } });
+    await expect(systemConfigApi.update({
+      configVersion: 'v1',
+      items: [],
+    })).rejects.toThrow('Request failed (HTTP 400).');
+
+    put.mockRejectedValueOnce({ response: { status: 409 } });
+    await expect(systemConfigApi.update({
+      configVersion: 'v1',
+      items: [],
+    })).rejects.toThrow('Request failed (HTTP 409).');
   });
 });

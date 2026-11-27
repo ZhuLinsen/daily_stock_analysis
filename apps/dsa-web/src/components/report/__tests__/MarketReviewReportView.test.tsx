@@ -511,4 +511,26 @@ describe('MarketReviewReportView enhanced structured fields (issue #1584)', () =
     expect(screen.getByText('Watch Fed minutes and Friday payrolls.')).toBeInTheDocument();
     expect(screen.getByText('Cross-Market Note')).toBeInTheDocument();
   });
+
+  it('localizes fallback section titles for headingless and intro-prefixed English markdown', () => {
+    const headingless = render(
+      <MarketReviewReportView
+        content={'# Market Review\n\nUS indices finished higher led by mega-cap tech.'}
+        reportLanguage="en"
+      />,
+    );
+    expect(headingless.getByText('Review Body')).toBeInTheDocument();
+    expect(headingless.queryByText('复盘正文')).not.toBeInTheDocument();
+    headingless.unmount();
+
+    const withIntro = render(
+      <MarketReviewReportView
+        content={'# Market Review\n\nBreadth stayed constructive.\n\n## Sector Rotation\n\nSemiconductors outperformed.'}
+        reportLanguage="en"
+      />,
+    );
+    expect(withIntro.getByText('Review Overview')).toBeInTheDocument();
+    expect(withIntro.getByText('Sector Rotation')).toBeInTheDocument();
+    expect(withIntro.queryByText('复盘概览')).not.toBeInTheDocument();
+  });
 });

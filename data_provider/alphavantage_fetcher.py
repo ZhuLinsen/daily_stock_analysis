@@ -111,6 +111,7 @@ class AlphaVantageFetcher(BaseFetcher):
 
         keep = ['code'] + STANDARD_COLUMNS
         df = df[[col for col in keep if col in df.columns]]
+        df.attrs['price_adjustment'] = 'unadjusted'
         return df
 
     def get_realtime_quote(self, stock_code: str) -> Optional[UnifiedRealtimeQuote]:

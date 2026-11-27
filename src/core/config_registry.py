@@ -304,7 +304,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     },
     "LITELLM_MODEL": {
         "title": "Primary Model",
-        "description": "Primary model in provider/model format (e.g. gemini/gemini-3.6-flash, deepseek/deepseek-v4-flash, anthropic/claude-sonnet-4-6). If empty, it is auto-inferred from available API keys or channel declarations.",
+        "description": "Primary model in provider/model format (e.g. gemini/gemini-3.6-flash, deepseek/deepseek-flash, anthropic/claude-sonnet-4-6). If empty, it is auto-inferred from available API keys or channel declarations.",
         "category": "ai_model",
         "data_type": "string",
         "ui_control": "text",
@@ -317,7 +317,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "display_order": 1,
         "help_key": "settings.ai_model.LITELLM_MODEL",
         "examples": [
-            "LITELLM_MODEL=deepseek/deepseek-v4-flash",
+            "LITELLM_MODEL=deepseek/deepseek-flash",
             "LITELLM_MODEL=gemini/gemini-3.6-flash",
             "LITELLM_MODEL=ollama/qwen3:8b",
         ],
@@ -463,7 +463,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
             "LLM_CHANNELS=deepseek,aihubmix",
             "LLM_DEEPSEEK_BASE_URL=https://api.deepseek.com",
             "LLM_DEEPSEEK_API_KEY=sk-xxxx",
-            "LLM_DEEPSEEK_MODELS=deepseek-v4-flash,deepseek-v4-pro",
+            "LLM_DEEPSEEK_MODELS=deepseek-flash,deepseek-v4-pro",
         ],
         "docs": [
             {
@@ -732,7 +732,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     # ------------------------------------------------------------------
     "DEEPSEEK_API_KEY": {
         "title": "DeepSeek API Key",
-        "description": "Official DeepSeek API key (from https://platform.deepseek.com). A key set alone auto-infers deepseek/deepseek-v4-flash unless a higher-priority model configuration is present. Also works in multi-channel mode.",
+        "description": "Official DeepSeek API key (from https://platform.deepseek.com). A key set alone auto-infers deepseek/deepseek-flash (legacy alias deepseek-v4-flash remains accepted for compatibility) unless a higher-priority model configuration is present. Also works in multi-channel mode.",
         "category": "ai_model",
         "data_type": "string",
         "ui_control": "password",
@@ -746,7 +746,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "help_key": "settings.ai_model.provider_keys",
         "examples": [
             "DEEPSEEK_API_KEY=sk-xxxx",
-            "LITELLM_MODEL=deepseek/deepseek-v4-flash",
+            "LITELLM_MODEL=deepseek/deepseek-flash",
         ],
         "docs": [
             {
@@ -4850,7 +4850,7 @@ _FIELD_HELP_METADATA: Dict[str, Dict[str, Any]] = {
         "help_key": "settings.ai_model.provider_keys",
         "examples": [
             "DEEPSEEK_API_KEYS=sk-xxxx,sk-yyyy",
-            "LITELLM_MODEL=deepseek/deepseek-v4-flash",
+            "LITELLM_MODEL=deepseek/deepseek-flash",
         ],
         "docs": _DOC_LLM_CONFIG,
         "warning_codes": ["secret_value", "comma_separated_keys"],

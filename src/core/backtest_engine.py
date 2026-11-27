@@ -8,7 +8,7 @@ objects that look like daily OHLC bars.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 import math
 import re
 from typing import Any, Dict, Iterable, List, Optional, Protocol, Sequence
@@ -454,6 +454,8 @@ class BacktestEngine:
 
         advice_breakdown = cls._compute_advice_breakdown(completed)
         diagnostics = cls._compute_diagnostics(results_list)
+        quant_metrics = cls._compute_quant_metrics(completed, eval_window_days=int(eval_window_days))
+        diagnostics["quant_metrics"] = quant_metrics
 
         return {
             "scope": scope,
@@ -479,6 +481,7 @@ class BacktestEngine:
             "avg_days_to_first_hit": avg_days_to_first_hit,
             "advice_breakdown": advice_breakdown,
             "diagnostics": diagnostics,
+            "quant_metrics": quant_metrics,
         }
 
     @staticmethod
@@ -836,4 +839,233 @@ class BacktestEngine:
         return {
             "eval_status": status_counts,
             "first_hit": first_hit_counts,
+        }
+
+    @staticmethod
+    def _quant_chronological_sort_key(item: tuple[int, BacktestResultLike]) -> tuple[date, int, str, int]:
+        idx, row = item
+        raw_date = getattr(row, "analysis_date", None)
+        if isinstance(raw_date, datetime):
+            sort_date = raw_date.date()
+        elif isinstance(raw_date, date):
+            sort_date = raw_date
+        else:
+            sort_date = date.min
+
+        raw_hist_id = getattr(row, "analysis_history_id", None)
+        sort_hist_id = int(raw_hist_id) if isinstance(raw_hist_id, int) else 0
+        sort_code = str(getattr(row, "code", None) or "")
+        return (sort_date, sort_hist_id, sort_code, idx)
+
+    @staticmethod
+    def _quant_streak_counts(returns: List[float]) -> tuple[int, int]:
+        max_wins = 0
+        max_losses = 0
+        cur_wins = 0
+        cur_losses = 0
+        for ret in returns:
+            if ret > 0:
+                cur_wins += 1
+                cur_losses = 0
+                if cur_wins > max_wins:
+                    max_wins = cur_wins
+            elif ret < 0:
+                cur_losses += 1
+                cur_wins = 0
+                if cur_losses > max_losses:
+                    max_losses = cur_losses
+            else:
+                cur_wins = 0
+                cur_losses = 0
+        return max_wins, max_losses
+
+    @classmethod
+    def _compute_quant_metrics(
+        cls,
+        completed: List[BacktestResultLike],
+        *,
+        eval_window_days: int,
+    ) -> Dict[str, Any]:
+        """Compute quantitative risk-adjusted metrics and equity curve from completed rows."""
+        ordered_rows = [
+            row
+            for _, row in sorted(enumerate(completed), key=cls._quant_chronological_sort_key)
+        ]
+
+        exit_reason_counts: Dict[str, int] = {}
+        active_trade_count = 0
+
+        ordered_returns: List[float] = []
+        log_equity = 0.0
+        peak_log_equity = 0.0
+        equity_zeroed = False
+        max_drawdown_pct = 0.0
+        first_valid_date: Optional[date] = None
+        last_valid_date: Optional[date] = None
+        equity_curve: List[Dict[str, Any]] = []
+
+        for row in ordered_rows:
+            reason = str(getattr(row, "simulated_exit_reason", None) or "").strip()
+            if reason:
+                exit_reason_counts[reason] = exit_reason_counts.get(reason, 0) + 1
+
+            trade_ret = cls._finite_optional_float(getattr(row, "simulated_return_pct", None))
+            if trade_ret is None:
+                continue
+
+            if (getattr(row, "position_recommendation", None) or "") == "long":
+                active_trade_count += 1
+
+            ordered_returns.append(trade_ret)
+            step_factor = max(0.0, 1.0 + trade_ret / 100.0)
+            if equity_zeroed or step_factor <= 0.0:
+                equity_zeroed = True
+                drawdown_pct = 100.0
+                equity_pct_val: Optional[float] = -100.0
+            else:
+                log_equity += math.log(step_factor)
+                if log_equity > peak_log_equity:
+                    peak_log_equity = log_equity
+                drawdown_pct = (1.0 - math.exp(log_equity - peak_log_equity)) * 100.0
+                if log_equity <= 700.0:
+                    raw_pct = math.expm1(log_equity) * 100.0
+                    equity_pct_val = round(raw_pct, 2) if math.isfinite(raw_pct) else None
+                else:
+                    equity_pct_val = None
+            if drawdown_pct > max_drawdown_pct:
+                max_drawdown_pct = drawdown_pct
+
+            raw_date = getattr(row, "analysis_date", None)
+            row_date: Optional[date] = None
+            if isinstance(raw_date, datetime):
+                row_date = raw_date.date()
+                date_label: Optional[str] = row_date.isoformat()
+            elif isinstance(raw_date, date):
+                row_date = raw_date
+                date_label = row_date.isoformat()
+            elif isinstance(raw_date, str) and raw_date.strip():
+                date_label = raw_date.strip()[:10]
+                try:
+                    row_date = date.fromisoformat(date_label)
+                except ValueError:
+                    row_date = None
+            else:
+                date_label = None
+
+            if row_date is not None:
+                if first_valid_date is None or row_date < first_valid_date:
+                    first_valid_date = row_date
+                if last_valid_date is None or row_date > last_valid_date:
+                    last_valid_date = row_date
+
+            equity_curve.append(
+                {
+                    "index": len(ordered_returns),
+                    "date": date_label,
+                    "code": getattr(row, "code", None),
+                    "return_pct": round(trade_ret, 2),
+                    "equity_pct": equity_pct_val,
+                    "outcome": getattr(row, "outcome", None),
+                }
+            )
+
+        sample_count = len(ordered_returns)
+        if sample_count == 0:
+            return {
+                "sample_count": 0,
+                "active_trade_count": 0,
+                "profit_factor": None,
+                "expectancy_pct": None,
+                "payoff_ratio": None,
+                "avg_win_pct": None,
+                "avg_loss_pct": None,
+                "cumulative_return_pct": None,
+                "max_drawdown_pct": None,
+                "sharpe_ratio": None,
+                "sortino_ratio": None,
+                "calmar_ratio": None,
+                "best_trade_pct": None,
+                "worst_trade_pct": None,
+                "max_consecutive_wins": 0,
+                "max_consecutive_losses": 0,
+                "exit_reason_breakdown": dict(sorted(exit_reason_counts.items())),
+                "equity_curve": [],
+            }
+
+        pos_wins = [r for r in ordered_returns if r > 0]
+        neg_losses = [r for r in ordered_returns if r < 0]
+        gross_profit = sum(pos_wins)
+        gross_loss = abs(sum(neg_losses))
+        profit_factor = round(gross_profit / gross_loss, 2) if gross_loss > 1e-9 else None
+        avg_win_pct = round(gross_profit / len(pos_wins), 2) if pos_wins else None
+        avg_loss_pct = round(sum(neg_losses) / len(neg_losses), 2) if neg_losses else None
+        payoff_ratio = (
+            round(avg_win_pct / abs(avg_loss_pct), 2)
+            if avg_win_pct is not None and avg_loss_pct is not None and abs(avg_loss_pct) > 1e-9
+            else None
+        )
+
+        mean_ret = sum(ordered_returns) / sample_count
+        expectancy_pct = round(mean_ret, 2)
+        if equity_zeroed:
+            cumulative_return_pct: Optional[float] = -100.0
+        elif log_equity <= 700.0:
+            raw_cum_pct = math.expm1(log_equity) * 100.0
+            cumulative_return_pct = round(raw_cum_pct, 2) if math.isfinite(raw_cum_pct) else None
+        else:
+            cumulative_return_pct = None
+        max_drawdown_rounded = round(max_drawdown_pct, 2)
+
+        ann_factor = math.sqrt(252.0 / max(1, int(eval_window_days or 1)))
+        sharpe_ratio: Optional[float] = None
+        sortino_ratio: Optional[float] = None
+        if sample_count >= 2:
+            variance = sum((r - mean_ret) ** 2 for r in ordered_returns) / (sample_count - 1)
+            stdev = math.sqrt(variance) if variance > 0 else 0.0
+            if stdev > 1e-9:
+                sharpe_ratio = round((mean_ret / stdev) * ann_factor, 2)
+
+            downside_sq = sum(min(0.0, r) ** 2 for r in ordered_returns) / sample_count
+            downside_rms = math.sqrt(downside_sq) if downside_sq > 0 else 0.0
+            if downside_rms > 1e-9:
+                sortino_ratio = round((mean_ret / downside_rms) * ann_factor, 2)
+
+        calmar_ratio: Optional[float] = None
+        if (
+            not equity_zeroed
+            and max_drawdown_pct >= 0.01
+            and max_drawdown_rounded > 1e-6
+            and first_valid_date is not None
+            and last_valid_date is not None
+        ):
+            span_days = (last_valid_date - first_valid_date).days
+            if span_days >= 30:
+                years = span_days / 365.25
+                ann_log = log_equity / years
+                if math.isfinite(ann_log) and ann_log <= 700.0:
+                    cagr_pct = math.expm1(ann_log) * 100.0
+                    calmar_val = cagr_pct / max_drawdown_pct
+                    if math.isfinite(calmar_val):
+                        calmar_ratio = round(calmar_val, 2)
+        max_wins, max_losses = cls._quant_streak_counts(ordered_returns)
+
+        return {
+            "sample_count": sample_count,
+            "active_trade_count": active_trade_count,
+            "profit_factor": profit_factor,
+            "expectancy_pct": expectancy_pct,
+            "payoff_ratio": payoff_ratio,
+            "avg_win_pct": avg_win_pct,
+            "avg_loss_pct": avg_loss_pct,
+            "cumulative_return_pct": cumulative_return_pct,
+            "max_drawdown_pct": max_drawdown_rounded,
+            "sharpe_ratio": sharpe_ratio,
+            "sortino_ratio": sortino_ratio,
+            "calmar_ratio": calmar_ratio,
+            "best_trade_pct": round(max(ordered_returns), 2),
+            "worst_trade_pct": round(min(ordered_returns), 2),
+            "max_consecutive_wins": max_wins,
+            "max_consecutive_losses": max_losses,
+            "exit_reason_breakdown": dict(sorted(exit_reason_counts.items())),
+            "equity_curve": equity_curve[-40:],
         }
