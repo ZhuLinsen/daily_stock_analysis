@@ -20,7 +20,7 @@ python main.py --serve-only
 | 页面路由 | 功能模块 | 说明 |
 | --- | --- | --- |
 | `/` | **分析首页** | 提交单股或批量任务、查看实时进度、阅读决策仪表盘与近 60 日价格点位图 |
-| `/chat` | **Agent 策略问股** | 基于 15 种内置策略或自定义 YAML 策略对单只标的发起多轮追问 |
+| `/chat` | **Agent 策略问股** | 基于 20 种内置策略或自定义 YAML 策略对单只标的发起多轮追问 |
 | `/decision-signals` | **决策信号池** | 汇总 AI 建议池、过滤强买/观望/风控信号并联动告警 |
 | `/screening` | **智能选股** | 全市场多因子与热点扫描，输出可解释的候选股清单 |
 | `/portfolio` | **持仓与风控** | 管理持仓台账、市场暴露、币种暴露及风险旗标 |
@@ -32,7 +32,7 @@ python main.py --serve-only
 
 在配置具备 **Agent 工具调用能力的模型路由**（`LITELLM_CONFIG`、`LLM_CHANNELS` 配合 `AGENT_LITELLM_MODEL` / `LITELLM_MODEL`，或传统 `GEMINI_API_KEY` / `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `DEEPSEEK_API_KEY`）后即可使用 `/chat`（如需显式关闭可设置 `AGENT_MODE=false`）：
 
-- 支持均线金叉、缠论结构、波浪理论、多头趋势、热点题材、事件驱动、成长质量、预期重估等 **15 种内置策略**；
+- 支持均线金叉、缠论结构、波浪理论、多头趋势、量化因子、热点题材、事件驱动、成长质量、预期重估等 **20 种内置策略**；
 - Agent 可在对话过程中按需调用实时行情、K 线指标、财经新闻与风险上下文；
 - 支持会话导出、发送到通知渠道以及后台异步执行，也可在 `AGENT_DEBATE_ENABLED=true` 时启用多空辩论与风控审查。
 
@@ -40,4 +40,4 @@ python main.py --serve-only
 如果环境中只配置了保留渠道 `LLM_CHANNELS=hermes`（本机 Hermes HTTP Generation），普通分析可正常工作，但 Agent `/chat` 不会回退至旧模型并会判定 Agent 后端不可用（请求返回 `400`），需额外配置支持工具调用的 Agent 模型路由后方可问股。详情见 [LLM 大模型配置指南](/docs/configuration/llm-guide/)。
 :::
 
-更多策略编写细节请参考 [Agent 15 种内置策略与自定义 Skill](/docs/features/strategies/)。
+更多策略编写细节请参考 [Agent 20 种内置策略与自定义 Skill](/docs/features/strategies/)。

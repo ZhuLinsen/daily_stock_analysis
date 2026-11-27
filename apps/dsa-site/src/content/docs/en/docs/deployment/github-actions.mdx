@@ -1,0 +1,55 @@
+---
+title: "GitHub Actions Zero-Cost Scheduled Deployment"
+description: "No server required—fork the repository and configure Secrets to run daily analysis and deliver reports automatically on every trading day at 18:00."
+---
+
+GitHub Actions is the lightest, zero-infrastructure way to run DSA. Through the built-in workflow, the system checks trading calendars automatically every weekday at **18:00 (Beijing Time, UTC 10:00)**, executes stock analysis, and sends notifications.
+
+## Setup Steps
+
+### 1. Fork the Main Repository
+
+Go to [ZhuLinsen/daily_stock_analysis](https://github.com/ZhuLinsen/daily_stock_analysis) and click **Fork** in the top-right corner to copy the repository under your GitHub account.
+
+### 2. Configure Repository Secrets / Variables
+
+Open your forked repository and navigate to: `Settings → Secrets and variables → Actions`.
+
+**Option A: Single-Key Setup (Recommended for Beginners, add to Secrets)**
+
+| Secret Name | Description | Recommendation |
+| --- | --- | --- |
+| `MODELFLARE_KEY` | Modelflare model gateway key; the backend derives the default base URL and model automatically | Recommended |
+| `GEMINI_API_KEY` | Google Gemini API Key | Optional |
+| `DEEPSEEK_API_KEY` | Official DeepSeek API Key (defaults to `deepseek/deepseek-flash`; legacy alias `deepseek/deepseek-v4-flash` remains supported for compatibility; upstream current IDs are `deepseek-flash` and `deepseek-v4-pro`, or `LITELLM_MODEL=deepseek/deepseek-flash` / `LITELLM_MODEL=deepseek/deepseek-v4-pro` when set explicitly) | Optional |
+| `ANTHROPIC_API_KEY` | Anthropic Claude API Key | Optional |
+| `OPENAI_API_KEY` | OpenAI or compatible gateway key (**must** pair with `OPENAI_BASE_URL` and `LITELLM_MODEL` or `OPENAI_MODEL` in Variables/Secrets; prefix gateway model IDs containing `/` with `openai/`, e.g., `openai/Qwen/Qwen3-32B`) | Optional |
+
+**Option B: Multi-Field Aggregator Channels such as x6.ai (requires Variables + Secret)**
+
+`LLM_X6AI_API_KEY` **cannot take effect as a standalone Secret**, because the workflow and configuration loader do not auto-populate x6.ai routing fields. When using x6.ai, besides placing `LLM_X6AI_API_KEY` (or `LLM_X6AI_API_KEYS`) in **Secrets**, you must explicitly declare all of the following keys in **Variables**:
+
+```ini
+LLM_CHANNELS=x6ai
+LLM_X6AI_PROTOCOL=openai
+LLM_X6AI_BASE_URL=https://api.x6.ai/v1
+LLM_X6AI_MODELS=openai/anthropic/claude-haiku-5-5-discount
+```
+
+Verify the exact model ID in your account dashboard and test connection results. See [LLM Providers Reference](/en/docs/configuration/llm-providers/) and [LLM Configuration Guide](/en/docs/configuration/llm-guide/) for custom gateway patterns.
+
+**Configure Your Watchlist & Notification Channels:**
+
+- `STOCK_LIST`: Comma-separated symbols such as `600519,hk00700,AAPL,7203.T` (can be stored in Variables or Secrets)
+- Notification channels (configure at least one complete channel or required pair): `WECHAT_WEBHOOK_URL`, `FEISHU_WEBHOOK_URL`, `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID`, `DISCORD_WEBHOOK_URL`, `EMAIL_SENDER` + `EMAIL_PASSWORD`
+- Recommended news search keys: `SERPAPI_API_KEYS`, or `ANSPIRE_API_KEYS` / `TAVILY_API_KEYS`
+
+### 3. Enable Actions & Run a Manual Test
+
+1. Open the **Actions** tab in your forked repository and click **I understand my workflows, go ahead and enable them**.
+2. Select the **每日股票分析** workflow (Daily Stock Analysis, `.github/workflows/00-daily-analysis.yml`) on the left and click **Run workflow** on the right to execute an initial test run.
+3. After completion, inspect the workflow logs and confirm report delivery in WeChat Work, Feishu, Telegram, or Email.
+
+:::note[Non-Trading Day Skip Rules]
+By default, the workflow checks each ticker against its own market's trading calendar across all 6 supported markets (A-share, Hong Kong, US, Japan, South Korea, and Taiwan) and skips tickers whose market is closed. If you want to test execution over a weekend or holiday, check the force-run option when triggering `Run workflow` manually.
+:::

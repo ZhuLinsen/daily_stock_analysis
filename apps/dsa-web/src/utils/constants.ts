@@ -1,3 +1,6 @@
+import { resolveActiveUiLanguage } from './format';
+import type { UiLanguage } from '../i18n/uiText';
+
 const configuredApiBaseUrl = import.meta.env.VITE_API_URL?.trim();
 
 declare const __APP_PACKAGE_VERSION__: string | undefined;
@@ -8,6 +11,7 @@ const PLACEHOLDER_WEB_VERSION = '0.0.0';
 const DEVELOPMENT_WEB_VERSION = 'development';
 const UNKNOWN_REVISION = 'unknown';
 const UNKNOWN_BUILD_TIME = '未提供';
+const UNKNOWN_BUILD_TIME_EN = 'Not provided';
 
 // 默认保持同源 API，避免生产/静态部署时把请求错误打到用户本机 localhost。
 // 仅在显式提供 VITE_API_URL 时才覆盖默认行为。
@@ -42,7 +46,7 @@ export function normalizeBuildTimestamp(buildTimestamp?: string) {
 
 export function createBuildIdentifier(buildTimestamp?: string) {
   const normalized = buildTimestamp?.trim();
-  if (!normalized || normalized === UNKNOWN_BUILD_TIME) {
+  if (!normalized || normalized === UNKNOWN_BUILD_TIME || normalized === UNKNOWN_BUILD_TIME_EN) {
     return 'build-local';
   }
 
@@ -55,6 +59,14 @@ export function createBuildIdentifier(buildTimestamp?: string) {
 
   const compactValue = normalized.replace(/[^0-9A-Za-z]+/g, '-').replace(/^-+|-+$/g, '');
   return compactValue ? `build-${compactValue}` : 'build-local';
+}
+
+export function formatWebBuildTime(buildTime?: string, language?: UiLanguage): string {
+  const normalized = buildTime?.trim();
+  if (!normalized || normalized === UNKNOWN_BUILD_TIME || normalized === UNKNOWN_BUILD_TIME_EN) {
+    return resolveActiveUiLanguage(language) === 'en' ? UNKNOWN_BUILD_TIME_EN : UNKNOWN_BUILD_TIME;
+  }
+  return normalized;
 }
 
 export function resolveWebBuildInfo({

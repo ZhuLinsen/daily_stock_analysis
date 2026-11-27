@@ -125,7 +125,22 @@ class StockService:
             
             # 获取股票名称
             stock_name = manager.get_stock_name(stock_code)
-            
+
+            ohlc_synthesized = bool(getattr(df, "attrs", {}).get("ohlc_synthesized", False))
+            raw_adjustment = getattr(df, "attrs", {}).get("price_adjustment")
+            if isinstance(raw_adjustment, str):
+                normalized_adj = raw_adjustment.strip().lower()
+                if normalized_adj in ("none", "unadjusted"):
+                    price_adjustment = "unadjusted"
+                elif normalized_adj in ("forward", "backward", "unknown"):
+                    price_adjustment = normalized_adj
+                else:
+                    price_adjustment = None
+            elif source in ("AlphaVantageFetcher", "TushareFetcher", "PytdxFetcher"):
+                price_adjustment = "unadjusted"
+            else:
+                price_adjustment = None
+
             # 转换为响应格式
             data = []
             for _, row in df.iterrows():
@@ -137,9 +152,9 @@ class StockService:
                 
                 data.append({
                     "date": date_str,
-                    "open": float(row.get("open", 0)),
-                    "high": float(row.get("high", 0)),
-                    "low": float(row.get("low", 0)),
+                    "open": 0.0 if ohlc_synthesized else float(row.get("open", 0)),
+                    "high": 0.0 if ohlc_synthesized else float(row.get("high", 0)),
+                    "low": 0.0 if ohlc_synthesized else float(row.get("low", 0)),
                     "close": float(row.get("close", 0)),
                     "volume": float(row.get("volume", 0)) if row.get("volume") else None,
                     "amount": float(row.get("amount", 0)) if row.get("amount") else None,
@@ -151,6 +166,8 @@ class StockService:
                 "stock_name": stock_name,
                 "period": period,
                 "data": data,
+                "price_adjustment": price_adjustment,
+                "ohlc_synthesized": ohlc_synthesized,
             }
             
         except ImportError:

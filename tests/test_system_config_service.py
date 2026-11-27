@@ -5319,6 +5319,27 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         )
         self.assertFalse(any(issue["code"] == "ssrf_blocked" for issue in validation["issues"]))
 
+    def test_legacy_deepseek_key_infers_deepseek_flash_default_and_preserves_explicit_alias(self) -> None:
+        from src.services.generation_backend_status_service import GenerationBackendStatusService
+        from src.services.screening.config import _resolve_llm_model
+
+        self.assertEqual(
+            SystemConfigService._infer_setup_legacy_primary_model({"DEEPSEEK_API_KEY": "sk-test"}),
+            "deepseek/deepseek-flash",
+        )
+        self.assertEqual(
+            GenerationBackendStatusService._infer_legacy_litellm_model({"DEEPSEEK_API_KEY": "sk-test"}),
+            "deepseek/deepseek-flash",
+        )
+        with patch.dict(os.environ, {"DEEPSEEK_API_KEY": "sk-test"}, clear=True):
+            self.assertEqual(_resolve_llm_model([]), "deepseek/deepseek-flash")
+        with patch.dict(
+            os.environ,
+            {"DEEPSEEK_API_KEY": "sk-test", "LITELLM_MODEL": "deepseek/deepseek-v4-flash"},
+            clear=True,
+        ):
+            self.assertEqual(_resolve_llm_model([]), "deepseek/deepseek-v4-flash")
+
 
 if __name__ == "__main__":
     unittest.main()

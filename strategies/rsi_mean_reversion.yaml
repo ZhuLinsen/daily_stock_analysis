@@ -1,0 +1,45 @@
+# RSI/KDJ Mean Reversion Strategy / 均值回归策略
+
+name: rsi_mean_reversion
+display_name: RSI/KDJ 均值回归
+description: 在震荡市利用ADX过滤强趋势，结合RSI超卖、KDJ低位金叉与布林带下轨偏离捕捉均值回归机会。
+category: quant
+core_rules: [1, 4]
+required_tools:
+  - get_daily_history
+  - analyze_trend
+  - calculate_quant_factors
+aliases: [均值回归, 超卖反弹, KDJ, RSI回归]
+default_priority: 56
+market_regimes: [sideways, trending_down]
+
+instructions: |
+  **RSI/KDJ 均值回归策略（Mean Reversion Strategy）**
+
+  核心量化逻辑：均值回归策略仅在**非单边下跌趋势**（震荡或弱势尾声）有效。先用 `adx_14` 与 `obv_divergence` 剔除“无底洞式单边空头”，再在超卖区间等待短周期动量（KDJ低位金叉 + RSI/MFI 止跌）拐头做波段修复，目标看至布林中轨 / VWAP20。
+
+  ## 量化因子判据
+
+  优先读取上下文中预计算的 `quant_factors` 字段；仅在具备工具调用能力的 Agent 会话且上下文缺失时调用 `calculate_quant_factors` 与 `analyze_trend`（短周期历史导致部分因子为 `N/A` 时如实标注，不得臆测）：
+
+  1. **趋势过滤（Regime Guard — 关键风控）**
+     - 首选 `adx_regime == "range_bound"`（`adx_14 < 20`）或 `adx_direction != "bearish"` 强单边。
+     - 若 `adx_14 >= 28` 且 `adx_direction == "bearish"`（强空头主跌浪），禁用逆势做多，直接判定“观望”。
+
+  2. **超卖极值识别**
+     - 动量超卖：`rsi_6 < 30` 或 `mfi_14 <= 25` 或 `kdj_j < 15`。
+     - 空间偏离：`boll_pct_b <= 0.10` 或 `vwap_bias_pct <= -4.0%`。
+
+  3. **右侧止跌共振**
+     - `kdj_status == "golden_cross_low"`（低位金叉）为最佳左侧转右侧确认点。
+     - 若伴随 `obv_divergence == "bullish_divergence"`（底背离），可显著提高反弹胜率。
+
+  4. **止盈与严格止损**
+     - 第一目标位：`boll_mid` 或 `vwap_20`（回归均值即分批兑现，不恋战）。
+     - 严格止损：入场当日将 `atr_stop_loss_long`（`现价 - 2 * ATR(14)`）或前波段低点固定记作初始硬止损；买入后跌破该入场止损、跌破前低，或触发 `atr_trailing_stop_breached == true`（收盘跌破 `atr_trailing_stop_long`）时无条件止损，绝不在均值回归单上深套加仓。
+
+  评分调整建议：
+  - `adx_14 < 25` 且 `boll_pct_b <= 0.1` + `kdj_status == "golden_cross_low"`：`sentiment_score +12`
+  - 出现 `obv_divergence == "bullish_divergence"` 且 `mfi_14 <= 30`：`sentiment_score +8`
+  - `adx_14 >= 28` 且 `adx_direction == "bearish"`（强空头接飞刀风险）：`sentiment_score -16`
+  - 反弹已触及 `boll_mid` 且 `kdj_j > 80`：`sentiment_score -6（兑现区间）`

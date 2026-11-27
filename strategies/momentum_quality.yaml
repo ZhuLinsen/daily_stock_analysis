@@ -1,0 +1,41 @@
+# Momentum + Low-Volatility Composite Factor Strategy / 动量低波复合因子策略
+
+name: momentum_quality
+display_name: 动量低波复合因子
+description: 融合20/60日价格动量、年化波动率与最大回撤约束，辅以VWAP/OBV资金流确认的中期量化多因子策略。
+category: quant
+core_rules: [2, 3, 6]
+required_tools:
+  - get_daily_history
+  - analyze_trend
+  - calculate_quant_factors
+aliases: [动量因子, 低波因子, 多因子, 量化动量]
+default_priority: 58
+market_regimes: [trending_up]
+
+instructions: |
+  **动量低波复合因子策略（Momentum & Low-Volatility Quality Factor Strategy）**
+
+  核心量化逻辑：A股与港美股中，单纯高动量容易追在情绪高点后剧烈回撤；将**中期正动量（ROC20 / ROC60）**、**风险调整收益（Sharpe60）**、**低回撤低波动约束（HV20 / MaxDD60）**以及**成交量加权均价承接（VWAP20 / OBV / MFI）**组合评分，能够筛选走势稳健机构主导的优质趋势标的。
+
+  ## 量化因子判据
+
+  优先读取上下文中预计算的 `quant_factors` 字段；仅在具备工具调用能力的 Agent 会话且上下文缺失时调用 `calculate_quant_factors` 与 `analyze_trend`（当有效交易日不足60日导致 `roc_60_pct` / `sharpe_60` / `max_drawdown_60_pct` 为 `N/A` 时如实标注样本受限，不得将短样本视作完整60日风险指标）：
+
+  1. **动量因子（Trend & Persistence）**
+     - `roc_20_pct > 0` 且 `roc_60_pct > 0`（中短期动量同向）；关注 `sharpe_60 >= 1.0` 代表收益风险比优异。
+     - 警惕短期过热：`roc_5_pct > 15%` 且 `bias_ma5 > 5%` 时提示等待向 VWAP20/MA10 回撤。
+
+  2. **低波与回撤风控因子（Defensive Quality）**
+     - `max_drawdown_60_pct >= -15.0%` 与 `hv_20_annualized_pct <= 45%` 属于稳健机构波动结构。
+     - 若 `max_drawdown_60_pct < -25%` 或 `hv_20_annualized_pct > 65%`，说明筹码博弈剧烈、噪声过大，降级处理。
+
+  3. **资金承接与综合评分**
+     - `vwap_bias_pct` 位于 `0% ~ +5%` 且 `obv_trend == "rising"`、`mfi_14` 处于 `50 ~ 78` 区间，表明筹码在机构成本线上方健康换手。
+     - 参考 `quant_composite_score`（0-100）辅助校准置信度。
+
+  评分调整建议：
+  - `roc_20_pct > 0` + `sharpe_60 >= 1.2` + `max_drawdown_60_pct >= -15%` + `obv_trend == "rising"`：`sentiment_score +14`
+  - 稳健站稳 `vwap_20` 上方（`0 <= vwap_bias_pct <= 5%`）且 `mfi_status == "bullish"`：`sentiment_score +8`
+  - 出现高波大回撤（`max_drawdown_60_pct < -25%` 或 `hv_20_annualized_pct > 70%`）：`sentiment_score -10`
+  - 动量转负（`roc_20_pct < -5%`）且跌破 `vwap_20`：`sentiment_score -12`

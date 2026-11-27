@@ -1,6 +1,8 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { toCamelCase } from '../../api/utils';
 import { UiLanguageProvider } from '../../contexts/UiLanguageContext';
+import type { PerformanceMetrics } from '../../types/backtest';
 import { UI_LANGUAGE_STORAGE_KEY } from '../../utils/uiLanguage';
 import BacktestPage from '../BacktestPage';
 
@@ -1071,5 +1073,276 @@ describe('BacktestPage', () => {
     } finally {
       consoleErrorSpy.mockRestore();
     }
+  });
+
+  it('renders camelCased backend quant telemetry, equity curve, outcome filter, sort, and row replay drawer', async () => {
+    const rawSnakePerf = {
+      ...basePerformance,
+      advice_breakdown: {
+        买入: { total: 3, win: 2, loss: 1, neutral: 0, win_rate_pct: 66.7 },
+      },
+      quant_metrics: {
+        sample_count: 3,
+        active_trade_count: 3,
+        profit_factor: 3.1,
+        expectancy_pct: 4.2,
+        payoff_ratio: 2.2,
+        avg_win_pct: 8.8,
+        avg_loss_pct: -4.0,
+        cumulative_return_pct: 12.6,
+        max_drawdown_pct: 4.0,
+        sharpe_ratio: 1.95,
+        sortino_ratio: 3.1,
+        calmar_ratio: 3.15,
+        best_trade_pct: 10.2,
+        worst_trade_pct: -4.0,
+        max_consecutive_wins: 2,
+        max_consecutive_losses: 1,
+        exit_reason_breakdown: { take_profit: 2, stop_loss: 1 },
+        equity_curve: [
+          { index: 1, date: '2026-03-10', code: '600519', return_pct: 7.4, equity_pct: 7.4, outcome: 'win' },
+          { index: 2, date: '2026-03-15', code: 'AAPL', return_pct: -4.0, equity_pct: 3.1, outcome: 'loss' },
+          { index: 3, date: '2026-03-20', code: '00700', return_pct: 9.2, equity_pct: 12.6, outcome: 'win' },
+        ],
+      },
+    };
+    mockGetOverallPerformance.mockResolvedValueOnce(toCamelCase<PerformanceMetrics>(rawSnakePerf));
+    mockGetResults.mockResolvedValueOnce({
+      total: 2,
+      page: 1,
+      limit: 20,
+      items: [
+        {
+          ...baseResultItem,
+          analysisHistoryId: 201,
+          code: 'AAPL',
+          stockName: 'Apple',
+          outcome: 'loss',
+          simulatedEntryPrice: 180.0,
+          simulatedExitPrice: 172.8,
+          simulatedExitReason: 'stop_loss',
+          simulatedReturnPct: -4.0,
+          stopLoss: 172.8,
+          takeProfit: 200.0,
+          firstHit: 'stop_loss',
+          firstHitDate: '2026-03-18',
+          firstHitTradingDays: 3,
+          startPrice: 180.0,
+          endClose: 174.0,
+          maxHigh: 185.4,
+          minLow: 171.0,
+        },
+        {
+          ...baseResultItem,
+          analysisHistoryId: 202,
+          code: '00700',
+          stockName: '腾讯控股',
+          outcome: 'win',
+          simulatedEntryPrice: 400.0,
+          simulatedExitPrice: 440.0,
+          simulatedExitReason: 'take_profit',
+          simulatedReturnPct: 10.0,
+          stopLoss: 380.0,
+          takeProfit: 440.0,
+          firstHit: 'take_profit',
+          firstHitDate: '2026-03-25',
+          firstHitTradingDays: 4,
+          startPrice: 400.0,
+          endClose: 435.0,
+          maxHigh: 442.0,
+          minLow: 396.0,
+        },
+      ],
+    });
+
+    render(<BacktestPage />);
+
+    expect(await screen.findByText('量化风险绩效与模拟净值')).toBeInTheDocument();
+    expect(screen.getByText('+12.60%')).toBeInTheDocument();
+    expect(screen.getByText('3.10')).toBeInTheDocument();
+    expect(screen.getByLabelText('策略顺序模拟净值曲线')).toBeInTheDocument();
+    expect(screen.getByText('按操作建议胜率分布')).toBeInTheDocument();
+    expect(screen.getAllByText('触发止盈').length).toBeGreaterThan(0);
+
+    // Sort by simulated return descending so 00700 (+10%) moves above AAPL (-4%)
+    const sortSelect = screen.getByLabelText('排序');
+    fireEvent.change(sortSelect, { target: { value: 'sim_desc' } });
+    const rowsAfterSort = screen.getAllByRole('row');
+    expect(within(rowsAfterSort[1]).getByText('00700')).toBeInTheDocument();
+
+    // Expand replay detail row on the sorted second data row (AAPL)
+    const expandButtons = await screen.findAllByLabelText('展开回测交易回放详情');
+    fireEvent.click(expandButtons[1]);
+    expect(await screen.findByText('单笔回测执行与波动回放')).toBeInTheDocument();
+    expect(screen.getByText('触发止损 · 2026-03-18 · 第 3 交易日')).toBeInTheDocument();
+
+    // Filter to wins only
+    fireEvent.click(screen.getByRole('button', { name: '仅盈利' }));
+    expect(screen.queryByText('AAPL')).not.toBeInTheDocument();
+    expect(screen.getByText('00700')).toBeInTheDocument();
+
+    // Filter to losses only
+    fireEvent.click(screen.getByRole('button', { name: '仅亏损' }));
+    expect(screen.getByText('AAPL')).toBeInTheDocument();
+    expect(screen.queryByText('00700')).not.toBeInTheDocument();
+  });
+
+  it('localizes quant risk panel and trade replay labels in English UI mode', async () => {
+    mockGetOverallPerformance.mockResolvedValueOnce({
+      ...basePerformance,
+      quantMetrics: {
+        sampleCount: 2,
+        activeTradeCount: 2,
+        profitFactor: 2.5,
+        expectancyPct: 3.0,
+        cumulativeReturnPct: 6.0,
+        maxDrawdownPct: 2.0,
+        sharpeRatio: 1.5,
+        sortinoRatio: 2.0,
+        calmarRatio: 3.0,
+        equityCurve: [
+          { index: 1, date: '2026-03-10', code: '600519', returnPct: 6.0, equityPct: 6.0, outcome: 'win' },
+          { index: 2, date: '2026-03-11', code: '600519', returnPct: 0.0, equityPct: 6.0, outcome: 'neutral' },
+        ],
+      },
+    });
+
+    renderEnglishPage();
+
+    expect(await screen.findByText('Quant Risk Telemetry & Equity Curve')).toBeInTheDocument();
+    expect(screen.getByLabelText('Chronological Simulated Equity Curve')).toBeInTheDocument();
+    fireEvent.click(await screen.findByLabelText('Expand trade replay details'));
+    expect(await screen.findByText('Trade Execution & Window Excursion Replay')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Open in Workspace' })).toHaveAttribute('href', '/?stock=600519');
+  });
+
+  it('uses simulatedEntryPrice as MFE/MAE excursion basis and resets expanded rows on pagination', async () => {
+    mockGetResults
+      .mockResolvedValueOnce({
+        total: 25,
+        page: 1,
+        limit: 20,
+        items: [
+          {
+            ...baseResultItem,
+            analysisHistoryId: 301,
+            code: '600519',
+            stockName: '贵州茅台',
+            startPrice: 100.0,
+            simulatedEntryPrice: 110.0,
+            simulatedExitPrice: 118.8,
+            simulatedExitReason: 'take_profit',
+            simulatedReturnPct: 8.0,
+            maxHigh: 121.0,
+            minLow: 99.0,
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        total: 25,
+        page: 2,
+        limit: 20,
+        items: [
+          {
+            ...baseResultItem,
+            analysisHistoryId: 301,
+            code: '000001',
+            stockName: '平安银行',
+            startPrice: 12.0,
+            simulatedEntryPrice: 12.0,
+            maxHigh: 12.6,
+            minLow: 11.4,
+          },
+        ],
+      });
+
+    render(<BacktestPage />);
+
+    const expandButton = await screen.findByLabelText('展开回测交易回放详情');
+    fireEvent.click(expandButton);
+    expect(await screen.findByText('单笔回测执行与波动回放')).toBeInTheDocument();
+    expect(screen.getByText('(+10.00% / -10.00%)')).toBeInTheDocument();
+    expect(screen.queryByText('(+21.00% / -1.00%)')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '2' }));
+    expect(await screen.findByText('000001')).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.queryByText('单笔回测执行与波动回放')).not.toBeInTheDocument();
+    });
+  });
+
+  it('filters by simulatedReturnPct instead of directional outcome and omits fabricated replay prices', async () => {
+    mockGetResults.mockResolvedValueOnce({
+      total: 3,
+      page: 1,
+      limit: 20,
+      items: [
+        {
+          // Stopped out at -4% even though directional outcome is win (+10% window close)
+          ...baseResultItem,
+          analysisHistoryId: 801,
+          code: '600519',
+          stockName: '贵州茅台',
+          outcome: 'win',
+          startPrice: 100.0,
+          endClose: 110.0,
+          simulatedEntryPrice: 100.0,
+          simulatedExitPrice: 96.0,
+          simulatedExitReason: 'stop_loss',
+          simulatedReturnPct: -4.0,
+        },
+        {
+          // Cash / stand aside row: no simulated fills
+          ...baseResultItem,
+          analysisHistoryId: 802,
+          code: '000001',
+          stockName: '平安银行',
+          outcome: 'win',
+          startPrice: 100.0,
+          endClose: 110.0,
+          simulatedEntryPrice: null,
+          simulatedExitPrice: null,
+          simulatedExitReason: 'cash',
+          simulatedReturnPct: 0.0,
+        },
+        {
+          // Invalid targets row: missing simulatedExitPrice and simulatedReturnPct
+          ...baseResultItem,
+          analysisHistoryId: 803,
+          code: '00700',
+          stockName: '腾讯控股',
+          outcome: 'win',
+          startPrice: 100.0,
+          endClose: 110.0,
+          simulatedEntryPrice: 100.0,
+          simulatedExitPrice: null,
+          simulatedExitReason: 'invalid_targets',
+          simulatedReturnPct: null,
+        },
+      ],
+    });
+
+    render(<BacktestPage />);
+
+    expect(await screen.findByText('600519')).toBeInTheDocument();
+    // P&L summary counts based on simulatedReturnPct: 0 wins, 1 loss (600519), 1 neutral (000001)
+    expect(screen.getByText('(0/1/1)')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '仅盈利' }));
+    expect(screen.getByText('当前页没有匹配筛选条件的回测记录')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '仅亏损' }));
+    expect(screen.getByText('600519')).toBeInTheDocument();
+    expect(screen.queryByText('000001')).not.toBeInTheDocument();
+    expect(screen.queryByText('00700')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '全部' }));
+    const expandButtons = await screen.findAllByLabelText('展开回测交易回放详情');
+    // Expand cash row (index 1: 000001) and invalid_targets row (index 2: 00700)
+    fireEvent.click(expandButtons[1]);
+    fireEvent.click(expandButtons[2]);
+
+    expect(await screen.findByText('100.00 → --')).toBeInTheDocument();
+    expect(screen.queryByText('100.00 → 110.00')).not.toBeInTheDocument();
   });
 });

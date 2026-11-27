@@ -3,10 +3,11 @@ import type { ChatGPTModelSource } from '../types/modelSource';
 import { create } from 'zustand';
 import { analysisApi, DuplicateTaskError } from '../api/analysis';
 import type { ParsedApiError } from '../api/error';
-import { getParsedApiError } from '../api/error';
+import { createLocalizedParsedApiError, getParsedApiError } from '../api/error';
 import { historyApi } from '../api/history';
+import type { UiLanguage } from '../i18n/uiText';
 import type { AnalysisReport, HistoryItem, HistoryListResponse, ReportLanguage, StockBarItem, StockHistoryFilters, StockHistoryRange, TaskInfo } from '../types/analysis';
-import { getRecentStartDate, getTodayInShanghai } from '../utils/format';
+import { getRecentStartDate, getTodayInShanghai, resolveActiveUiLanguage } from '../utils/format';
 import { toAssetAwareCodeKey, type AssetAwareAssetType } from '../utils/stockCode';
 import { isObviouslyInvalidStockQuery, looksLikeStockCode, validateStockCode } from '../utils/validation';
 
@@ -55,12 +56,80 @@ let manualSelectionRequestId = 0;
 const dismissedTaskIds = new Set<string>();
 const pendingCompletedTaskSelectionKeys = new Map<string, CompletedTaskSelectionIntent>();
 
+export type InlineErrorResolver = (language: UiLanguage) => string;
+
+const clearInlineInputErrorState = {
+  inputError: undefined,
+  inputErrorResolver: null as InlineErrorResolver | null,
+  inputErrorResolvedValue: undefined as string | undefined,
+};
+
+const clearInlineDuplicateErrorState = {
+  duplicateError: null as string | null,
+  duplicateErrorResolver: null as InlineErrorResolver | null,
+  duplicateErrorResolvedValue: null as string | null,
+};
+
+function buildInlineInputErrorState(resolver: InlineErrorResolver) {
+  const resolved = resolver(resolveActiveUiLanguage());
+  return {
+    inputError: resolved,
+    inputErrorResolver: resolver,
+    inputErrorResolvedValue: resolved,
+    ...clearInlineDuplicateErrorState,
+  };
+}
+
+function buildDuplicateErrorState(stockCode: string) {
+  const resolver: InlineErrorResolver = (language) => (
+    language === 'en'
+      ? `Stock ${stockCode} is already being analyzed; please wait for it to finish`
+      : `股票 ${stockCode} 正在分析中，请等待完成`
+  );
+  const resolved = resolver(resolveActiveUiLanguage());
+  return {
+    duplicateError: resolved,
+    duplicateErrorResolver: resolver,
+    duplicateErrorResolvedValue: resolved,
+  };
+}
+
+export function localizeStockPoolInputError(
+  state: Pick<StockPoolState, 'inputError' | 'inputErrorResolver' | 'inputErrorResolvedValue'>,
+  language: UiLanguage,
+): string | undefined {
+  if (!state.inputError) {
+    return undefined;
+  }
+  if (state.inputErrorResolver && state.inputError === state.inputErrorResolvedValue) {
+    return state.inputErrorResolver(language);
+  }
+  return state.inputError;
+}
+
+export function localizeStockPoolDuplicateError(
+  state: Pick<StockPoolState, 'duplicateError' | 'duplicateErrorResolver' | 'duplicateErrorResolvedValue'>,
+  language: UiLanguage,
+): string | null {
+  if (!state.duplicateError) {
+    return null;
+  }
+  if (state.duplicateErrorResolver && state.duplicateError === state.duplicateErrorResolvedValue) {
+    return state.duplicateErrorResolver(language);
+  }
+  return state.duplicateError;
+}
+
 export interface StockPoolState {
   query: string;
   selectionSource: SelectionSource;
   notify: boolean;
   inputError?: string;
+  inputErrorResolver: InlineErrorResolver | null;
+  inputErrorResolvedValue?: string;
   duplicateError: string | null;
+  duplicateErrorResolver: InlineErrorResolver | null;
+  duplicateErrorResolvedValue: string | null;
   error: ParsedApiError | null;
   isAnalyzing: boolean;
   historyItems: HistoryItem[];
@@ -132,8 +201,8 @@ const initialState = {
   query: '',
   selectionSource: 'manual' as SelectionSource,
   notify: true,
-  inputError: undefined,
-  duplicateError: null,
+  ...clearInlineInputErrorState,
+  ...clearInlineDuplicateErrorState,
   error: null,
   isAnalyzing: false,
   historyItems: [] as HistoryItem[],
@@ -622,14 +691,14 @@ export const useStockPoolStore = create<StockPoolState>((set, get) => ({
     set({
       query,
       selectionSource: 'manual',
-      inputError: undefined,
-      duplicateError: null,
+      ...clearInlineInputErrorState,
+      ...clearInlineDuplicateErrorState,
     });
   },
 
   clearError: () => set({ error: null }),
 
-  clearInlineMessages: () => set({ inputError: undefined, duplicateError: null }),
+  clearInlineMessages: () => set({ ...clearInlineInputErrorState, ...clearInlineDuplicateErrorState }),
 
   setNotify: (notify) => set({ notify }),
 
@@ -897,29 +966,40 @@ export const useStockPoolStore = create<StockPoolState>((set, get) => ({
     const forceRefresh = options?.forceRefresh ?? false;
     const skills = options?.skills;
 
+    const language = resolveActiveUiLanguage();
+
     if (!stockCodeInput) {
-      set({ inputError: '请输入股票代码', duplicateError: null });
+      set(buildInlineInputErrorState((lang) => (lang === 'en' ? 'Please enter a stock code' : '请输入股票代码')));
       return;
     }
 
     if (selectionSource !== 'autocomplete' && isObviouslyInvalidStockQuery(stockCodeInput)) {
-      set({ inputError: '请输入有效的股票代码或股票名称', duplicateError: null });
+      set(
+        buildInlineInputErrorState((lang) => (
+          lang === 'en' ? 'Please enter a valid stock code or stock name' : '请输入有效的股票代码或股票名称'
+        )),
+      );
       return;
     }
 
     let normalizedStockCode = stockCodeInput;
     if (selectionSource === 'autocomplete' || looksLikeStockCode(stockCodeInput)) {
-      const { valid, message, normalized } = validateStockCode(stockCodeInput);
+      const { valid, normalized } = validateStockCode(stockCodeInput, language);
       if (!valid) {
-        set({ inputError: message, duplicateError: null });
+        set(
+          buildInlineInputErrorState((lang) => (
+            validateStockCode(stockCodeInput, lang).message
+            ?? (lang === 'en' ? 'Invalid stock code format' : '股票代码格式不正确')
+          )),
+        );
         return;
       }
       normalizedStockCode = normalized;
     }
 
     set({
-      inputError: undefined,
-      duplicateError: null,
+      ...clearInlineInputErrorState,
+      ...clearInlineDuplicateErrorState,
       error: null,
       isAnalyzing: true,
     });
@@ -953,14 +1033,12 @@ export const useStockPoolStore = create<StockPoolState>((set, get) => ({
       }
 
       if (error instanceof DuplicateTaskError) {
-        set({
-          duplicateError: `股票 ${error.stockCode} 正在分析中，请等待完成`,
-        });
+        set(buildDuplicateErrorState(error.stockCode));
         return;
       }
 
       if (options?.modelSource) void useChatGPTStore.getState().recheckStatus();
-      set({ error: getParsedApiError(error) });
+      set({ error: getParsedApiError(error, resolveActiveUiLanguage()) });
     } finally {
       if (requestId === analyzeRequestSeq) {
         set({ isAnalyzing: false });
@@ -995,7 +1073,13 @@ export const useStockPoolStore = create<StockPoolState>((set, get) => ({
   syncTaskFailed: (task) => {
     if (task.modelProvider === 'chatgpt_siwc') void useChatGPTStore.getState().recheckStatus();
     get().syncTaskUpdated(task);
-    set({ error: getParsedApiError(task.error || '分析失败') });
+    const error = task.error
+      ? getParsedApiError(task.error)
+      : createLocalizedParsedApiError((language) => getParsedApiError(
+          language === 'en' ? 'Analysis failed' : '分析失败',
+          language,
+        ));
+    set({ error });
   },
 
   refreshActiveTasks: async () => {

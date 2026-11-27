@@ -5,7 +5,12 @@ import {
   LLM_PROVIDER_TEMPLATES,
   MODEL_PLACEHOLDERS_BY_PROTOCOL,
   filterDiscoveredTextModels,
+  getProviderCapabilityMeta,
   getProviderTemplate,
+  getProviderTemplateConfigHint,
+  getProviderTemplateLabel,
+  getProviderTemplateOfficialSources,
+  getProviderTemplateRegistration,
   isKnownProviderTemplate,
 } from '../llmProviderTemplates';
 
@@ -161,11 +166,50 @@ describe('llmProviderTemplates', () => {
   it('keeps protocol-level fallback placeholders centralized', () => {
     expect(MODEL_PLACEHOLDERS_BY_PROTOCOL).toMatchObject({
       openai: 'gpt-6.1-sol,qwen3.6-plus',
-      deepseek: 'deepseek-v4-flash,deepseek-v4-pro',
+      deepseek: 'deepseek-flash,deepseek-v4-pro',
       gemini: 'gemini-3.6-flash,gemini-3.5-flash-lite',
       anthropic: 'claude-sonnet-4-6,claude-opus-4-7',
       vertex_ai: 'gemini-3.6-flash',
       ollama: 'llama3.2,qwen2.5',
     });
+    expect(LLM_PROVIDER_TEMPLATE_BY_ID.deepseek.placeholderModels).toBe('deepseek-flash,deepseek-v4-pro');
+    expect(getProviderTemplateConfigHint(LLM_PROVIDER_TEMPLATE_BY_ID.deepseek, 'zh')).toContain('deepseek-flash');
+    expect(getProviderTemplateConfigHint(LLM_PROVIDER_TEMPLATE_BY_ID.deepseek, 'en')).toContain('deepseek-flash');
+  });
+
+  it('provides localized English template and capability metadata without CJK characters', () => {
+    const cjkPattern = /[\u4e00-\u9fff]/;
+
+    for (const capability of Object.keys(LLM_PROVIDER_CAPABILITY_LABELS) as Array<keyof typeof LLM_PROVIDER_CAPABILITY_LABELS>) {
+      expect(getProviderCapabilityMeta(capability, 'zh')).toEqual(LLM_PROVIDER_CAPABILITY_LABELS[capability]);
+      const enMeta = getProviderCapabilityMeta(capability, 'en');
+      expect(enMeta.label).not.toMatch(cjkPattern);
+      expect(enMeta.hint).not.toMatch(cjkPattern);
+    }
+
+    for (const template of LLM_PROVIDER_TEMPLATES) {
+      expect(getProviderTemplateLabel(template, 'zh')).toBe(template.label);
+      expect(getProviderTemplateLabel(template, 'en')).not.toMatch(cjkPattern);
+
+      const enHint = getProviderTemplateConfigHint(template, 'en');
+      if (template.configHint) {
+        expect(enHint).toBeTruthy();
+        expect(enHint).not.toMatch(cjkPattern);
+      } else {
+        expect(enHint).toBeUndefined();
+      }
+
+      const enRegistration = getProviderTemplateRegistration(template, 'en');
+      if (template.registration) {
+        expect(enRegistration?.url).toBe(template.registration.url);
+        expect(enRegistration?.label).not.toMatch(cjkPattern);
+      } else {
+        expect(enRegistration).toBeUndefined();
+      }
+
+      for (const source of getProviderTemplateOfficialSources(template, 'en')) {
+        expect(source.label).not.toMatch(cjkPattern);
+      }
+    }
   });
 });

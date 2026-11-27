@@ -643,11 +643,13 @@ class EfinanceFetcher(BaseFetcher):
         df = df.rename(columns=column_mapping)
         
         # Fallback: if OHLC columns are missing (e.g. very old data path), fill from close
-        if 'close' in df.columns and 'open' not in df.columns:
-            df['open'] = df['close']
-            df['high'] = df['close']
-            df['low'] = df['close']
-            
+        ohlc_synthesized = False
+        if 'close' in df.columns:
+            for col in ('open', 'high', 'low'):
+                if col not in df.columns:
+                    df[col] = df['close']
+                    ohlc_synthesized = True
+
         # Fill volume and amount if missing
         if 'volume' not in df.columns:
             df['volume'] = 0
@@ -663,6 +665,9 @@ class EfinanceFetcher(BaseFetcher):
         keep_cols = ['code'] + STANDARD_COLUMNS
         existing_cols = [col for col in keep_cols if col in df.columns]
         df = df[existing_cols]
+        df.attrs['price_adjustment'] = 'forward'
+        if ohlc_synthesized:
+            df.attrs['ohlc_synthesized'] = True
         
         return df
     

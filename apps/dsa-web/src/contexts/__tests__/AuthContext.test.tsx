@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createApiError, createParsedApiError } from '../../api/error';
+import { UI_LANGUAGE_STORAGE_KEY } from '../../utils/uiLanguage';
 import { AuthProvider, useAuth } from '../AuthContext';
 
 const { getStatus, login, changePassword, logout, resetDashboardState } = vi.hoisted(() => ({
@@ -48,6 +49,13 @@ const Probe = () => {
 describe('AuthContext', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    window.localStorage.removeItem(UI_LANGUAGE_STORAGE_KEY);
+    document.documentElement.lang = '';
+  });
+
+  afterEach(() => {
+    window.localStorage.removeItem(UI_LANGUAGE_STORAGE_KEY);
+    document.documentElement.lang = '';
   });
 
   it('refreshes auth state after a successful login', async () => {
@@ -475,5 +483,62 @@ describe('AuthContext', () => {
 
     await waitFor(() => expect(getStatus).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(screen.getByTestId('overlap-status')).toHaveTextContent('logged-in'));
+  });
+
+  it('localizes 429 rate-limit login errors when UI language is en', async () => {
+    window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'en');
+    getStatus.mockResolvedValueOnce({
+      authEnabled: true,
+      loggedIn: false,
+      passwordSet: true,
+      passwordChangeable: true,
+      setupState: 'enabled',
+    });
+    login.mockRejectedValueOnce(
+      createApiError(
+        createParsedApiError({
+          title: 'Too many requests',
+          message: 'Rate limited',
+          rawMessage: 'Rate limited',
+          status: 429,
+          category: 'http_error',
+        }),
+        { response: { status: 429, data: { error: 'rate_limited' } } }
+      )
+    );
+
+    let loginResult!: { success: boolean; error?: { title: string; message: string } };
+    const RateLimitProbe = () => {
+      const auth = useAuth();
+      return (
+        <button
+          type="button"
+          onClick={() => {
+            void auth.login('passwd6').then((res) => {
+              loginResult = res;
+            });
+          }}
+        >
+          rate-limited-login
+        </button>
+      );
+    };
+
+    render(
+      <AuthProvider>
+        <RateLimitProbe />
+      </AuthProvider>
+    );
+
+    await waitFor(() => expect(getStatus).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'rate-limited-login' }));
+      await Promise.resolve();
+    });
+
+    await waitFor(() => expect(loginResult).toBeDefined());
+    expect(loginResult.success).toBe(false);
+    expect(loginResult.error?.title).toBe('Too many login attempts');
+    expect(loginResult.error?.message).toBe('Too many attempts. Please try again later.');
   });
 });

@@ -8,7 +8,9 @@ import {
   ChevronDown,
   CircleAlert,
   Clock3,
+  Compass,
   Droplet,
+  ExternalLink,
   Factory,
   Flame,
   Gem,
@@ -44,6 +46,7 @@ import { useUiLanguage } from '../contexts/UiLanguageContext';
 import type { UiLanguage } from '../i18n/uiText';
 import { SCREENING_TEXT, screeningText, type ScreeningTextKey } from '../locales/screening';
 import { AppPage, Button, InlineAlert, Select } from '../components/common';
+import { Tooltip } from '../components/common/Tooltip';
 
 const MARKET_IDS = ['cn'];
 const SCREEN_TASK_STORAGE_KEY = 'dsa.screening.activeScreenTask.v1';
@@ -1534,9 +1537,29 @@ const StockScreeningPage: React.FC = () => {
           <h1 className="text-2xl font-bold tracking-normal text-foreground">{copy.title}</h1>
         </div>
 
-        <div className="inline-flex w-fit items-center gap-2 rounded-2xl border border-border/70 bg-card/80 px-4 py-2 text-sm shadow-soft-card">
-          <span className={`h-2.5 w-2.5 rounded-full ${isScreeningEnabled ? 'bg-success' : 'bg-warning'}`} />
-          <span className="font-medium text-secondary-text">{statusText}</span>
+        <div className="flex flex-wrap items-center gap-2">
+          <Tooltip content={copy.alphaSiftTooltip} side="bottom">
+            <a
+              href={
+                language === 'en'
+                  ? 'https://alphasift.zhulinsen.tech/?lang=en&utm_source=dsa_web_screening'
+                  : 'https://alphasift.zhulinsen.tech/?lang=zh&utm_source=dsa_web_screening'
+              }
+              target="_blank"
+              rel="noopener noreferrer"
+              aria-label={copy.alphaSiftAria}
+              className="inline-flex w-fit items-center gap-2 rounded-2xl border border-border/70 bg-card/80 px-4 py-2 text-sm font-bold text-foreground shadow-soft-card transition-colors hover:border-cyan/50 hover:text-cyan"
+            >
+              <Compass className="h-4 w-4 text-cyan" aria-hidden="true" />
+              <span>{copy.alphaSiftLabel}</span>
+              <ExternalLink className="h-3.5 w-3.5 text-muted-text" aria-hidden="true" />
+            </a>
+          </Tooltip>
+
+          <div className="inline-flex w-fit items-center gap-2 rounded-2xl border border-border/70 bg-card/80 px-4 py-2 text-sm shadow-soft-card">
+            <span className={`h-2.5 w-2.5 rounded-full ${isScreeningEnabled ? 'bg-success' : 'bg-warning'}`} />
+            <span className="font-medium text-secondary-text">{statusText}</span>
+          </div>
         </div>
       </div>
 

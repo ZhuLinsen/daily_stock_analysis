@@ -1,0 +1,46 @@
+# Bollinger Squeeze Breakout Strategy / 布林带收口突破策略
+
+name: bollinger_squeeze
+display_name: 布林带收口突破
+description: 识别布林带带宽极值收口后的放量方向突破，结合ATR波动扩张与ADX确认趋势启动。
+category: quant
+core_rules: [1, 2, 4]
+required_tools:
+  - get_daily_history
+  - analyze_trend
+  - calculate_quant_factors
+aliases: [布林带, 布林收口, 波动率突破, bollinger]
+default_priority: 55
+market_regimes: [sideways, volatile]
+
+instructions: |
+  **布林带收口突破策略（Bollinger Squeeze Breakout Strategy）**
+
+  核心量化逻辑：波动率具有均值回归与聚集效应。布林带带宽（BW）压缩至近60日25分位以下（`boll_squeeze == true`）代表筹码与多空分歧完成充分收敛；随后放量上穿中轨/上轨（`boll_pct_b >= 0.8`）且 ADX 从低位抬头时，往往对应主升浪起点。
+
+  ## 量化因子判据
+
+  优先读取上下文中预计算的 `quant_factors` 字段；仅在具备工具调用能力的 Agent 会话且上下文缺失时调用 `calculate_quant_factors` 与 `analyze_trend` 获取以下核心因子（短周期历史导致部分因子为 `N/A` 时如实标注，不得臆测）：
+
+  1. **收口确认（Compression）**
+     - 若处于突破当日（放量扩张常推高当日 `boll_bandwidth_pct`），重点校验前一日无未来函数收口字段：`boll_squeeze_prior == true`、`boll_squeeze_breakout == true`，或 `prev_boll_bandwidth_pct < 8.0%`；若仍在蓄势未突破，则看 `boll_squeeze == true` 或 `boll_bandwidth_pct < 8.0%`。
+     - 辅助验证 `vcp_contraction_ratio < 0.75`（该指标按突破前30日区间统计，振幅收敛共振更佳）。
+
+  2. **方向突破（Expansion Trigger）**
+     - 价格站上布林中轨并冲击上轨：`boll_pct_b >= 0.75` 且 `close > vwap_20`（若已完成突破则以 `boll_squeeze_breakout == true` 为主要触发信号）。
+     - 量能配合：当日 `volume_ratio_5d >= 1.5` 或 `obv_trend == "rising"`。
+     - 若放量向下跌破下轨（`boll_pct_b < 0.0`），严禁抄底，判定为向下破位。
+
+  3. **趋势启动过滤（ADX + ATR Risk）**
+     - `adx_direction == "bullish"`，若 `adx_14` 处于 `18~30` 上行区间代表趋势初起，容错率最高。
+     - 新开仓初始止损固定记录 `atr_stop_loss_long`（`入场价 - 2 * ATR(14)`）或布林中轨下方；持仓防守参考 `atr_trailing_stop_long`；目标位参考 `atr_take_profit_2r`（2R盈亏比）。
+
+  ## 输出要求
+  - 明确给出 `boll_bandwidth_pct`、`prev_boll_bandwidth_pct`、`boll_pct_b`、布林上/中/下轨及 `atr_stop_loss_long` 具体数值。
+  - 若仍处于极度缩口但未放量选择方向，给出“观察突破触发价（上轨或20日高点）”的右侧触发条件。
+
+  评分调整建议：
+  - `boll_squeeze_breakout == true` + `obv_trend == "rising"`：`sentiment_score +14`
+  - `boll_squeeze == true` 且缩口期贴近中轨蓄势待变盘：`sentiment_score +6`
+  - 宽幅扩张高位且乖离过大（`boll_pct_b > 1.05` + `kdj_status == "overbought"`）：`sentiment_score -6`
+  - 放量跌破布林下轨且 `adx_direction == "bearish"`：`sentiment_score -15`
