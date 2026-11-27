@@ -11,7 +11,11 @@ import type {
 } from '../../types/analysis';
 import { getRecentStartDate, getTodayInShanghai } from '../../utils/format';
 import { UI_LANGUAGE_STORAGE_KEY } from '../../utils/uiLanguage';
-import { useStockPoolStore } from '../stockPoolStore';
+import {
+  localizeStockPoolDuplicateError,
+  localizeStockPoolInputError,
+  useStockPoolStore,
+} from '../stockPoolStore';
 
 vi.mock('../../api/history', () => ({
   historyApi: {
@@ -1503,6 +1507,41 @@ describe('stockPoolStore', () => {
       expect(useStockPoolStore.getState().duplicateError).toBe(
         'Stock 600519 is already being analyzed; please wait for it to finish',
       );
+    });
+
+    it('re-localizes settled inputError and duplicateError across UI language changes (OR-COR-2f91c84a)', async () => {
+      window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'zh');
+
+      await useStockPoolStore.getState().submitAnalysis({ stockCode: '' });
+      expect(useStockPoolStore.getState().inputError).toBe('请输入股票代码');
+      expect(localizeStockPoolInputError(useStockPoolStore.getState(), 'en')).toBe('Please enter a stock code');
+
+      await useStockPoolStore.getState().submitAnalysis({ stockCode: '600519??' });
+      expect(useStockPoolStore.getState().inputError).toBe('请输入有效的股票代码或股票名称');
+      expect(localizeStockPoolInputError(useStockPoolStore.getState(), 'en')).toBe(
+        'Please enter a valid stock code or stock name',
+      );
+
+      await useStockPoolStore.getState().submitAnalysis({ stockCode: '1234567', selectionSource: 'autocomplete' });
+      expect(useStockPoolStore.getState().inputError).toBe('股票代码格式不正确');
+      expect(localizeStockPoolInputError(useStockPoolStore.getState(), 'en')).toBe(
+        'Invalid stock code format',
+      );
+
+      vi.mocked(analysisApi.analyzeAsync).mockRejectedValueOnce(new DuplicateTaskError('600519', 'task-dup-settled'));
+      await useStockPoolStore.getState().submitAnalysis({ stockCode: '600519' });
+      expect(useStockPoolStore.getState().duplicateError).toBe('股票 600519 正在分析中，请等待完成');
+      expect(localizeStockPoolDuplicateError(useStockPoolStore.getState(), 'en')).toBe(
+        'Stock 600519 is already being analyzed; please wait for it to finish',
+      );
+
+      // Direct manual overrides bypass the stored resolver safely.
+      useStockPoolStore.setState({ duplicateError: 'Custom banner message' });
+      expect(localizeStockPoolDuplicateError(useStockPoolStore.getState(), 'en')).toBe('Custom banner message');
+
+      useStockPoolStore.getState().clearInlineMessages();
+      expect(useStockPoolStore.getState().inputError).toBeUndefined();
+      expect(useStockPoolStore.getState().duplicateError).toBeNull();
     });
   });
 });

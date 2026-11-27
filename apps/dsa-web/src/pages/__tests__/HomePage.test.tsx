@@ -6,6 +6,7 @@ import { agentApi } from '../../api/agent';
 import { historyApi } from '../../api/history';
 import { systemConfigApi } from '../../api/systemConfig';
 import { UiLanguageProvider } from '../../contexts/UiLanguageContext';
+import { UiLanguageToggle } from '../../components/i18n/UiLanguageToggle';
 import { useTaskStream } from '../../hooks/useTaskStream';
 import { useStockPoolStore } from '../../stores';
 import type { RunFlowSnapshot } from '../../types/runFlow';
@@ -3699,5 +3700,45 @@ describe('HomePage', () => {
     await waitFor(() => expect((input as HTMLInputElement).value).toBe('600519'));
     expect(navigateMock).toHaveBeenCalledWith('/', { replace: true, state: null });
     expect(vi.mocked(analysisApi.analyzeAsync)).not.toHaveBeenCalled();
+  });
+
+  it('re-localizes rendered inputError and duplicateError banners immediately when switching UI language (OR-COR-2f91c84a)', async () => {
+    window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'zh');
+    vi.mocked(historyApi.getStockBarList).mockResolvedValue({ total: 0, items: [] });
+    vi.mocked(historyApi.getList).mockResolvedValue({ total: 0, page: 1, limit: 20, items: [] });
+    vi.mocked(analysisApi.analyzeAsync).mockRejectedValueOnce(new DuplicateTaskError('600519', 'task-dup-ui'));
+
+    try {
+      render(
+        <MemoryRouter>
+          <UiLanguageProvider>
+            <UiLanguageToggle />
+            <HomePage />
+          </UiLanguageProvider>
+        </MemoryRouter>,
+      );
+
+      const input = await screen.findByPlaceholderText(/输入股票代码/);
+      fireEvent.change(input, { target: { value: '   ' } });
+      fireEvent.click(screen.getByRole('button', { name: '分析' }));
+      expect(await screen.findByText('请输入股票代码')).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('button', { name: /切换界面语言|Switch UI language/ }));
+      expect(await screen.findByText('Please enter a stock code')).toBeInTheDocument();
+      expect(screen.queryByText('请输入股票代码')).not.toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('button', { name: /切换界面语言|Switch UI language/ }));
+      expect(await screen.findByText('请输入股票代码')).toBeInTheDocument();
+
+      fireEvent.change(input, { target: { value: '600519' } });
+      fireEvent.click(screen.getByRole('button', { name: '分析' }));
+      expect(await screen.findByText('股票 600519 正在分析中，请等待完成')).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('button', { name: /切换界面语言|Switch UI language/ }));
+      expect(await screen.findByText('Stock 600519 is already being analyzed; please wait for it to finish')).toBeInTheDocument();
+      expect(screen.queryByText('股票 600519 正在分析中，请等待完成')).not.toBeInTheDocument();
+    } finally {
+      window.localStorage.removeItem(UI_LANGUAGE_STORAGE_KEY);
+    }
   });
 });

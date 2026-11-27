@@ -32,6 +32,7 @@ import {
 } from '../components/watchlist/HomeStockWorkspace';
 import { isWatchlistRowPendingAnalysis } from '../components/watchlist/watchlistRowState';
 import { useDashboardLifecycle, useHomeDashboardState } from '../hooks';
+import { localizeStockPoolDuplicateError, localizeStockPoolInputError } from '../stores/stockPoolStore';
 import { useWatchlist } from '../hooks/useWatchlist';
 import { useUiLanguage } from '../contexts/UiLanguageContext';
 import { localizeSkill } from '../locales/strategyText';
@@ -358,7 +359,11 @@ const HomePage: React.FC = () => {
   const {
     query,
     inputError,
+    inputErrorResolver,
+    inputErrorResolvedValue,
     duplicateError,
+    duplicateErrorResolver,
+    duplicateErrorResolvedValue,
     error,
     isAnalyzing,
     selectedReport,
@@ -402,6 +407,21 @@ const HomePage: React.FC = () => {
     loadStockBar,
     refreshStockBar,
   } = useHomeDashboardState();
+
+  const localizedInputError = useMemo(
+    () => localizeStockPoolInputError(
+      { inputError, inputErrorResolver, inputErrorResolvedValue },
+      uiLanguage,
+    ),
+    [inputError, inputErrorResolver, inputErrorResolvedValue, uiLanguage],
+  );
+  const localizedDuplicateError = useMemo(
+    () => localizeStockPoolDuplicateError(
+      { duplicateError, duplicateErrorResolver, duplicateErrorResolvedValue },
+      uiLanguage,
+    ),
+    [duplicateError, duplicateErrorResolver, duplicateErrorResolvedValue, uiLanguage],
+  );
 
   const clearDuplicateBannerTimer = useCallback(() => {
     if (duplicateBannerTimer.current !== null) {
@@ -1554,7 +1574,7 @@ const HomePage: React.FC = () => {
                   }}
                   placeholder={t('home.placeholder')}
                   disabled={isAnalyzing}
-                  className={inputError ? 'border-danger/50' : undefined}
+                  className={localizedInputError ? 'border-danger/50' : undefined}
                 />
               </div>
               {analysisSkills.length > 0 ? (
@@ -1660,21 +1680,21 @@ const HomePage: React.FC = () => {
           </div>
         </header>
 
-        {inputError || (duplicateError && duplicateBannerVisible) ? (
+        {localizedInputError || (localizedDuplicateError && duplicateBannerVisible) ? (
           <div className="px-3 pb-2 md:px-4">
-            {inputError ? (
+            {localizedInputError ? (
               <InlineAlert
                 variant="danger"
                 title={t('home.inputInvalid')}
-                message={inputError}
+                message={localizedInputError}
                 className="rounded-xl px-3 py-2 text-xs shadow-none"
               />
             ) : null}
-            {!inputError && duplicateError && duplicateBannerVisible ? (
+            {!localizedInputError && localizedDuplicateError && duplicateBannerVisible ? (
               <InlineAlert
                 variant="warning"
                 title={t('home.duplicateTask')}
-                message={duplicateError}
+                message={localizedDuplicateError}
                 action={(
                   <button
                     type="button"

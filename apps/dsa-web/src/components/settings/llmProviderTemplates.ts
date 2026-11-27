@@ -106,8 +106,10 @@ export const LLM_PROVIDER_TEMPLATES: LLMProviderTemplate[] = [
     label: 'DeepSeek 官方',
     protocol: 'deepseek',
     baseUrl: 'https://api.deepseek.com',
-    placeholderModels: 'deepseek-v4-flash,deepseek-v4-pro',
+    placeholderModels: 'deepseek-flash,deepseek-v4-pro',
     capabilities: ['official-api', 'openai-compatible'],
+    configHint:
+      '推荐使用官方当前模型名 deepseek-flash（也可搭配 deepseek-v4-pro）；旧名 deepseek-v4-flash 已退役，仅作为兼容别名临时转发。',
     officialSources: [{ label: 'DeepSeek API Docs', url: 'https://api-docs.deepseek.com/' }],
   },
   {
@@ -291,7 +293,7 @@ export function isKnownProviderTemplate(channelId: string): boolean {
 
 export const MODEL_PLACEHOLDERS_BY_PROTOCOL: Record<ChannelProtocol, string> = {
   openai: 'gpt-6.1-sol,qwen3.6-plus',
-  deepseek: 'deepseek-v4-flash,deepseek-v4-pro',
+  deepseek: 'deepseek-flash,deepseek-v4-pro',
   gemini: 'gemini-3.6-flash,gemini-3.5-flash-lite',
   anthropic: 'claude-sonnet-4-6,claude-opus-4-7',
   vertex_ai: 'gemini-3.6-flash',
@@ -350,6 +352,8 @@ const EN_TEMPLATE_CONFIG_HINTS: Record<string, string> = {
   modelflare:
     'The API Key routing group must support your selected models; verify exact model IDs in the Modelflare console or via Fetch Models. Leaving Base URL blank defaults to /v1 and can be overridden without appending /chat/completions.',
   x6ai: 'Use "Fetch Models" to query model IDs available to your account, then select models and test the connection; refer to the x6.ai console for actual capabilities and pricing.',
+  deepseek:
+    'Recommended current Flash model ID is deepseek-flash (optionally alongside deepseek-v4-pro); legacy deepseek-v4-flash is retired and only accepted temporarily for compatibility.',
   volcengine: 'Ensure the online inference endpoint/region is not mixed up with dedicated Coding Plan endpoints.',
   siliconflow: 'Model list and model visibility depend on account permissions and your API Key.',
   openrouter: 'Model list and model visibility depend on account permissions and your API Key.',

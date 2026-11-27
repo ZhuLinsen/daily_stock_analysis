@@ -1090,7 +1090,7 @@ describe('LLMChannelEditor', () => {
     expect(update).not.toHaveBeenCalled();
   });
 
-  it('uses DeepSeek V4 defaults when adding the official preset', async () => {
+  it('uses DeepSeek Flash defaults when adding the official preset', async () => {
     render(
       <LLMChannelEditor
         items={[]}
@@ -1105,7 +1105,8 @@ describe('LLMChannelEditor', () => {
 
     await screen.findByRole('button', { name: /DeepSeek 官方/i });
     expect(screen.getByLabelText('Base URL')).toHaveValue('https://api.deepseek.com');
-    expect(screen.getByLabelText('模型（逗号分隔）')).toHaveValue('deepseek-v4-flash,deepseek-v4-pro');
+    expect(screen.getByLabelText('模型（逗号分隔）')).toHaveValue('deepseek-flash,deepseek-v4-pro');
+    expect(screen.getByText(/推荐使用官方当前模型名 deepseek-flash/i)).toBeInTheDocument();
   });
 
   it.each([
