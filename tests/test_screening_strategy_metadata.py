@@ -758,3 +758,134 @@ screening:
         config=runtime_cfg,
     )
     assert [pick.code for pick in empty_result.picks] == ["600519"]
+
+
+def test_pipeline_screen_ignores_zero_and_negative_known_factor_weights_in_tie_break(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import pandas as pd
+    from src.services.screening import pipeline as screening_pipeline
+    from src.services.screening.config import Config as RuntimeConfig
+
+    (tmp_path / "zero_known_weights.yaml").write_text(
+        """
+name: zero_known_weights
+display_name: Zero Known Factor Weights
+screening:
+  enabled: true
+  market_scope: [cn]
+  max_output: 1
+  factor_weights:
+    value: 0
+""".strip(),
+        encoding="utf-8",
+    )
+    (tmp_path / "negative_and_zero_weights.yaml").write_text(
+        """
+name: negative_and_zero_weights
+display_name: Negative And Zero Factor Weights
+screening:
+  enabled: true
+  market_scope: [cn]
+  max_output: 1
+  factor_weights:
+    value: -1
+    momentum: 0
+""".strip(),
+        encoding="utf-8",
+    )
+    (tmp_path / "mixed_positive_and_nonpositive_weights.yaml").write_text(
+        """
+name: mixed_positive_and_nonpositive_weights
+display_name: Mixed Positive And Nonpositive Factor Weights
+screening:
+  enabled: true
+  market_scope: [cn]
+  max_output: 1
+  factor_weights:
+    value: 0
+    momentum: -0.5
+    stability: 0.6
+""".strip(),
+        encoding="utf-8",
+    )
+
+    snapshot_df = pd.DataFrame([
+        {
+            "code": "600519", "name": "HighZeroVal", "price": 100.0, "change_pct": 0.0,
+            "volume_ratio": 1.0, "turnover_rate": 2.0, "pe_ratio": 20.0, "pb_ratio": 3.0,
+            "total_mv": 5e10, "circ_mv": 4e10, "amount": 5e8,
+        },
+        {
+            "code": "000001", "name": "LowZeroVal", "price": 12.0, "change_pct": 0.0,
+            "volume_ratio": 1.0, "turnover_rate": 2.0, "pe_ratio": 20.0, "pb_ratio": 3.0,
+            "total_mv": 5e10, "circ_mv": 4e10, "amount": 5e8,
+        },
+    ])
+    snapshot_df.attrs.update({
+        "snapshot_source": "test_snapshot",
+        "source_errors": [],
+        "fallback_used": False,
+    })
+
+    stability_scores = {"value": [40.0, 80.0]}
+
+    def fake_compute_scores(frame: pd.DataFrame, _screening) -> pd.DataFrame:
+        scored = frame.copy()
+        scored["factor_value_score"] = [80.0 if code == "600519" else 20.0 for code in scored["code"]]
+        scored["factor_liquidity_score"] = 50.0
+        scored["factor_momentum_score"] = [90.0 if code == "600519" else 20.0 for code in scored["code"]]
+        scored["factor_activity_score"] = 50.0
+        scored["factor_stability_score"] = [
+            stability_scores["value"][0] if code == "600519" else stability_scores["value"][1]
+            for code in scored["code"]
+        ]
+        scored["screen_score"] = 50.0
+        return scored
+
+    runtime_cfg = RuntimeConfig(
+        strategies_dir=tmp_path,
+        daily_enrich_enabled=False,
+        post_analyzers=[],
+        risk_enabled=False,
+        portfolio_diversity_enabled=False,
+    )
+    monkeypatch.setattr(screening_pipeline, "fetch_snapshot_with_fallback", lambda *args, **kwargs: snapshot_df.copy())
+    monkeypatch.setattr(screening_pipeline, "compute_screen_scores", fake_compute_scores)
+    monkeypatch.setattr(screening_pipeline, "apply_dsa_provider_context", lambda picks, _ctx: [])
+
+    # Known factor_weights with only zero or negative weights fall back to [screen_score, code] tie-break.
+    zero_result = screening_pipeline.screen(
+        "zero_known_weights",
+        market="cn",
+        use_llm=False,
+        config=runtime_cfg,
+    )
+    assert [pick.code for pick in zero_result.picks] == ["000001"]
+
+    negative_result = screening_pipeline.screen(
+        "negative_and_zero_weights",
+        market="cn",
+        use_llm=False,
+        config=runtime_cfg,
+    )
+    assert [pick.code for pick in negative_result.picks] == ["000001"]
+
+    # Mixed positive and non-positive weights only use positive weights (stability) for tie-breaking.
+    mixed_first = screening_pipeline.screen(
+        "mixed_positive_and_nonpositive_weights",
+        market="cn",
+        use_llm=False,
+        config=runtime_cfg,
+    )
+    assert [pick.code for pick in mixed_first.picks] == ["000001"]
+
+    stability_scores["value"] = [85.0, 40.0]
+    mixed_reverse = screening_pipeline.screen(
+        "mixed_positive_and_nonpositive_weights",
+        market="cn",
+        use_llm=False,
+        config=runtime_cfg,
+    )
+    assert [pick.code for pick in mixed_reverse.picks] == ["600519"]

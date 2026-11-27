@@ -653,7 +653,7 @@ def _sort_screened_candidates(df: pd.DataFrame, screening=None) -> pd.DataFrame:
                 numeric_weight = float(weight)
             except (TypeError, ValueError, OverflowError):
                 continue
-            if math.isfinite(numeric_weight):
+            if math.isfinite(numeric_weight) and numeric_weight > 0:
                 weighted_factors.append((factor, numeric_weight))
         factor_order = [
             factor
