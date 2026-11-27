@@ -341,6 +341,24 @@ def test_changelog_mentions_alert_p8_docs_closeout() -> None:
     assert "GitHub Actions 与 Desktop 边界" in changelog
 
 
+def test_alerts_doc_covers_kline_pattern_rules() -> None:
+    doc = _read_doc()
+
+    for token in (
+        "## K 线形态监测规则（kline_pattern）",
+        "`kline_pattern`",
+        "`red_three_soldiers`",
+        "`immortal_guide`",
+        "`any_bullish`",
+        "`any_bearish`",
+        "`require_volume_confirm`",
+        "`22` 根已收盘日线",
+        "`__bar_dedup__`",
+        "`pattern_filter`",
+    ):
+        assert token in doc
+
+
 def test_changelog_unreleased_keeps_flat_entries() -> None:
     changelog = (PROJECT_ROOT / "docs" / "CHANGELOG.md").read_text(encoding="utf-8")
     unreleased = changelog.split("## [Unreleased]", 1)[1].split("\n## [", 1)[0]

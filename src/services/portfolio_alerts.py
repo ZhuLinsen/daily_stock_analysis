@@ -268,7 +268,7 @@ def evaluate_portfolio_risk_alert(
 
 def result_to_target_result(payload: RuntimeAlertPayload, result: Dict[str, Any]) -> Dict[str, Any]:
     record_status = result.get("record_status")
-    return {
+    item = {
         "target": payload.effective_target,
         "display_target": payload.display_target,
         "status": result.get("status") or "evaluation_error",
@@ -278,6 +278,10 @@ def result_to_target_result(payload: RuntimeAlertPayload, result: Dict[str, Any]
         "threshold": result.get("threshold"),
         "message": result.get("message") or result.get("reason") or "",
     }
+    for key in ("matched_patterns", "monitored_patterns", "unavailable_patterns"):
+        if result.get(key) is not None:
+            item[key] = list(result[key])
+    return item
 
 
 def aggregate_dry_run_results(rule_id: int, target_scope: str, results: List[Dict[str, Any]]) -> Dict[str, Any]:

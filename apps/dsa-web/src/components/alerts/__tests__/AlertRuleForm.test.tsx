@@ -1,6 +1,8 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { UiLanguageProvider } from '../../../contexts/UiLanguageContext';
+import { alertsApi } from '../../../api/alerts';
+import apiClient from '../../../api/index';
 import { UI_LANGUAGE_STORAGE_KEY } from '../../../utils/uiLanguage';
 import { AlertRuleForm } from '../AlertRuleForm';
 
@@ -319,5 +321,87 @@ describe('AlertRuleForm', () => {
     await waitFor(() => expect(onSubmit).toHaveBeenCalled());
     expect(screen.getByLabelText('标的代码')).toHaveValue('aapl');
     expect(screen.getByLabelText('价格阈值')).toHaveValue(200);
+  });
+
+  it('submits a kline_pattern rule with presets and volume confirmation, and rejects empty selection', async () => {
+    render(<AlertRuleForm onSubmit={onSubmit} />);
+
+    fireEvent.change(screen.getByLabelText('标的代码'), { target: { value: '600519' } });
+    fireEvent.change(screen.getByLabelText('规则类型'), { target: { value: 'kline_pattern' } });
+
+    expect(screen.getByLabelText('红三兵')).toBeChecked();
+    expect(screen.getByLabelText('仙人指路')).toBeChecked();
+
+    fireEvent.click(screen.getByRole('button', { name: '全部看涨' }));
+    expect(screen.getByLabelText('全部看涨形态')).toBeChecked();
+    expect(screen.getByLabelText('红三兵')).toBeDisabled();
+    expect(screen.getByLabelText('红三兵')).toBeChecked();
+
+    fireEvent.click(screen.getByLabelText('全部看涨形态'));
+    expect(screen.getByLabelText('红三兵')).not.toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: '创建规则' }));
+    expect(screen.getByRole('alert')).toHaveTextContent('至少选择一个监测形态');
+    expect(onSubmit).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: '红三兵 + 仙人指路' }));
+    fireEvent.click(screen.getByLabelText('需要量能确认（过滤无量形态）'));
+    fireEvent.click(screen.getByRole('button', { name: '创建规则' }));
+
+    await waitFor(() => {
+      expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
+        target: '600519',
+        alertType: 'kline_pattern',
+        parameters: {
+          patterns: ['red_three_soldiers', 'immortal_guide'],
+          requireVolumeConfirm: true,
+        },
+      }));
+    });
+  });
+
+  it('preserves snake_case pattern tokens and require_volume_confirm through alertsApi.createRule', async () => {
+    const postSpy = vi.spyOn(apiClient, 'post').mockResolvedValueOnce({
+      data: {
+        id: 12,
+        name: '600519 pattern red_three_soldiers',
+        target_scope: 'single_symbol',
+        target: '600519',
+        alert_type: 'kline_pattern',
+        parameters: { patterns: ['red_three_soldiers'], require_volume_confirm: false },
+        severity: 'warning',
+        enabled: true,
+        source: 'api',
+      },
+    });
+
+    const created = await alertsApi.createRule({
+      targetScope: 'single_symbol',
+      target: '600519',
+      alertType: 'kline_pattern',
+      parameters: { patterns: ['red_three_soldiers'], requireVolumeConfirm: false },
+      severity: 'warning',
+      enabled: true,
+    });
+
+    expect(postSpy).toHaveBeenCalledWith('/api/v1/alerts/rules', expect.objectContaining({
+      alert_type: 'kline_pattern',
+      parameters: { patterns: ['red_three_soldiers'], require_volume_confirm: false },
+    }));
+    expect(created.parameters).toEqual({
+      patterns: ['red_three_soldiers'],
+      requireVolumeConfirm: false,
+    });
+    postSpy.mockRestore();
+  });
+
+  it('renders kline_pattern controls in English UI mode', () => {
+    renderEnglishForm();
+
+    fireEvent.change(screen.getByLabelText('Rule type'), { target: { value: 'kline_pattern' } });
+
+    expect(screen.getByText('Patterns to monitor')).toBeInTheDocument();
+    expect(screen.getByLabelText('Three White Soldiers')).toBeChecked();
+    expect(screen.getByLabelText('Immortal Guide')).toBeChecked();
+    expect(screen.getByLabelText('Require volume confirmation')).toBeInTheDocument();
   });
 });

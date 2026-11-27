@@ -9,6 +9,7 @@ Fixes #1066 – eliminates 45+ redundant HTTP requests per stock in Agent mode.
 from __future__ import annotations
 
 import contextvars
+import inspect
 import logging
 from datetime import date, datetime, timedelta
 from threading import Lock
@@ -22,6 +23,7 @@ _CACHE_MIN_RECORDS = 30
 
 class HistoryIdentityError(ValueError):
     """A strict tool identity cannot be preserved by the history read path."""
+
 
 # ---------------------------------------------------------------------------
 # Frozen target date (ContextVar) – set once per stock in pipeline, read by
@@ -138,6 +140,17 @@ def _select_best_bars(db, stock_code: str, start: date, end: date, stock_identit
     return best_code, best_bars
 
 
+def _accepts_kwarg(func: Any, kwarg_name: str) -> bool:
+    try:
+        sig = inspect.signature(func)
+    except (TypeError, ValueError):
+        return False
+    for param in sig.parameters.values():
+        if param.kind == inspect.Parameter.VAR_KEYWORD or param.name == kwarg_name:
+            return True
+    return False
+
+
 def load_history_df(
     stock_code: str,
     days: int = 60,
@@ -186,14 +199,38 @@ def load_history_df(
         logger.debug("load_history_df(%s): DB read failed: %s", stock_code, e)
 
     # --- 2. Network fallback via singleton DataFetcherManager -------------
+    has_explicit_end = target_date is not None or get_frozen_target_date() is not None
     fallback_kwargs = {}
     if identity is not None:
         fallback_kwargs["analysis_target"] = analysis_target
     try:
         manager = _get_fetcher_manager()
+        if has_explicit_end and _accepts_kwarg(manager.get_daily_data, "end_date"):
+            fallback_kwargs["end_date"] = end.isoformat()
         df, source = manager.get_daily_data(stock_code, days=days, **fallback_kwargs)
         if df is not None and not df.empty:
-            return df, source
+            if has_explicit_end:
+                from src.core.kline_patterns import parse_iso_date_value
+                from src.services.alert_indicators import _find_column
+
+                attrs = dict(getattr(df, "attrs", {}) or {})
+                date_col = _find_column(df, "date")
+                raw_dates = None
+                if date_col is not None:
+                    raw_dates = [parse_iso_date_value(v) for v in df[date_col].tolist()]
+                elif isinstance(df.index, pd.DatetimeIndex):
+                    raw_dates = [parse_iso_date_value(v) for v in df.index.to_pydatetime().tolist()]
+                if raw_dates is not None:
+                    end_iso = end.isoformat()
+                    keep_mask = [d_iso is None or d_iso <= end_iso for d_iso in raw_dates]
+                    if not all(keep_mask):
+                        if date_col is not None:
+                            df = df.loc[keep_mask].copy().reset_index(drop=True)
+                        else:
+                            df = df.loc[keep_mask].copy()
+                        df.attrs.update(attrs)
+            if not df.empty:
+                return df, source
     except Exception as e:
         logger.warning("load_history_df(%s): DataFetcherManager failed: %s", stock_code, e)
 

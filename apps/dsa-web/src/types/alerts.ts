@@ -10,12 +10,33 @@ export type AlertType =
   | 'macd_cross'
   | 'kdj_cross'
   | 'cci_threshold'
+  | 'kline_pattern'
   | 'portfolio_stop_loss'
   | 'portfolio_concentration'
   | 'portfolio_drawdown'
   | 'portfolio_price_stale'
   | 'market_light_status'
   | 'market_light_score_drop';
+export type KlinePatternToken =
+  | 'any_bullish'
+  | 'any_bearish'
+  | 'red_three_soldiers'
+  | 'immortal_guide'
+  | 'rising_lotus'
+  | 'bullish_cannon'
+  | 'morning_star'
+  | 'bullish_engulfing'
+  | 'piercing_line'
+  | 'hammer'
+  | 'breakout_20d_high'
+  | 'ma_pullback_support'
+  | 'three_black_crows'
+  | 'guillotine'
+  | 'evening_star'
+  | 'bearish_engulfing'
+  | 'dark_cloud_cover'
+  | 'shooting_star'
+  | 'hanging_man';
 export type AlertSeverity = 'info' | 'warning' | 'critical';
 export type AlertTargetScope = 'single_symbol' | 'watchlist' | 'portfolio_holdings' | 'portfolio_account' | 'market';
 export type AlertDirection = 'above' | 'below' | 'up' | 'down' | 'bullish_cross' | 'bearish_cross';
@@ -38,6 +59,8 @@ export interface AlertRuleParameters {
   signalPeriod?: number;
   kPeriod?: number;
   dPeriod?: number;
+  patterns?: KlinePatternToken[];
+  requireVolumeConfirm?: boolean;
   mode?: PortfolioStopLossMode;
   statuses?: MarketLightStatus[];
   minDrop?: number;
@@ -96,6 +119,9 @@ export interface AlertRuleTestResponse {
   degradedCount?: number;
   skippedCount?: number;
   targetResults?: AlertRuleTargetResult[];
+  matchedPatterns?: string[] | null;
+  monitoredPatterns?: string[] | null;
+  unavailablePatterns?: string[] | null;
 }
 
 export interface AlertRuleTargetResult {
@@ -107,6 +133,9 @@ export interface AlertRuleTargetResult {
   observedValue?: unknown;
   threshold?: unknown;
   message: string;
+  matchedPatterns?: string[] | null;
+  monitoredPatterns?: string[] | null;
+  unavailablePatterns?: string[] | null;
 }
 
 export interface AlertTriggerItem {
@@ -121,6 +150,9 @@ export interface AlertTriggerItem {
   triggeredAt?: string | null;
   status: AlertTriggerStatus | string;
   diagnostics?: string | null;
+  matchedPatterns?: string[] | null;
+  monitoredPatterns?: string[] | null;
+  unavailablePatterns?: string[] | null;
   marketPhaseSummary?: MarketPhaseSummary | null;
   analysisContextPackOverview?: AnalysisContextPackOverview | null;
   analysisVisibilitySource?: string | null;

@@ -7,6 +7,7 @@ import { formatUiText, type UiLanguage } from '../../i18n/uiText';
 import {
   ALERT_DIRECTION_LABELS,
   ALERT_ENABLED_FILTER_OPTIONS,
+  ALERT_KLINE_PATTERN_LABELS,
   ALERT_LIST_TEXT,
   ALERT_MARKET_LIGHT_STATUS_LABELS,
   ALERT_MARKET_REGION_LABELS,
@@ -59,6 +60,15 @@ function formatParameters(rule: AlertRuleItem, language: UiLanguage): string {
       return `MACD(${rule.parameters.fastPeriod ?? '--'},${rule.parameters.slowPeriod ?? '--'},${rule.parameters.signalPeriod ?? '--'}) ${direction}`;
     }
     return `KDJ(${rule.parameters.period ?? '--'},${rule.parameters.kPeriod ?? '--'},${rule.parameters.dPeriod ?? '--'}) ${direction}`;
+  }
+  if (rule.alertType === 'kline_pattern') {
+    const tokens = rule.parameters.patterns ?? [];
+    if (tokens.length === 0) return '--';
+    const labels = tokens.map((token) => ALERT_KLINE_PATTERN_LABELS[language][token] ?? token);
+    const preview = labels.slice(0, 3).join(language === 'zh' ? '、' : ', ');
+    const overflow = labels.length > 3 ? ` +${labels.length - 3}` : '';
+    const volSuffix = rule.parameters.requireVolumeConfirm ? ALERT_LIST_TEXT[language].volumeConfirmedSuffix : '';
+    return `${preview}${overflow}${volSuffix}`;
   }
   if (rule.alertType === 'portfolio_stop_loss') {
     return rule.parameters.mode === 'breach' ? directionLabels.stopLossBreach : directionLabels.stopLossNear;

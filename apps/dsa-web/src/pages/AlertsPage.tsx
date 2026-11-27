@@ -13,6 +13,9 @@ import {
 } from '../components/alerts/AlertRuleList';
 import { AlertTriggerHistory } from '../components/alerts/AlertTriggerHistory';
 import { ApiErrorAlert, AppPage, Card, EmptyState, InlineAlert, Loading, PageHeader } from '../components/common';
+import { useUiLanguage } from '../contexts/UiLanguageContext';
+import { formatUiText, type UiLanguage } from '../i18n/uiText';
+import { ALERT_NOTIFICATION_CHANNEL_LABELS, ALERT_PAGE_TEXT, formatAlertReason } from '../locales/featureText';
 import type {
   AlertNotificationItem,
   AlertRuleCreateRequest,
@@ -41,67 +44,119 @@ function testVariant(result: AlertRuleTestResponse): 'success' | 'warning' | 'da
   return result.triggered ? 'success' : 'warning';
 }
 
-function renderTestResultMessage(result: AlertRuleTestResponse): React.ReactNode {
+function renderTestResultMessage(result: AlertRuleTestResponse, language: UiLanguage): React.ReactNode {
+  const text = ALERT_PAGE_TEXT[language];
   const targetResults = result.targetResults ?? [];
+  const hasTopLevelPatternMeta = Boolean(
+    result.matchedPatterns?.length
+    || result.monitoredPatterns?.length
+    || result.unavailablePatterns?.length,
+  );
+  const hasTargetPatternMeta = targetResults.some(
+    (item) => Boolean(
+      item.matchedPatterns?.length
+      || item.unavailablePatterns?.length
+      || item.monitoredPatterns?.length,
+    ),
+  );
+  const showTargetResults = targetResults.length > 1
+    || (targetResults.length === 1 && !hasTopLevelPatternMeta && hasTargetPatternMeta);
   return (
     <div className="space-y-2">
       <div>
-        {result.message}
-        {' · 状态：'}
+        {formatAlertReason(result.message, language, {
+          status: result.status,
+          triggered: result.triggered,
+          observedValue: result.observedValue,
+          matchedPatterns: result.matchedPatterns,
+          monitoredPatterns: result.monitoredPatterns,
+          unavailablePatterns: result.unavailablePatterns,
+        })}
+        {' · '}
+        {text.statusLabel}
         {result.status}
-        {' · 触发：'}
-        {result.triggered ? '是' : '否'}
-        {' · 观察值：'}
+        {' · '}
+        {text.triggeredLabel}
+        {result.triggered ? text.yes : text.no}
+        {' · '}
+        {text.observedValueLabel}
         {result.observedValue == null ? '--' : String(result.observedValue)}
       </div>
       {result.evaluatedCount != null && result.evaluatedCount > 1 ? (
         <div className="text-xs">
-          评估 {result.evaluatedCount} · 触发 {result.triggeredCount ?? 0} · 降级 {result.degradedCount ?? 0} · 跳过 {result.skippedCount ?? 0}
+          {formatUiText(text.batchStats, {
+            evaluated: result.evaluatedCount,
+            triggered: result.triggeredCount ?? 0,
+            degraded: result.degradedCount ?? 0,
+            skipped: result.skippedCount ?? 0,
+          })}
         </div>
       ) : null}
-      {targetResults.length > 1 ? (
+      {showTargetResults ? (
         <div className="grid gap-1 text-xs">
-          {targetResults.slice(0, 20).map((item) => (
-            <div key={`${item.target}-${item.status}`} className="flex flex-wrap justify-between gap-2">
-              <span>{item.displayTarget ?? item.target}</span>
-              <span>
-                {item.status}
-                {item.recordStatus ? ` / ${item.recordStatus}` : ''}
-              </span>
-            </div>
-          ))}
+          {targetResults.slice(0, 20).map((item) => {
+            const hasPatternMeta = Boolean(
+              item.matchedPatterns?.length
+              || item.unavailablePatterns?.length
+              || item.monitoredPatterns?.length,
+            );
+            const localizedPatternSummary = hasPatternMeta
+              ? formatAlertReason(item.message, language, {
+                status: item.status,
+                triggered: item.triggered,
+                observedValue: item.observedValue,
+                matchedPatterns: item.matchedPatterns,
+                monitoredPatterns: item.monitoredPatterns,
+                unavailablePatterns: item.unavailablePatterns,
+              })
+              : null;
+            return (
+              <div key={`${item.target}-${item.status}`} className="flex flex-wrap justify-between gap-2">
+                <span>
+                  {item.displayTarget ?? item.target}
+                  {localizedPatternSummary ? ` · ${localizedPatternSummary}` : ''}
+                </span>
+                <span>
+                  {item.status}
+                  {item.recordStatus ? ` / ${item.recordStatus}` : ''}
+                </span>
+              </div>
+            );
+          })}
         </div>
       ) : null}
     </div>
   );
 }
 
-const notificationChannelLabel: Record<string, string> = {
-  __cooldown__: '业务冷却',
-  __cooldown_read_failed__: '冷却读取失败',
-  __noise_suppressed__: '通知降噪',
-  __no_channel__: '无可用渠道',
-  __dispatch__: '通知调度',
-  __context__: '会话渠道',
-};
-
-function formatNotificationChannel(channel: string): string {
-  return notificationChannelLabel[channel] ?? channel;
+function formatNotificationChannel(channel: string, language: UiLanguage): string {
+  return ALERT_NOTIFICATION_CHANNEL_LABELS[language][channel] ?? channel;
 }
 
-function formatNotificationStatus(notification: AlertNotificationItem): string {
-  if (notification.success) return '成功';
-  if (notification.errorCode === 'cooldown_active') return '冷却抑制';
-  if (notification.errorCode === 'cooldown_read_failed') return '冷却读取失败';
-  if (notification.errorCode === 'noise_suppressed') return '降噪抑制';
-  if (notification.errorCode === 'no_channel') return '无渠道';
-  return '失败';
+function formatNotificationStatus(notification: AlertNotificationItem, language: UiLanguage): string {
+  const text = ALERT_PAGE_TEXT[language];
+  if (notification.success) return text.statusSuccess;
+  if (notification.errorCode === 'cooldown_active') return text.statusCooldown;
+  if (notification.errorCode === 'already_delivered') return text.statusAlreadyDelivered;
+  if (notification.errorCode === 'delivery_in_flight' || notification.errorCode === 'in_flight') {
+    return text.statusDeliveryInFlight;
+  }
+  if (notification.errorCode === 'delivery_unrecorded') return text.statusDeliveryUnrecorded;
+  if (notification.errorCode === 'claim_failed') return text.statusClaimFailed;
+  if (notification.errorCode === 'claim_lost') return text.statusClaimLost;
+  if (notification.errorCode === 'cooldown_read_failed') return text.statusCooldownReadFailed;
+  if (notification.errorCode === 'noise_suppressed') return text.statusNoiseSuppressed;
+  if (notification.errorCode === 'no_channel') return text.statusNoChannel;
+  return text.statusFailed;
 }
 
 const AlertsPage: React.FC = () => {
+  const { language } = useUiLanguage();
+  const text = ALERT_PAGE_TEXT[language];
+
   useEffect(() => {
-    document.title = '告警中心 - DSA';
-  }, []);
+    document.title = text.documentTitle;
+  }, [text.documentTitle]);
 
   const [rules, setRules] = useState<AlertRuleItem[]>([]);
   const [rulesTotal, setRulesTotal] = useState(0);
@@ -208,7 +263,7 @@ const AlertsPage: React.FC = () => {
     setCreateSuccess(null);
     try {
       const created = await alertsApi.createRule(payload);
-      setCreateSuccess(`已创建告警规则「${created.name}」`);
+      setCreateSuccess(formatUiText(text.createSuccessMessage, { name: created.name }));
       setRulesPage(1);
       setRulesRefreshKey((value) => value + 1);
       return true;
@@ -265,19 +320,19 @@ const AlertsPage: React.FC = () => {
     <AppPage className="space-y-5">
       <PageHeader
         eyebrow="Alert Center"
-        title="告警中心"
-        description="管理事件告警、日线技术指标、自选股、持仓/账户联动和大盘红绿灯规则，执行一次性测试，并查看后台评估任务记录的触发历史。"
+        title={text.title}
+        description={text.description}
       />
 
       {createError ? <ApiErrorAlert error={createError} onDismiss={() => setCreateError(null)} /> : null}
       {createSuccess ? (
         <InlineAlert
-          title="创建成功"
+          title={text.createSuccessTitle}
           message={createSuccess}
           variant="success"
           action={(
             <button type="button" className="text-sm underline" onClick={() => setCreateSuccess(null)}>
-              关闭
+              {text.close}
             </button>
           )}
         />
@@ -285,9 +340,12 @@ const AlertsPage: React.FC = () => {
       {rulesError ? <ApiErrorAlert error={rulesError} onDismiss={() => setRulesError(null)} /> : null}
       {!rulesError && ruleSources && ruleSources.legacyConfigured > 0 ? (
         <InlineAlert
-          title="存在环境变量告警规则"
+          title={text.envRuleTitle}
           variant="warning"
-          message={`环境变量配置了 ${ruleSources.legacyConfigured} 条有效规则，按当前启用的页面规则去重后有 ${ruleSources.legacyEffective} 条可供后台轮询。此数量不受页面筛选影响，也不表示后台轮询已启动。页面仅管理数据库规则；删除或禁用页面规则不会停用环境规则。若需停用，请在部署配置中修改 AGENT_EVENT_ALERT_RULES_JSON 并重新加载配置。`}
+          message={formatUiText(text.envRuleMessage, {
+            configured: ruleSources.legacyConfigured,
+            effective: ruleSources.legacyEffective,
+          })}
         />
       ) : null}
 
@@ -319,9 +377,9 @@ const AlertsPage: React.FC = () => {
           />
           {testResult ? (
             <InlineAlert
-              title="测试结果"
+              title={text.testResultTitle}
               variant={testVariant(testResult)}
-              message={renderTestResultMessage(testResult)}
+              message={renderTestResultMessage(testResult, language)}
             />
           ) : null}
         </div>
@@ -331,13 +389,13 @@ const AlertsPage: React.FC = () => {
       <AlertTriggerHistory triggers={triggers} isLoading={triggersLoading} />
 
       {notificationsError ? <ApiErrorAlert error={notificationsError} onDismiss={() => setNotificationsError(null)} /> : null}
-      <Card title="通知尝试记录" subtitle="通知结果" variant="bordered" padding="md">
-        {notificationsLoading ? <Loading label="正在加载通知尝试记录" /> : null}
+      <Card title={text.notificationsTitle} subtitle={text.notificationsSubtitle} variant="bordered" padding="md">
+        {notificationsLoading ? <Loading label={text.loadingNotifications} /> : null}
         {!notificationsLoading && notifications.length === 0 ? (
           <EmptyState
             icon={<BellRing className="h-6 w-6" />}
-            title="暂无通知尝试记录"
-            description="当前没有可展示的通知尝试明细；告警触发仍会按已配置通知渠道发送。"
+            title={text.noNotificationsTitle}
+            description={text.noNotificationsDescription}
           />
         ) : null}
         {!notificationsLoading && notifications.length > 0 ? (
@@ -345,19 +403,19 @@ const AlertsPage: React.FC = () => {
             <table className="w-full min-w-[680px] text-left text-sm">
               <thead className="border-b border-border/60 text-xs uppercase text-muted-text">
                 <tr>
-                  <th className="px-3 py-2 font-medium">渠道</th>
-                  <th className="px-3 py-2 font-medium">状态</th>
-                  <th className="px-3 py-2 font-medium">错误码</th>
-                  <th className="px-3 py-2 font-medium">耗时</th>
-                  <th className="px-3 py-2 font-medium">时间</th>
-                  <th className="px-3 py-2 font-medium">诊断</th>
+                  <th className="px-3 py-2 font-medium">{text.colChannel}</th>
+                  <th className="px-3 py-2 font-medium">{text.colStatus}</th>
+                  <th className="px-3 py-2 font-medium">{text.colErrorCode}</th>
+                  <th className="px-3 py-2 font-medium">{text.colLatency}</th>
+                  <th className="px-3 py-2 font-medium">{text.colTime}</th>
+                  <th className="px-3 py-2 font-medium">{text.colDiagnostics}</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border/40">
                 {notifications.map((notification) => (
                   <tr key={notification.id}>
-                    <td className="px-3 py-3">{formatNotificationChannel(notification.channel)}</td>
-                    <td className="px-3 py-3">{formatNotificationStatus(notification)}</td>
+                    <td className="px-3 py-3">{formatNotificationChannel(notification.channel, language)}</td>
+                    <td className="px-3 py-3">{formatNotificationStatus(notification, language)}</td>
                     <td className="px-3 py-3">{notification.errorCode ?? '--'}</td>
                     <td className="px-3 py-3">{notification.latencyMs == null ? '--' : `${notification.latencyMs}ms`}</td>
                     <td className="px-3 py-3">{formatDateTime(notification.createdAt)}</td>

@@ -867,12 +867,17 @@ class StockAnalysisPipeline:
                 historical_bars = self.db.get_data_range(code, start_date, end_date)
                 if historical_bars:
                     df = pd.DataFrame([bar.to_dict() for bar in historical_bars])
+                    closed_pattern_df = df
+                    if frozen is None and not df.empty:
+                        from src.services.alert_indicators import _drop_partial_today
+
+                        closed_pattern_df = _drop_partial_today(df, stock_code=code)
                     # Issue #234: Augment with realtime for intraday MA calculation
                     if self.config.enable_realtime_quote and realtime_quote:
                         df = self._augment_historical_with_realtime(
                             df, realtime_quote, code, market=market
                         )
-                    trend_result = self.trend_analyzer.analyze(df, code)
+                    trend_result = self.trend_analyzer.analyze(df, code, pattern_df=closed_pattern_df)
                     logger.info(
                         f"{log_stock_name}({code}) trend analysis: {trend_result.trend_status.name}, "
                         f"buy_signal={trend_result.buy_signal.name}, score={trend_result.signal_score}"
@@ -1356,6 +1361,9 @@ class StockAnalysisPipeline:
                 'signal_reasons': trend_result.signal_reasons,
                 'risk_factors': trend_result.risk_factors,
             }
+            if trend_result.kline_patterns:
+                enhanced['trend_analysis']['kline_patterns'] = trend_result.kline_patterns
+                enhanced['trend_analysis']['pattern_summary'] = trend_result.pattern_summary
 
         # Issue #234：盘中分析使用实时 OHLC 与趋势 MA 覆盖 today。
         # 防护条件：trend_result.ma5 > 0 表示 MA 计算已成功且数据量充足。

@@ -17,6 +17,14 @@ from src.formatters import (
     chunk_content_by_max_words,
     strip_hidden_markdown_metadata,
 )
+from ._delivery_context import (
+    is_at_most_once_delivery,
+    is_delivery_ambiguous,
+    record_delivery_ambiguous,
+    record_delivery_confirmed_absent,
+    record_delivery_succeeded,
+    validate_http_post_request,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -74,6 +82,7 @@ class DiscordSender:
         sanitized_content = strip_hidden_markdown_metadata(content).strip()
         if not sanitized_content:
             logger.warning("Discord message content is empty, skipping notification")
+            record_delivery_confirmed_absent("invalid_content")
             return False
 
         # 分割内容，避免单条消息超过 Discord 限制
@@ -98,6 +107,7 @@ class DiscordSender:
             )
 
         logger.warning("Discord configuration incomplete, skipping notification")
+        record_delivery_confirmed_absent("invalid_config")
         return False
 
     def _split_discord_content(self, content: str) -> list[str]:
@@ -141,6 +151,8 @@ class DiscordSender:
                     logger.info("Discord %s chunk %d/%d sent successfully", channel_name, i + 1, total_chunks)
             else:
                 logger.error("Discord %s chunk %d/%d send failed", channel_name, i + 1, total_chunks)
+                if is_at_most_once_delivery() and is_delivery_ambiguous():
+                    return False
 
             if i < total_chunks - 1:
                 time.sleep(DISCORD_CHUNK_SLEEP_SECONDS)
@@ -213,10 +225,17 @@ class DiscordSender:
         channel_name: str,
     ) -> bool:
         """发送单条 Discord 消息，并复用 Telegram 的有限重试思路处理 429/5xx。"""
+        if not validate_http_post_request(url, headers=headers, json=payload):
+            logger.error("Discord %s request configuration is invalid, cannot send", channel_name)
+            record_delivery_confirmed_absent("invalid_config")
+            return False
+
         request_kwargs = {
             'json': payload,
             'timeout': timeout_seconds or 10,
         }
+        if is_at_most_once_delivery():
+            request_kwargs['allow_redirects'] = False
         if headers:
             request_kwargs['headers'] = headers
         if verify is not None:
@@ -225,7 +244,28 @@ class DiscordSender:
         for attempt in range(1, DISCORD_MAX_RETRIES + 1):
             try:
                 response = requests.post(url, **request_kwargs)
+            except requests.exceptions.ConnectTimeout as e:
+                if attempt < DISCORD_MAX_RETRIES:
+                    delay = 2 ** attempt
+                    logger.warning(
+                        "Discord %s connect timeout (%d/%d): %s; retrying in %ss",
+                        channel_name,
+                        attempt,
+                        DISCORD_MAX_RETRIES,
+                        e,
+                        delay,
+                    )
+                    time.sleep(delay)
+                    continue
+                logger.error("Discord %s connect timed out after retries: %s", channel_name, e)
+                record_delivery_confirmed_absent("connect_timeout")
+                return False
             except requests.exceptions.RequestException as e:
+                error_code = "read_timeout" if isinstance(e, requests.exceptions.Timeout) else "connection_error"
+                record_delivery_ambiguous(error_code)
+                if is_at_most_once_delivery():
+                    logger.error("Discord %s request failed in at-most-once mode (%s): %s", channel_name, error_code, e)
+                    return False
                 if attempt < DISCORD_MAX_RETRIES:
                     delay = 2 ** attempt
                     logger.warning(
@@ -243,32 +283,54 @@ class DiscordSender:
 
             if response.status_code in success_statuses:
                 logger.info("Discord %s message sent successfully", channel_name)
+                record_delivery_succeeded()
                 return True
 
-            if response.status_code == 429 and attempt < DISCORD_MAX_RETRIES:
-                retry_after = self._get_retry_after_seconds(response, attempt)
-                logger.warning(
-                    "Discord %s rate limited; retrying in %ss (%d/%d)",
-                    channel_name,
-                    retry_after,
-                    attempt,
-                    DISCORD_MAX_RETRIES,
-                )
-                time.sleep(retry_after)
-                continue
+            if response.status_code == 429:
+                if attempt < DISCORD_MAX_RETRIES:
+                    retry_after = self._get_retry_after_seconds(response, attempt)
+                    logger.warning(
+                        "Discord %s rate limited; retrying in %ss (%d/%d)",
+                        channel_name,
+                        retry_after,
+                        attempt,
+                        DISCORD_MAX_RETRIES,
+                    )
+                    time.sleep(retry_after)
+                    continue
+                logger.error("Discord %s send failed after rate-limit retries: %s", channel_name, response.status_code)
+                record_delivery_confirmed_absent("rate_limited")
+                return False
 
-            if response.status_code >= 500 and attempt < DISCORD_MAX_RETRIES:
-                delay = 2 ** attempt
-                logger.warning(
-                    "Discord %s server error HTTP %s (%d/%d); retrying in %ss",
+            if response.status_code >= 500:
+                record_delivery_ambiguous("http_5xx")
+                if is_at_most_once_delivery():
+                    logger.error(
+                        "Discord %s server error HTTP %s in at-most-once mode: %s",
+                        channel_name,
+                        response.status_code,
+                        response.text,
+                    )
+                    return False
+                if attempt < DISCORD_MAX_RETRIES:
+                    delay = 2 ** attempt
+                    logger.warning(
+                        "Discord %s server error HTTP %s (%d/%d); retrying in %ss",
+                        channel_name,
+                        response.status_code,
+                        attempt,
+                        DISCORD_MAX_RETRIES,
+                        delay,
+                    )
+                    time.sleep(delay)
+                    continue
+                logger.error(
+                    "Discord %s send failed: %s %s",
                     channel_name,
                     response.status_code,
-                    attempt,
-                    DISCORD_MAX_RETRIES,
-                    delay,
+                    response.text,
                 )
-                time.sleep(delay)
-                continue
+                return False
 
             logger.error(
                 "Discord %s send failed: %s %s",
@@ -276,6 +338,12 @@ class DiscordSender:
                 response.status_code,
                 response.text,
             )
+            if 400 <= response.status_code < 500:
+                record_delivery_confirmed_absent("http_4xx")
+            elif 300 <= response.status_code < 400:
+                record_delivery_ambiguous("http_3xx")
+            else:
+                record_delivery_ambiguous("send_failed")
             return False
 
         return False

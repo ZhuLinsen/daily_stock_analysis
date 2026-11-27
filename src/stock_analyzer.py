@@ -18,7 +18,7 @@
 
 import logging
 from dataclasses import dataclass, field
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from enum import Enum
 
 import pandas as pd
@@ -133,6 +133,8 @@ class TrendAnalysisResult:
     signal_score: int = 0            # 综合评分 0-100
     signal_reasons: List[str] = field(default_factory=list)
     risk_factors: List[str] = field(default_factory=list)
+    kline_patterns: List[Dict[str, Any]] = field(default_factory=list)
+    pattern_summary: str = ""
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -157,6 +159,8 @@ class TrendAnalysisResult:
             'signal_score': self.signal_score,
             'signal_reasons': self.signal_reasons,
             'risk_factors': self.risk_factors,
+            'kline_patterns': self.kline_patterns,
+            'pattern_summary': self.pattern_summary,
             'macd_dif': self.macd_dif,
             'macd_dea': self.macd_dea,
             'macd_bar': self.macd_bar,
@@ -204,27 +208,34 @@ class StockTrendAnalyzer:
         """初始化分析器"""
         pass
     
-    def analyze(self, df: pd.DataFrame, code: str) -> TrendAnalysisResult:
+    def analyze(
+        self,
+        df: pd.DataFrame,
+        code: str,
+        *,
+        pattern_df: Optional[pd.DataFrame] = None,
+    ) -> TrendAnalysisResult:
         """
         分析股票趋势
-        
+
         Args:
             df: 包含 OHLCV 数据的 DataFrame
             code: 股票代码
-            
+            pattern_df: 可选的已收盘日线 DataFrame，用于在盘中隔离未收盘实时虚拟K线
+
         Returns:
             TrendAnalysisResult 分析结果
         """
         result = TrendAnalysisResult(code=code)
-        
+
         if df is None or df.empty or len(df) < 20:
             logger.warning(f"{code} insufficient data for trend analysis")
             result.risk_factors.append("数据不足，无法完成分析")
             return result
-        
+
         # 确保数据按日期排序
         df = df.sort_values('date').reset_index(drop=True)
-        
+
         # 计算均线
         df = self._calculate_mas(df)
 
@@ -258,7 +269,13 @@ class StockTrendAnalyzer:
         # 6. RSI 分析
         self._analyze_rsi(df, result)
 
-        # 7. 生成买入信号
+        # 7. K线形态识别（优先使用已收盘日线避免盘中虚拟K线误判）
+        pattern_input = pattern_df if pattern_df is not None else df
+        if pattern_df is not None and not pattern_df.empty and 'date' in pattern_df.columns:
+            pattern_input = pattern_df.sort_values('date').reset_index(drop=True)
+        self._analyze_kline_patterns(pattern_input, result)
+
+        # 8. 生成买入信号
         self._generate_signal(result)
 
         return result
@@ -569,6 +586,41 @@ class StockTrendAnalyzer:
             result.rsi_status = RSIStatus.OVERSOLD
             result.rsi_signal = f"⭐ RSI超卖({rsi_mid:.1f}<30)，反弹机会大"
 
+    def _analyze_kline_patterns(self, df: pd.DataFrame, result: TrendAnalysisResult) -> None:
+        """Detect recent high-value K-line patterns without altering numeric scores."""
+        if df is None or df.empty or not {"open", "high", "low", "close"}.issubset(df.columns):
+            return
+        try:
+            from src.core.kline_patterns import detect_kline_patterns
+
+            detected = detect_kline_patterns(
+                df,
+                days=min(len(df), 60),
+                single_candle_lookback=3,
+                include_chart_patterns=True,
+                legacy_compat_mode=False,
+                allow_missing_volume_breakout=False,
+            )
+            strength_rank = {"强": 0, "中": 1, "弱": 2}
+            actionable = [
+                item for item in detected
+                if item.completed_bar_offset >= -2 and item.pattern_id != "box_consolidation"
+            ]
+            actionable.sort(
+                key=lambda item: (
+                    -item.completed_bar_offset,
+                    strength_rank.get(item.strength, 9),
+                    0 if item.volume_confirmed is True else 1,
+                )
+            )
+            actionable = actionable[:5]
+            if not actionable:
+                return
+            result.kline_patterns = [item.to_detail_dict() for item in actionable]
+            result.pattern_summary = "、".join(item.pattern for item in actionable)
+        except Exception as exc:
+            logger.debug("K-line pattern detection skipped for %s: %s", result.code, exc)
+
     def _generate_signal(self, result: TrendAnalysisResult) -> None:
         """
         生成买入信号
@@ -782,6 +834,12 @@ class StockTrendAnalyzer:
             f"🎯 操作建议: {result.buy_signal.value}",
             f"   综合评分: {result.signal_score}/100",
         ]
+
+        if result.kline_patterns:
+            lines.append("")
+            lines.append("🕯️ K线形态:")
+            for pat in result.kline_patterns:
+                lines.append(f"   {pat.get('pattern', '')} - {pat.get('desc', '')}")
 
         if result.signal_reasons:
             lines.append(f"")

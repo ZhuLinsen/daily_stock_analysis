@@ -6,6 +6,7 @@ import type {
   AlertSeverity,
   AlertTargetScope,
   AlertType,
+  KlinePatternToken,
   MarketLightStatus,
   MarketRegion,
   PortfolioStopLossMode,
@@ -17,6 +18,9 @@ import {
   ALERT_CHANGE_DIRECTION_OPTIONS,
   ALERT_CROSS_DIRECTION_OPTIONS,
   ALERT_FORM_TEXT,
+  ALERT_KLINE_PATTERN_OPTIONS,
+  ALERT_KLINE_PRESET_MEMBERS,
+  ALERT_KLINE_PRESETS,
   ALERT_MARKET_LIGHT_STATUS_OPTIONS,
   ALERT_MARKET_REGION_OPTIONS,
   ALERT_MARKET_TYPE_OPTIONS,
@@ -31,75 +35,8 @@ import {
 import { validateStockCode } from '../../utils/validation';
 import { Button, Card, Checkbox, Input, Select } from '../common';
 
-const SYMBOL_ALERT_TYPE_OPTIONS = [
-  { value: 'price_cross', label: '价格突破' },
-  { value: 'price_change_percent', label: '涨跌幅' },
-  { value: 'volume_spike', label: '成交量放大' },
-  { value: 'ma_price_cross', label: '价格均线穿越' },
-  { value: 'rsi_threshold', label: 'RSI 阈值' },
-  { value: 'macd_cross', label: 'MACD 金叉/死叉' },
-  { value: 'kdj_cross', label: 'KDJ 金叉/死叉' },
-  { value: 'cci_threshold', label: 'CCI 阈值' },
-];
-
-const PORTFOLIO_ALERT_TYPE_OPTIONS = [
-  { value: 'portfolio_stop_loss', label: '组合止损' },
-  { value: 'portfolio_concentration', label: '组合集中度' },
-  { value: 'portfolio_drawdown', label: '组合回撤' },
-  { value: 'portfolio_price_stale', label: '组合价格状态' },
-];
-
-const MARKET_ALERT_TYPE_OPTIONS = [
-  { value: 'market_light_status', label: '大盘红绿灯状态' },
-  { value: 'market_light_score_drop', label: '大盘红绿灯分数下降' },
-];
-
-const TARGET_SCOPE_OPTIONS = [
-  { value: 'single_symbol', label: '单标的' },
-  { value: 'watchlist', label: '自选股' },
-  { value: 'portfolio_holdings', label: '持仓标的' },
-  { value: 'portfolio_account', label: '持仓账户' },
-  { value: 'market', label: '大盘市场' },
-];
-
-const SEVERITY_OPTIONS = [
-  { value: 'info', label: '提示' },
-  { value: 'warning', label: '警告' },
-  { value: 'critical', label: '严重' },
-];
-
-const PRICE_DIRECTION_OPTIONS = [
-  { value: 'above', label: '上破' },
-  { value: 'below', label: '下破' },
-];
-
-const CHANGE_DIRECTION_OPTIONS = [
-  { value: 'up', label: '上涨达到' },
-  { value: 'down', label: '下跌达到' },
-];
-
-const THRESHOLD_DIRECTION_OPTIONS = [
-  { value: 'above', label: '上穿' },
-  { value: 'below', label: '下穿' },
-];
-
-const CROSS_DIRECTION_OPTIONS = [
-  { value: 'bullish_cross', label: '金叉' },
-  { value: 'bearish_cross', label: '死叉' },
-];
-
-const STOP_LOSS_MODE_OPTIONS = [
-  { value: 'near', label: '接近止损' },
-  { value: 'breach', label: '已触发止损' },
-];
-
-
-const MARKET_LIGHT_STATUS_OPTIONS: Array<{ value: MarketLightStatus; label: string }> = [
-  { value: 'red', label: '红灯' },
-  { value: 'yellow', label: '黄灯' },
-];
-
 const MAX_REQUESTED_DAYS = 365;
+const DEFAULT_KLINE_PATTERNS: KlinePatternToken[] = ['red_three_soldiers', 'immortal_guide'];
 
 interface AlertRuleFormProps {
   onSubmit: (payload: AlertRuleCreateRequest) => Promise<boolean | void> | boolean | void;
@@ -116,10 +53,6 @@ function defaultAlertTypeForScope(scope: AlertTargetScope): AlertType {
 }
 
 function optionsForScope(scope: AlertTargetScope, language: UiLanguage) {
-  if (language === 'zh') {
-    if (scope === 'market') return MARKET_ALERT_TYPE_OPTIONS;
-    return scope === 'portfolio_account' ? PORTFOLIO_ALERT_TYPE_OPTIONS : SYMBOL_ALERT_TYPE_OPTIONS;
-  }
   if (scope === 'market') return ALERT_MARKET_TYPE_OPTIONS[language];
   return scope === 'portfolio_account' ? ALERT_PORTFOLIO_TYPE_OPTIONS[language] : ALERT_SYMBOL_TYPE_OPTIONS[language];
 }
@@ -155,6 +88,8 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
   const [dPeriod, setDPeriod] = useState('3');
   const [marketLightStatuses, setMarketLightStatuses] = useState<MarketLightStatus[]>(['red', 'yellow']);
   const [minDrop, setMinDrop] = useState('10');
+  const [klinePatterns, setKlinePatterns] = useState<KlinePatternToken[]>(DEFAULT_KLINE_PATTERNS);
+  const [requireVolumeConfirm, setRequireVolumeConfirm] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -215,6 +150,9 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
       setThresholdDirection('above');
       setPeriod('14');
       setThreshold('');
+    } else if (nextType === 'kline_pattern') {
+      setKlinePatterns(DEFAULT_KLINE_PATTERNS);
+      setRequireVolumeConfirm(false);
     } else if (nextType === 'portfolio_stop_loss') {
       setStopLossMode('near');
     } else if (nextType === 'market_light_status') {
@@ -231,6 +169,30 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
         : [...current, status]
     ));
   };
+
+  const toggleKlinePattern = (token: KlinePatternToken) => {
+    setKlinePatterns((current) => {
+      if (current.includes(token)) {
+        return current.filter((item) => item !== token);
+      }
+      if (token === 'any_bullish' || token === 'any_bearish') {
+        const covered = new Set<KlinePatternToken>(ALERT_KLINE_PRESET_MEMBERS[token]);
+        return [...current.filter((item) => !covered.has(item)), token];
+      }
+      return [...current, token];
+    });
+  };
+
+  const coveredByActivePreset = useMemo(() => {
+    const covered = new Set<KlinePatternToken>();
+    if (klinePatterns.includes('any_bullish')) {
+      for (const member of ALERT_KLINE_PRESET_MEMBERS.any_bullish) covered.add(member);
+    }
+    if (klinePatterns.includes('any_bearish')) {
+      for (const member of ALERT_KLINE_PRESET_MEMBERS.any_bearish) covered.add(member);
+    }
+    return covered;
+  }, [klinePatterns]);
 
   const parsePositiveNumber = (value: string, label: string): number | null => {
     const parsed = Number(value);
@@ -339,6 +301,13 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
       if (parsedPeriod == null || parsedThreshold == null) return null;
       return { direction: thresholdDirection, period: parsedPeriod, threshold: parsedThreshold };
     }
+    if (alertType === 'kline_pattern') {
+      if (klinePatterns.length === 0) {
+        setFormError(text.noKlinePattern);
+        return null;
+      }
+      return { patterns: klinePatterns, requireVolumeConfirm };
+    }
     if (alertType === 'portfolio_stop_loss') {
       return { mode: stopLossMode };
     }
@@ -417,6 +386,8 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
     setDPeriod('3');
     setMarketLightStatuses(['red', 'yellow']);
     setMinDrop('10');
+    setKlinePatterns(DEFAULT_KLINE_PATTERNS);
+    setRequireVolumeConfirm(false);
     resetParameters(alertType);
     setEnabled(true);
   };
@@ -482,7 +453,7 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
           <Select
             label={text.targetScope}
             value={targetScope}
-            options={language === 'zh' ? TARGET_SCOPE_OPTIONS : ALERT_TARGET_SCOPE_OPTIONS[language]}
+            options={ALERT_TARGET_SCOPE_OPTIONS[language]}
             disabled={isSubmitting}
             onChange={handleScopeChange}
           />
@@ -501,7 +472,7 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
           <Select
             label={text.severity}
             value={severity}
-            options={language === 'zh' ? SEVERITY_OPTIONS : ALERT_SEVERITY_OPTIONS[language]}
+            options={ALERT_SEVERITY_OPTIONS[language]}
             disabled={isSubmitting}
             onChange={(value) => setSeverity(value as AlertSeverity)}
           />
@@ -512,7 +483,7 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
             <Select
               label={text.direction}
               value={priceDirection}
-              options={language === 'zh' ? PRICE_DIRECTION_OPTIONS : ALERT_PRICE_DIRECTION_OPTIONS[language]}
+              options={ALERT_PRICE_DIRECTION_OPTIONS[language]}
               disabled={isSubmitting}
               onChange={(value) => setPriceDirection(value as 'above' | 'below')}
             />
@@ -533,7 +504,7 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
             <Select
               label={text.direction}
               value={changeDirection}
-              options={language === 'zh' ? CHANGE_DIRECTION_OPTIONS : ALERT_CHANGE_DIRECTION_OPTIONS[language]}
+              options={ALERT_CHANGE_DIRECTION_OPTIONS[language]}
               disabled={isSubmitting}
               onChange={(value) => setChangeDirection(value as 'up' | 'down')}
             />
@@ -566,7 +537,7 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
             <Select
               label={text.maDirection}
               value={thresholdDirection}
-              options={language === 'zh' ? THRESHOLD_DIRECTION_OPTIONS : ALERT_THRESHOLD_DIRECTION_OPTIONS[language]}
+              options={ALERT_THRESHOLD_DIRECTION_OPTIONS[language]}
               disabled={isSubmitting}
               onChange={(value) => setThresholdDirection(value as 'above' | 'below')}
             />
@@ -588,7 +559,7 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
             <Select
               label={text.thresholdDirection}
               value={thresholdDirection}
-              options={language === 'zh' ? THRESHOLD_DIRECTION_OPTIONS : ALERT_THRESHOLD_DIRECTION_OPTIONS[language]}
+              options={ALERT_THRESHOLD_DIRECTION_OPTIONS[language]}
               disabled={isSubmitting}
               onChange={(value) => setThresholdDirection(value as 'above' | 'below')}
             />
@@ -620,7 +591,7 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
             <Select
               label={text.crossDirection}
               value={crossDirection}
-              options={language === 'zh' ? CROSS_DIRECTION_OPTIONS : ALERT_CROSS_DIRECTION_OPTIONS[language]}
+              options={ALERT_CROSS_DIRECTION_OPTIONS[language]}
               disabled={isSubmitting}
               onChange={(value) => setCrossDirection(value as 'bullish_cross' | 'bearish_cross')}
             />
@@ -662,7 +633,7 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
             <Select
               label={text.crossDirection}
               value={crossDirection}
-              options={language === 'zh' ? CROSS_DIRECTION_OPTIONS : ALERT_CROSS_DIRECTION_OPTIONS[language]}
+              options={ALERT_CROSS_DIRECTION_OPTIONS[language]}
               disabled={isSubmitting}
               onChange={(value) => setCrossDirection(value as 'bullish_cross' | 'bearish_cross')}
             />
@@ -704,7 +675,7 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
             <Select
               label={text.thresholdDirection}
               value={thresholdDirection}
-              options={language === 'zh' ? THRESHOLD_DIRECTION_OPTIONS : ALERT_THRESHOLD_DIRECTION_OPTIONS[language]}
+              options={ALERT_THRESHOLD_DIRECTION_OPTIONS[language]}
               disabled={isSubmitting}
               onChange={(value) => setThresholdDirection(value as 'above' | 'below')}
             />
@@ -729,11 +700,56 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
           </div>
         ) : null}
 
+        {alertType === 'kline_pattern' ? (
+          <div className="space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="text-sm font-medium text-foreground">{text.klinePatternsLabel}</span>
+              <div className="flex flex-wrap gap-1.5">
+                {ALERT_KLINE_PRESETS[language].map((preset) => (
+                  <Button
+                    key={preset.key}
+                    type="button"
+                    size="xsm"
+                    variant="outline"
+                    disabled={isSubmitting}
+                    onClick={() => setKlinePatterns(preset.patterns)}
+                  >
+                    {preset.label}
+                  </Button>
+                ))}
+              </div>
+            </div>
+            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+              {ALERT_KLINE_PATTERN_OPTIONS[language].map((option) => {
+                const isCoveredByPreset = coveredByActivePreset.has(option.value);
+                return (
+                  <Checkbox
+                    key={option.value}
+                    label={option.label}
+                    checked={isCoveredByPreset || klinePatterns.includes(option.value)}
+                    disabled={isSubmitting || isCoveredByPreset}
+                    onChange={() => toggleKlinePattern(option.value)}
+                  />
+                );
+              })}
+            </div>
+            {coveredByActivePreset.size > 0 ? (
+              <p className="text-xs text-muted-text">{text.klinePresetIncludedHint}</p>
+            ) : null}
+            <Checkbox
+              label={text.klineRequireVolumeConfirm}
+              checked={requireVolumeConfirm}
+              disabled={isSubmitting}
+              onChange={(event) => setRequireVolumeConfirm(event.target.checked)}
+            />
+          </div>
+        ) : null}
+
         {alertType === 'portfolio_stop_loss' ? (
           <Select
             label={text.stopLossMode}
             value={stopLossMode}
-            options={language === 'zh' ? STOP_LOSS_MODE_OPTIONS : ALERT_STOP_LOSS_MODE_OPTIONS[language]}
+            options={ALERT_STOP_LOSS_MODE_OPTIONS[language]}
             disabled={isSubmitting}
             onChange={(value) => setStopLossMode(value as PortfolioStopLossMode)}
           />
@@ -743,7 +759,7 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
           <div className="space-y-2">
             <div className="text-sm font-medium text-foreground">{text.triggerStatus}</div>
             <div className="grid gap-3 sm:grid-cols-2">
-              {(language === 'zh' ? MARKET_LIGHT_STATUS_OPTIONS : ALERT_MARKET_LIGHT_STATUS_OPTIONS[language]).map((option) => (
+              {ALERT_MARKET_LIGHT_STATUS_OPTIONS[language].map((option) => (
                 <Checkbox
                   key={option.value}
                   label={option.label}

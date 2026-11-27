@@ -77,7 +77,29 @@ class HistoryLoaderTestCase(unittest.TestCase):
 
         self.assertIsNotNone(df)
         self.assertEqual(source, "eastmoney")
-        mock_fm.get_daily_data.assert_called_once_with("600519", days=60)
+        mock_fm.get_daily_data.assert_called_once_with("600519", days=60, end_date="2026-04-18")
+
+    def test_historical_cache_miss_passes_end_date_and_trims_newer_rows(self):
+        from src.services.history_loader import load_history_df
+
+        mock_db = MagicMock()
+        mock_db.get_data_range.return_value = []
+
+        provider_df = pd.DataFrame([
+            {"date": "2026-04-17", "open": 10.0, "high": 10.5, "low": 9.8, "close": 10.2, "volume": 1000},
+            {"date": "2026-04-18", "open": 10.2, "high": 10.8, "low": 10.0, "close": 10.6, "volume": 1200},
+            {"date": "2026-04-19", "open": 10.6, "high": 11.0, "low": 10.5, "close": 10.9, "volume": 1500},
+        ])
+        mock_fm = MagicMock()
+        mock_fm.get_daily_data.return_value = (provider_df, "eastmoney")
+
+        with patch("src.storage.get_db", return_value=mock_db), \
+             patch("src.services.history_loader._get_fetcher_manager", return_value=mock_fm):
+            df, source = load_history_df("600519", days=60, target_date=date(2026, 4, 18))
+
+        self.assertEqual(source, "eastmoney")
+        mock_fm.get_daily_data.assert_called_once_with("600519", days=60, end_date="2026-04-18")
+        self.assertEqual(list(df["date"]), ["2026-04-17", "2026-04-18"])
 
     # ------------------------------------------------------------------
     # ContextVar integration

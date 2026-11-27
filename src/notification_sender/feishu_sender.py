@@ -19,7 +19,6 @@ import time
 import uuid as uuid_mod
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Tuple, TypeVar
-from urllib.parse import urlsplit
 
 import requests
 
@@ -33,6 +32,15 @@ from src.formatters import (
     strip_hidden_markdown_metadata,
 )
 from src.report_language import SUPPORTED_REPORT_LANGUAGES, get_report_labels
+from ._delivery_context import (
+    is_at_most_once_delivery,
+    is_delivery_ambiguous,
+    is_valid_http_url,
+    record_delivery_ambiguous,
+    record_delivery_confirmed_absent,
+    record_delivery_succeeded,
+    validate_http_post_request,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -155,11 +163,7 @@ class FeishuSender:
 
     @staticmethod
     def _is_web_url(value: str) -> bool:
-        try:
-            url = urlsplit(value)
-            return url.scheme in {"http", "https"} and bool(url.hostname) and not any(char.isspace() for char in value)
-        except ValueError:
-            return False
+        return is_valid_http_url(value)
 
     @staticmethod
     def _is_risk_heading(line: str) -> bool:
@@ -373,10 +377,12 @@ class FeishuSender:
         """Send message through the Feishu App Bot, chunking if necessary."""
         if not self._feishu_chat_id:
             logger.warning("FEISHU_CHAT_ID not configured, skipping App Bot send")
+            record_delivery_confirmed_absent("not_configured")
             return False
 
         client = self._ensure_app_client()
         if client is None:
+            record_delivery_confirmed_absent("not_configured")
             return False
 
         header = self._infer_card_header(content)
@@ -402,6 +408,7 @@ class FeishuSender:
                 pages = build_pages()
         except ValueError as e:
             logger.error("App Bot chunking failed: %s", e)
+            record_delivery_confirmed_absent("chunking_failed")
             return False
 
         success = True
@@ -410,6 +417,8 @@ class FeishuSender:
             if not ok:
                 logger.error("App Bot chunk %d/%d send failed", i + 1, len(pages))
                 success = False
+                if is_at_most_once_delivery() and is_delivery_ambiguous():
+                    break
             if i < len(pages) - 1:
                 time.sleep(1)
         return success
@@ -425,6 +434,9 @@ class FeishuSender:
         """
         if self._app_send_raw(client, "interactive", card_payload):
             return True
+
+        if is_at_most_once_delivery() and is_delivery_ambiguous():
+            return False
 
         # Fallback to plain text.
         text_payload = json.dumps({"text": content}, ensure_ascii=False)
@@ -453,6 +465,7 @@ class FeishuSender:
         a transient failure.
         """
         if client is None:
+            record_delivery_confirmed_absent("not_configured")
             return False
 
         send_uuid = str(uuid_mod.uuid4())
@@ -465,6 +478,7 @@ class FeishuSender:
             )
         except Exception as e:
             logger.error("App Bot request build failed: %s: %s", type(e).__name__, e)
+            record_delivery_confirmed_absent("request_build_failed")
             return False
 
         last_status: Optional[str] = None
@@ -477,6 +491,9 @@ class FeishuSender:
                     "App Bot send exception (attempt=%d/%d): %s: %s",
                     attempt + 1, _APP_SEND_RETRIES, type(e).__name__, e,
                 )
+                if is_at_most_once_delivery():
+                    record_delivery_ambiguous("feishu_app_send_exception")
+                    return False
                 if attempt < _APP_SEND_RETRIES - 1:
                     time.sleep(
                         _APP_SEND_BACKOFF_SECONDS[
@@ -487,6 +504,7 @@ class FeishuSender:
 
             if resp.success():
                 logger.info("App Bot message sent successfully (type=%s)", msg_type)
+                record_delivery_succeeded()
                 return True
 
             try:
@@ -501,6 +519,9 @@ class FeishuSender:
                 "App Bot send failed (attempt=%d/%d): %s",
                 attempt + 1, _APP_SEND_RETRIES, status,
             )
+            if is_at_most_once_delivery():
+                record_delivery_ambiguous("feishu_app_send_failed")
+                return False
 
             if attempt < _APP_SEND_RETRIES - 1:
                 time.sleep(
@@ -511,6 +532,7 @@ class FeishuSender:
 
         if last_status:
             logger.error("App Bot send permanently failed: %s", last_status)
+        record_delivery_ambiguous("feishu_app_send_failed")
         return False
 
     # ------------------------------------------------------------------
@@ -531,6 +553,7 @@ class FeishuSender:
         """
         if content is None:
             logger.error("send_to_feishu: content must not be None")
+            record_delivery_confirmed_absent("invalid_payload")
             return False
         sanitized_content = strip_hidden_markdown_metadata(content).strip()
         if self._feishu_url:
@@ -557,6 +580,7 @@ class FeishuSender:
         path = Path(file_path)
         if not path.is_file():
             logger.error("send_feishu_file: file does not exist: %s", file_path)
+            record_delivery_confirmed_absent("file_not_found")
             return False
 
         upload_path, display_name = self._prepare_sanitized_file(path)
@@ -606,14 +630,17 @@ class FeishuSender:
         """Upload *path* to Feishu via App Bot SDK and send as file message."""
         if not FEISHU_FILE_SDK_AVAILABLE:
             logger.warning("lark-oapi SDK does not support file upload; upgrade lark-oapi")
+            record_delivery_confirmed_absent("sdk_unavailable")
             return False
 
         if not self._feishu_chat_id:
             logger.warning("FEISHU_CHAT_ID not configured, skipping App Bot file send")
+            record_delivery_confirmed_absent("not_configured")
             return False
 
         client = self._ensure_app_client()
         if client is None:
+            record_delivery_confirmed_absent("not_configured")
             return False
 
         file_name = display_name or path.name
@@ -683,6 +710,7 @@ class FeishuSender:
             text = path.read_text("utf-8")
         except (OSError, UnicodeDecodeError) as e:
             logger.error("Failed to read file content (webhook fallback): %s: %s", type(e).__name__, e)
+            record_delivery_confirmed_absent("file_read_failed")
             return False
 
         file_label = self._guess_mime_for_webhook(path)
@@ -697,11 +725,16 @@ class FeishuSender:
 
     def _send_via_webhook(self, content: str, *, timeout_seconds: Optional[float] = None) -> bool:
         """Budget the report using the same JSON encoding as requests.post."""
+        if not is_valid_http_url(self._feishu_url):
+            logger.error("Feishu Webhook URL is invalid, cannot send")
+            record_delivery_confirmed_absent("invalid_config")
+            return False
         header = self._infer_card_header(content)
         formatted_content = format_feishu_markdown(content)
         content_budget = self._feishu_max_bytes - len(self._get_keyword_prefix().encode("utf-8"))
         if content_budget <= 0:
             logger.error("Feishu keyword exceeds max bytes allowed per message, cannot send")
+            record_delivery_confirmed_absent("payload_too_large")
             return False
         sample_security_fields = self._build_security_fields()
         web_url = self._web_url
@@ -736,6 +769,7 @@ class FeishuSender:
                 or self._webhook_payload_bytes(text_payload) > _WEBHOOK_MAX_REQUEST_BYTES
             ):
                 logger.error("Feishu Webhook card build or chunking failed: %s", e)
+                record_delivery_confirmed_absent("chunking_failed")
                 return False
             pages = [(formatted_content, None)]
 
@@ -749,8 +783,13 @@ class FeishuSender:
                     success_count += 1
                 else:
                     logger.error("Feishu chunk %d/%d send failed", i + 1, total_chunks)
+                    if is_at_most_once_delivery() and is_delivery_ambiguous():
+                        break
             except Exception as e:
                 logger.error("Feishu chunk %d/%d send exception: %s", i + 1, total_chunks, e)
+                record_delivery_ambiguous("send_failed")
+                if is_at_most_once_delivery():
+                    break
             if i < total_chunks - 1:
                 time.sleep(1)
         return success_count == total_chunks
@@ -805,50 +844,97 @@ class FeishuSender:
         timeout_seconds: Optional[float],
     ) -> bool:
         """Send a single Feishu webhook message (interactive card, fallback text)."""
+        if not is_valid_http_url(self._feishu_url):
+            logger.error("Feishu Webhook URL is invalid, cannot send")
+            record_delivery_confirmed_absent("invalid_config")
+            return False
+
         security_fields = self._build_security_fields()
 
         def _post_payload(payload: Dict[str, Any]) -> bool:
+            if not validate_http_post_request(self._feishu_url, json=payload):
+                logger.error("Feishu Webhook request preparation failed, cannot send")
+                record_delivery_confirmed_absent("invalid_config")
+                return False
             try:
-                response = requests.post(
-                    self._feishu_url,
-                    json=payload,
-                    timeout=timeout_seconds or _WEBHOOK_SEND_TIMEOUT_SECONDS,
-                    verify=self._webhook_verify_ssl,
-                )
+                post_kwargs: Dict[str, Any] = {
+                    "json": payload,
+                    "timeout": timeout_seconds or _WEBHOOK_SEND_TIMEOUT_SECONDS,
+                    "verify": self._webhook_verify_ssl,
+                }
+                if is_at_most_once_delivery():
+                    post_kwargs["allow_redirects"] = False
+                response = requests.post(self._feishu_url, **post_kwargs)
+            except requests.exceptions.ConnectTimeout as e:
+                logger.error("Feishu Webhook connect timeout: %s", e)
+                record_delivery_confirmed_absent("connect_timeout")
+                return False
             except (requests.exceptions.ConnectionError,
                      requests.exceptions.Timeout,
                      requests.exceptions.RequestException) as e:
                 logger.error("Feishu Webhook network request exception: %s", e)
+                record_delivery_ambiguous("read_timeout" if isinstance(e, requests.exceptions.Timeout) else "connection_error")
                 return False
             if response.status_code == 200:
                 try:
                     result = response.json()
                 except (ValueError, AttributeError):
                     logger.error("Feishu Webhook returned non-JSON response: %s", response.text[:200])
+                    record_delivery_ambiguous("invalid_response")
                     return False
                 if not isinstance(result, dict):
                     logger.error("Feishu Webhook returned unexpected format: %s", type(result).__name__)
+                    record_delivery_ambiguous("invalid_response")
                     return False
-                code = result.get("code") if "code" in result else result.get("StatusCode")
+                has_code = "code" in result
+                has_status_code = "StatusCode" in result
+                raw_code = result.get("code")
+                raw_status_code = result.get("StatusCode")
+                code_valid = has_code and isinstance(raw_code, int) and not isinstance(raw_code, bool)
+                status_code_valid = (
+                    has_status_code and isinstance(raw_status_code, int) and not isinstance(raw_status_code, bool)
+                )
+                if (
+                    (not has_code and not has_status_code)
+                    or (has_code and not code_valid)
+                    or (has_status_code and not status_code_valid)
+                    or (code_valid and status_code_valid and raw_code != raw_status_code)
+                ):
+                    logger.error("Feishu Webhook returned incomplete or invalid status payload: %s", result)
+                    record_delivery_ambiguous("invalid_response")
+                    return False
+                code = raw_code if code_valid else raw_status_code
                 if code == 0:
                     logger.info("Feishu Webhook message sent successfully")
+                    record_delivery_succeeded()
                     return True
                 logger.error(
                     "Feishu Webhook returned error [code=%s]: %s",
                     code,
                     result.get("msg") or result.get("StatusMessage", "Unknown error"),
                 )
+                record_delivery_confirmed_absent("feishu_api_rejected")
                 return False
             logger.error("Feishu Webhook request failed: HTTP %d", response.status_code)
+            if 400 <= response.status_code < 500:
+                record_delivery_confirmed_absent("rate_limited" if response.status_code == 429 else "http_4xx")
+            elif 300 <= response.status_code < 400:
+                record_delivery_ambiguous("http_3xx")
+            else:
+                record_delivery_ambiguous("http_5xx" if response.status_code >= 500 else "send_failed")
             return False
 
         if card_payload is not None:
             card_payload.update(security_fields)
             if self._webhook_payload_bytes(card_payload) <= _WEBHOOK_MAX_REQUEST_BYTES and _post_payload(card_payload):
                 return True
+            if is_at_most_once_delivery() and is_delivery_ambiguous():
+                return False
 
         text_payload = self._build_webhook_text_payload(content, security_fields)
         if self._webhook_payload_bytes(text_payload) > _WEBHOOK_MAX_REQUEST_BYTES:
             logger.error("Feishu Webhook plain-text request body too large, cannot send")
+            if not is_delivery_ambiguous():
+                record_delivery_confirmed_absent("payload_too_large")
             return False
         return _post_payload(text_payload)

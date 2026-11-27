@@ -130,8 +130,9 @@ should sum to 100; all-zero means no effective signal and must not be faked.
 ``news_sentiment`` explains the impact of news/sentiment on the recommendation.
 ``fundamentals`` explains the impact of fundamental factors (valuation, earnings, financials) on the recommendation.
 ``market_conditions`` explains the impact of overall market environment on the recommendation.
-``strongest_bullish_signal`` is the name of the strongest bullish signal (e.g., MACD golden cross, earnings surprise, low valuation).
-``strongest_bearish_signal`` is the name of the strongest bearish signal (e.g., MA death cross, earnings warning, high valuation).
+``strongest_bullish_signal`` is the name of the strongest bullish signal (e.g., MACD golden cross, Red Three Soldiers / 红三兵, Immortal Guide / 仙人指路, earnings surprise, low valuation).
+``strongest_bearish_signal`` is the name of the strongest bearish signal (e.g., MA death cross, Three Black Crows / 三只乌鸦, Guillotine / 断头铡刀, earnings warning, high valuation).
+Risk-management guardrails and high-severity risk overrides are UNCONDITIONAL: no candlestick or chart pattern (whether confirmed or unconfirmed) may override a risk veto or bypass risk caps.
 """
         if report_language == "en":
             return prompt + """

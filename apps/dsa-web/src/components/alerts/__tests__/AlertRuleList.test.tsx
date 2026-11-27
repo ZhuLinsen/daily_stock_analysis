@@ -282,4 +282,27 @@ describe('AlertRuleList', () => {
 
     expect(screen.getByText('暂无告警规则')).toBeInTheDocument();
   });
+
+  it('renders kline_pattern rules in Chinese and English UI modes', () => {
+    const klineRule: AlertRuleItem = {
+      id: 9,
+      name: '茅台形态监测',
+      targetScope: 'single_symbol',
+      target: '600519',
+      alertType: 'kline_pattern',
+      parameters: { patterns: ['red_three_soldiers', 'immortal_guide'], requireVolumeConfirm: true },
+      severity: 'info',
+      enabled: true,
+      source: 'api',
+      cooldownActive: false,
+    };
+
+    renderList({ rules: [klineRule] });
+    expect(screen.getAllByText('K 线形态监测').length).toBeGreaterThan(0);
+    expect(screen.getByText('红三兵、仙人指路 · 需放量/量能确认')).toBeInTheDocument();
+
+    renderEnglishList({ rules: [klineRule] });
+    expect(screen.getAllByText('K-line pattern').length).toBeGreaterThan(0);
+    expect(screen.getByText('Three White Soldiers, Immortal Guide · Volume confirmed')).toBeInTheDocument();
+  });
 });

@@ -30,6 +30,7 @@ from src.notification_routing import (
     get_notification_route_config,
     split_notification_route_channels,
 )
+from src.notification_sender._delivery_context import begin_delivery_attempt, end_delivery_attempt
 from src.notification_contracts import is_feishu_static_configured
 from src.notification_noise import (
     NotificationNoiseDecision,
@@ -209,6 +210,7 @@ class ChannelAttemptResult:
     success: bool
     error_code: Optional[str] = None
     retryable: bool = False
+    delivery_confirmed_absent: bool = False
     latency_ms: Optional[int] = None
     diagnostics: Optional[str] = None
 
@@ -2728,6 +2730,7 @@ class NotificationService(
         dedup_key: Optional[str] = None,
         cooldown_key: Optional[str] = None,
         structured_payload: Optional[Dict[str, Any]] = None,
+        at_most_once: bool = False,
     ) -> NotificationDispatchResult:
         """
         Send a notification and return per-channel diagnostics.
@@ -2880,6 +2883,7 @@ class NotificationService(
         for channel in target_channels:
             channel_name = ChannelDetector.get_channel_name(channel)
             started_at = time.monotonic()
+            delivery_state, delivery_token = begin_delivery_attempt(at_most_once=at_most_once)
             try:
                 result = self._send_to_static_channel(
                     channel,
@@ -2895,12 +2899,19 @@ class NotificationService(
                     success_count += 1
                 else:
                     fail_count += 1
+                confirmed_absent = (
+                    (not bool(result))
+                    and bool(delivery_state.confirmed_absent)
+                    and not bool(delivery_state.ambiguous)
+                    and not bool(delivery_state.any_delivered)
+                )
                 channel_results.append(
                     ChannelAttemptResult(
                         channel=channel.value,
                         success=bool(result),
-                        error_code=None if result else "send_failed",
+                        error_code=None if result else (delivery_state.error_code or "send_failed"),
                         retryable=not bool(result),
+                        delivery_confirmed_absent=confirmed_absent,
                         latency_ms=latency_ms,
                     )
                 )
@@ -2914,10 +2925,13 @@ class NotificationService(
                         success=False,
                         error_code="exception",
                         retryable=True,
+                        delivery_confirmed_absent=False,
                         latency_ms=int((time.monotonic() - started_at) * 1000),
                         diagnostics=self._sanitize_notification_diagnostics(str(e)),
                     )
                 )
+            finally:
+                end_delivery_attempt(delivery_token)
 
         logger.info(f"Notification dispatch completed: {success_count} succeeded, {fail_count} failed")
         if success_count > 0:

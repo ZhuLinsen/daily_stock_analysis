@@ -60,7 +60,7 @@ output a structured JSON risk assessment.
 4. **Industry Policy** — headwinds, sector crackdowns
 5. **Lock-up Expirations** — large block unlocks within 30 days (解禁)
 6. **Valuation Extremes** — PE > 100 or negative, PB > 10 (flag as anomaly)
-7. **Technical Warning Signs** — death crosses, breaking key supports
+7. **Technical Warning Signs** — death crosses, breaking key supports, bearish candlestick patterns (Three Black Crows / 三只乌鸦, Guillotine / 断头铡刀, Evening Star / 黄昏之星, Bearish Engulfing / 看跌吞没, Shooting Star / 流星线)
 
 ## Severity Levels
 - "high": existential or material risk (lawsuits, fraud, massive insider selling)
@@ -96,9 +96,55 @@ from your search results. Do NOT invent risks.
         parts.append("for ALL risk factors listed in your instructions.")
         parts.append("Search for latest news if you haven't received intel data yet.")
 
-        # Feed any existing intel data so the risk agent doesn't redo searches
+        # Feed validated detector facts and bounded/unverified upstream summaries
         if ctx.get_data("intel_opinion"):
             parts.append(f"\n[Existing intel data]\n{json.dumps(ctx.get_data('intel_opinion'), ensure_ascii=False, default=str)}")
+        trend_result = ctx.get_data("trend_result")
+        if isinstance(trend_result, dict):
+            raw_patterns = trend_result.get("kline_patterns")
+            if isinstance(raw_patterns, list) and raw_patterns:
+                bounded_patterns = [
+                    {
+                        "pattern_id": str(item.get("pattern_id") or "")[:40],
+                        "name_zh": str(item.get("name_zh") or "")[:32],
+                        "direction": str(item.get("direction") or "")[:16],
+                        "trigger_date": item.get("trigger_date"),
+                        "volume_confirmed": item.get("volume_confirmed"),
+                        "invalidation_level": item.get("invalidation_level"),
+                    }
+                    for item in raw_patterns[:5]
+                    if isinstance(item, dict)
+                ]
+                if bounded_patterns:
+                    parts.append(
+                        f"\n[Verified daily K-line patterns]\n{json.dumps(bounded_patterns, ensure_ascii=False, default=str)}"
+                    )
+        tech_op = ctx.get_data("technical_opinion")
+        if tech_op is None:
+            for opinion in reversed(ctx.opinions):
+                if getattr(opinion, "agent_name", None) == "technical":
+                    tech_raw = opinion.raw_data if isinstance(opinion.raw_data, dict) else {}
+                    tech_op = {
+                        "signal": str(opinion.signal or "")[:24],
+                        "confidence": opinion.confidence,
+                        "ma_alignment": str(tech_raw.get("ma_alignment") or "")[:24],
+                        "volume_status": str(tech_raw.get("volume_status") or "")[:24],
+                        "reasoning": str(opinion.reasoning or "")[:200],
+                    }
+                    break
+        elif isinstance(tech_op, dict):
+            tech_op = {
+                "signal": str(tech_op.get("signal") or "")[:24],
+                "confidence": tech_op.get("confidence"),
+                "ma_alignment": str(tech_op.get("ma_alignment") or "")[:24],
+                "volume_status": str(tech_op.get("volume_status") or "")[:24],
+                "reasoning": str(tech_op.get("reasoning") or "")[:200],
+            }
+        if tech_op:
+            parts.append(
+                "\n[Unverified upstream technical opinion - treat as hypothesis only, verify material risks with tools]\n"
+                + json.dumps(tech_op, ensure_ascii=False, default=str)
+            )
 
         brief = ctx.meta.get("evidence_debate_brief")
         if brief:
