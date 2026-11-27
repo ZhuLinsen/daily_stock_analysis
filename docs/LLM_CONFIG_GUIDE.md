@@ -1,6 +1,6 @@
 # LLM (大模型) 配置指南
 
-> **平台边界（2026-11-08）：** Gemini API 与 Vertex AI 的模型生命周期不同。Vertex AI 的 `gemini-3.6-flash` 占位值仅为输入示例；[Google Cloud 文档](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/gemini/3-6-flash)列出的该平台退役日期为 2026-11-19。请确认模型在你的项目和区域中可用；Gemini API 验证通过不代表 Vertex AI 也已验证。仅配置 DeepSeek Key 时会推断使用 `deepseek/deepseek-v4-flash`；显式模型及更高优先级配置仍然优先。
+> **平台边界（2026-11-08）：** Gemini API 与 Vertex AI 的模型生命周期不同。Vertex AI 的 `gemini-3.6-flash` 占位值仅为输入示例；[Google Cloud 文档](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/gemini/3-6-flash)列出的该平台退役日期为 2026-11-19。请确认模型在你的项目和区域中可用；Gemini API 验证通过不代表 Vertex AI 也已验证。仅配置 DeepSeek Key 时会推断使用 `deepseek/deepseek-flash`（旧别名 `deepseek-v4-flash` 仅保留临时兼容）；显式模型及更高优先级配置仍然优先。
 
 欢迎！无论你是刚接触 AI 的新手小白，还是精通各种 API 的高玩老手，这份指南都能帮你快速把大模型（LLM）跑起来。
 
@@ -126,8 +126,8 @@ LITELLM_MODEL=openai/deepseek-ai/DeepSeek-V3
 # 填入你在 DeepSeek 官方平台申请的 API Key
 DEEPSEEK_API_KEY=sk-xxxxxxxxxxxxxxxx
 ```
-*仅填这一行时，系统默认使用 `deepseek/deepseek-v4-flash`。*
-`deepseek-chat` / `deepseek-reasoner` 已被 DeepSeek 官方公告于 2026/07/24 停用，旧配置请迁移；新配置建议通过 Web 快速渠道或显式 `LITELLM_MODEL=deepseek/deepseek-v4-flash` 迁移到 `deepseek-v4-flash` / `deepseek-v4-pro`。
+*仅填这一行时，系统默认使用 `deepseek/deepseek-flash`（旧别名 `deepseek/deepseek-v4-flash` 仅临时兼容）。*
+`deepseek-chat` / `deepseek-reasoner` 已被 DeepSeek 官方公告于 2026/07/24 停用，旧配置请迁移；新配置建议通过 Web 快速渠道或显式 `LITELLM_MODEL=deepseek/deepseek-flash` 迁移到 `deepseek-flash` / `deepseek-v4-pro`。
 
 ### 示例 3：使用 Gemini 免费 API
 ```env
@@ -269,7 +269,7 @@ LLM_CHANNELS=deepseek,aihubmix
 # 2. 渠道一：配置 DeepSeek 官方
 LLM_DEEPSEEK_BASE_URL=https://api.deepseek.com
 LLM_DEEPSEEK_API_KEY=sk-1111111111111
-LLM_DEEPSEEK_MODELS=deepseek-v4-flash,deepseek-v4-pro
+LLM_DEEPSEEK_MODELS=deepseek-flash,deepseek-v4-pro
 
 # 3. 渠道二：配置一个常用的聚合中转 API
 LLM_AIHUBMIX_BASE_URL=https://api.aihubmix.com/v1
@@ -278,7 +278,7 @@ LLM_AIHUBMIX_MODELS=gpt-6.1-sol,claude-sonnet-4-6
 
 # 4. 【关键】指定主模型和备用模型列表
 # 平时首选用 deepseek 这款模型：
-LITELLM_MODEL=deepseek/deepseek-v4-flash
+LITELLM_MODEL=deepseek/deepseek-flash
 # 可选：Agent 问股单独指定主模型（留空则继承主模型）
 AGENT_LITELLM_MODEL=deepseek/deepseek-v4-pro
 # 主模型崩了立刻挨个尝试下面这俩备用模型：
@@ -461,7 +461,7 @@ P0.5a 不引入 PromptBlock IR、`block_id`、`stability_class`、`static_prefix
 model_list:
   - model_name: my-smart-model
     litellm_params:
-      model: deepseek/deepseek-v4-flash
+      model: deepseek/deepseek-flash
       api_base: https://api.deepseek.com
       api_key: "os.environ/MY_CUSTOM_SECRET_KEY"  # 从环境变量读取 Key，安全防泄漏
 

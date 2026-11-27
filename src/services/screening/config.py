@@ -498,7 +498,7 @@ def _resolve_llm_model(channels: list[dict[str, object]]) -> str:
         ollama_model = os.getenv("OLLAMA_MODEL", "").strip()
         return f"ollama/{ollama_model}" if ollama_model else DEFAULT_LLM_MODEL
     if os.getenv("DEEPSEEK_API_KEY"):
-        return "deepseek/deepseek-v4-flash"
+        return "deepseek/deepseek-flash"
     if os.getenv("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEYS"):
         return _normalize_litellm_model(os.getenv("GEMINI_MODEL", DEFAULT_LLM_MODEL), "gemini")
     if os.getenv("OPENAI_API_KEY"):

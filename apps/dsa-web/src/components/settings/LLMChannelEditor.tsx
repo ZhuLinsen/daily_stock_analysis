@@ -566,7 +566,7 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
                 label={text.channelNameLabel}
                 fieldKey="LLM_CHANNEL_NAME"
                 helpKey="settings.llm_channel.channel_name"
-                examples={['LLM_CHANNELS=deepseek,aihubmix', 'LLM_DEEPSEEK_MODELS=deepseek-v4-flash,deepseek-v4-pro']}
+                examples={['LLM_CHANNELS=deepseek,aihubmix', 'LLM_DEEPSEEK_MODELS=deepseek-flash,deepseek-v4-pro']}
               />
             <Input
               id={channelNameInputId}
@@ -732,7 +732,7 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
                   label={text.discoveredModelsLabel}
                   fieldKey="LLM_CHANNEL_DISCOVERED_MODELS"
                   helpKey="settings.llm_channel.models"
-                  examples={['LLM_DEEPSEEK_MODELS=deepseek-v4-flash,deepseek-v4-pro']}
+                  examples={['LLM_DEEPSEEK_MODELS=deepseek-flash,deepseek-v4-pro']}
                 />
                 <div className="max-h-48 space-y-2 overflow-y-auto rounded-xl border border-[var(--settings-border)] bg-[var(--settings-surface)] p-3">
                   {discoveredModels.map((model) => (
@@ -763,7 +763,7 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
                 label={discoveredModels.length > 0 ? text.manualModelsLabelWithDiscovery : text.manualModelsLabelDefault}
                 fieldKey="LLM_CHANNEL_MODELS"
                 helpKey="settings.llm_channel.models"
-                examples={['LLM_DEEPSEEK_MODELS=deepseek-v4-flash,deepseek-v4-pro', 'LLM_OLLAMA_MODELS=qwen3:8b,llama3.1:8b']}
+                examples={['LLM_DEEPSEEK_MODELS=deepseek-flash,deepseek-v4-pro', 'LLM_OLLAMA_MODELS=qwen3:8b,llama3.1:8b']}
               />
             <Input
               id={modelsInputId}
@@ -2647,7 +2647,7 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
                       label={text.primaryModelLabel}
                       fieldKey="LITELLM_MODEL"
                       helpKey="settings.llm_channel.primary_model"
-                      examples={['LITELLM_MODEL=deepseek/deepseek-v4-flash']}
+                      examples={['LITELLM_MODEL=deepseek/deepseek-flash']}
                       compact
                     />
                     <Select
