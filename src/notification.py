@@ -885,14 +885,8 @@ class NotificationService(
             # 创建回复客户端
             reply_client = FeishuReplyClient(app_id, app_secret)
 
-            # 飞书文本消息有长度限制，需要分批发送
-            max_bytes = getattr(config, 'feishu_max_bytes', 20000)
+            # Format the complete report in the client before splitting it into cards.
             content = strip_hidden_markdown_metadata(content).strip()
-            content_bytes = len(content.encode('utf-8'))
-
-            if content_bytes > max_bytes:
-                return self._send_feishu_stream_chunked(reply_client, chat_id, content, max_bytes)
-
             return reply_client.send_to_chat(chat_id, content)
 
         except ImportError as e:
@@ -901,75 +895,6 @@ class NotificationService(
         except Exception as e:
             logger.error(f"Feishu Stream reply exception: {e}")
             return False
-
-    def _send_feishu_stream_chunked(
-        self,
-        reply_client,
-        chat_id: str,
-        content: str,
-        max_bytes: int
-    ) -> bool:
-        """
-        分批发送长消息到飞书（Stream 模式）
-
-        Args:
-            reply_client: FeishuReplyClient 实例
-            chat_id: 飞书会话 ID
-            content: 完整消息内容
-            max_bytes: 单条消息最大字节数
-
-        Returns:
-            是否全部发送成功
-        """
-        import time
-
-        def get_bytes(s: str) -> int:
-            return len(s.encode('utf-8'))
-
-        # 按段落或分隔线分割
-        if "\n---\n" in content:
-            sections = content.split("\n---\n")
-            separator = "\n---\n"
-        elif "\n### " in content:
-            parts = content.split("\n### ")
-            sections = [parts[0]] + [f"### {p}" for p in parts[1:]]
-            separator = "\n"
-        else:
-            # 按行分割
-            sections = content.split("\n")
-            separator = "\n"
-
-        chunks = []
-        current_chunk = []
-        current_bytes = 0
-        separator_bytes = get_bytes(separator)
-
-        for section in sections:
-            section_bytes = get_bytes(section) + separator_bytes
-
-            if current_bytes + section_bytes > max_bytes:
-                if current_chunk:
-                    chunks.append(separator.join(current_chunk))
-                current_chunk = [section]
-                current_bytes = section_bytes
-            else:
-                current_chunk.append(section)
-                current_bytes += section_bytes
-
-        if current_chunk:
-            chunks.append(separator.join(current_chunk))
-
-        # 发送每个分块
-        success = True
-        for i, chunk in enumerate(chunks):
-            if i > 0:
-                time.sleep(0.5)  # 避免请求过快
-
-            if not reply_client.send_to_chat(chat_id, chunk):
-                success = False
-                logger.error(f"Feishu Stream chunk {i+1}/{len(chunks)} send failed")
-
-        return success
 
     def generate_daily_report(
         self,

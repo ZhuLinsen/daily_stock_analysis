@@ -1215,6 +1215,8 @@ WECOM_AIBOT_REPLY_STREAM=false     # 可选：用 stream 流式回复（默认�
 
 ### 飞书
 
+通过飞书或 Lark 的 Stream 机器人回送报告时，系统会先转换完整表格，再分页发送卡片。后续卡片中的数据行沿用原表的列名。
+
 Webhook 和 App Bot 交互卡片可附带 Web 工作台按钮。优先读取 `FEISHU_CARD_WEB_URL`，留空时读取 `DSA_WEB_URL`。填写收件人可访问的 `http://` 或 `https://` 地址，两项均清空即可停用按钮。`FEISHU_MAX_BYTES` 控制每页正文预算。分页还会检查完整 JSON 请求体，Webhook 限为 20,000 字节，App Bot 限为 30,000 字节。若工作台 URL 过长导致卡片无法分页，发送时会省略按钮。[飞书自定义机器人指南](https://open.feishu.cn/document/client-docs/bot-v3/add-custom-bot) · [飞书消息 API](https://open.feishu.cn/document/server-docs/im-v1/message/create)
 
 > ⚠️ **关键区分**：`FEISHU_WEBHOOK_SECRET`（Webhook 签名密钥）和 `FEISHU_APP_SECRET`（飞书应用 Secret）是两个完全不同的配置，不能互换。

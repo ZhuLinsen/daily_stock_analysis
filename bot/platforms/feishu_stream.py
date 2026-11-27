@@ -282,7 +282,20 @@ class FeishuReplyClient:
         Returns:
             是否全部发送成功
         """
-        chunks = chunk_content_by_max_bytes(content, self._max_bytes, add_page_marker=True)
+        try:
+            chunks = chunk_content_by_max_bytes(content, self._max_bytes, add_page_marker=True)
+        except ValueError:
+            # Very small configured budgets cannot accommodate the paginator's markers.
+            encoded = content.encode("utf-8")
+            chunks = []
+            start = 0
+            while start < len(encoded):
+                page = encoded[start:start + self._max_bytes].decode("utf-8", errors="ignore")
+                if not page:
+                    logger.error("Feishu Stream byte limit is too small for a single character")
+                    return False
+                chunks.append(page)
+                start += len(page.encode("utf-8"))
         success_count = 0
         for i, chunk in enumerate(chunks):
             if send_func(chunk):
