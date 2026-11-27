@@ -21,7 +21,7 @@ Open your forked repository and navigate to: `Settings → Secrets and variables
 | --- | --- | --- |
 | `MODELFLARE_KEY` | Modelflare model gateway key; the backend derives the default base URL and model automatically | Recommended |
 | `GEMINI_API_KEY` | Google Gemini API Key | Optional |
-| `DEEPSEEK_API_KEY` | Official DeepSeek API Key (current `main` fallback: `deepseek/deepseek-v4-flash` legacy compat alias; upstream current IDs are `deepseek-flash` and `deepseek-v4-pro`, or `LITELLM_MODEL=deepseek/deepseek-flash` / `LITELLM_MODEL=deepseek/deepseek-v4-pro` when set explicitly) | Optional |
+| `DEEPSEEK_API_KEY` | Official DeepSeek API Key (defaults to `deepseek/deepseek-flash`; legacy alias `deepseek/deepseek-v4-flash` remains supported for compatibility; upstream current IDs are `deepseek-flash` and `deepseek-v4-pro`, or `LITELLM_MODEL=deepseek/deepseek-flash` / `LITELLM_MODEL=deepseek/deepseek-v4-pro` when set explicitly) | Optional |
 | `ANTHROPIC_API_KEY` | Anthropic Claude API Key | Optional |
 | `OPENAI_API_KEY` | OpenAI or compatible gateway key (**must** pair with `OPENAI_BASE_URL` and `LITELLM_MODEL` or `OPENAI_MODEL` in Variables/Secrets; prefix gateway model IDs containing `/` with `openai/`, e.g., `openai/Qwen/Qwen3-32B`) | Optional |
 
