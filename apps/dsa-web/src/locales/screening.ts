@@ -503,7 +503,7 @@ const en: Record<keyof typeof zh, string> = {
   taskProcessing: "Screening is in progress",
   alphaSiftLabel: "AlphaSift Daily Picks",
   alphaSiftTooltip: "AlphaSift: multi-market daily screening & public T+N paper track record",
-  alphaSiftAria: "AlphaSift Daily Picks: open multi-market daily stock screener (opens in a new tab)"
+  alphaSiftAria: "AlphaSift Daily Picks: open multi-market daily screening & public T+N paper track record (opens in a new tab)"
 };
 
 export type ScreeningTextKey = keyof typeof zh;

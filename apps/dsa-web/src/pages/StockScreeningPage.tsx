@@ -1548,7 +1548,7 @@ const StockScreeningPage: React.FC = () => {
               target="_blank"
               rel="noopener noreferrer"
               aria-label={copy.alphaSiftAria}
-              className="inline-flex w-fit items-center gap-2 rounded-2xl border border-border/70 bg-card/80 px-4 py-2 text-sm font-bold text-foreground shadow-soft-card transition-colors hover:border-cyan/50 hover:text-cyan"
+              className="inline-flex w-fit items-center gap-2 rounded-2xl border border-border/70 bg-card/80 px-4 py-2 text-sm font-bold text-foreground shadow-soft-card transition-colors hover:border-cyan/60 hover:bg-hover/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan/50"
             >
               <Compass className="h-4 w-4 text-cyan" aria-hidden="true" />
               <span>{copy.alphaSiftLabel}</span>

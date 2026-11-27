@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ScreeningHotspotDetail } from '../../api/screening';
 import { UiLanguageProvider } from '../../contexts/UiLanguageContext';
 import { UiLanguageToggle } from '../../components/i18n/UiLanguageToggle';
@@ -166,6 +166,11 @@ describe('StockScreeningPage', () => {
     window.sessionStorage.clear();
   });
 
+  afterEach(() => {
+    localStorage.removeItem('dsa.uiLanguage');
+    window.sessionStorage.clear();
+  });
+
   it('updates disabled controls when the UI language changes', async () => {
     localStorage.setItem('dsa.uiLanguage', 'en');
     getScreeningStatus.mockResolvedValueOnce({ enabled: false, available: true });
@@ -223,20 +228,23 @@ describe('StockScreeningPage', () => {
 
       fireEvent.click(screen.getByRole('button', { name: /切换界面语言|Switch UI language/ }));
       const enLink = await screen.findByRole('link', {
-        name: 'AlphaSift Daily Picks: open multi-market daily stock screener (opens in a new tab)',
+        name: 'AlphaSift Daily Picks: open multi-market daily screening & public T+N paper track record (opens in a new tab)',
       });
       expect(enLink).toHaveAttribute('href', 'https://alphasift.zhulinsen.tech/?lang=en&utm_source=dsa_web_screening');
       expect(enLink).toHaveTextContent('AlphaSift Daily Picks');
       expect(enLink.getAttribute('aria-label')).toContain('AlphaSift Daily Picks');
+      expect(enLink.getAttribute('aria-label')).toContain('public T+N paper track record');
+      expect(enLink.className).not.toContain('hover:text-cyan');
 
-      fireEvent.focus(enLink.parentElement!);
+      fireEvent.focus(enLink);
       const enTooltip = await screen.findByRole('tooltip');
+      expect(enLink).toHaveAttribute('aria-describedby', enTooltip.id);
       expect(enTooltip).toHaveTextContent('AlphaSift: multi-market daily screening & public T+N paper track record');
       expect(enTooltip.className).not.toContain('min-w-max');
       expect(enTooltip.className).toContain('w-max');
       expect(enTooltip.className).toContain('max-w-[min(18rem,calc(100vw-1rem))]');
       expect(enTooltip.className).toContain('whitespace-normal');
-      fireEvent.blur(enLink.parentElement!);
+      fireEvent.blur(enLink);
     } finally {
       localStorage.removeItem('dsa.uiLanguage');
     }

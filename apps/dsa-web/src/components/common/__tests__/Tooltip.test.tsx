@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Tooltip } from '../Tooltip';
 
@@ -37,6 +37,51 @@ describe('Tooltip', () => {
 
     fireEvent.blur(triggerWrapper);
     expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
+  });
+
+  it('keeps tooltip open while pointer moves to tooltip content and attaches aria-describedby on child control', async () => {
+    vi.useFakeTimers();
+    try {
+      render(
+        <Tooltip content="AlphaSift: multi-market daily screening & public T+N paper track record">
+          <a href="https://alphasift.zhulinsen.tech/?lang=en">AlphaSift Daily Picks</a>
+        </Tooltip>,
+      );
+
+      const link = screen.getByRole('link', { name: 'AlphaSift Daily Picks' });
+      const triggerWrapper = link.parentElement!;
+
+      fireEvent.focus(link);
+      const tooltip = screen.getByRole('tooltip');
+      expect(link).toHaveAttribute('aria-describedby', tooltip.id);
+      expect(triggerWrapper).not.toHaveAttribute('aria-describedby');
+      expect(tooltip.className).toContain('pointer-events-auto');
+
+      fireEvent.blur(link);
+      expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
+
+      fireEvent.mouseEnter(triggerWrapper);
+      const hoveredTooltip = screen.getByRole('tooltip');
+      fireEvent.mouseLeave(triggerWrapper);
+      fireEvent.mouseEnter(hoveredTooltip);
+      act(() => {
+        vi.advanceTimersByTime(300);
+      });
+      expect(screen.getByRole('tooltip')).toBeInTheDocument();
+
+      fireEvent.keyDown(document, { key: 'Escape' });
+      expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
+
+      fireEvent.mouseEnter(triggerWrapper);
+      const reopenedTooltip = screen.getByRole('tooltip');
+      fireEvent.mouseLeave(reopenedTooltip);
+      act(() => {
+        vi.advanceTimersByTime(200);
+      });
+      expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('clamps horizontal position inside a 320px narrow viewport', async () => {
