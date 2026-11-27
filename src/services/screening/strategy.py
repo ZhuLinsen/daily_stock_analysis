@@ -8,6 +8,7 @@ import logging
 import math
 from dataclasses import asdict, fields
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -1061,19 +1062,24 @@ def _validated_tech_weight(
     return _coerce_finite_float(raw, f"tech_weight in strategy file {filepath.name}")
 
 
-def _validated_factor_weights(screening_data: dict, filepath: Path) -> dict[str, float]:
+def _validated_factor_weights(screening_data: dict, filepath: Path) -> dict[Any, Any]:
     raw = screening_data.get("factor_weights", {})
     if raw is None:
         return {}
     if not isinstance(raw, dict):
         raise ValueError(f"Invalid factor_weights section in strategy file: {filepath}")
-    validated: dict[str, float] = {}
+
+    from src.services.screening.scorer import factor_score_columns
+
+    known_factors = factor_score_columns()
+    validated: dict[Any, Any] = {}
     for key, weight in raw.items():
-        if not isinstance(key, str) or not key.strip():
-            raise ValueError(f"Invalid factor_weights key in strategy file {filepath.name}: expected non-empty string")
-        validated[key] = _coerce_finite_float(
-            weight, f"factor weight '{key}' in strategy file {filepath.name}"
-        )
+        if isinstance(key, str) and key in known_factors:
+            validated[key] = _coerce_finite_float(
+                weight, f"factor weight '{key}' in strategy file {filepath.name}"
+            )
+        else:
+            validated[key] = weight
     return validated
 
 

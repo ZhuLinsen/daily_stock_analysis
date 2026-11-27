@@ -538,3 +538,96 @@ screening:
     assert by_id["bool_tech_weight_only"]["factor_weights"] == pytest.approx(
         {"momentum": 0.55, "activity": 0.45}
     )
+
+
+def test_load_strategy_and_scorer_ignore_unknown_or_empty_factor_weight_placeholders(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import pandas as pd
+    from src.services.screening.scorer import compute_screen_scores
+
+    placeholder_path = tmp_path / "placeholder_weights.yaml"
+    placeholder_path.write_text(
+        """
+name: placeholder_weights
+display_name: Legacy Placeholder Weights
+screening:
+  enabled: true
+  market_scope: [cn]
+  factor_weights:
+    value: 0.6
+    momentum: 0.4
+    "": 0
+    legacy_note: "keep-ignored"
+""".strip(),
+        encoding="utf-8",
+    )
+    baseline_path = tmp_path / "baseline_weights.yaml"
+    baseline_path.write_text(
+        """
+name: baseline_weights
+display_name: Baseline Weights
+screening:
+  enabled: true
+  market_scope: [cn]
+  factor_weights:
+    value: 0.6
+    momentum: 0.4
+""".strip(),
+        encoding="utf-8",
+    )
+
+    loaded_placeholder = load_strategy(placeholder_path)
+    loaded_baseline = load_strategy(baseline_path)
+    assert normalized_factor_weights(loaded_placeholder.screening) == pytest.approx(
+        {"value": 0.6, "momentum": 0.4}
+    )
+
+    df = pd.DataFrame([
+        {
+            "code": "600519", "name": "A", "price": 100.0, "change_pct": 3.0,
+            "volume_ratio": 1.8, "turnover_rate": 2.5, "pe_ratio": 15.0, "pb_ratio": 2.5,
+            "total_mv": 5e10, "circ_mv": 4e10, "amount": 5e8, "ma_bullish": True,
+            "rsi_6": 55.0, "macd_hist": 0.5, "change_60d": 12.0, "volatility_60d": 20.0,
+            "max_drawdown_60d": -5.0,
+        },
+        {
+            "code": "000001", "name": "B", "price": 12.0, "change_pct": -1.5,
+            "volume_ratio": 0.9, "turnover_rate": 1.2, "pe_ratio": 45.0, "pb_ratio": 5.0,
+            "total_mv": 1e10, "circ_mv": 8e9, "amount": 1e8, "ma_bullish": False,
+            "rsi_6": 42.0, "macd_hist": -0.2, "change_60d": -6.0, "volatility_60d": 35.0,
+            "max_drawdown_60d": -15.0,
+        },
+    ])
+    scored_placeholder = compute_screen_scores(df, loaded_placeholder.screening)
+    scored_baseline = compute_screen_scores(df, loaded_baseline.screening)
+    assert scored_placeholder["screen_score"].iloc[0] != scored_placeholder["screen_score"].iloc[1]
+    assert scored_placeholder["screen_score"].tolist() == pytest.approx(
+        scored_baseline["screen_score"].tolist()
+    )
+
+    invalid_path = tmp_path / "invalid_weights.yaml"
+    invalid_path.write_text(
+        """
+name: invalid_weights
+display_name: Invalid Factor Weight
+screening:
+  enabled: true
+  market_scope: [cn]
+  factor_weights:
+    value: "not-a-number"
+    momentum: 0.4
+""".strip(),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError):
+        load_strategy(invalid_path)
+
+    monkeypatch.setenv("STRATEGIES_DIR", str(tmp_path))
+    catalog = ScreeningService(config=Config(screening_enabled=True)).strategies()
+    by_id = {item["id"]: item for item in catalog["strategies"]}
+    assert "placeholder_weights" in by_id
+    assert by_id["placeholder_weights"]["factor_weights"] == pytest.approx(
+        {"value": 0.6, "momentum": 0.4}
+    )
