@@ -631,3 +631,39 @@ screening:
     assert by_id["placeholder_weights"]["factor_weights"] == pytest.approx(
         {"value": 0.6, "momentum": 0.4}
     )
+
+    from src.services.screening import pipeline as screening_pipeline
+    from src.services.screening.config import Config as RuntimeConfig
+
+    snapshot_df = df.copy()
+    snapshot_df.attrs.update({
+        "snapshot_source": "test_snapshot",
+        "source_errors": [],
+        "fallback_used": False,
+    })
+    runtime_cfg = RuntimeConfig(
+        strategies_dir=tmp_path,
+        daily_enrich_enabled=False,
+        post_analyzers=[],
+        risk_enabled=False,
+        portfolio_diversity_enabled=False,
+    )
+    monkeypatch.setattr(screening_pipeline, "fetch_snapshot_with_fallback", lambda *args, **kwargs: snapshot_df.copy())
+    monkeypatch.setattr(screening_pipeline, "apply_dsa_provider_context", lambda picks, _ctx: [])
+
+    placeholder_result = screening_pipeline.screen(
+        "placeholder_weights",
+        market="cn",
+        use_llm=False,
+        config=runtime_cfg,
+    )
+    baseline_result = screening_pipeline.screen(
+        "baseline_weights",
+        market="cn",
+        use_llm=False,
+        config=runtime_cfg,
+    )
+    assert [pick.code for pick in placeholder_result.picks] == [pick.code for pick in baseline_result.picks]
+    assert [pick.screen_score for pick in placeholder_result.picks] == pytest.approx(
+        [pick.screen_score for pick in baseline_result.picks]
+    )

@@ -5,6 +5,7 @@
 
 import copy
 import logging
+import math
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -642,14 +643,26 @@ def _df_to_picks(df: pd.DataFrame) -> list[Pick]:
 def _sort_screened_candidates(df: pd.DataFrame, screening=None) -> pd.DataFrame:
     """Sort scored candidates deterministically with factor-aware tie breakers."""
     factor_order = ["stability", "activity", "momentum", "value"]
+    recognized = factor_score_columns()
     if screening is not None and screening.factor_weights:
-        factor_order = [
-            factor
-            for factor, _weight in sorted(
-                screening.factor_weights.items(),
-                key=lambda item: (-float(item[1]), item[0]),
-            )
-        ]
+        weighted_factors: list[tuple[str, float]] = []
+        for factor, weight in screening.factor_weights.items():
+            if not isinstance(factor, str) or factor not in recognized:
+                continue
+            try:
+                numeric_weight = float(weight)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if math.isfinite(numeric_weight):
+                weighted_factors.append((factor, numeric_weight))
+        if weighted_factors:
+            factor_order = [
+                factor
+                for factor, _weight in sorted(
+                    weighted_factors,
+                    key=lambda item: (-item[1], item[0]),
+                )
+            ]
     sort_columns = [
         column
         for column in ["screen_score"] + [f"factor_{factor}_score" for factor in factor_order]
