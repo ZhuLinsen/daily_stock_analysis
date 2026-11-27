@@ -256,15 +256,9 @@ class BacktestService:
         if results_to_save:
             saved = self.repo.save_results_batch(results_to_save, replace_existing=force)
 
-        if saved:
-            self._recompute_summaries(
-                touched_codes=sorted(touched_codes),
-                eval_window_days=int(eval_window_days),
-                engine_version=str(engine_version),
-            )
-
         has_matching_analysis = False
         aligned_existing_result_dates = 0
+        aligned_codes: set[str] = set()
         has_analysis_date_filter = analysis_date_from is not None or analysis_date_to is not None
         if not force and has_analysis_date_filter:
             aligned_existing_result_dates = self.repo.align_existing_result_dates(
@@ -274,6 +268,17 @@ class BacktestService:
                 engine_version=str(engine_version),
                 analysis_date_from=analysis_date_from,
                 analysis_date_to=analysis_date_to,
+                aligned_codes_out=aligned_codes,
+            )
+
+        if saved or aligned_existing_result_dates:
+            summary_codes = set(touched_codes) | aligned_codes
+            if aligned_existing_result_dates and query_code:
+                summary_codes.add(query_code)
+            self._recompute_summaries(
+                touched_codes=sorted(summary_codes),
+                eval_window_days=int(eval_window_days),
+                engine_version=str(engine_version),
             )
         if not force and processed == 0:
             has_matching_analysis = self._has_matching_analysis_for_run(
@@ -1057,6 +1062,9 @@ class BacktestService:
 
     @staticmethod
     def _summary_to_dict(row: BacktestSummary) -> Dict[str, Any]:
+        advice_breakdown = json.loads(row.advice_breakdown_json) if row.advice_breakdown_json else {}
+        diagnostics = json.loads(row.diagnostics_json) if row.diagnostics_json else {}
+        quant_metrics = diagnostics.get("quant_metrics") if isinstance(diagnostics, dict) else None
         return {
             "scope": row.scope,
             "code": None if row.code == OVERALL_SENTINEL_CODE else row.code,
@@ -1080,8 +1088,9 @@ class BacktestService:
             "take_profit_trigger_rate": row.take_profit_trigger_rate,
             "ambiguous_rate": row.ambiguous_rate,
             "avg_days_to_first_hit": row.avg_days_to_first_hit,
-            "advice_breakdown": json.loads(row.advice_breakdown_json) if row.advice_breakdown_json else {},
-            "diagnostics": json.loads(row.diagnostics_json) if row.diagnostics_json else {},
+            "advice_breakdown": advice_breakdown if isinstance(advice_breakdown, dict) else {},
+            "diagnostics": diagnostics if isinstance(diagnostics, dict) else {},
+            "quant_metrics": quant_metrics if isinstance(quant_metrics, dict) else None,
         }
 
     @staticmethod

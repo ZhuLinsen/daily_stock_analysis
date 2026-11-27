@@ -1,12 +1,14 @@
 import type React from 'react';
-import { useState, useEffect, useCallback, useRef } from 'react';
-import { Check, Minus, X } from 'lucide-react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Check, ChevronDown, ChevronUp, ExternalLink, Minus, X } from 'lucide-react';
 import { backtestApi } from '../api/backtest';
 import type { ParsedApiError } from '../api/error';
 import { getParsedApiError } from '../api/error';
 import { ApiErrorAlert, Card, Badge, EmptyState, Pagination, StatusDot, Tooltip } from '../components/common';
+import { BacktestQuantInsights } from '../components/backtest/BacktestQuantInsights';
 import { useUiLanguage } from '../contexts/UiLanguageContext';
 import { formatUiText, type UiLanguage } from '../i18n/uiText';
+import { BACKTEST_QUANT_TEXT } from '../locales/backtestQuantText';
 import {
   BACKTEST_DIRECTION_EXPECTED_LABELS,
   BACKTEST_MOVEMENT_LABELS,
@@ -95,6 +97,15 @@ function outcomeBadge(outcome: string | undefined, language: UiLanguage) {
     default:
       return <Badge variant="default">{outcome}</Badge>;
   }
+}
+
+function classifySimulatedPnl(row: BacktestResultItem): 'win' | 'loss' | 'neutral' | null {
+  if (typeof row.simulatedReturnPct !== 'number' || !Number.isFinite(row.simulatedReturnPct)) {
+    return null;
+  }
+  if (row.simulatedReturnPct > 0) return 'win';
+  if (row.simulatedReturnPct < 0) return 'loss';
+  return 'neutral';
 }
 
 function statusBadge(status: string, language: UiLanguage) {
@@ -251,9 +262,20 @@ const RunSummary: React.FC<{ data: BacktestRunResponse; language: UiLanguage }> 
 
 // ============ Main Page ============
 
+function fmtPrice(value?: number | null): string {
+  if (value == null || !Number.isFinite(value)) return '--';
+  return value.toFixed(2);
+}
+
+function fmtSignedPct(value?: number | null): string {
+  if (value == null || !Number.isFinite(value)) return '--';
+  return `${value > 0 ? '+' : ''}${value.toFixed(2)}%`;
+}
+
 const BacktestPage: React.FC = () => {
   const { language, t } = useUiLanguage();
   const text = BACKTEST_TEXT[language];
+  const qt = BACKTEST_QUANT_TEXT[language];
   const phaseFilterOptions = BACKTEST_PHASE_FILTER_OPTIONS[language];
   const actionLabels = buildDecisionActionLabelMap(t);
 
@@ -282,6 +304,9 @@ const BacktestPage: React.FC = () => {
   const [totalResults, setTotalResults] = useState(0);
   const [currentPage, setCurrentPage] = useState(1);
   const [isLoadingResults, setIsLoadingResults] = useState(false);
+  const [outcomeFilter, setOutcomeFilter] = useState<'all' | 'win' | 'loss' | 'neutral'>('all');
+  const [sortBy, setSortBy] = useState<'default' | 'sim_desc' | 'sim_asc' | 'stock_desc'>('default');
+  const [expandedIds, setExpandedIds] = useState<Record<number, boolean>>({});
   const pageSize = 20;
 
   // Performance state
@@ -296,6 +321,39 @@ const BacktestPage: React.FC = () => {
   const effectiveWindowDays = appliedFilters.windowDays;
   const isNextDayValidation = effectiveWindowDays === 1;
   const showNextDayActualColumns = isNextDayValidation;
+
+  const outcomeCounts = useMemo(() => {
+    const counts = { all: results.length, win: 0, loss: 0, neutral: 0 };
+    for (const row of results) {
+      const bucket = classifySimulatedPnl(row);
+      if (bucket === 'win') counts.win += 1;
+      else if (bucket === 'loss') counts.loss += 1;
+      else if (bucket === 'neutral') counts.neutral += 1;
+    }
+    return counts;
+  }, [results]);
+
+  const filteredSortedResults = useMemo(() => {
+    const filtered = outcomeFilter === 'all'
+      ? results
+      : results.filter((row) => classifySimulatedPnl(row) === outcomeFilter);
+    if (sortBy === 'default') return filtered;
+    const copy = [...filtered];
+    copy.sort((a, b) => {
+      if (sortBy === 'sim_desc') {
+        return (b.simulatedReturnPct ?? Number.NEGATIVE_INFINITY) - (a.simulatedReturnPct ?? Number.NEGATIVE_INFINITY);
+      }
+      if (sortBy === 'sim_asc') {
+        return (a.simulatedReturnPct ?? Number.POSITIVE_INFINITY) - (b.simulatedReturnPct ?? Number.POSITIVE_INFINITY);
+      }
+      return (b.actualReturnPct ?? Number.NEGATIVE_INFINITY) - (a.actualReturnPct ?? Number.NEGATIVE_INFINITY);
+    });
+    return copy;
+  }, [results, outcomeFilter, sortBy]);
+
+  const toggleRowExpand = (historyId: number) => {
+    setExpandedIds((prev) => ({ ...prev, [historyId]: !prev[historyId] }));
+  };
 
   useEffect(() => {
     mountedRef.current = true;
@@ -333,6 +391,7 @@ const BacktestPage: React.FC = () => {
         return;
       }
       setResults(response.items);
+      setExpandedIds({});
       setTotalResults(response.total);
       setCurrentPage(response.page);
       setAppliedFilters({
@@ -345,6 +404,7 @@ const BacktestPage: React.FC = () => {
       if (isPagination) {
         setPaginationError(null);
       } else {
+        setOutcomeFilter('all');
         setResultsRefreshError(null);
         setPaginationError(null);
       }
@@ -728,6 +788,13 @@ const BacktestPage: React.FC = () => {
           {pageError ? (
             <ApiErrorAlert error={pageError} className="mb-3" />
           ) : null}
+          {!isLoadingPerf && (overallPerf || stockPerf) ? (
+            <BacktestQuantInsights
+              overallPerf={overallPerf}
+              stockPerf={stockPerf}
+              language={language}
+            />
+          ) : null}
           {isLoadingResults ? (
             <div className="flex flex-col items-center justify-center h-64">
               <div className="backtest-spinner md" />
@@ -759,91 +826,246 @@ const BacktestPage: React.FC = () => {
                 </div>
                 <span className="backtest-table-scroll-hint">{text.scrollHint}</span>
               </div>
-              <div className="backtest-table-wrapper">
-                <table className="backtest-table min-w-[900px] w-full text-sm">
-                  <thead className="backtest-table-head">
-                    <tr className="text-left">
-                      <th className="backtest-table-head-cell">{text.stock}</th>
-                      <th className="backtest-table-head-cell">{text.analysisDate}</th>
-                      <th className="backtest-table-head-cell">{text.phase}</th>
-                      <th className="backtest-table-head-cell">{text.aiPrediction}</th>
-                      <th className="backtest-table-head-cell">
-                        {showNextDayActualColumns ? text.actualPerformance : text.windowReturn}
-                      </th>
-                      <th className="backtest-table-head-cell">
-                        {showNextDayActualColumns ? text.accuracy : text.directionMatch}
-                      </th>
-                      <th className="backtest-table-head-cell">{text.result}</th>
-                      <th className="backtest-table-head-cell">{text.status}</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {results.map((row) => {
-                      const actionLabel = getDecisionActionLabel(row.action, row.actionLabel, null, null, actionLabels);
-                      const predictionParts = [actionLabel, row.trendPrediction, row.operationAdvice]
-                        .filter((part): part is string => Boolean(part));
-
-                      return (
-                        <tr
-                          key={row.analysisHistoryId}
-                          className="backtest-table-row"
-                        >
-                          <td className="backtest-table-cell backtest-table-code">
-                            <div className="flex flex-col">
-                              <span>{row.code}</span>
-                              <span className="text-xs text-muted-text">{row.stockName || '--'}</span>
-                            </div>
-                          </td>
-                          <td className="backtest-table-cell text-secondary-text">{row.analysisDate || '--'}</td>
-                          <td className="backtest-table-cell text-secondary-text">{phaseLabel(row, language)}</td>
-                          <td className="backtest-table-cell max-w-[220px] text-foreground">
-                            {predictionParts.length ? (
-                              <Tooltip
-                                content={predictionParts.join(' / ')}
-                                focusable
-                              >
-                                <div className="flex flex-col gap-1">
-                                  <span className="block truncate">{actionLabel || row.trendPrediction || '--'}</span>
-                                  {actionLabel && row.trendPrediction && (
-                                    <span className="block truncate text-xs text-secondary-text">{row.trendPrediction}</span>
-                                  )}
-                                  {row.operationAdvice && (
-                                    <span className="block truncate text-xs text-secondary-text">{row.operationAdvice}</span>
-                                  )}
-                                </div>
-                              </Tooltip>
-                            ) : (
-                              '--'
-                            )}
-                          </td>
-                          <td className="backtest-table-cell">
-                            <div className="flex items-center gap-2">
-                              {actualMovementBadge(row.actualMovement, language)}
-                              <span className={
-                                row.actualReturnPct != null
-                                  ? row.actualReturnPct > 0 ? 'text-success' : row.actualReturnPct < 0 ? 'text-danger' : 'text-secondary-text'
-                                  : 'text-muted-text'
-                              }>
-                                {pct(row.actualReturnPct)}
-                              </span>
-                            </div>
-                          </td>
-                          <td className="backtest-table-cell">
-                            <span className="flex items-center gap-2">
-                              {boolIcon(row.directionCorrect, text)}
-                              <span className="text-muted-text">
-                                {row.directionExpected ? labelFromMap(row.directionExpected, BACKTEST_DIRECTION_EXPECTED_LABELS[language]) : ''}
-                              </span>
-                            </span>
-                          </td>
-                          <td className="backtest-table-cell">{outcomeBadge(row.outcome, language)}</td>
-                          <td className="backtest-table-cell">{statusBadge(row.evalStatus, language)}</td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
+              <div className="mb-2 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-white/10 bg-surface-elevated/35 px-3 py-2">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="mr-1 text-[11px] text-muted-text">{qt.outcomeFilterLabel}:</span>
+                  {(
+                    [
+                      ['all', qt.filterAll],
+                      ['win', qt.filterWin],
+                      ['loss', qt.filterLoss],
+                      ['neutral', qt.filterNeutral],
+                    ] as const
+                  ).map(([key, label]) => (
+                    <button
+                      key={key}
+                      type="button"
+                      onClick={() => setOutcomeFilter(key)}
+                      aria-pressed={outcomeFilter === key}
+                      className={`rounded-lg border px-2 py-1 text-xs transition-colors ${
+                        outcomeFilter === key
+                          ? 'border-primary/50 bg-primary/15 text-primary font-medium'
+                          : 'border-white/10 bg-transparent text-secondary-text hover:border-white/25'
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                  <span className="ml-1 font-mono text-[11px] text-muted-text">
+                    ({outcomeCounts.win}/{outcomeCounts.loss}/{outcomeCounts.neutral})
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-[11px] text-muted-text">{qt.sortLabel}</span>
+                  <select
+                    aria-label={qt.sortLabel}
+                    value={sortBy}
+                    onChange={(e) => setSortBy(e.target.value as typeof sortBy)}
+                    className={`${BACKTEST_COMPACT_INPUT_CLASS} h-8 w-36 py-1 text-xs`}
+                  >
+                    <option value="default">{qt.sortDefault}</option>
+                    <option value="sim_desc">{qt.sortSimDesc}</option>
+                    <option value="sim_asc">{qt.sortSimAsc}</option>
+                    <option value="stock_desc">{qt.sortStockDesc}</option>
+                  </select>
+                </div>
               </div>
+              {filteredSortedResults.length === 0 ? (
+                <div className="flex flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-white/15 bg-surface-elevated/30 py-10 text-xs text-muted-text">
+                  <span>{qt.noFilteredRows}</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setOutcomeFilter('all');
+                      setSortBy('default');
+                    }}
+                    className="btn-secondary px-3 py-1 text-xs"
+                  >
+                    {qt.resetLocalFilter}
+                  </button>
+                </div>
+              ) : (
+                <div className="backtest-table-wrapper">
+                  <table className="backtest-table min-w-[900px] w-full text-sm">
+                    <thead className="backtest-table-head">
+                      <tr className="text-left">
+                        <th className="backtest-table-head-cell">{text.stock}</th>
+                        <th className="backtest-table-head-cell">{text.analysisDate}</th>
+                        <th className="backtest-table-head-cell">{text.phase}</th>
+                        <th className="backtest-table-head-cell">{text.aiPrediction}</th>
+                        <th className="backtest-table-head-cell">
+                          {showNextDayActualColumns ? text.actualPerformance : text.windowReturn}
+                        </th>
+                        <th className="backtest-table-head-cell">
+                          {showNextDayActualColumns ? text.accuracy : text.directionMatch}
+                        </th>
+                        <th className="backtest-table-head-cell">{text.result}</th>
+                        <th className="backtest-table-head-cell">{text.status}</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filteredSortedResults.map((row) => {
+                        const actionLabel = getDecisionActionLabel(row.action, row.actionLabel, null, null, actionLabels);
+                        const predictionParts = [actionLabel, row.trendPrediction, row.operationAdvice]
+                          .filter((part): part is string => Boolean(part));
+                        const isExpanded = Boolean(expandedIds[row.analysisHistoryId]);
+                        const entryBasis = row.simulatedEntryPrice && row.simulatedEntryPrice > 0
+                          ? row.simulatedEntryPrice
+                          : row.startPrice;
+                        const mfePct = entryBasis && entryBasis > 0 && row.maxHigh != null
+                          ? ((row.maxHigh - entryBasis) / entryBasis) * 100
+                          : null;
+                        const maePct = entryBasis && entryBasis > 0 && row.minLow != null
+                          ? ((row.minLow - entryBasis) / entryBasis) * 100
+                          : null;
+                        const exitReasonLabel = row.simulatedExitReason
+                          ? (qt.exitReasons[row.simulatedExitReason] ?? row.simulatedExitReason)
+                          : '--';
+                        const hitDetailParts = [
+                          row.firstHit ? (qt.exitReasons[row.firstHit] ?? row.firstHit) : null,
+                          row.firstHitDate || null,
+                          row.firstHitTradingDays != null
+                            ? formatUiText(qt.daysUnit, { days: row.firstHitTradingDays })
+                            : null,
+                        ].filter(Boolean);
+
+                        return (
+                          <Fragment key={row.analysisHistoryId}>
+                            <tr className="backtest-table-row">
+                              <td className="backtest-table-cell backtest-table-code">
+                                <div className="flex items-center gap-1.5">
+                                  <button
+                                    type="button"
+                                    onClick={() => toggleRowExpand(row.analysisHistoryId)}
+                                    aria-expanded={isExpanded}
+                                    aria-label={isExpanded ? qt.collapseDetailAria : qt.expandDetailAria}
+                                    className="rounded-md p-1 text-muted-text transition-colors hover:bg-white/10 hover:text-foreground"
+                                  >
+                                    {isExpanded ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                                  </button>
+                                  <div className="flex flex-col">
+                                    <span>{row.code}</span>
+                                    <span className="text-xs text-muted-text">{row.stockName || '--'}</span>
+                                  </div>
+                                </div>
+                              </td>
+                              <td className="backtest-table-cell text-secondary-text">{row.analysisDate || '--'}</td>
+                              <td className="backtest-table-cell text-secondary-text">{phaseLabel(row, language)}</td>
+                              <td className="backtest-table-cell max-w-[220px] text-foreground">
+                                {predictionParts.length ? (
+                                  <Tooltip
+                                    content={predictionParts.join(' / ')}
+                                    focusable
+                                  >
+                                    <div className="flex flex-col gap-1">
+                                      <span className="block truncate">{actionLabel || row.trendPrediction || '--'}</span>
+                                      {actionLabel && row.trendPrediction && (
+                                        <span className="block truncate text-xs text-secondary-text">{row.trendPrediction}</span>
+                                      )}
+                                      {row.operationAdvice && (
+                                        <span className="block truncate text-xs text-secondary-text">{row.operationAdvice}</span>
+                                      )}
+                                    </div>
+                                  </Tooltip>
+                                ) : (
+                                  '--'
+                                )}
+                              </td>
+                              <td className="backtest-table-cell">
+                                <div className="flex items-center gap-2">
+                                  {actualMovementBadge(row.actualMovement, language)}
+                                  <span className={
+                                    row.actualReturnPct != null
+                                      ? row.actualReturnPct > 0 ? 'text-success' : row.actualReturnPct < 0 ? 'text-danger' : 'text-secondary-text'
+                                      : 'text-muted-text'
+                                  }>
+                                    {pct(row.actualReturnPct)}
+                                  </span>
+                                </div>
+                              </td>
+                              <td className="backtest-table-cell">
+                                <span className="flex items-center gap-2">
+                                  {boolIcon(row.directionCorrect, text)}
+                                  <span className="text-muted-text">
+                                    {row.directionExpected ? labelFromMap(row.directionExpected, BACKTEST_DIRECTION_EXPECTED_LABELS[language]) : ''}
+                                  </span>
+                                </span>
+                              </td>
+                              <td className="backtest-table-cell">{outcomeBadge(row.outcome, language)}</td>
+                              <td className="backtest-table-cell">{statusBadge(row.evalStatus, language)}</td>
+                            </tr>
+                            {isExpanded && (
+                              <tr className="bg-surface-elevated/45">
+                                <td colSpan={8} className="border-b border-white/10 px-4 py-3 text-xs">
+                                  <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                                    <span className="font-semibold text-foreground">{qt.replayTitle}</span>
+                                    <a
+                                      href={`/?stock=${encodeURIComponent(row.code)}`}
+                                      className="inline-flex items-center gap-1 rounded-lg border border-primary/35 bg-primary/10 px-2.5 py-1 text-xs font-medium text-primary hover:bg-primary/20"
+                                    >
+                                      {qt.openReportAction}
+                                      <ExternalLink className="h-3 w-3" />
+                                    </a>
+                                  </div>
+                                  <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+                                    <div>
+                                      <div className="text-[11px] text-muted-text">{qt.simEntryExit}</div>
+                                      <div className="mt-0.5 font-mono text-foreground">
+                                        {row.simulatedEntryPrice == null && row.simulatedExitPrice == null
+                                          ? '--'
+                                          : `${fmtPrice(row.simulatedEntryPrice)} → ${fmtPrice(row.simulatedExitPrice)}`}
+                                      </div>
+                                    </div>
+                                    <div>
+                                      <div className="text-[11px] text-muted-text">{qt.exitReason}</div>
+                                      <div className="mt-0.5 text-foreground">{exitReasonLabel}</div>
+                                    </div>
+                                    <div>
+                                      <div className="text-[11px] text-muted-text">{qt.simReturn}</div>
+                                      <div className={`mt-0.5 font-mono font-semibold ${
+                                        (row.simulatedReturnPct ?? 0) > 0
+                                          ? 'text-success'
+                                          : (row.simulatedReturnPct ?? 0) < 0
+                                            ? 'text-danger'
+                                            : 'text-foreground'
+                                      }`}>
+                                        {fmtSignedPct(row.simulatedReturnPct)}
+                                      </div>
+                                    </div>
+                                    <div>
+                                      <div className="text-[11px] text-muted-text">{qt.riskTargets}</div>
+                                      <div className="mt-0.5 font-mono text-foreground">
+                                        {fmtPrice(row.stopLoss)} / {fmtPrice(row.takeProfit)}
+                                      </div>
+                                    </div>
+                                    <div>
+                                      <div className="text-[11px] text-muted-text">{qt.firstHitDetail}</div>
+                                      <div className="mt-0.5 text-foreground">
+                                        {hitDetailParts.length > 0 ? hitDetailParts.join(' · ') : '--'}
+                                      </div>
+                                    </div>
+                                    <div>
+                                      <div className="text-[11px] text-muted-text">{qt.excursionRange}</div>
+                                      <div className="mt-0.5 font-mono text-foreground">
+                                        {fmtPrice(row.maxHigh)} / {fmtPrice(row.minLow)}
+                                        {(mfePct != null || maePct != null) && (
+                                          <span className="ml-1 text-[11px] text-muted-text">
+                                            ({fmtSignedPct(mfePct)} / {fmtSignedPct(maePct)})
+                                          </span>
+                                        )}
+                                      </div>
+                                    </div>
+                                  </div>
+                                </td>
+                              </tr>
+                            )}
+                          </Fragment>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
 
               {/* Pagination */}
               <div className="mt-4">
