@@ -380,20 +380,22 @@ OPENAI_MODEL=deepseek-v4-flash
 
 ### Q15: macOS 提示“应用已损坏”或无法打开桌面端？
 
-**原因**：当前 macOS DMG 尚未使用 Apple Developer 证书签名和公证。从浏览器下载后，macOS Gatekeeper 可能给应用添加 quarantine（下载隔离）属性并阻止启动。
+**原因**：当前 macOS DMG 已在打包阶段由内向外补齐本地 ad-hoc 签名以支持 Apple Silicon（`arm64`），但尚未使用 Apple Developer 证书签名和公证。从浏览器下载后，macOS Gatekeeper 可能给应用添加 quarantine（下载隔离）属性并阻止启动。
 
 **解决方案**：
 
 1. 只从项目的 [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) 下载附件，并确认安装包架构与 Mac 一致。不要对第三方转载或来源不明的应用绕过 Gatekeeper。
 2. 将 `Daily Stock Analysis` 拖入“应用程序”，先在“系统设置 → 隐私与安全性”中尝试“仍要打开”。
-3. 如果仍无法启动，并且已经确认文件来自项目官方 Release，可在终端只针对该应用移除 quarantine 属性并启动：
+3. 如果仍无法启动，并且已经确认文件来自项目官方 Release，可在终端只针对该应用移除 quarantine 属性并启动；若使用 `v3.35.0` 等早期包且 Apple Silicon 仍无反应，可补跑一次 ad-hoc 重签：
 
    ```bash
    xattr -dr com.apple.quarantine "/Applications/Daily Stock Analysis.app"
+   # 仅 v3.35.0 等早期未补齐 ad-hoc 签名的 arm64 包需要额外执行下一行：
+   # codesign --force --deep --sign - "/Applications/Daily Stock Analysis.app"
    open "/Applications/Daily Stock Analysis.app"
    ```
 
-如果应用不在 `/Applications`，请替换为实际 `.app` 路径。不要对整个 `/Applications` 目录执行 `xattr`。该命令只是临时放行受信任的 unsigned 应用，不等同于签名或公证；完整排查说明见 [桌面端打包与发布](desktop-package.md#macos-提示应用已损坏无法打开)。
+如果应用不在 `/Applications`，请替换为实际 `.app` 路径。不要对整个 `/Applications` 目录执行 `xattr`。该命令只是临时放行受信任的未公证应用，不等同于开发者签名或公证；完整排查说明见 [桌面端打包与发布](desktop-package.md#macos-提示应用已损坏无法打开)。
 
 > 📌 相关 Issue: [#2113](https://github.com/ZhuLinsen/daily_stock_analysis/issues/2113)
 

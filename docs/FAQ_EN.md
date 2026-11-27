@@ -355,20 +355,22 @@ Work through the following 5 checkpoints in order:
 
 ### Q15: macOS says the desktop app is damaged or cannot be opened?
 
-**Cause**: The current macOS DMG is not signed and notarized with an Apple Developer certificate. After a browser download, macOS Gatekeeper may attach the quarantine attribute and block startup.
+**Cause**: Current macOS DMG builds apply inside-out ad-hoc signatures during packaging so Apple Silicon (`arm64`) binaries can run, but are still not signed and notarized with an Apple Developer certificate. After a browser download, macOS Gatekeeper may attach the quarantine attribute and block startup.
 
 **Solution**:
 
 1. Download only from the project's [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases), and select the package matching your Mac architecture. Do not bypass Gatekeeper for third-party copies or files from an untrusted source.
 2. Drag `Daily Stock Analysis` into Applications, then first try **System Settings → Privacy & Security → Open Anyway**.
-3. If it still does not start and you have verified that it came from the official project Release, remove quarantine only from this app and launch it:
+3. If it still does not start and you have verified that it came from the official project Release, remove quarantine only from this app and launch it (for earlier `v3.35.0` Apple Silicon builds that lacked ad-hoc signatures, also re-sign ad-hoc locally):
 
    ```bash
    xattr -dr com.apple.quarantine "/Applications/Daily Stock Analysis.app"
+   # Only needed on earlier arm64 builds such as v3.35.0 without ad-hoc signatures:
+   # codesign --force --deep --sign - "/Applications/Daily Stock Analysis.app"
    open "/Applications/Daily Stock Analysis.app"
    ```
 
-Replace the path if the app is not in `/Applications`. Never run `xattr` against the entire `/Applications` directory. This is a temporary way to allow a trusted unsigned app; it is not a substitute for signing or notarization. See the [desktop packaging guide](desktop-package.md#macos-提示应用已损坏无法打开) for the complete troubleshooting notes.
+Replace the path if the app is not in `/Applications`. Never run `xattr` against the entire `/Applications` directory. This is a temporary way to allow a trusted unnotarized app; it is not a substitute for Developer ID signing or notarization. See the [desktop packaging guide](desktop-package.md#macos-提示应用已损坏无法打开) for the complete troubleshooting notes.
 
 > Related Issue: [#2113](https://github.com/ZhuLinsen/daily_stock_analysis/issues/2113)
 

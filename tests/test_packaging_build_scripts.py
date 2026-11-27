@@ -200,7 +200,7 @@ def test_pyinstaller_runtime_hook_disables_incompatible_nltk_guard(
     assert os.environ["NLTK_DISABLE_IMPORT_SECURITY"] == "1"
 
 
-def test_macos_unsigned_packaging_contract_is_explicit() -> None:
+def test_macos_adhoc_packaging_contract_is_explicit() -> None:
     package = json.loads(
         _read_text(REPO_ROOT / "apps" / "dsa-desktop" / "package.json")
     )
@@ -220,27 +220,45 @@ def test_macos_unsigned_packaging_contract_is_explicit() -> None:
     normalize_call = (
         'bash "${SCRIPT_DIR}/macos-signature-audit.sh" normalize "${packaged_root}"'
     )
+    check_call = (
+        'bash "${SCRIPT_DIR}/macos-signature-audit.sh" check "${packaged_root}"'
+    )
     assert normalize_call in backend_script
-    assert backend_script.index(normalize_call) < backend_script.index(
+    assert check_call in backend_script
+    assert backend_script.index(normalize_call) < backend_script.index(check_call)
+    assert backend_script.index(check_call) < backend_script.index(
         '"${packaged_entry}" --help'
     )
     assert 'bash "${SCRIPT_DIR}/macos-signature-audit.sh" check "${app_path}"' in (
         desktop_script
     )
-    assert "verify_unsigned_dmg" in desktop_script
+    assert "verify_adhoc_signed_app" in desktop_script
+    assert "verify_packaged_dmg" in desktop_script
+    assert "codesign --verify --deep --strict --verbose=4" in desktop_script
+    assert "ELECTRON_RUN_AS_NODE=1" in desktop_script
     assert "code has no resources but signature indicates they must be present" in (
         desktop_script
     )
     assert "scripts/macos-signature-audit.sh" in workflow
+    assert "scripts/build-desktop-macos.sh" in workflow
     assert "run: bash scripts/build-backend-macos.sh" in workflow
     assert "run: bash scripts/build-desktop-macos.sh" in workflow
 
 
-def _write_fake_macos_signature_tools(fake_bin: Path) -> None:
+def _write_fake_macos_signature_tools(fake_bin: Path, sign_log: Path) -> None:
     fake_bin.mkdir()
     file_tool = fake_bin / "file"
     file_tool.write_text(
-        "#!/usr/bin/env bash\nprintf 'Mach-O 64-bit executable\\n'\n",
+        """#!/usr/bin/env bash
+case "$(basename "${@: -1}")" in
+  *.bin|*.dylib|*.so|Python|stock_analysis)
+    printf 'Mach-O 64-bit executable arm64\\n'
+    ;;
+  *)
+    printf 'ASCII text\\n'
+    ;;
+esac
+""",
         encoding="utf-8",
         newline="\n",
     )
@@ -248,23 +266,43 @@ def _write_fake_macos_signature_tools(fake_bin: Path) -> None:
     codesign_tool.write_text(
         """#!/usr/bin/env bash
 candidate="${@: -1}"
-marker="${candidate}.removed"
+if [[ -d "${candidate}" ]]; then
+  signed_marker="${candidate}/_CodeSignature/.signed"
+else
+  signed_marker="${candidate}.signed"
+fi
+has_signed_flag() {
+  [[ -f "${signed_marker}" ]] || [[ "$(basename "${candidate}")" == valid* ]]
+}
 case "$1" in
   -d)
-    if [[ -f "${marker}" ]] || [[ "${candidate}" == *"unsigned.bin" ]]; then
-      printf 'code object is not signed at all\\n' >&2
-      exit 1
+    if has_signed_flag || [[ "${candidate}" == *"broken"* ]]; then
+      printf 'Signature=adhoc\\n' >&2
+      exit 0
     fi
-    printf 'Authority=adhoc\\n' >&2
+    printf 'code object is not signed at all\\n' >&2
+    exit 1
     ;;
   --verify)
-    if [[ "${candidate}" == *"broken.bin" ]] && [[ ! -f "${marker}" ]]; then
+    if [[ "${candidate}" == *"broken"* ]] && [[ ! -f "${signed_marker}" ]]; then
       printf 'broken signature\\n' >&2
       exit 1
     fi
+    if ! has_signed_flag; then
+      printf 'code object is not signed at all\\n' >&2
+      exit 1
+    fi
     ;;
-  --remove-signature)
-    : > "${marker}"
+  --force)
+    if [[ -d "${candidate}" ]] && [[ "${candidate}" == *.framework ]] && [[ ! -e "${candidate}/Versions/Current" ]] && [[ ! -f "${candidate}/Resources/Info.plist" ]] && [[ ! -f "${candidate}/Info.plist" ]]; then
+      printf 'bundle format unrecognized, invalid, or unsuitable\\n' >&2
+      exit 1
+    fi
+    if [[ -d "${candidate}" ]]; then
+      mkdir -p "${candidate}/_CodeSignature"
+    fi
+    : > "${signed_marker}"
+    printf '%s\\n' "${candidate}" >> """ + shlex.quote(_bash_path(sign_log)) + """
     ;;
 esac
 """,
@@ -275,69 +313,115 @@ esac
     codesign_tool.chmod(0o755)
 
 
-def test_macos_signature_audit_normalizes_invalid_signatures(tmp_path: Path) -> None:
+def test_macos_signature_audit_normalizes_unsigned_and_invalid_inside_out(
+    tmp_path: Path,
+) -> None:
     fake_bin = tmp_path / "bin"
-    _write_fake_macos_signature_tools(fake_bin)
-    artifact = tmp_path / "artifact"
-    artifact.mkdir()
-    broken = artifact / "broken.bin"
-    broken.write_text("broken", encoding="utf-8")
-    (artifact / "unsigned.bin").write_text("unsigned", encoding="utf-8")
+    sign_log = tmp_path / "sign.log"
+    _write_fake_macos_signature_tools(fake_bin, sign_log)
 
-    result = subprocess.run(
-        [
-            "bash",
-            "-c",
-            'PATH={fake_bin}:"$PATH"; export PATH; bash {script} normalize {artifact}'.format(
-                fake_bin=shlex.quote(_bash_path(fake_bin)),
-                script=shlex.quote(
-                    _bash_path(REPO_ROOT / "scripts" / "macos-signature-audit.sh")
-                ),
-                artifact=shlex.quote(_bash_path(artifact)),
-            ),
-        ],
+    app_dir = tmp_path / "Daily Stock Analysis.app"
+    (app_dir / "Contents").mkdir(parents=True)
+    (app_dir / "Contents" / "Info.plist").write_text("<plist/>", encoding="utf-8")
+
+    fw_dir = app_dir / "Contents" / "Frameworks" / "Electron Framework.framework"
+    (fw_dir / "Versions" / "A" / "Resources").mkdir(parents=True)
+    (fw_dir / "Versions" / "A" / "Resources" / "Info.plist").write_text("<plist/>", encoding="utf-8")
+    (fw_dir / "Versions" / "Current").symlink_to("A")
+    (fw_dir / "Resources").symlink_to("Versions/Current/Resources")
+    valid_dylib = fw_dir / "Versions" / "A" / "valid.dylib"
+    valid_dylib.write_text("ok", encoding="utf-8")
+    broken_dylib = fw_dir / "Versions" / "A" / "broken.dylib"
+    broken_dylib.write_text("broken", encoding="utf-8")
+
+    partial_py_fw = (
+        app_dir / "Contents" / "Resources" / "backend" / "stock_analysis" / "_internal" / "Python.framework"
+    )
+    (partial_py_fw / "Versions" / "3.12").mkdir(parents=True)
+    py_bin = partial_py_fw / "Versions" / "3.12" / "Python"
+    py_bin.write_text("broken", encoding="utf-8")
+    backend_bin = app_dir / "Contents" / "Resources" / "backend" / "stock_analysis" / "stock_analysis"
+    backend_bin.write_text("unsigned", encoding="utf-8")
+
+    script_path = _bash_path(REPO_ROOT / "scripts" / "macos-signature-audit.sh")
+    app_arg = _bash_path(app_dir)
+    env = os.environ.copy()
+    env["PATH"] = f"{_bash_path(fake_bin)}:{env['PATH']}"
+
+    normalize_res = subprocess.run(
+        ["bash", script_path, "normalize", app_arg],
         cwd=REPO_ROOT,
-        env=os.environ.copy(),
+        env=env,
         check=False,
         capture_output=True,
         text=True,
     )
+    assert normalize_res.returncode == 0, normalize_res.stderr
+    assert "resigned=5" in normalize_res.stdout
 
-    assert result.returncode == 0, result.stderr
-    assert (artifact / "broken.bin.removed").is_file()
-    assert "removed=1" in result.stdout
+    signed_order = [line.strip() for line in sign_log.read_text(encoding="utf-8").splitlines() if line.strip()]
+    assert len(signed_order) == 5
+    assert str(partial_py_fw) not in signed_order
+    assert not any(entry.endswith("valid.dylib") for entry in signed_order)
+    assert signed_order[-1].endswith("Daily Stock Analysis.app")
+    assert signed_order.index(str(broken_dylib)) < signed_order.index(str(fw_dir))
+    assert signed_order.index(str(py_bin)) < signed_order.index(str(app_dir))
+    assert signed_order.index(str(backend_bin)) < signed_order.index(str(app_dir))
 
-
-def test_macos_signature_audit_rejects_invalid_signatures(tmp_path: Path) -> None:
-    fake_bin = tmp_path / "bin"
-    _write_fake_macos_signature_tools(fake_bin)
-    artifact = tmp_path / "artifact"
-    artifact.mkdir()
-    broken = artifact / "broken.bin"
-    broken.write_text("broken", encoding="utf-8")
-
-    result = subprocess.run(
-        [
-            "bash",
-            "-c",
-            'PATH={fake_bin}:"$PATH"; export PATH; bash {script} check {artifact}'.format(
-                fake_bin=shlex.quote(_bash_path(fake_bin)),
-                script=shlex.quote(
-                    _bash_path(REPO_ROOT / "scripts" / "macos-signature-audit.sh")
-                ),
-                artifact=shlex.quote(_bash_path(artifact)),
-            ),
-        ],
+    check_res = subprocess.run(
+        ["bash", script_path, "check", app_arg],
         cwd=REPO_ROOT,
-        env=os.environ.copy(),
+        env=env,
         check=False,
         capture_output=True,
         text=True,
     )
+    assert check_res.returncode == 0, check_res.stderr
+    assert "checked=6, signed=6, resigned=0" in check_res.stdout
 
-    assert result.returncode != 0
-    assert not (artifact / "broken.bin.removed").exists()
-    assert "invalid signature" in result.stderr
+
+def test_macos_signature_audit_rejects_unsigned_and_invalid_in_check_mode(
+    tmp_path: Path,
+) -> None:
+    fake_bin = tmp_path / "bin"
+    sign_log = tmp_path / "sign.log"
+    _write_fake_macos_signature_tools(fake_bin, sign_log)
+    script_path = _bash_path(REPO_ROOT / "scripts" / "macos-signature-audit.sh")
+    env = os.environ.copy()
+    env["PATH"] = f"{_bash_path(fake_bin)}:{env['PATH']}"
+
+    broken_dir = tmp_path / "broken_artifact"
+    broken_dir.mkdir()
+    broken = broken_dir / "broken.bin"
+    broken.write_text("broken", encoding="utf-8")
+
+    res_broken = subprocess.run(
+        ["bash", script_path, "check", _bash_path(broken_dir)],
+        cwd=REPO_ROOT,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert res_broken.returncode != 0
+    assert "invalid signature" in res_broken.stderr
+    assert not (broken_dir / "broken.bin.signed").exists()
+
+    unsigned_dir = tmp_path / "unsigned_artifact"
+    unsigned_dir.mkdir()
+    (unsigned_dir / "unsigned.bin").write_text("unsigned", encoding="utf-8")
+
+    res_unsigned = subprocess.run(
+        ["bash", script_path, "check", _bash_path(unsigned_dir)],
+        cwd=REPO_ROOT,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert res_unsigned.returncode != 0
+    assert "unsigned macOS artifact" in res_unsigned.stderr
+    assert not sign_log.exists()
 
 
 def test_macos_pyinstaller_command_preserves_real_bash_argv() -> None:

@@ -7,26 +7,46 @@ ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 export CSC_IDENTITY_AUTO_DISCOVERY="false"
 export ELECTRON_BUILDER_CACHE="${ROOT_DIR}/.electron-builder-cache"
 
-verify_expected_unsigned_app() {
+verify_adhoc_signed_app() {
   local app_path="$1"
   local signature_details=""
   local assessment_output=""
+  local smoke_output=""
 
   bash "${SCRIPT_DIR}/macos-signature-audit.sh" check "${app_path}"
 
-  if signature_details="$(codesign -d "${app_path}" 2>&1)"; then
-    echo "ERROR: expected an unsigned application bundle, but a signature was found: ${app_path}"
+  if ! signature_details="$(codesign -d --verbose=4 "${app_path}" 2>&1)"; then
+    echo "ERROR: application bundle signature could not be read: ${app_path}" >&2
     echo "${signature_details}" >&2
     exit 1
   fi
-  if [[ "${signature_details}" != *"code object is not signed at all"* ]]; then
-    echo "ERROR: application bundle has an unreadable or invalid signature: ${app_path}"
+  if [[ "${signature_details}" == *"code object is not signed at all"* ]]; then
+    echo "ERROR: expected an ad-hoc signed application bundle, but found unsigned binary: ${app_path}" >&2
     echo "${signature_details}" >&2
     exit 1
   fi
 
+  if ! codesign --verify --deep --strict --verbose=4 "${app_path}" 2>&1; then
+    echo "ERROR: application bundle failed deep strict code-signature verification: ${app_path}" >&2
+    exit 1
+  fi
+
+  local host_arch target_arch
+  host_arch="$(uname -m)"
+  target_arch="${DSA_MAC_ARCH:-}"
+  if [[ -z "${target_arch}" ]] || [[ "${target_arch}" == "arm64" && "${host_arch}" == "arm64" ]] || [[ "${target_arch}" == "x64" && "${host_arch}" == "x86_64" ]]; then
+    if ! smoke_output="$(ELECTRON_RUN_AS_NODE=1 "${app_path}/Contents/MacOS/Daily Stock Analysis" -e "console.log('desktop-smoke:' + process.platform + ':' + process.arch)" 2>&1)"; then
+      echo "ERROR: packaged Electron executable failed headless launch smoke check: ${app_path}" >&2
+      echo "${smoke_output}" >&2
+      exit 1
+    fi
+    echo "${smoke_output}"
+  else
+    echo "Skipping headless Electron launch smoke check for cross-arch build (host=${host_arch}, target=${target_arch})."
+  fi
+
   if assessment_output="$(spctl --assess --type execute --verbose=4 "${app_path}" 2>&1)"; then
-    echo "WARNING: Gatekeeper accepted an explicitly unsigned application: ${app_path}"
+    echo "WARNING: Gatekeeper accepted an unnotarized ad-hoc signed application: ${app_path}"
     echo "${assessment_output}"
     return 0
   fi
@@ -36,16 +56,16 @@ verify_expected_unsigned_app() {
     echo "ERROR: Gatekeeper detected the broken-signature defect reported in issue #2075." >&2
     exit 1
   fi
-  echo "WARNING: Gatekeeper rejection is expected because this build has no Apple Developer signature."
+  echo "WARNING: Gatekeeper rejection is expected because this build uses an ad-hoc signature without Apple Developer notarization."
 }
 
-verify_unsigned_dmg() {
+verify_packaged_dmg() {
   local dmg_path="$1"
   local mount_dir=""
   local mounted_app=""
   local mounted=false
 
-  mount_dir="$(mktemp -d "${TMPDIR:-/tmp}/dsa-unsigned-dmg.XXXXXX")"
+  mount_dir="$(mktemp -d "${TMPDIR:-/tmp}/dsa-macos-dmg.XXXXXX")"
   cleanup_mount() {
     if [[ "${mounted}" == "true" ]]; then
       hdiutil detach "${mount_dir}" >/dev/null || true
@@ -62,7 +82,7 @@ verify_unsigned_dmg() {
     exit 1
   fi
 
-  verify_expected_unsigned_app "${mounted_app}"
+  verify_adhoc_signed_app "${mounted_app}"
 
   hdiutil detach "${mount_dir}" >/dev/null
   mounted=false
@@ -167,8 +187,8 @@ if [[ "${#dmg_candidates[@]}" -ne 1 ]]; then
   exit 1
 fi
 
-verify_expected_unsigned_app "${app_candidates[0]}"
-verify_unsigned_dmg "${dmg_candidates[0]}"
+verify_adhoc_signed_app "${app_candidates[0]}"
+verify_packaged_dmg "${dmg_candidates[0]}"
 
 popd >/dev/null
 
