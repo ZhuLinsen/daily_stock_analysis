@@ -93,7 +93,7 @@ export const SYNC_SPECS = [
   {
     target: 'docs/features/strategies.md',
     sources: ['strategies/README.md'],
-    title: 'Agent 15 种内置策略与自定义 Skill',
+    title: 'Agent 20 种内置策略与自定义 Skill',
     description: '自然语言 YAML 交易策略编写指南、核心理念与默认策略目录。',
   },
   {
