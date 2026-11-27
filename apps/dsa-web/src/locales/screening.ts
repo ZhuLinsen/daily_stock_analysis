@@ -247,7 +247,10 @@ const zh = {
   requestTimeout: "请求超时，请稍后重试。",
   requestNetwork: "无法连接服务，请检查网络后重试。",
   taskPending: "等待选股任务执行",
-  taskProcessing: "选股任务执行中"
+  taskProcessing: "选股任务执行中",
+  alphaSiftLabel: "AlphaSift 今日榜单",
+  alphaSiftTooltip: "AlphaSift：多市场每日自动选股与公开 T+N 纸面跟踪",
+  alphaSiftAria: "AlphaSift 今日榜单：访问多市场每日选股与公开 T+N 纸面跟踪（新窗口打开）"
 };
 
 const en: Record<keyof typeof zh, string> = {
@@ -497,7 +500,10 @@ const en: Record<keyof typeof zh, string> = {
   requestTimeout: "The request timed out. Please try again later.",
   requestNetwork: "Could not connect to the service. Check your connection and retry.",
   taskPending: "Waiting for screening to start",
-  taskProcessing: "Screening is in progress"
+  taskProcessing: "Screening is in progress",
+  alphaSiftLabel: "AlphaSift Daily Picks",
+  alphaSiftTooltip: "AlphaSift: multi-market daily screening & public T+N paper track record",
+  alphaSiftAria: "AlphaSift Daily Picks: open multi-market daily stock screener (opens in a new tab)"
 };
 
 export type ScreeningTextKey = keyof typeof zh;

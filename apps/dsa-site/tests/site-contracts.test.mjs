@@ -251,6 +251,42 @@ test('landing page and docs honor review regression guards', () => {
   assert.equal(fs.existsSync(path.join(SITE_ROOT, 'public', 'assets', 'dsa-vi-light.png')), false);
 });
 
+test('landing page AlphaSift Daily Picks link meets WCAG AA text contrast in light and dark themes', () => {
+  const landing = fs.readFileSync(path.join(SITE_ROOT, 'src', 'components', 'LandingPage.astro'), 'utf8');
+  const css = fs.readFileSync(path.join(SITE_ROOT, 'src', 'styles', 'landing.css'), 'utf8');
+
+  const linkMatch = landing.match(/<a[^>]*alphasift\.zhulinsen\.tech[^>]*style="([^"]+)"[^>]*>\s*\{isEn \? 'Daily Picks ↗' : '在线今日榜单 ↗'\}/s);
+  assert.ok(linkMatch, 'Expected AlphaSift Daily Picks anchor in LandingPage.astro');
+  assert.match(linkMatch[1], /--ob-accent-strong/);
+  assert.doesNotMatch(linkMatch[1], /var\(--ob-accent\)/);
+
+  function extractBlockVars(selectorPattern) {
+    const match = css.match(selectorPattern);
+    assert.ok(match, `Missing CSS block matching ${selectorPattern}`);
+    const vars = {};
+    for (const m of match[1].matchAll(/(--[a-z0-9-]+):\s*(#[0-9a-fA-F]{6})\s*;/g)) {
+      vars[m[1]] = m[2];
+    }
+    return vars;
+  }
+
+  function contrastRatio(fgHex, bgHex) {
+    const relLum = (hex) => {
+      const rgb = [0, 2, 4].map((i) => Number.parseInt(hex.slice(1 + i, 3 + i), 16) / 255);
+      const lin = rgb.map((c) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
+      return 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2];
+    };
+    const [l1, l2] = [relLum(fgHex), relLum(bgHex)].sort((a, b) => b - a);
+    return (l1 + 0.05) / (l2 + 0.05);
+  }
+
+  const darkVars = extractBlockVars(/:root,\s*:root\[data-theme="dark"\]\s*\{([^}]+)\}/);
+  const lightVars = extractBlockVars(/:root\[data-theme="light"\]\s*\{([^}]+)\}/);
+
+  assert.ok(contrastRatio(lightVars['--ob-accent-strong'], lightVars['--ob-surface']) >= 4.5);
+  assert.ok(contrastRatio(darkVars['--ob-accent-strong'], darkVars['--ob-surface']) >= 4.5);
+});
+
 test('prepareDocs generates English counterparts for beginner setup, market support, and notifications', () => {
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'dsa-site-en-docs-'));
   try {
