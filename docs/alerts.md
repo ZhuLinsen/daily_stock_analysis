@@ -247,7 +247,7 @@ P5 支持的 `alert_type` 与 `parameters`：
 - 首版统一使用日线 close，不做分钟线。
 - 边缘触发只比较最近两根已收盘日线；非边缘但当前 level 已满足阈值时仍返回 `not_triggered`，避免规则创建首日把历史状态误报为新触发。
 - 边缘触发包含前一根刚好等于阈值或零轴的情况：`above` / `bullish_cross` 使用 `prev <= threshold < current`，`below` / `bearish_cross` 使用 `prev >= threshold > current`。
-- partial bar 只使用服务器本地时区启发式：当前本地时间早于 16:00 时，最后一行日期等于本地今天或日期不可判定都会保守丢弃；不区分 A 股、港股、美股市场时区或交易日历。Issue #1386 P0 的市场阶段基线暂不接入技术指标规则，告警 partial bar 精确判定留到后续阶段。
+- partial bar 判定优先按股票归属市场（`cn` / `hk` / `us` / `jp` / `kr` / `tw`）结合交易日历与当地收盘时间通过 `_drop_partial_today` 过滤未收盘当日柱线（Issue #1386 P0 市场阶段语义仍保留在独立阶段上下文链路，不直接改变 P5 数值指标契约）；仅当市场无法识别或日历不可用回退时，才使用服务器本地时区启发式：当前本地时间早于 16:00 时，最后一行日期等于本地今天或日期不可判定都会保守丢弃（`kline_pattern` 对最新无日期行则保守保留并在评估期降级为 `degraded`，避免丢弃后误用前一根日线触发）。
 - `src/services/alert_indicators.py` 自行归一化 OHLCV 并计算 MA、RSI、MACD、KDJ、CCI，不依赖 fetcher 预计算的 MA5/MA10/MA20。
 - RSI 使用共享的 `src/utils/rsi.py`（`wilder_rsi`，基于 `fin-primitives`，与 TA-Lib 一致）：`avg_gain` / `avg_loss` 先以前 `period` 个涨跌幅的简单均值起算，之后按 Wilder's SMMA 递推（`alpha=1/period`，即 `avg = (avg * (period - 1) + 当前值) / period`），不使用 rolling SMA。告警穿越判断使用 `fill_warmup=False`，预热期为 NaN，不参与穿越判断。
 - MACD 使用 `EMA(fast_period) - EMA(slow_period)` 得到 DIF，DEA 为 DIF 的 `EMA(signal_period)`；金叉/死叉比较 DIF-DEA 相对 0 的边缘穿越。
@@ -477,3 +477,23 @@ worker 会把 `triggered`、`skipped`、`degraded`、`failed` 写入 `alert_trig
 ### 页面来源提示的视觉验证
 
 运行 `cd apps/dsa-web && npx playwright install chromium && npx playwright test --config playwright.fixture.config.ts`，使用真实告警页面与拦截 API fixture，无需后台或登录口令。空数据库仍显示 2 条有效环境配置、1 条去重后规则及停用边界；覆盖 1440px 桌面和 390px 窄屏，无横向溢出。截图保存在 `apps/dsa-web/test-results/fixtures/`，由 web-gate 上传 `web-ui-evidence-<head SHA>` artifact，不入库。
+
+## K 线形态监测规则（kline_pattern）
+
+在现有技术指标规则链路（`src/services/alert_indicators.py`、`src/services/alert_service.py`、`src/services/alert_worker.py`）中新增 `kline_pattern` 规则，与 `src/core/kline_patterns.py` 及 Agent `analyze_pattern` 工具共用同一确定性 K 线形态引擎。
+
+- 支持范围：`single_symbol`、`watchlist`、`portfolio_holdings`；不支持 `portfolio_account`、`market` 与 legacy `AGENT_EVENT_ALERT_RULES_JSON`。
+- 参数契约：
+  - `patterns`（必填，非空字符串数组）：支持快捷预设与单个形态 ID（不区分大小写、自动去重），用于过滤触发的通知形态集合；不同于 MCP/Agent `analyze_pattern` 的 `pattern_filter`（当 `pattern_filter` 省略时，`analyze_pattern` 返回的 `patterns` 保留历史兼容投影，而 `pattern_details` 返回扩展形态全集）。
+  - `require_volume_confirm`（可选布尔，默认 `false`）：开启后仅在对应形态通过量能确认时触发。
+- 支持预设与经典形态：
+  - 预设：`any_bullish`（全部看涨可告警形态）、`any_bearish`（全部看跌风险可告警形态）。
+  - 看涨形态：`red_three_soldiers`（红三兵）、`immortal_guide`（仙人指路）、`rising_lotus`（出水芙蓉）、`bullish_cannon`（多方炮）、`morning_star`（早晨之星）、`bullish_engulfing`（看涨吞没）、`piercing_line`（曙光初现：实体阳线开于前阴收盘下方并收复前阴实体一半以上）、`hammer`（锤子线）、`breakout_20d_high`（放量突破20日高点）、`ma_pullback_support`（缩量回踩均线）。
+  - 看跌风险形态：`three_black_crows`（三只乌鸦）、`guillotine`（断头铡刀）、`evening_star`（黄昏之星）、`bearish_engulfing`（看跌吞没）、`dark_cloud_cover`（乌云盖顶：实体阴线开于前阳收盘上方并深入前阳实体一半以下）、`shooting_star`（流星线）、`hanging_man`（上吊线）。
+- 评估、量能与防重复契约：
+  - `compute_required_bars` 至少为 `22` 根已收盘日线（包含 `open`/`high`/`low`/`close`，具体按所选形态在边缘两侧的最大预热需求动态计算；例如含 `immortal_guide` 或 `any_bullish` 时至少需要 `27` 根，以保证边缘前先验 MA20 上升背景在边缘两侧均可独立计算）。`_normalize_kline_ohlcv` 会保留柱线邻接关系、按市场交易日历过滤未收盘 partial bar、按最后一行去重重复日期，并在评估窗口内出现无日期末行、fetcher 丢弃空 `close` 坏行、中间交易日缺失、非交易日/节假日多余柱线、已知交易所交易日历不可用（fail-closed）、最新有效收盘日缺失/数据延迟或损坏 OHLC 时返回 `degraded`。
+  - 依赖量能的形态（`immortal_guide`、`breakout_20d_high`、`ma_pullback_support`）及 `require_volume_confirm=true` 要求存在有效连续成交量基线，否则降级为 `degraded`；`kline_pattern` 拉取路径会保留有效 OHLC 但缺失成交量的日线，混合形态集合且 `require_volume_confirm=false` 时按成员独立评估，满足条件的纯价格形态仍可触发并附带 `unavailable_patterns` 说明未评估的量能形态，若无纯价格形态触发则降级提示量能缺失（同时为其他非 `kline_pattern` 调用方维持原有清洗语义）。除 `ma_pullback_support` 以缩量（`<= 0.75x`）为确认标准外，其余形态均以相对近 5 日均量的放量（`>= 1.1x–1.5x`）作为量能确认。
+  - 采用「先判断形态边缘、再校验量能确认」逻辑：仅当目标形态在最新一根已收盘日线首次完成且前一根未完成该形态时才进入触发，同一形态连续多日维持（如四连阳）不会在后续日线重复触发；未通过量能确认的形态在次日延续时也不会借昨日形态重触发。
+  - DB 持久化的 `kline_pattern` 规则按 `(rule_id, target, data_source, data_timestamp)` 执行两阶段 fail-closed 原子并发投递认领（`__bar_delivery_claim__` 仅筛选 `retryable=false` 的租约：先获取 `in_flight` 预派发租约，紧接在外部发送前持久化不可抢占的 `dispatch_committed` 状态 + `NotificationService.send_with_results(..., at_most_once=True)` 禁止 Telegram/Discord/Feishu App 等在 `ReadTimeout`/断连/5xx 模糊结果时同轮内重发 + 覆盖派发至投递结果与冷却落盘完成的心跳续期 + `__bar_dedup__`）：重叠轮询与进程重启下同一收盘日线至多真实推送一次，预派发前崩溃的可复用，已提交派发但外部成功且写库失败（含进程重启后）会收敛为不过期的 `delivery_unrecorded` 对账保留（含按真实 DB URL 索引的进程内兜底刷新）以阻止重放；认领或提交失败、缺少 `trigger_id` 时记录可重试的 `claim_failed` 并阻止未受保护的推送；生产 sender 仅在明确确认未向任何外部渠道发出（`no_channel`、`noise_suppressed` 或全渠道经 `_delivery_context` 传播 `delivery_confirmed_absent=true`，如 `ConnectTimeout`/4xx/429/无效配置）时按持有者校验安全释放认领以允许自动重试，读超时、断连、5xx 等模糊失败同样保持 `delivery_unrecorded` 对账屏障防止重复发送。Trigger 历史（含 `triggered` 与 `degraded`）及 dry-run 响应（含单标的和多标的批量逐条明细）均提供结构化 `matched_patterns` / `monitored_patterns` / `unavailable_patterns`。
+  - MCP / Agent 的 `analyze_trend` 与 `analyze_pattern`（扩展明细 `pattern_details` 及指定 `pattern_filter`）同样将扩展形态证据截断至 `min(frozen_target_date, effective_closed_date)` 并按 `max(scan_days, 28)` 校验前置窗口内交易日连续性与坏行丢弃元数据（含 `load_history_df` 在显式/冻结日期缓存未命中时向数据源传递 `end_date` 并收敛上界），同时保持 `analyze_pattern` 省略 `pattern_filter` 时的 `patterns` 历史兼容投影与趋势数值评分不变。
+- 回滚说明：`kline_pattern` 不新增数据库表或 schema 迁移；回滚代码后，worker 遇到旧版本未识别的 `kline_pattern` 会按 unsupported type 跳过，不影响既有告警规则运行。

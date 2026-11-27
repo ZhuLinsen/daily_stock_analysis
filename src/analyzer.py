@@ -827,6 +827,53 @@ def _filter_conflicting_trend_items(items: List[str], conflict_hints: Tuple[str,
     return [item for item in items if not _contains_trend_hint(item, conflict_hints)]
 
 
+def _format_kline_patterns_section(trend: Dict[str, Any], *, english: bool) -> str:
+    """Format optional recent K-line pattern signals for analysis prompts."""
+    raw_patterns = trend.get("kline_patterns")
+    if not isinstance(raw_patterns, list) or not raw_patterns:
+        return ""
+
+    lines: List[str] = []
+    for item in raw_patterns[:5]:
+        if not isinstance(item, dict):
+            continue
+        name = item.get("name_en") if english else (item.get("pattern") or item.get("name_zh"))
+        if not name:
+            name = item.get("pattern") or item.get("pattern_id") or ""
+        if not name:
+            continue
+        meta_parts: List[str] = []
+        direction = item.get("direction")
+        if direction:
+            meta_parts.append(str(direction))
+        trigger_date = item.get("trigger_date")
+        if trigger_date:
+            meta_parts.append(str(trigger_date))
+        vol_confirmed = item.get("volume_confirmed")
+        if vol_confirmed is True:
+            meta_parts.append("vol confirmed" if english else "量能确认")
+        elif vol_confirmed is False:
+            meta_parts.append("vol unconfirmed" if english else "量能未确认")
+        invalidation = item.get("invalidation_level")
+        if (
+            isinstance(invalidation, (int, float))
+            and not isinstance(invalidation, bool)
+            and math.isfinite(invalidation)
+        ):
+            meta_parts.append(
+                f"invalidation {invalidation:.2f}" if english else f"失效位 {invalidation:.2f}"
+            )
+        meta_text = f" ({', '.join(meta_parts)})" if meta_parts else ""
+        desc = item.get("desc")
+        desc_text = f": {desc}" if desc and not english else ""
+        lines.append(f"- {name}{meta_text}{desc_text}")
+
+    if not lines:
+        return ""
+    header = "#### Recent K-line Pattern Signals" if english else "#### 近期 K线形态信号"
+    return f"\n{header}\n" + "\n".join(lines) + "\n"
+
+
 def _sanitize_trend_analysis_for_prompt(
     trend: Any,
     *,
@@ -5173,6 +5220,7 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
 **一致性约束**：
 {chr(10).join('- ' + note for note in consistency_notes)}
 """
+            prompt += _format_kline_patterns_section(trend, english=english)
         
         # 添加昨日对比数据
         if 'yesterday' in context:

@@ -53,7 +53,7 @@ output a structured JSON opinion.
 1. Fetch realtime quote + daily history (if not already provided)
 2. Run trend analysis (MA alignment, MACD, RSI)
 3. Analyse volume and chip distribution
-4. Identify chart patterns
+4. Identify classic K-line / chart patterns (using `analyze_pattern`: e.g. Red Three Soldiers / 红三兵, Immortal Guide / 仙人指路, Rising Lotus / 出水芙蓉, Bullish Cannon / 多方炮, Three Black Crows / 三只乌鸦, Guillotine / 断头铡刀, Engulfing, Morning/Evening Star, Breakouts) and check volume confirmation and invalidation levels
 
 {baseline}
 {skills}
@@ -71,7 +71,9 @@ Return **only** a JSON object (no markdown fences):
   "trend_score": 0-100,
   "ma_alignment": "bullish|neutral|bearish",
   "volume_status": "heavy|normal|light",
-  "pattern": "<detected pattern or none>"
+  "pattern": "<detected pattern or none>",
+  "pattern_signals": ["<pattern name and direction>"],
+  "pattern_bias": "bullish|bearish|neutral|none"
 }}
 """
 

@@ -5,9 +5,12 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
 import json
 import logging
+import threading
 import time
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
@@ -50,6 +53,9 @@ DEFAULT_DB_ALERT_COOLDOWN_SECONDS = 24 * 60 * 60
 ALERT_WORKER_RULE_LIMIT = 1000
 WRITABLE_TRIGGER_STATUSES = frozenset({"triggered", "skipped", "degraded", "failed"})
 
+_UNRECORDED_DELIVERIES_LOCK = threading.Lock()
+_UNRECORDED_DELIVERIES: Dict[Tuple[str, int], Tuple[Optional[int], str, str]] = {}
+
 
 @dataclass
 class RuntimeAlertRule:
@@ -87,6 +93,7 @@ class AlertWorker:
         notifier: Optional[Any] = None,
         now_provider: Optional[Callable[[], float]] = None,
         fingerprint_ttl_seconds: int = ALERT_WORKER_FINGERPRINT_TTL_SECONDS,
+        bar_delivery_lease_seconds: float = 300.0,
     ) -> None:
         self.config_provider = config_provider or self._default_config_provider
         self.service = service or AlertService()
@@ -94,6 +101,7 @@ class AlertWorker:
         self.notifier = notifier
         self.now_provider = now_provider or time.time
         self.fingerprint_ttl_seconds = max(1, int(fingerprint_ttl_seconds))
+        self._bar_delivery_lease_seconds = max(0.05, float(bar_delivery_lease_seconds))
         self._trigger_fingerprints: Dict[str, float] = {}
         self._trigger_fingerprint_ttls: Dict[str, int] = {}
         self._analysis_visibility_cache: Dict[str, Optional[Dict[str, Any]]] = {}
@@ -176,21 +184,92 @@ class AlertWorker:
             if record_status == "triggered":
                 stats["triggered"] += 1
                 if runtime_rule.source == "db":
-                    cooldown_decision = self._check_db_cooldown(runtime_rule, trigger_id)
-                    if cooldown_decision.suppressed:
+                    allowed, claim_id, owner_token, claim_status, claim_error = self._acquire_bar_delivery_claim(
+                        runtime_rule, trigger_id
+                    )
+                    if not allowed:
+                        if claim_status == "claim_failed":
+                            stats["notification_attempts"] += self._record_bar_claim_failure(
+                                trigger_id,
+                                error_code="claim_failed",
+                                detail=claim_error,
+                            )
+                            continue
+                        self._record_bar_dedup_suppression(trigger_id, status=claim_status)
                         stats["cooldown_suppressed"] += 1
                         stats["notification_attempts"] += 1
                         continue
-                    dispatch = self._send_notification_safely(runtime_rule, result)
-                    stats["notification_attempts"] += self._record_notification_attempts_safely(trigger_id, dispatch)
-                    if self._dispatch_has_real_channel_success(dispatch):
-                        self._upsert_db_cooldown_safely(runtime_rule, result)
-                        if cooldown_decision.fallback_key:
-                            self._mark_notified(
-                                cooldown_decision.fallback_key,
-                                ttl_seconds=cooldown_decision.fallback_ttl_seconds,
+                    release_claim = True
+                    try:
+                        cooldown_decision = self._check_db_cooldown(runtime_rule, trigger_id)
+                        if cooldown_decision.suppressed:
+                            stats["cooldown_suppressed"] += 1
+                            stats["notification_attempts"] += 1
+                            continue
+                        if claim_id is not None and owner_token is not None:
+                            committed, commit_error = self._commit_bar_delivery_dispatch_safely(
+                                claim_id, owner_token=owner_token,
                             )
-                        stats["notified"] += 1
+                            if not committed:
+                                if commit_error is not None:
+                                    stats["notification_attempts"] += self._record_bar_claim_failure(
+                                        trigger_id,
+                                        error_code="claim_failed",
+                                        detail=commit_error,
+                                    )
+                                else:
+                                    stats["notification_attempts"] += self._record_bar_claim_failure(
+                                        trigger_id,
+                                        error_code="claim_lost",
+                                        detail="Delivery claim ownership lost before dispatch",
+                                    )
+                                    release_claim = False
+                                continue
+                        hb_stop = None
+                        hb_thread = None
+                        if claim_id is not None and owner_token is not None:
+                            hb_stop, hb_thread = self._start_claim_heartbeat(claim_id, owner_token)
+                        try:
+                            dispatch = self._send_notification_safely(runtime_rule, result)
+                            recorded_attempts = self._record_notification_attempts_safely(trigger_id, dispatch)
+                            stats["notification_attempts"] += recorded_attempts
+                            if self._dispatch_has_real_channel_success(dispatch):
+                                self._upsert_db_cooldown_safely(runtime_rule, result)
+                                if cooldown_decision.fallback_key:
+                                    self._mark_notified(
+                                        cooldown_decision.fallback_key,
+                                        ttl_seconds=cooldown_decision.fallback_ttl_seconds,
+                                    )
+                                stats["notified"] += 1
+                                if recorded_attempts == 0:
+                                    release_claim = False
+                                    if trigger_id is not None and owner_token is not None:
+                                        self._mark_bar_delivery_claim_unrecorded_safely(
+                                            trigger_id,
+                                            claim_id,
+                                            owner_token=owner_token,
+                                            detail="Sent alert outcome could not be persisted; held for reconciliation",
+                                        )
+                            elif (
+                                claim_id is not None
+                                and not self._dispatch_confirmed_no_delivery(dispatch)
+                            ):
+                                release_claim = False
+                                if trigger_id is not None and owner_token is not None:
+                                    self._mark_bar_delivery_claim_unrecorded_safely(
+                                        trigger_id,
+                                        claim_id,
+                                        owner_token=owner_token,
+                                        detail="External delivery outcome uncertain after dispatch failure; held for reconciliation",
+                                    )
+                        finally:
+                            if hb_stop is not None:
+                                hb_stop.set()
+                            if hb_thread is not None:
+                                hb_thread.join(timeout=2.0)
+                    finally:
+                        if claim_id is not None and release_claim:
+                            self._release_bar_delivery_claim_safely(claim_id, owner_token=owner_token)
                 elif self._should_notify(runtime_rule.key):
                     dispatch = self._send_notification_safely(runtime_rule, result)
                     stats["notification_attempts"] += self._record_notification_attempts_safely(trigger_id, dispatch)
@@ -371,6 +450,11 @@ class AlertWorker:
         if status == "triggered":
             payload = self._diagnostics_payload(result.get("diagnostics"))
             payload["analysis_visibility"] = self._build_analysis_visibility(runtime_rule, result)
+            return json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        raw_diag = result.get("diagnostics")
+        if isinstance(raw_diag, dict) and "kline_pattern" in raw_diag:
+            payload = dict(raw_diag)
+            payload.setdefault("message", result.get("message") or result.get("reason") or "")
             return json.dumps(payload, ensure_ascii=False, sort_keys=True)
         return result.get("message") or result.get("reason")
 
@@ -670,7 +754,21 @@ class AlertWorker:
             content = f"{content}\n\n{signal_excerpt}"
         alert_text = NotificationBuilder.build_simple_alert(title=title, content=content, alert_type="warning")
 
+        is_kline = self._public_alert_type(getattr(runtime_rule.rule, "alert_type", None)) == "kline_pattern"
+        if is_kline and self._notifier_accepts_at_most_once(notification_service):
+            return notification_service.send_with_results(alert_text, route_type="alert", at_most_once=True)
         return notification_service.send_with_results(alert_text, route_type="alert")
+
+    @staticmethod
+    def _notifier_accepts_at_most_once(notification_service: Any) -> bool:
+        try:
+            sig = inspect.signature(notification_service.send_with_results)
+        except (TypeError, ValueError, AttributeError):
+            return False
+        for param in sig.parameters.values():
+            if param.kind == inspect.Parameter.VAR_KEYWORD or param.name == "at_most_once":
+                return True
+        return False
 
     def _send_notification_safely(self, runtime_rule: RuntimeAlertRule, result: Dict[str, Any]) -> "NotificationDispatchResult":
         try:
@@ -773,6 +871,22 @@ class AlertWorker:
                 return True
         return False
 
+    @staticmethod
+    def _dispatch_confirmed_no_delivery(dispatch: "NotificationDispatchResult") -> bool:
+        """Return True only when dispatch definitively established zero external deliveries."""
+        if AlertWorker._dispatch_has_real_channel_success(dispatch):
+            return False
+        if not bool(getattr(dispatch, "dispatched", False)):
+            return str(getattr(dispatch, "status", "") or "") in {"no_channel", "noise_suppressed"}
+        channel_results = list(getattr(dispatch, "channel_results", None) or [])
+        if not channel_results:
+            return False
+        return all(
+            (not bool(getattr(item, "success", False)))
+            and bool(getattr(item, "delivery_confirmed_absent", False))
+            for item in channel_results
+        )
+
     def _check_db_cooldown(self, runtime_rule: RuntimeAlertRule, trigger_id: Optional[int]) -> DBCooldownDecision:
         """Return the DB cooldown decision for this trigger.
 
@@ -860,6 +974,259 @@ class AlertWorker:
                     )
                 ],
                 message=sanitized,
+            ),
+        )
+
+    def _db_reconciliation_key(self) -> str:
+        db = getattr(self.service, "db", None)
+        engine = getattr(db, "_engine", None) or getattr(db, "engine", None)
+        if engine is not None and getattr(engine, "url", None) is not None:
+            return str(engine.url)
+        db_url = getattr(db, "_db_url", None)
+        if db_url:
+            return str(db_url)
+        return str(id(db))
+
+    def _commit_bar_delivery_dispatch_safely(
+        self,
+        claim_id: int,
+        *,
+        owner_token: str,
+    ) -> Tuple[bool, Optional[str]]:
+        try:
+            committed = bool(
+                self.service.repo.commit_bar_delivery_dispatch(
+                    claim_id,
+                    owner_token=owner_token,
+                    now=self._now_datetime(),
+                )
+            )
+            return committed, None
+        except Exception as exc:
+            sanitized = self.service._sanitize_text(str(exc) or "dispatch commit failed")
+            logger.warning(
+                "[AlertWorker] Failed to commit pre-dispatch claim %s: %s",
+                claim_id,
+                sanitized,
+            )
+            return False, sanitized
+
+    def _acquire_bar_delivery_claim(
+        self,
+        runtime_rule: RuntimeAlertRule,
+        trigger_id: Optional[int],
+    ) -> Tuple[bool, Optional[int], Optional[str], str, Optional[str]]:
+        alert_type = self._public_alert_type(getattr(runtime_rule.rule, "alert_type", None))
+        if alert_type != "kline_pattern":
+            return True, None, None, "not_applicable", None
+        if trigger_id is None:
+            logger.warning(
+                "[AlertWorker] Missing trigger_id for kline_pattern %s; refusing unguarded dispatch",
+                self._display_target(runtime_rule),
+            )
+            return False, None, None, "claim_failed", "Trigger persistence returned no trigger_id"
+
+        db_key = self._db_reconciliation_key()
+        with _UNRECORDED_DELIVERIES_LOCK:
+            pending_unrecorded = _UNRECORDED_DELIVERIES.get((db_key, trigger_id))
+        if pending_unrecorded is not None:
+            p_claim_id, p_owner_token, p_detail = pending_unrecorded
+            try:
+                self.service.repo.mark_bar_delivery_claim_unrecorded(
+                    trigger_id,
+                    p_claim_id,
+                    owner_token=p_owner_token,
+                    detail=p_detail,
+                    now=self._now_datetime(),
+                )
+                with _UNRECORDED_DELIVERIES_LOCK:
+                    _UNRECORDED_DELIVERIES.pop((db_key, trigger_id), None)
+            except Exception as exc:
+                logger.debug(
+                    "[AlertWorker] Unrecorded delivery hold flush deferred for %s: %s",
+                    self._display_target(runtime_rule),
+                    self.service._sanitize_text(str(exc) or "reconciliation flush failed"),
+                )
+            return False, None, None, "delivery_unrecorded", "Prior delivery outcome unrecorded; held for reconciliation"
+
+        owner_token = uuid.uuid4().hex
+        try:
+            allowed, status, claim_id = self.service.repo.acquire_bar_delivery_claim(
+                trigger_id,
+                owner_token=owner_token,
+                lease_seconds=self._bar_delivery_lease_seconds,
+                now=self._now_datetime(),
+            )
+            return bool(allowed), claim_id, (owner_token if allowed else None), str(status), None
+        except Exception as exc:
+            sanitized = self.service._sanitize_text(str(exc) or "delivery claim failed")
+            logger.warning(
+                "[AlertWorker] Failed to acquire delivery claim for %s: %s",
+                self._display_target(runtime_rule),
+                sanitized,
+            )
+            return False, None, None, "claim_failed", sanitized
+
+    def _mark_bar_delivery_claim_unrecorded_safely(
+        self,
+        trigger_id: int,
+        claim_id: Optional[int],
+        *,
+        owner_token: str,
+        detail: str,
+    ) -> bool:
+        db_key = self._db_reconciliation_key()
+        for attempt in range(3):
+            try:
+                self.service.repo.mark_bar_delivery_claim_unrecorded(
+                    trigger_id,
+                    claim_id,
+                    owner_token=owner_token,
+                    detail=detail,
+                    now=self._now_datetime(),
+                )
+                with _UNRECORDED_DELIVERIES_LOCK:
+                    _UNRECORDED_DELIVERIES.pop((db_key, trigger_id), None)
+                return True
+            except Exception as exc:
+                if attempt < 2:
+                    time.sleep(0.05)
+                    continue
+                logger.warning(
+                    "[AlertWorker] Failed to persist unrecorded delivery hold for trigger %s: %s",
+                    trigger_id,
+                    self.service._sanitize_text(str(exc) or "reconciliation hold write failed"),
+                )
+        with _UNRECORDED_DELIVERIES_LOCK:
+            _UNRECORDED_DELIVERIES[(db_key, trigger_id)] = (claim_id, owner_token, detail)
+        return False
+
+    def _renew_bar_delivery_claim_safely(self, claim_id: int, *, owner_token: str) -> bool:
+        try:
+            return bool(
+                self.service.repo.renew_bar_delivery_claim(
+                    claim_id,
+                    owner_token=owner_token,
+                    now=self._now_datetime(),
+                )
+            )
+        except Exception as exc:
+            logger.warning(
+                "[AlertWorker] Failed to renew delivery claim %s: %s",
+                claim_id,
+                self.service._sanitize_text(str(exc) or "claim renew failed"),
+            )
+            return False
+
+    def _start_claim_heartbeat(
+        self,
+        claim_id: int,
+        owner_token: str,
+    ) -> Tuple[threading.Event, threading.Thread]:
+        stop_event = threading.Event()
+        interval = max(0.05, min(self._bar_delivery_lease_seconds / 3.0, 30.0))
+
+        def _beat() -> None:
+            while not stop_event.wait(interval):
+                try:
+                    renewed = self.service.repo.renew_bar_delivery_claim(
+                        claim_id,
+                        owner_token=owner_token,
+                        now=self._now_datetime(),
+                    )
+                    if not renewed:
+                        return
+                except Exception as exc:
+                    logger.warning(
+                        "[AlertWorker] Heartbeat renew error for claim %s: %s",
+                        claim_id,
+                        self.service._sanitize_text(str(exc) or "claim heartbeat failed"),
+                    )
+
+        thread = threading.Thread(
+            target=_beat,
+            name=f"alert-claim-hb-{claim_id}",
+            daemon=True,
+        )
+        thread.start()
+        return stop_event, thread
+
+    def _release_bar_delivery_claim_safely(self, claim_id: int, *, owner_token: Optional[str] = None) -> None:
+        try:
+            self.service.repo.release_bar_delivery_claim(claim_id, owner_token=owner_token)
+        except Exception as exc:
+            logger.warning(
+                "[AlertWorker] Failed to release delivery claim %s: %s",
+                claim_id,
+                self.service._sanitize_text(str(exc) or "claim release failed"),
+            )
+
+    def _record_bar_claim_failure(
+        self,
+        trigger_id: Optional[int],
+        *,
+        error_code: str = "claim_failed",
+        detail: Optional[str] = None,
+    ) -> int:
+        from src.notification import ChannelAttemptResult, NotificationDispatchResult
+
+        diagnostics = detail or "Completed-bar delivery claim unavailable"
+        return self._record_notification_attempts_safely(
+            trigger_id,
+            NotificationDispatchResult(
+                dispatched=False,
+                success=False,
+                status=error_code,
+                channel_results=[
+                    ChannelAttemptResult(
+                        channel="__bar_delivery_claim__",
+                        success=False,
+                        error_code=error_code,
+                        retryable=True,
+                        diagnostics=diagnostics,
+                    )
+                ],
+                message=diagnostics,
+            ),
+        )
+
+    def _record_bar_dedup_suppression(
+        self,
+        trigger_id: Optional[int],
+        *,
+        status: str = "already_delivered",
+    ) -> None:
+        from src.notification import ChannelAttemptResult, NotificationDispatchResult
+
+        if status == "in_flight":
+            error_code = "delivery_in_flight"
+            diagnostics = "Notification suppressed: completed-bar delivery already in flight"
+            message = "completed-bar delivery already in flight"
+        elif status == "delivery_unrecorded":
+            error_code = "delivery_unrecorded"
+            diagnostics = "Notification held: prior delivery outcome was not recorded; reconciliation required"
+            message = "prior delivery outcome unrecorded; held for reconciliation"
+        else:
+            error_code = "already_delivered"
+            diagnostics = "Notification suppressed: completed-bar signal already delivered"
+            message = "completed-bar signal already delivered"
+
+        self._record_notification_attempts_safely(
+            trigger_id,
+            NotificationDispatchResult(
+                dispatched=False,
+                success=False,
+                status=error_code,
+                channel_results=[
+                    ChannelAttemptResult(
+                        channel="__bar_dedup__",
+                        success=False,
+                        error_code=error_code,
+                        retryable=False,
+                        diagnostics=diagnostics,
+                    )
+                ],
+                message=message,
             ),
         )
 

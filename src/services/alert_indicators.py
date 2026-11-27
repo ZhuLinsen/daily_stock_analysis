@@ -4,17 +4,26 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, time, timedelta
+from datetime import date, datetime, time, timedelta
 from math import isfinite
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
+from src.core.kline_patterns import (
+    ALLOWED_ALERT_PATTERN_TOKENS,
+    VOLUME_DEPENDENT_PATTERN_IDS,
+    detect_kline_patterns,
+    parse_iso_date_value,
+    required_bars_for_alert_patterns,
+    resolve_alert_pattern_ids,
+)
 from src.core.trading_calendar import (
     _XCALS_AVAILABLE,
     get_effective_trading_date,
     get_market_for_stock,
     get_market_now,
+    get_trading_dates,
 )
 from src.utils.rsi import wilder_rsi
 
@@ -25,6 +34,7 @@ TECHNICAL_ALERT_TYPES = frozenset({
     "macd_cross",
     "kdj_cross",
     "cci_threshold",
+    "kline_pattern",
 })
 
 ABOVE_BELOW_DIRECTIONS = frozenset({"above", "below"})
@@ -55,6 +65,9 @@ class IndicatorEvaluation:
     threshold: Optional[float]
     message: str
     data_timestamp: Optional[datetime] = None
+    matched_patterns: Optional[List[str]] = None
+    monitored_patterns: Optional[List[str]] = None
+    unavailable_patterns: Optional[List[str]] = None
 
 
 def normalize_indicator_parameters(alert_type: str, parameters: Dict[str, Any]) -> Dict[str, Any]:
@@ -101,6 +114,16 @@ def normalize_indicator_parameters(alert_type: str, parameters: Dict[str, Any]) 
             "threshold": _finite_float(parameters.get("threshold"), "threshold"),
         }
         return _ensure_required_bars_fetchable(alert_type, normalized)
+    if alert_type == "kline_pattern":
+        normalized = {
+            "patterns": _pattern_list(parameters.get("patterns")),
+            "require_volume_confirm": _bool_flag(
+                parameters.get("require_volume_confirm"),
+                "require_volume_confirm",
+                default=False,
+            ),
+        }
+        return _ensure_required_bars_fetchable(alert_type, normalized)
     raise ValueError(f"unsupported technical alert_type: {alert_type}")
 
 
@@ -117,6 +140,8 @@ def compute_required_bars(alert_type: str, params: Dict[str, Any]) -> int:
         return int(params["period"]) + int(params["k_period"]) + int(params["d_period"]) + 1
     if alert_type == "cci_threshold":
         return int(params["period"]) + 1
+    if alert_type == "kline_pattern":
+        return required_bars_for_alert_patterns(params["patterns"])
     raise ValueError(f"unsupported technical alert_type: {alert_type}")
 
 
@@ -146,7 +171,15 @@ def evaluate_indicator_alert(
         columns = ("high", "low", "close")
 
     try:
-        normalized = normalize_ohlcv(df, required_columns=columns, stock_code=stock_code, now=now)
+        if alert_type == "kline_pattern":
+            normalized = _normalize_kline_ohlcv(df, stock_code=stock_code, now=now)
+        else:
+            normalized = normalize_ohlcv(
+                df,
+                required_columns=columns,
+                stock_code=stock_code,
+                now=now,
+            )
     except ValueError as exc:
         return IndicatorEvaluation(
             status="degraded",
@@ -190,6 +223,8 @@ def evaluate_indicator_alert(
         return _evaluate_kdj(stock_code, params, normalized)
     if alert_type == "cci_threshold":
         return _evaluate_cci(stock_code, params, normalized)
+    if alert_type == "kline_pattern":
+        return _evaluate_kline_pattern(stock_code, params, normalized)
     raise ValueError(f"unsupported technical alert_type: {alert_type}")
 
 
@@ -226,6 +261,81 @@ def normalize_ohlcv(
     if output.empty:
         return output.reset_index(drop=True)
     output = output.sort_values(by="date", kind="stable", na_position="first").reset_index(drop=True)
+    return output
+
+
+def _effective_closed_date_for_stock(
+    stock_code: Optional[str] = None,
+    now: Optional[datetime] = None,
+) -> Optional[date]:
+    market = get_market_for_stock(stock_code) if stock_code else None
+    if market in _MARKET_CLOSE_TIMES:
+        market_now = get_market_now(market, current_time=now)
+        if _XCALS_AVAILABLE:
+            return get_effective_trading_date(market, current_time=now)
+        close_time = _MARKET_CLOSE_TIMES[market]
+        return (
+            market_now.date() - timedelta(days=1)
+            if market_now.time() < close_time
+            else market_now.date()
+        )
+    current = now or datetime.now()
+    if current.time() < time(16, 0):
+        return current.date() - timedelta(days=1)
+    return None
+
+
+def _normalize_kline_ohlcv(
+    df: Any,
+    *,
+    stock_code: Optional[str] = None,
+    now: Optional[datetime] = None,
+) -> pd.DataFrame:
+    """Normalize OHLC(V) while preserving row positions and resolving duplicate dates."""
+    if df is None or getattr(df, "empty", True) or not isinstance(df, pd.DataFrame):
+        return pd.DataFrame()
+
+    attrs = dict(getattr(df, "attrs", {}) or {})
+    output = pd.DataFrame(index=df.index.copy())
+    date_col = _find_column(df, "date")
+    if date_col is not None:
+        raw_dates = [parse_iso_date_value(v) for v in df[date_col].tolist()]
+        output["date"] = pd.to_datetime(raw_dates, errors="coerce")
+    elif isinstance(df.index, pd.DatetimeIndex):
+        raw_dates = [parse_iso_date_value(v) for v in df.index.to_pydatetime().tolist()]
+        output["date"] = pd.to_datetime(raw_dates, errors="coerce")
+    else:
+        output["date"] = pd.Series([pd.NaT] * len(df), index=df.index)
+
+    required_columns = ("open", "high", "low", "close")
+    missing = []
+    for canonical in required_columns:
+        source = _find_column(df, canonical)
+        if source is None:
+            missing.append(canonical)
+            continue
+        output[canonical] = pd.to_numeric(df[source], errors="coerce")
+    if missing:
+        raise ValueError(f"daily data missing {', '.join(missing)} column")
+
+    vol_col = _find_column(df, "volume")
+    if vol_col is not None:
+        output["volume"] = pd.to_numeric(df[vol_col], errors="coerce")
+
+    attrs["raw_last_undated"] = bool(len(output) > 0 and pd.isna(output["date"].iloc[-1]))
+    eff_closed = _effective_closed_date_for_stock(stock_code=stock_code, now=now)
+    attrs["effective_closed_date"] = eff_closed.isoformat() if eff_closed is not None else None
+    output.attrs.update(attrs)
+
+    output = _drop_partial_today(output, stock_code=stock_code, now=now, drop_undated_last=False)
+    if output.empty:
+        return output.reset_index(drop=True)
+
+    output = output.sort_values(by="date", kind="stable", na_position="last")
+    valid_date_mask = output["date"].notna()
+    dup_valid = valid_date_mask & output.duplicated(subset=["date"], keep="last")
+    output = output.loc[~dup_valid].reset_index(drop=True)
+    output.attrs.update(attrs)
     return output
 
 
@@ -374,6 +484,297 @@ def _evaluate_cci(stock_code: str, params: Dict[str, Any], df: pd.DataFrame) -> 
     )
 
 
+def check_kline_session_continuity(
+    dates: list[date],
+    *,
+    stock_code: Optional[str] = None,
+    expected_latest: Optional[date] = None,
+    require_latest_match: bool = False,
+) -> Optional[str]:
+    """Validate trading-session continuity across ``dates``.
+
+    Returns an English degradation reason if an interior session is missing or
+    (when ``require_latest_match=True``) the latest observed session is stale
+    relative to ``expected_latest`` for known markets; returns ``None`` when valid.
+    """
+    if not dates:
+        return "missing session dates"
+
+    win_start = dates[0]
+    win_end = dates[-1]
+    market = get_market_for_stock(stock_code) if stock_code else None
+
+    if require_latest_match and market in _MARKET_CLOSE_TIMES and expected_latest is not None:
+        if expected_latest < win_start:
+            return f"session dates ahead of effective closed session ({expected_latest.isoformat()})"
+        expected_sessions = get_trading_dates(market, win_start, expected_latest)
+        if expected_sessions is not None:
+            if len(expected_sessions) == 0:
+                return f"unexpected non-trading session in evaluation window: {dates[0].isoformat()}"
+            expected_set = {ts.date() for ts in expected_sessions}
+            observed_dates = set(dates)
+            unexpected_sessions = sorted(d for d in observed_dates if d not in expected_set)
+            if unexpected_sessions:
+                return (
+                    f"unexpected non-trading session in evaluation window: "
+                    f"{unexpected_sessions[0].isoformat()}"
+                )
+            latest_expected = expected_sessions[-1].date()
+            if win_end < latest_expected:
+                return (
+                    f"missing latest closed trading session: {latest_expected.isoformat()} "
+                    f"(latest observed {win_end.isoformat()})"
+                )
+            missing_sessions = [ts.date() for ts in expected_sessions if ts.date() not in observed_dates]
+            if missing_sessions:
+                return f"missing trading session in evaluation window: {missing_sessions[0].isoformat()}"
+            return None
+        return f"trading calendar unavailable for {market} session validation"
+
+    expected_sessions = get_trading_dates(market, win_start, win_end) if market else None
+    if expected_sessions is not None:
+        if len(expected_sessions) == 0:
+            return f"unexpected non-trading session in evaluation window: {dates[0].isoformat()}"
+        expected_set = {ts.date() for ts in expected_sessions}
+        observed_dates = set(dates)
+        unexpected_sessions = sorted(d for d in observed_dates if d not in expected_set)
+        if unexpected_sessions:
+            return (
+                f"unexpected non-trading session in evaluation window: "
+                f"{unexpected_sessions[0].isoformat()}"
+            )
+        missing_sessions = [ts.date() for ts in expected_sessions if ts.date() not in observed_dates]
+        if missing_sessions:
+            return f"missing trading session in evaluation window: {missing_sessions[0].isoformat()}"
+        return None
+    if market in _MARKET_CLOSE_TIMES:
+        return f"trading calendar unavailable for {market} session validation"
+
+    weekend_dates = sorted(d for d in set(dates) if d.weekday() >= 5)
+    if weekend_dates:
+        return f"unexpected non-trading session in evaluation window: {weekend_dates[0].isoformat()}"
+    recent_dates = dates[-min(len(dates), 5):]
+    for prev_day, curr_day in zip(recent_dates, recent_dates[1:]):
+        probe_day = prev_day + timedelta(days=1)
+        while probe_day < curr_day:
+            if probe_day.weekday() < 5:
+                return f"missing weekday session in evaluation window: {probe_day.isoformat()}"
+            probe_day += timedelta(days=1)
+    return None
+
+
+def _evaluate_kline_pattern(stock_code: str, params: Dict[str, Any], df: pd.DataFrame) -> IndicatorEvaluation:
+    ordered_target_ids = resolve_alert_pattern_ids(params["patterns"])
+    require_volume = bool(params.get("require_volume_confirm", False))
+    required_bars = compute_required_bars("kline_pattern", params)
+    latest = _latest_timestamp(df)
+
+    if bool(df.attrs.get("raw_last_undated")):
+        return IndicatorEvaluation(
+            status="degraded",
+            observed_value=None,
+            threshold=None,
+            message="invalid or missing latest session date",
+            data_timestamp=latest,
+        )
+
+    tail_win = df.iloc[-required_bars:]
+    if tail_win["date"].isna().any():
+        return IndicatorEvaluation(
+            status="degraded",
+            observed_value=None,
+            threshold=None,
+            message="invalid or missing session date in evaluation window",
+            data_timestamp=latest,
+        )
+
+    dropped_undated = int(df.attrs.get("dropped_undated_count") or 0)
+    if dropped_undated > 0:
+        return IndicatorEvaluation(
+            status="degraded",
+            observed_value=None,
+            threshold=None,
+            message="dropped undated invalid daily rows in fetch path",
+            data_timestamp=latest,
+        )
+
+    tail_dates = [ts.date() for ts in pd.to_datetime(tail_win["date"]).tolist()]
+    win_start = tail_dates[0]
+    win_end = tail_dates[-1]
+    eff_cutoff_iso = df.attrs.get("effective_closed_date")
+    eff_cutoff = date.fromisoformat(eff_cutoff_iso) if eff_cutoff_iso else None
+    upper_bound = max(win_end, eff_cutoff) if eff_cutoff is not None else win_end
+
+    for raw_dropped in df.attrs.get("dropped_invalid_dates") or []:
+        parsed_iso = parse_iso_date_value(raw_dropped)
+        if parsed_iso is None:
+            continue
+        dropped_day = date.fromisoformat(parsed_iso)
+        if win_start <= dropped_day <= upper_bound:
+            return IndicatorEvaluation(
+                status="degraded",
+                observed_value=None,
+                threshold=None,
+                message=f"dropped invalid daily data in evaluation window ({parsed_iso})",
+                data_timestamp=latest,
+            )
+
+    gap_error = check_kline_session_continuity(
+        tail_dates,
+        stock_code=stock_code,
+        expected_latest=eff_cutoff,
+        require_latest_match=True,
+    )
+    if gap_error is not None:
+        return IndicatorEvaluation(
+            status="degraded",
+            observed_value=None,
+            threshold=None,
+            message=gap_error,
+            data_timestamp=latest,
+        )
+
+    for row_idx in range(len(tail_win)):
+        row = tail_win.iloc[row_idx]
+        o_v = float(row["open"])
+        h_v = float(row["high"])
+        l_v = float(row["low"])
+        c_v = float(row["close"])
+        if (
+            not all(isfinite(val) and val > 0 for val in (o_v, h_v, l_v, c_v))
+            or h_v < l_v
+            or h_v < max(o_v, c_v)
+            or l_v > min(o_v, c_v)
+        ):
+            return _indicator_unavailable("K-line pattern", latest)
+
+    volume_window_valid = False
+    if "volume" in df.columns and len(df) >= 7:
+        vol_tail = [float(v) for v in df["volume"].iloc[-7:].tolist()]
+        volume_window_valid = all(isfinite(v) and v > 0 for v in vol_tail)
+
+    if volume_window_valid:
+        evaluable_ids = ordered_target_ids
+        unavailable_volume_ids: List[str] = []
+    elif require_volume:
+        evaluable_ids = []
+        unavailable_volume_ids = list(ordered_target_ids)
+    else:
+        unavailable_volume_ids = [
+            pid for pid in ordered_target_ids if pid in VOLUME_DEPENDENT_PATTERN_IDS
+        ]
+        evaluable_ids = [
+            pid for pid in ordered_target_ids if pid not in VOLUME_DEPENDENT_PATTERN_IDS
+        ]
+
+    if not evaluable_ids:
+        return IndicatorEvaluation(
+            status="degraded",
+            observed_value=None,
+            threshold=None,
+            message="insufficient volume data for volume-dependent kline pattern",
+            data_timestamp=latest,
+            unavailable_patterns=unavailable_volume_ids,
+        )
+
+    latest_close = float(df["close"].iloc[-1])
+    evaluable_set = set(evaluable_ids)
+
+    def _shapes_on(frame: pd.DataFrame):
+        return [
+            item
+            for item in detect_kline_patterns(
+                frame,
+                days=len(frame),
+                single_candle_lookback=1,
+                only_latest_bar=True,
+                include_chart_patterns=False,
+                legacy_compat_mode=False,
+                allow_missing_volume_breakout=False,
+            )
+            if item.pattern_id in evaluable_set
+        ]
+
+    curr_shapes = _shapes_on(df)
+    prev_shape_ids = {item.pattern_id for item in _shapes_on(df.iloc[:-1])}
+    newly_completed = [item for item in curr_shapes if item.pattern_id not in prev_shape_ids]
+    newly_triggered = [
+        item for item in newly_completed if not require_volume or item.volume_confirmed is True
+    ]
+
+    if newly_triggered:
+        matched_ids = [item.pattern_id for item in newly_triggered]
+        pattern_ids = ", ".join(matched_ids[:3])
+        extra = f" (+{len(matched_ids) - 3})" if len(matched_ids) > 3 else ""
+        skipped_note = (
+            f" (skipped volume-dependent: {', '.join(unavailable_volume_ids)})"
+            if unavailable_volume_ids
+            else ""
+        )
+        return IndicatorEvaluation(
+            status="triggered",
+            observed_value=latest_close,
+            threshold=None,
+            message=f"{stock_code} kline pattern triggered: {pattern_ids}{extra} at close {latest_close:.4f}{skipped_note}",
+            data_timestamp=latest,
+            matched_patterns=matched_ids,
+            unavailable_patterns=unavailable_volume_ids or None,
+        )
+
+    if unavailable_volume_ids:
+        return IndicatorEvaluation(
+            status="degraded",
+            observed_value=latest_close,
+            threshold=None,
+            message=(
+                f"{stock_code} kline pattern partially degraded: missing volume for "
+                f"{', '.join(unavailable_volume_ids)}; no price-only pattern triggered at close {latest_close:.4f}"
+            ),
+            data_timestamp=latest,
+            monitored_patterns=list(params["patterns"]),
+            unavailable_patterns=unavailable_volume_ids,
+        )
+
+    monitored = ", ".join(params["patterns"][:3])
+    extra_monitored = f" (+{len(params['patterns']) - 3})" if len(params["patterns"]) > 3 else ""
+    return IndicatorEvaluation(
+        status="not_triggered",
+        observed_value=latest_close,
+        threshold=None,
+        message=(
+            f"{stock_code} did not trigger kline patterns ({monitored}{extra_monitored}) "
+            f"at close {latest_close:.4f}"
+        ),
+        data_timestamp=latest,
+        monitored_patterns=list(params["patterns"]),
+    )
+
+
+def _pattern_list(value: Any) -> list[str]:
+    if not isinstance(value, (list, tuple)) or len(value) == 0:
+        raise ValueError("patterns must be a non-empty list")
+    normalized: list[str] = []
+    seen = set()
+    for item in value:
+        if not isinstance(item, str):
+            raise ValueError(f"invalid pattern identifier: {item}")
+        token = item.strip().lower()
+        if not token or token not in ALLOWED_ALERT_PATTERN_TOKENS:
+            raise ValueError(f"unsupported kline_pattern token: {item}")
+        if token not in seen:
+            seen.add(token)
+            normalized.append(token)
+    return normalized
+
+
+def _bool_flag(value: Any, field_name: str, *, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    raise ValueError(f"{field_name} must be a boolean")
+
+
 def _ensure_required_bars_fetchable(alert_type: str, params: Dict[str, Any]) -> Dict[str, Any]:
     required_bars = compute_required_bars(alert_type, params)
     if required_bars > MAX_REQUESTED_DAYS:
@@ -503,7 +904,9 @@ def _drop_partial_today(
     *,
     stock_code: Optional[str] = None,
     now: Optional[datetime] = None,
+    drop_undated_last: bool = True,
 ) -> pd.DataFrame:
+    attrs = dict(getattr(df, "attrs", {}) or {})
     market = get_market_for_stock(stock_code) if stock_code else None
     if market in _MARKET_CLOSE_TIMES:
         market_now = get_market_now(market, current_time=now)
@@ -516,20 +919,25 @@ def _drop_partial_today(
                 if market_now.time() < close_time
                 else market_now.date()
             )
-        if effective_date < market_now.date():
+        if effective_date < market_now.date() and drop_undated_last:
             try:
                 parsed_last = pd.to_datetime(df["date"].iloc[-1], errors="coerce")
             except (KeyError, IndexError, TypeError, ValueError, OverflowError):
-                return df.iloc[:-1].copy()
+                res = df.iloc[:-1].copy()
+                res.attrs.update(attrs)
+                return res
             if pd.isna(parsed_last):
                 df = df.iloc[:-1].copy()
                 if df.empty:
+                    df.attrs.update(attrs)
                     return df
         parsed_dates = pd.to_datetime(df["date"], errors="coerce")
         if isinstance(parsed_dates.dtype, pd.DatetimeTZDtype):
             parsed_dates = parsed_dates.dt.tz_localize(None)
         mask = parsed_dates.isna() | (parsed_dates.dt.date <= effective_date)
-        return df.loc[mask].copy()
+        res = df.loc[mask].copy()
+        res.attrs.update(attrs)
+        return res
 
     current = now or datetime.now()
     if current.time() >= time(16, 0):
@@ -537,12 +945,22 @@ def _drop_partial_today(
     try:
         parsed = pd.to_datetime(df["date"].iloc[-1], errors="coerce")
     except (KeyError, IndexError, TypeError, ValueError, OverflowError):
-        return df.iloc[:-1].copy()
+        if not drop_undated_last:
+            return df
+        res = df.iloc[:-1].copy()
+        res.attrs.update(attrs)
+        return res
     if pd.isna(parsed):
-        return df.iloc[:-1].copy()
+        if not drop_undated_last:
+            return df
+        res = df.iloc[:-1].copy()
+        res.attrs.update(attrs)
+        return res
     last_date = parsed.date()
     if last_date == current.date():
-        return df.iloc[:-1].copy()
+        res = df.iloc[:-1].copy()
+        res.attrs.update(attrs)
+        return res
     return df
 
 

@@ -14,6 +14,7 @@
 3. 指数退避重试机制
 """
 
+import inspect
 import logging
 import random
 import time
@@ -484,10 +485,12 @@ class BaseFetcher(ABC):
 
     def get_daily_data(
         self,
-        stock_code: str, 
+        stock_code: str,
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
-        days: int = 30
+        days: int = 30,
+        *,
+        preserve_missing_volume: bool = False,
     ) -> pd.DataFrame:
         """
         获取日线数据（统一入口）
@@ -540,7 +543,7 @@ class BaseFetcher(ABC):
             df = self._normalize_data(raw_df, stock_code)
             
             # Step 3: 数据清洗
-            df = self._clean_data(df)
+            df = self._clean_data(df, preserve_missing_volume=preserve_missing_volume)
             
             # Step 4: 计算技术指标
             df = self._calculate_indicators(df)
@@ -562,7 +565,7 @@ class BaseFetcher(ABC):
             )
             raise DataFetchError(f"[{self.name}] {stock_code}: {error_reason}") from e
     
-    def _clean_data(self, df: pd.DataFrame) -> pd.DataFrame:
+    def _clean_data(self, df: pd.DataFrame, *, preserve_missing_volume: bool = False) -> pd.DataFrame:
         """
         数据清洗
         
@@ -572,6 +575,7 @@ class BaseFetcher(ABC):
         3. 去除空值行
         4. 按日期排序
         """
+        attrs = dict(getattr(df, "attrs", {}) or {})
         df = df.copy()
         
         # 确保日期列为 datetime 类型
@@ -584,11 +588,38 @@ class BaseFetcher(ABC):
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
         
+        # 记录被丢弃的关键列空值行日期，供上游识别中间缺失交易日
+        drop_subset = ['close'] if preserve_missing_volume else ['close', 'volume']
+        invalid_mask = pd.Series(False, index=df.index)
+        for req_col in drop_subset:
+            if req_col in df.columns:
+                invalid_mask = invalid_mask | df[req_col].isna()
+        if invalid_mask.any():
+            dropped_dates = list(attrs.get("dropped_invalid_dates") or [])
+            dropped_undated = int(attrs.get("dropped_undated_count") or 0)
+            if 'date' in df.columns:
+                for raw_dt in df.loc[invalid_mask, 'date'].tolist():
+                    if pd.isna(raw_dt):
+                        dropped_undated += 1
+                    else:
+                        try:
+                            iso_str = pd.Timestamp(raw_dt).date().isoformat()
+                            if iso_str not in dropped_dates:
+                                dropped_dates.append(iso_str)
+                        except Exception:
+                            dropped_undated += 1
+            else:
+                dropped_undated += int(invalid_mask.sum())
+            attrs["dropped_invalid_dates"] = sorted(dropped_dates)
+            attrs["dropped_invalid_count"] = int(attrs.get("dropped_invalid_count") or 0) + int(invalid_mask.sum())
+            attrs["dropped_undated_count"] = dropped_undated
+
         # 去除关键列为空的行
-        df = df.dropna(subset=['close', 'volume'])
+        df = df.dropna(subset=drop_subset)
         
         # 按日期升序排序
         df = df.sort_values('date', ascending=True).reset_index(drop=True)
+        df.attrs.update(attrs)
         
         return df
     
@@ -600,6 +631,7 @@ class BaseFetcher(ABC):
         - MA5, MA10, MA20: 移动平均线
         - Volume_Ratio: 量比（今日成交量 / 5日平均成交量）
         """
+        attrs = dict(getattr(df, "attrs", {}) or {})
         df = df.copy()
         
         # 移动平均线
@@ -620,6 +652,7 @@ class BaseFetcher(ABC):
             if col in df.columns:
                 df[col] = df[col].round(2)
         
+        df.attrs.update(attrs)
         return df
     
     @staticmethod
@@ -1975,6 +2008,39 @@ class DataFetcherManager:
             self._fetchers.sort(key=lambda f: f.priority)
             self._refresh_fetcher_indexes_locked()
     
+    @staticmethod
+    def _fetcher_accepts_kwarg(fetcher: BaseFetcher, method_name: str, kwarg_name: str) -> bool:
+        try:
+            sig = inspect.signature(getattr(fetcher, method_name))
+        except (TypeError, ValueError, AttributeError):
+            return False
+        for param in sig.parameters.values():
+            if param.kind == inspect.Parameter.VAR_KEYWORD or param.name == kwarg_name:
+                return True
+        return False
+
+    def _call_daily_data_fetcher(
+        self,
+        fetcher: BaseFetcher,
+        *,
+        stock_code: str,
+        start_date: Optional[str],
+        end_date: Optional[str],
+        days: int,
+        preserve_missing_volume: bool = False,
+    ) -> pd.DataFrame:
+        kwargs: Dict[str, Any] = {
+            "stock_code": stock_code,
+            "start_date": start_date,
+            "end_date": end_date,
+            "days": days,
+        }
+        if preserve_missing_volume and self._fetcher_accepts_kwarg(
+            fetcher, "get_daily_data", "preserve_missing_volume"
+        ):
+            kwargs["preserve_missing_volume"] = True
+        return self._call_fetcher_method(fetcher, "get_daily_data", **kwargs)
+
     def get_daily_data(
         self, 
         stock_code: str,
@@ -1983,6 +2049,7 @@ class DataFetcherManager:
         days: int = 30,
         *,
         analysis_target: Optional[AnalysisTarget] = None,
+        preserve_missing_volume: bool = False,
     ) -> Tuple[pd.DataFrame, str]:
         """
         获取日线数据（自动切换数据源）
@@ -2101,13 +2168,13 @@ class DataFetcherManager:
                             provider=fetcher.name,
                             operation="get_daily_data",
                         )
-                        df = self._call_fetcher_method(
+                        df = self._call_daily_data_fetcher(
                             fetcher,
-                            "get_daily_data",
                             stock_code=stock_code,
                             start_date=start_date,
                             end_date=end_date,
                             days=days,
+                            preserve_missing_volume=preserve_missing_volume,
                         )
                         if df is not None and not df.empty:
                             duration_ms = int((time.time() - attempt_start) * 1000)
@@ -2188,13 +2255,13 @@ class DataFetcherManager:
                     provider=fetcher.name,
                     operation="get_daily_data",
                 )
-                df = self._call_fetcher_method(
+                df = self._call_daily_data_fetcher(
                     fetcher,
-                    "get_daily_data",
                     stock_code=stock_code,
                     start_date=start_date,
                     end_date=end_date,
-                    days=days
+                    days=days,
+                    preserve_missing_volume=preserve_missing_volume,
                 )
                 
                 if df is not None and not df.empty:

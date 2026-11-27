@@ -6,10 +6,14 @@ Provides DB access helpers for alert-center P1 API tables.
 
 from __future__ import annotations
 
-from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
+from contextlib import contextmanager
+from datetime import datetime, timedelta
+import time
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from sqlalchemy import and_, delete, desc, func, select
+from sqlalchemy.exc import OperationalError
+from sqlalchemy.orm import Session
 
 from src.storage import (
     AlertCooldownRecord,
@@ -18,6 +22,9 @@ from src.storage import (
     AlertTriggerRecord,
     DatabaseManager,
 )
+
+
+_ACTIVE_CLAIM_ERROR_CODES = ("in_flight", "dispatch_committed")
 
 
 class AlertRepository:
@@ -122,6 +129,65 @@ class AlertRepository:
             session.refresh(row)
             return row
 
+    @contextmanager
+    def _sqlite_immediate_session(self) -> Iterator[Tuple[Session, bool]]:
+        """Serialize read-check-insert transactions across SQLite workers."""
+        engine = getattr(self.db, "_engine", None)
+        is_sqlite = bool(
+            engine is not None
+            and hasattr(engine, "url")
+            and engine.url.get_backend_name() == "sqlite"
+        )
+        if not is_sqlite:
+            with self.db.get_session() as session:
+                try:
+                    yield session, False
+                    session.commit()
+                except Exception:
+                    session.rollback()
+                    raise
+            return
+
+        conn = engine.connect().execution_options(isolation_level="AUTOCOMMIT")
+        try:
+            in_tx = False
+            for attempt in range(20):
+                try:
+                    conn.exec_driver_sql("BEGIN IMMEDIATE")
+                    in_tx = True
+                    break
+                except OperationalError as exc:
+                    msg = str(getattr(exc, "orig", exc)).lower()
+                    if "cannot start a transaction within a transaction" in msg:
+                        in_tx = False
+                        break
+                    if ("locked" in msg or "busy" in msg) and attempt < 19:
+                        time.sleep(min(0.01 * (attempt + 1), 0.1))
+                        continue
+                    raise
+            session = Session(bind=conn, autocommit=False, autoflush=False)
+            try:
+                yield session, True
+                session.flush()
+                if in_tx:
+                    conn.exec_driver_sql("COMMIT")
+                else:
+                    session.commit()
+            except Exception:
+                try:
+                    session.rollback()
+                finally:
+                    if in_tx:
+                        try:
+                            conn.exec_driver_sql("ROLLBACK")
+                        except Exception:
+                            pass
+                raise
+            finally:
+                session.close()
+        finally:
+            conn.close()
+
     def create_trigger_if_absent(self, fields: Dict[str, Any]) -> Tuple[AlertTriggerRecord, bool]:
         """Create a triggered history row unless the same DB signal already exists.
 
@@ -138,7 +204,7 @@ class AlertRepository:
                 "create_trigger_if_absent requires triggered status, rule_id, and data_timestamp"
             )
 
-        with self.db.get_session() as session:
+        with self._sqlite_immediate_session() as (session, is_sqlite_imm):
             query = select(AlertTriggerRecord).where(
                 AlertTriggerRecord.rule_id == rule_id,
                 AlertTriggerRecord.target == fields.get("target"),
@@ -151,16 +217,19 @@ class AlertRepository:
             else:
                 query = query.where(AlertTriggerRecord.data_source == data_source)
 
-            existing = session.execute(
-                query.order_by(AlertTriggerRecord.id.asc()).limit(1)
-            ).scalar_one_or_none()
+            stmt = query.order_by(AlertTriggerRecord.id.asc()).limit(1)
+            if not is_sqlite_imm:
+                stmt = stmt.with_for_update()
+            existing = session.execute(stmt).scalar_one_or_none()
             if existing is not None:
+                session.expunge(existing)
                 return existing, False
 
             row = AlertTriggerRecord(**fields)
             session.add(row)
-            session.commit()
+            session.flush()
             session.refresh(row)
+            session.expunge(row)
             return row, True
 
     @staticmethod
@@ -180,6 +249,253 @@ class AlertRepository:
             session.commit()
             session.refresh(row)
             return row
+
+    def acquire_bar_delivery_claim(
+        self,
+        trigger_id: int,
+        *,
+        owner_token: str,
+        lease_seconds: float = 300.0,
+        now: Optional[datetime] = None,
+    ) -> Tuple[bool, str, Optional[int]]:
+        """Atomically claim completed-bar notification dispatch for ``trigger_id``."""
+        if not owner_token or not str(owner_token).strip():
+            raise ValueError("owner_token is required")
+        now_dt = now or datetime.now()
+        cutoff = now_dt - timedelta(seconds=max(0.05, float(lease_seconds)))
+        owner_diag = f"owner={owner_token}"
+
+        with self._sqlite_immediate_session() as (session, is_sqlite_imm):
+            if not is_sqlite_imm:
+                session.execute(
+                    select(AlertTriggerRecord.id)
+                    .where(AlertTriggerRecord.id == trigger_id)
+                    .with_for_update()
+                ).scalar_one_or_none()
+
+            channels = session.execute(
+                select(AlertNotificationRecord.channel).where(
+                    AlertNotificationRecord.trigger_id == trigger_id,
+                    AlertNotificationRecord.success.is_(True),
+                )
+            ).scalars().all()
+            if any(bool(ch) and not str(ch).startswith("__") for ch in channels):
+                return False, "already_delivered", None
+
+            unrecorded = session.execute(
+                select(AlertNotificationRecord.id)
+                .where(
+                    AlertNotificationRecord.trigger_id == trigger_id,
+                    AlertNotificationRecord.channel == "__bar_delivery_claim__",
+                    AlertNotificationRecord.error_code == "delivery_unrecorded",
+                    AlertNotificationRecord.retryable.is_(False),
+                )
+                .limit(1)
+            ).scalar_one_or_none()
+            if unrecorded is not None:
+                return False, "delivery_unrecorded", None
+
+            committed_claims = session.execute(
+                select(AlertNotificationRecord)
+                .where(
+                    AlertNotificationRecord.trigger_id == trigger_id,
+                    AlertNotificationRecord.channel == "__bar_delivery_claim__",
+                    AlertNotificationRecord.error_code == "dispatch_committed",
+                    AlertNotificationRecord.retryable.is_(False),
+                )
+                .order_by(AlertNotificationRecord.id.asc())
+            ).scalars().all()
+            if committed_claims:
+                if any(row.created_at is not None and row.created_at > cutoff for row in committed_claims):
+                    return False, "in_flight", None
+                return False, "delivery_unrecorded", None
+
+            existing_claims = session.execute(
+                select(AlertNotificationRecord)
+                .where(
+                    AlertNotificationRecord.trigger_id == trigger_id,
+                    AlertNotificationRecord.channel == "__bar_delivery_claim__",
+                    AlertNotificationRecord.error_code == "in_flight",
+                    AlertNotificationRecord.retryable.is_(False),
+                )
+                .order_by(AlertNotificationRecord.id.asc())
+            ).scalars().all()
+
+            active_claim = False
+            for row in existing_claims:
+                if row.created_at is None or row.created_at <= cutoff:
+                    session.delete(row)
+                else:
+                    active_claim = True
+
+            if active_claim:
+                return False, "in_flight", None
+
+            claim = AlertNotificationRecord(
+                trigger_id=trigger_id,
+                channel="__bar_delivery_claim__",
+                attempt=1,
+                success=False,
+                error_code="in_flight",
+                retryable=False,
+                latency_ms=None,
+                diagnostics=owner_diag,
+                created_at=now_dt,
+            )
+            session.add(claim)
+            session.flush()
+            return True, "claimed", int(claim.id)
+
+    def commit_bar_delivery_dispatch(
+        self,
+        claim_id: int,
+        *,
+        owner_token: str,
+        now: Optional[datetime] = None,
+    ) -> bool:
+        """Persistently transition an active pre-dispatch lease to non-reclaimable dispatch_committed."""
+        if not owner_token or not str(owner_token).strip():
+            raise ValueError("owner_token is required")
+        now_dt = now or datetime.now()
+        owner_diag = f"owner={owner_token}"
+        with self._sqlite_immediate_session() as (session, _):
+            row = session.execute(
+                select(AlertNotificationRecord)
+                .where(
+                    AlertNotificationRecord.id == claim_id,
+                    AlertNotificationRecord.channel == "__bar_delivery_claim__",
+                    AlertNotificationRecord.error_code == "in_flight",
+                    AlertNotificationRecord.retryable.is_(False),
+                    AlertNotificationRecord.diagnostics == owner_diag,
+                )
+                .limit(1)
+            ).scalar_one_or_none()
+            if row is None:
+                return False
+            row.error_code = "dispatch_committed"
+            row.created_at = now_dt
+            return True
+
+    def renew_bar_delivery_claim(
+        self,
+        claim_id: int,
+        *,
+        owner_token: str,
+        now: Optional[datetime] = None,
+    ) -> bool:
+        """Renew an active delivery claim timestamp only if still owned by ``owner_token``."""
+        if not owner_token or not str(owner_token).strip():
+            raise ValueError("owner_token is required")
+        now_dt = now or datetime.now()
+        owner_diag = f"owner={owner_token}"
+        with self._sqlite_immediate_session() as (session, _):
+            row = session.execute(
+                select(AlertNotificationRecord)
+                .where(
+                    AlertNotificationRecord.id == claim_id,
+                    AlertNotificationRecord.channel == "__bar_delivery_claim__",
+                    AlertNotificationRecord.error_code.in_(_ACTIVE_CLAIM_ERROR_CODES),
+                    AlertNotificationRecord.retryable.is_(False),
+                    AlertNotificationRecord.diagnostics == owner_diag,
+                )
+                .limit(1)
+            ).scalar_one_or_none()
+            if row is None:
+                return False
+            row.created_at = now_dt
+            return True
+
+    def release_bar_delivery_claim(
+        self,
+        claim_id: int,
+        *,
+        owner_token: Optional[str] = None,
+    ) -> bool:
+        """Delete an active completed-bar delivery claim row after attempt finishes."""
+        with self._sqlite_immediate_session() as (session, _):
+            stmt = delete(AlertNotificationRecord).where(
+                AlertNotificationRecord.id == claim_id,
+                AlertNotificationRecord.channel == "__bar_delivery_claim__",
+                AlertNotificationRecord.error_code.in_(_ACTIVE_CLAIM_ERROR_CODES),
+                AlertNotificationRecord.retryable.is_(False),
+            )
+            if owner_token is not None:
+                stmt = stmt.where(AlertNotificationRecord.diagnostics == f"owner={owner_token}")
+            res = session.execute(stmt)
+            return bool(res.rowcount)
+
+    def mark_bar_delivery_claim_unrecorded(
+        self,
+        trigger_id: int,
+        claim_id: Optional[int],
+        *,
+        owner_token: str,
+        detail: Optional[str] = None,
+        now: Optional[datetime] = None,
+    ) -> bool:
+        """Convert an active delivery claim into a non-expiring reconciliation hold."""
+        if not owner_token or not str(owner_token).strip():
+            raise ValueError("owner_token is required")
+        now_dt = now or datetime.now()
+        suffix = f"; {detail}" if detail else ""
+        diag = f"owner={owner_token}{suffix}"[:255]
+        owner_diag = f"owner={owner_token}"
+        with self._sqlite_immediate_session() as (session, _):
+            if claim_id is not None:
+                row = session.execute(
+                    select(AlertNotificationRecord)
+                    .where(
+                        AlertNotificationRecord.id == claim_id,
+                        AlertNotificationRecord.channel == "__bar_delivery_claim__",
+                        AlertNotificationRecord.error_code.in_(_ACTIVE_CLAIM_ERROR_CODES),
+                        AlertNotificationRecord.retryable.is_(False),
+                        AlertNotificationRecord.diagnostics == owner_diag,
+                    )
+                    .limit(1)
+                ).scalar_one_or_none()
+                if row is not None:
+                    row.error_code = "delivery_unrecorded"
+                    row.retryable = False
+                    row.diagnostics = diag
+                    row.created_at = now_dt
+                    return True
+            existing = session.execute(
+                select(AlertNotificationRecord.id)
+                .where(
+                    AlertNotificationRecord.trigger_id == trigger_id,
+                    AlertNotificationRecord.channel == "__bar_delivery_claim__",
+                    AlertNotificationRecord.error_code == "delivery_unrecorded",
+                    AlertNotificationRecord.retryable.is_(False),
+                )
+                .limit(1)
+            ).scalar_one_or_none()
+            if existing is not None:
+                return True
+            session.add(
+                AlertNotificationRecord(
+                    trigger_id=trigger_id,
+                    channel="__bar_delivery_claim__",
+                    attempt=1,
+                    success=False,
+                    error_code="delivery_unrecorded",
+                    retryable=False,
+                    latency_ms=None,
+                    diagnostics=diag,
+                    created_at=now_dt,
+                )
+            )
+            session.flush()
+            return True
+
+    def has_successful_notification(self, trigger_id: int) -> bool:
+        with self.db.get_session() as session:
+            channels = session.execute(
+                select(AlertNotificationRecord.channel).where(
+                    AlertNotificationRecord.trigger_id == trigger_id,
+                    AlertNotificationRecord.success.is_(True),
+                )
+            ).scalars().all()
+            return any(bool(ch) and not str(ch).startswith("__") for ch in channels)
 
     def get_active_cooldown(
         self,

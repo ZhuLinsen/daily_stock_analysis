@@ -307,6 +307,9 @@ class AlertService:
             "skipped_count": 1 if result.get("record_status") == "skipped" else 0,
             "target_results": [target_result],
         }
+        for key in ("matched_patterns", "monitored_patterns", "unavailable_patterns"):
+            if result.get(key) is not None:
+                response[key] = list(result[key])
         return response
 
     async def _evaluate_price(self, rule: PriceAlert, monitor: EventMonitor) -> Dict[str, Any]:
@@ -526,15 +529,26 @@ class AlertService:
         self,
         rule: TechnicalIndicatorAlert,
         *,
-        daily_cache: Optional[Dict[tuple[str, int], Any]] = None,
+        daily_cache: Optional[Dict[tuple[Any, ...], Any]] = None,
     ) -> Dict[str, Any]:
         requested_days = compute_requested_days(rule.alert_type, rule.indicator_params)
-        cache_key = (rule.stock_code, requested_days)
+        preserve_missing_volume = (rule.alert_type == "kline_pattern")
+        cache_key = (rule.stock_code, requested_days, preserve_missing_volume)
 
         def _fetch_daily_data():
             from data_provider import DataFetcherManager
 
-            return DataFetcherManager().get_daily_data(rule.stock_code, days=requested_days)
+            manager = DataFetcherManager()
+            if preserve_missing_volume:
+                try:
+                    return manager.get_daily_data(
+                        rule.stock_code,
+                        days=requested_days,
+                        preserve_missing_volume=True,
+                    )
+                except TypeError:
+                    return manager.get_daily_data(rule.stock_code, days=requested_days)
+            return manager.get_daily_data(rule.stock_code, days=requested_days)
 
         try:
             if daily_cache is not None and cache_key in daily_cache:
@@ -593,8 +607,16 @@ class AlertService:
                 data_timestamp=self._extract_daily_timestamp(df),
             )
 
+        kline_meta: Dict[str, Any] = {}
+        if evaluation.matched_patterns:
+            kline_meta["matched_patterns"] = list(evaluation.matched_patterns)
+        if evaluation.monitored_patterns:
+            kline_meta["monitored_patterns"] = list(evaluation.monitored_patterns)
+        if evaluation.unavailable_patterns:
+            kline_meta["unavailable_patterns"] = list(evaluation.unavailable_patterns)
+
         if evaluation.status == "triggered":
-            return self._triggered(
+            payload = self._triggered(
                 rule,
                 evaluation.observed_value,
                 evaluation.message,
@@ -602,7 +624,11 @@ class AlertService:
                 data_source="daily_data",
                 data_timestamp=evaluation.data_timestamp,
             )
-        return self._not_triggered(
+            if kline_meta:
+                payload.update(kline_meta)
+                payload["diagnostics"] = {"kline_pattern": kline_meta}
+            return payload
+        payload = self._not_triggered(
             rule,
             evaluation.observed_value,
             evaluation.message,
@@ -611,6 +637,14 @@ class AlertService:
             data_source="daily_data",
             data_timestamp=evaluation.data_timestamp,
         )
+        if kline_meta:
+            payload.update(kline_meta)
+            if evaluation.status == "degraded":
+                payload["diagnostics"] = {
+                    "message": payload.get("message") or evaluation.message,
+                    "kline_pattern": kline_meta,
+                }
+        return payload
 
     def _triggered(
         self,
@@ -1231,6 +1265,7 @@ class AlertService:
 
     def _serialize_trigger(self, row: AlertTriggerRecord) -> Dict[str, Any]:
         visibility = self._parse_analysis_visibility(row.diagnostics)
+        kline_meta = self._parse_kline_pattern_metadata(row.diagnostics)
         return {
             "id": row.id,
             "rule_id": row.rule_id,
@@ -1243,11 +1278,34 @@ class AlertService:
             "triggered_at": row.triggered_at.isoformat() if row.triggered_at else None,
             "status": row.status,
             "diagnostics": self._sanitize_text(row.diagnostics) if row.diagnostics else None,
+            "matched_patterns": kline_meta.get("matched_patterns"),
+            "monitored_patterns": kline_meta.get("monitored_patterns"),
+            "unavailable_patterns": kline_meta.get("unavailable_patterns"),
             "market_phase_summary": visibility.get("market_phase_summary"),
             "analysis_context_pack_overview": visibility.get("analysis_context_pack_overview"),
             "analysis_visibility_source": visibility.get("analysis_visibility_source"),
             "decision_signal_summary": visibility.get("decision_signal_summary"),
         }
+
+    @staticmethod
+    def _parse_kline_pattern_metadata(diagnostics: Optional[str]) -> Dict[str, Any]:
+        if not diagnostics:
+            return {}
+        try:
+            parsed = json.loads(diagnostics)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return {}
+        if not isinstance(parsed, dict):
+            return {}
+        raw = parsed.get("kline_pattern")
+        if not isinstance(raw, dict):
+            return {}
+        out: Dict[str, Any] = {}
+        for key in ("matched_patterns", "monitored_patterns", "unavailable_patterns"):
+            values = raw.get(key)
+            if isinstance(values, list):
+                out[key] = [str(v) for v in values if isinstance(v, str)]
+        return out
 
     @staticmethod
     def _parse_analysis_visibility(diagnostics: Optional[str]) -> Dict[str, Any]:
@@ -1312,6 +1370,11 @@ class AlertService:
             return f"{target} KDJ {parameters['direction']}"
         if alert_type == "cci_threshold":
             return f"{target} CCI{parameters['period']} {parameters['direction']} {parameters['threshold']}"
+        if alert_type == "kline_pattern":
+            patterns = list(parameters.get("patterns") or [])
+            preview = ",".join(patterns[:2])
+            suffix = f"+{len(patterns) - 2}" if len(patterns) > 2 else ""
+            return f"{target} pattern {preview}{suffix}"
         if alert_type == "portfolio_stop_loss":
             return f"{target} portfolio stop loss {parameters.get('mode', 'near')}"
         if alert_type == "portfolio_concentration":

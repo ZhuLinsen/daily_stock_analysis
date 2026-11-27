@@ -41,6 +41,8 @@ function toSnakeRulePayload(payload: AlertRuleCreateRequest): Record<string, unk
       signal_period: payload.parameters.signalPeriod,
       k_period: payload.parameters.kPeriod,
       d_period: payload.parameters.dPeriod,
+      patterns: payload.parameters.patterns,
+      require_volume_confirm: payload.parameters.requireVolumeConfirm,
       mode: payload.parameters.mode,
       statuses: payload.parameters.statuses,
       min_drop: payload.parameters.minDrop,

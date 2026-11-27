@@ -14,6 +14,16 @@ import requests
 
 from src.config import Config
 from src.formatters import chunk_content_by_max_bytes, strip_hidden_markdown_metadata
+from ._delivery_context import (
+    is_at_most_once_delivery,
+    is_delivery_ambiguous,
+    is_valid_http_headers,
+    is_valid_http_url,
+    record_delivery_ambiguous,
+    record_delivery_confirmed_absent,
+    record_delivery_succeeded,
+    validate_http_post_request,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -56,6 +66,8 @@ def resolve_ntfy_endpoint(ntfy_url: Optional[str]) -> Tuple[Optional[str], Optio
             fragment="",
         )
     ).rstrip("/")
+    if not is_valid_http_url(server_url):
+        return None, None
 
     return server_url, topic
 
@@ -84,11 +96,13 @@ class NtfySender:
         """Publish a notification to ntfy using a JSON body with UTF-8 text."""
         if not self._is_ntfy_configured():
             logger.warning("ntfy URL not configured, skipping notification")
+            record_delivery_confirmed_absent("invalid_config")
             return False
 
         server_url, topic = self._resolve_ntfy_endpoint()
         if not server_url or not topic:
             logger.error("NTFY_URL must be a full endpoint including the topic path, e.g. https://ntfy.sh/my-topic")
+            record_delivery_confirmed_absent("invalid_config")
             return False
 
         if title is None:
@@ -103,6 +117,10 @@ class NtfySender:
         token = (self._ntfy_token or "").strip()
         if token:
             headers["Authorization"] = f"Bearer {token}"
+        if not is_valid_http_headers(headers):
+            logger.error("ntfy headers are invalid, cannot send")
+            record_delivery_confirmed_absent("invalid_config")
+            return False
 
         chunks = [sanitized_content]
         if len(sanitized_content.encode("utf-8")) > NTFY_MESSAGE_MAX_BYTES:
@@ -127,8 +145,11 @@ class NtfySender:
                 timeout_seconds=timeout_seconds,
             ):
                 success_count += 1
-            elif total_chunks > 1:
-                logger.error("ntfy chunk %s/%s send failed", index + 1, total_chunks)
+            else:
+                if total_chunks > 1:
+                    logger.error("ntfy chunk %s/%s send failed", index + 1, total_chunks)
+                if is_at_most_once_delivery() and is_delivery_ambiguous():
+                    break
 
             # 批次间隔，避免连续发布触发限流
             if index < total_chunks - 1:
@@ -155,28 +176,56 @@ class NtfySender:
         }
 
         try:
-            response = requests.post(
-                server_url,
-                data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-                headers=headers,
-                timeout=timeout_seconds or 10,
-                verify=self._webhook_verify_ssl,
-            )
+            body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        except (TypeError, ValueError) as exc:
+            logger.error("Failed to serialize ntfy payload: %s", type(exc).__name__)
+            record_delivery_confirmed_absent("invalid_config")
+            return False
+
+        if not validate_http_post_request(server_url, headers=headers, data=body):
+            logger.error("ntfy request preparation failed, cannot send")
+            record_delivery_confirmed_absent("invalid_config")
+            return False
+
+        try:
+            post_kwargs = {
+                "data": body,
+                "headers": headers,
+                "timeout": timeout_seconds or 10,
+                "verify": self._webhook_verify_ssl,
+            }
+            if is_at_most_once_delivery():
+                post_kwargs["allow_redirects"] = False
+            response = requests.post(server_url, **post_kwargs)
             if 200 <= response.status_code < 300:
                 logger.info("ntfy message sent successfully")
+                record_delivery_succeeded()
                 return True
 
             logger.error("ntfy request failed: HTTP %s", response.status_code)
             logger.debug("ntfy response body: %s", response.text)
+            if 400 <= response.status_code < 500:
+                record_delivery_confirmed_absent("rate_limited" if response.status_code == 429 else "http_4xx")
+            elif 300 <= response.status_code < 400:
+                record_delivery_ambiguous("http_3xx")
+            else:
+                record_delivery_ambiguous("http_5xx" if response.status_code >= 500 else "send_failed")
+            return False
+        except requests.exceptions.ConnectTimeout:
+            logger.error("Failed to send ntfy message: connection timed out")
+            record_delivery_confirmed_absent("connect_timeout")
             return False
         except requests.exceptions.Timeout:
             logger.error("Failed to send ntfy message: request timed out")
+            record_delivery_ambiguous("read_timeout")
             return False
         except requests.exceptions.RequestException as exc:
             logger.error("Failed to send ntfy message: network request error")
             logger.debug("ntfy request exception type: %s", type(exc).__name__)
+            record_delivery_ambiguous("connection_error")
             return False
         except Exception as exc:
             logger.error("Failed to send ntfy message: unknown error")
             logger.debug("ntfy unknown exception type: %s", type(exc).__name__)
+            record_delivery_ambiguous("send_failed")
             return False

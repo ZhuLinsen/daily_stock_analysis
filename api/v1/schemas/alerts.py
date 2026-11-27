@@ -86,6 +86,9 @@ class AlertRuleTargetResult(BaseModel):
     observed_value: Optional[Any] = None
     threshold: Optional[Any] = None
     message: str
+    matched_patterns: Optional[List[str]] = None
+    monitored_patterns: Optional[List[str]] = None
+    unavailable_patterns: Optional[List[str]] = None
 
 
 class AlertRuleTestResponse(BaseModel):
@@ -100,6 +103,9 @@ class AlertRuleTestResponse(BaseModel):
     degraded_count: int = 0
     skipped_count: int = 0
     target_results: List[AlertRuleTargetResult] = Field(default_factory=list)
+    matched_patterns: Optional[List[str]] = None
+    monitored_patterns: Optional[List[str]] = None
+    unavailable_patterns: Optional[List[str]] = None
 
 
 class AlertTriggerItem(BaseModel):
@@ -114,6 +120,9 @@ class AlertTriggerItem(BaseModel):
     triggered_at: Optional[str] = None
     status: str
     diagnostics: Optional[str] = None
+    matched_patterns: Optional[List[str]] = None
+    monitored_patterns: Optional[List[str]] = None
+    unavailable_patterns: Optional[List[str]] = None
     market_phase_summary: Optional[MarketPhaseSummary] = None
     analysis_context_pack_overview: Optional[AnalysisContextPackOverview] = None
     analysis_visibility_source: Optional[str] = Field(

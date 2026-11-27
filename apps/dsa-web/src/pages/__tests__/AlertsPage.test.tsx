@@ -1,5 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { UiLanguageProvider } from '../../contexts/UiLanguageContext';
+import { UI_LANGUAGE_STORAGE_KEY } from '../../utils/uiLanguage';
 import AlertsPage from '../AlertsPage';
 
 const {
@@ -73,6 +75,7 @@ function createDeferred<T>() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  window.localStorage.clear();
   listRules.mockResolvedValue({ items: [rule], total: 1, page: 1, pageSize: 20 });
   listTriggers.mockResolvedValue({
     items: [
@@ -425,5 +428,178 @@ describe('AlertsPage', () => {
 
     expect(await screen.findByText('加载失败')).toBeInTheDocument();
     expect(screen.getByText('告警 API 不可用')).toBeInTheDocument();
+  });
+
+  it('renders alert center headings and history labels in English UI mode', async () => {
+    window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'en');
+    listTriggers.mockResolvedValueOnce({
+      items: [
+        {
+          id: 21,
+          ruleId: 9,
+          target: '600519',
+          observedValue: 21.7,
+          threshold: null,
+          reason: '600519 kline pattern triggered: red_three_soldiers, immortal_guide at close 21.7000',
+          dataSource: 'daily_data',
+          dataTimestamp: '2026-05-18T00:00:00',
+          triggeredAt: '2026-05-18T16:00:00',
+          status: 'triggered',
+        },
+      ],
+      total: 1,
+      page: 1,
+      pageSize: 20,
+    });
+    render(
+      <UiLanguageProvider>
+        <AlertsPage />
+      </UiLanguageProvider>,
+    );
+
+    expect(screen.getByRole('heading', { name: 'Alert Center' })).toBeInTheDocument();
+    expect(await screen.findByText('Trigger history')).toBeInTheDocument();
+    expect(screen.getByText('Notification attempts')).toBeInTheDocument();
+    expect(await screen.findByText('Triggered')).toBeInTheDocument();
+    expect(screen.getByText(/Three White Soldiers, Immortal Guide/)).toBeInTheDocument();
+  });
+
+  it('localizes kline pattern trigger reasons in Chinese UI mode', async () => {
+    listTriggers.mockResolvedValueOnce({
+      items: [
+        {
+          id: 22,
+          ruleId: 9,
+          target: '600519',
+          observedValue: 21.7,
+          threshold: null,
+          reason: '600519 kline pattern triggered: red_three_soldiers at close 21.7000',
+          dataSource: 'daily_data',
+          dataTimestamp: '2026-05-18T00:00:00',
+          triggeredAt: '2026-05-18T16:00:00',
+          status: 'triggered',
+        },
+      ],
+      total: 1,
+      page: 1,
+      pageSize: 20,
+    });
+    render(<AlertsPage />);
+
+    expect(await screen.findByText('600519 触发 K 线形态：红三兵（收盘价 21.7000）')).toBeInTheDocument();
+  });
+
+  it('localizes structured kline pattern metadata without regex sentence matching', async () => {
+    listTriggers.mockResolvedValueOnce({
+      items: [
+        {
+          id: 23,
+          ruleId: 9,
+          target: '600519',
+          observedValue: 21.7,
+          threshold: null,
+          reason: 'opaque backend text',
+          dataSource: 'daily_data',
+          dataTimestamp: '2026-05-18T00:00:00',
+          triggeredAt: '2026-05-18T16:00:00',
+          status: 'triggered',
+          matchedPatterns: ['red_three_soldiers', 'immortal_guide'],
+          unavailablePatterns: ['breakout_20d_high'],
+        },
+      ],
+      total: 1,
+      page: 1,
+      pageSize: 20,
+    });
+    render(<AlertsPage />);
+
+    expect(
+      await screen.findByText(
+        '600519 触发 K 线形态：红三兵、仙人指路（收盘价 21.7000）（缺失量能未评估：放量突破20日高点）',
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it('localizes structured kline pattern details per batch target row', async () => {
+    testRule.mockResolvedValueOnce({
+      ruleId: 1,
+      targetScope: 'watchlist',
+      status: 'triggered',
+      triggered: true,
+      observedValue: 21.7,
+      message: 'Evaluated 2 targets',
+      evaluatedCount: 2,
+      triggeredCount: 1,
+      degradedCount: 1,
+      skippedCount: 0,
+      targetResults: [
+        {
+          target: '600519',
+          displayTarget: '自选股 - 600519',
+          status: 'triggered',
+          recordStatus: 'triggered',
+          triggered: true,
+          observedValue: 21.7,
+          message: 'opaque',
+          matchedPatterns: ['red_three_soldiers'],
+          unavailablePatterns: ['breakout_20d_high'],
+        },
+        {
+          target: '000858',
+          displayTarget: '自选股 - 000858',
+          status: 'not_triggered',
+          recordStatus: 'degraded',
+          triggered: false,
+          observedValue: 100.5,
+          message: 'opaque',
+          unavailablePatterns: ['immortal_guide'],
+        },
+      ],
+    });
+
+    render(<AlertsPage />);
+    fireEvent.click(await screen.findByRole('button', { name: '测试' }));
+
+    expect(
+      await screen.findByText(/自选股 - 600519 · 触发 K 线形态：红三兵（收盘价 21.7000）（缺失量能未评估：放量突破20日高点）/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/自选股 - 000858 · 量能数据不足，无法评估：仙人指路/),
+    ).toBeInTheDocument();
+  });
+
+  it('localizes structured kline pattern details for single-target batch dry-run results', async () => {
+    testRule.mockResolvedValueOnce({
+      ruleId: 2,
+      targetScope: 'watchlist',
+      status: 'triggered',
+      triggered: true,
+      observedValue: 21.7,
+      message: 'Evaluated 1 targets: 1 triggered, 0 degraded, 0 skipped, 0 failed',
+      evaluatedCount: 1,
+      triggeredCount: 1,
+      degradedCount: 0,
+      skippedCount: 0,
+      targetResults: [
+        {
+          target: '600519',
+          displayTarget: '自选股 - 600519',
+          status: 'triggered',
+          recordStatus: 'triggered',
+          triggered: true,
+          observedValue: 21.7,
+          message: 'opaque',
+          matchedPatterns: ['red_three_soldiers'],
+          unavailablePatterns: ['breakout_20d_high'],
+        },
+      ],
+    });
+
+    render(<AlertsPage />);
+    fireEvent.click(await screen.findByRole('button', { name: '测试' }));
+
+    expect(
+      await screen.findByText(/自选股 - 600519 · 触发 K 线形态：红三兵（收盘价 21\.7000）（缺失量能未评估：放量突破20日高点）/),
+    ).toBeInTheDocument();
   });
 });

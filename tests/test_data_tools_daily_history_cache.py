@@ -153,7 +153,7 @@ class DailyHistoryCacheToolTest(unittest.TestCase):
              patch("src.services.history_loader._get_fetcher_manager", return_value=manager):
             result = self._run_with_frozen_date(target, "600519", days=60)
 
-        manager.get_daily_data.assert_called_once_with("600519", days=60)
+        manager.get_daily_data.assert_called_once_with("600519", days=60, end_date="2026-04-24")
         db.save_daily_data.assert_called_once_with(df, "600519", "Fetcher")
         self.assertFalse(result["cache_hit"])
         self.assertEqual(result["source"], "Fetcher")
@@ -191,7 +191,7 @@ class DailyHistoryCacheToolTest(unittest.TestCase):
              patch("src.services.history_loader._get_fetcher_manager", return_value=manager):
             result = self._run_with_frozen_date(target, "600519", days=60)
 
-        manager.get_daily_data.assert_called_once_with("600519", days=60)
+        manager.get_daily_data.assert_called_once_with("600519", days=60, end_date="2026-04-24")
         self.assertFalse(result["cache_hit"])
         self.assertEqual(result["source"], "Fetcher")
 
@@ -220,7 +220,7 @@ class DailyHistoryCacheToolTest(unittest.TestCase):
              patch("src.services.history_loader._get_fetcher_manager", return_value=manager):
             result = self._run_with_frozen_date(target, "600519", days=999)
 
-        manager.get_daily_data.assert_called_once_with("600519", days=365)
+        manager.get_daily_data.assert_called_once_with("600519", days=365, end_date="2026-04-24")
         self.assertEqual(result["requested_days"], 999)
         self.assertEqual(result["effective_days"], 365)
         self.assertIn("warning", result)

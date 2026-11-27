@@ -31,6 +31,95 @@ def _fetch_trend_data(stock_code: str):
     return df
 
 
+def _closed_pattern_df(df, stock_code: str, *, scan_days: int = 60):
+    """Apply frozen/closed-session cutoff and continuity checks for extended daily pattern evidence."""
+    if df is None or getattr(df, "empty", True):
+        return df
+
+    import pandas as pd
+    from datetime import date
+    from src.core.kline_patterns import parse_iso_date_value
+    from src.services.alert_indicators import (
+        _drop_partial_today,
+        _effective_closed_date_for_stock,
+        _find_column,
+        check_kline_session_continuity,
+    )
+    from src.services.history_loader import get_frozen_target_date
+
+    date_col = _find_column(df, "date")
+    if date_col is None and not isinstance(df.index, pd.DatetimeIndex):
+        return df
+
+    work = df.copy()
+    attrs = dict(getattr(df, "attrs", {}) or {})
+    if date_col is not None and date_col != "date":
+        work["date"] = work[date_col]
+    elif date_col is None and isinstance(work.index, pd.DatetimeIndex):
+        work["date"] = work.index
+    work["date"] = pd.to_datetime(
+        [parse_iso_date_value(v) for v in work["date"].tolist()],
+        errors="coerce",
+    )
+    work.attrs.update(attrs)
+
+    frozen = get_frozen_target_date()
+    eff_closed = _effective_closed_date_for_stock(stock_code)
+    upper_date: Optional[date]
+    if frozen is not None and eff_closed is not None:
+        upper_date = min(frozen, eff_closed)
+    else:
+        upper_date = frozen if frozen is not None else eff_closed
+
+    filtered = _drop_partial_today(work, stock_code=stock_code)
+    if filtered.empty:
+        return filtered
+
+    if upper_date is not None:
+        parsed_dates = pd.to_datetime(filtered["date"], errors="coerce")
+        if isinstance(parsed_dates.dtype, pd.DatetimeTZDtype):
+            parsed_dates = parsed_dates.dt.tz_localize(None)
+        mask = parsed_dates.isna() | (parsed_dates.dt.date <= upper_date)
+        filtered = filtered.loc[mask].copy()
+        filtered.attrs.update(attrs)
+        if filtered.empty:
+            return filtered
+
+    filtered = filtered.sort_values(by="date", kind="stable", na_position="last")
+    valid_date_mask = filtered["date"].notna()
+    dup_valid = valid_date_mask & filtered.duplicated(subset=["date"], keep="last")
+    filtered = filtered.loc[~dup_valid].reset_index(drop=True)
+    filtered.attrs.update(attrs)
+    if filtered.empty:
+        return filtered
+
+    tail_len = min(len(filtered), max(int(scan_days), 28))
+    tail_win = filtered.iloc[-tail_len:]
+    if tail_win["date"].isna().any():
+        return filtered.iloc[0:0].copy()
+
+    dropped_undated = int(filtered.attrs.get("dropped_undated_count") or 0)
+    if dropped_undated > 0:
+        return filtered.iloc[0:0].copy()
+
+    tail_dates = [ts.date() for ts in pd.to_datetime(tail_win["date"]).tolist()]
+    win_start = tail_dates[0]
+    win_end = tail_dates[-1]
+    drop_upper = upper_date if (upper_date is not None and upper_date >= win_end) else win_end
+    for raw_dropped in filtered.attrs.get("dropped_invalid_dates") or []:
+        parsed_iso = parse_iso_date_value(raw_dropped)
+        if parsed_iso is None:
+            continue
+        dropped_day = date.fromisoformat(parsed_iso)
+        if win_start <= dropped_day <= drop_upper:
+            return filtered.iloc[0:0].copy()
+
+    if check_kline_session_continuity(tail_dates, stock_code=stock_code, require_latest_match=False) is not None:
+        return filtered.iloc[0:0].copy()
+
+    return filtered
+
+
 def _handle_analyze_trend(stock_code: str) -> dict:
     """Run technical trend analysis on a stock."""
     from src.stock_analyzer import StockTrendAnalyzer
@@ -45,9 +134,10 @@ def _handle_analyze_trend(stock_code: str) -> dict:
     if len(df) < 20:
         return {"error": f"Insufficient data for trend analysis on {stock_code} (need >= 20 days)"}
 
+    closed_df = _closed_pattern_df(df, stock_code)
     analyzer = StockTrendAnalyzer()
     try:
-        result = analyzer.analyze(df, stock_code)
+        result = analyzer.analyze(df, stock_code, pattern_df=closed_df)
     except Exception:
         logger.warning("analyze_trend(%s): Trend analysis failed", stock_code, exc_info=True)
         return {"error": f"Trend analysis failed for {stock_code}"}
@@ -86,6 +176,8 @@ def _handle_analyze_trend(stock_code: str) -> dict:
         "signal_score": result.signal_score,
         "signal_reasons": result.signal_reasons,
         "risk_factors": result.risk_factors,
+        "kline_patterns": result.kline_patterns,
+        "pattern_summary": result.pattern_summary,
     }
 
 
@@ -322,209 +414,101 @@ get_volume_analysis_tool = ToolDefinition(
 # analyze_pattern — candlestick / chart pattern recognition
 # ============================================================
 
-def _handle_analyze_pattern(stock_code: str, days: int = 60) -> dict:
+def _handle_analyze_pattern(
+    stock_code: str,
+    days: int = 60,
+    pattern_filter: Optional[str] = None,
+) -> dict:
     """Detect common candlestick and chart patterns in recent price history."""
+    from src.core.kline_patterns import detect_kline_patterns, summarize_detected_patterns
     from src.services.history_loader import load_history_df
 
-    df, source = load_history_df(stock_code, days=max(days, 120))
+    try:
+        scan_days = int(days)
+    except (TypeError, ValueError):
+        return {"error": f"Invalid days parameter: {days}"}
+    if scan_days <= 0:
+        return {"error": f"days must be positive (got {scan_days})"}
+
+    df, source = load_history_df(stock_code, days=max(scan_days, 120))
 
     if df is None or df.empty:
         return {"error": f"No historical data for {stock_code}"}
 
-    history_close = df["close"].values  # everything loaded: the trend before a candle may precede the scan
-    df = df.tail(days).copy().reset_index(drop=True)
-    if len(df) < 10:
-        return {"error": f"Insufficient data for pattern analysis (got {len(df)} days, need >= 10)"}
+    period_days = min(len(df), scan_days)
+    if period_days < 10:
+        return {"error": f"Insufficient data for pattern analysis (got {period_days} days, need >= 10)"}
 
-    o = df["open"].values
-    h = df["high"].values
-    l = df["low"].values   # noqa: E741
-    c = df["close"].values
-    v = df["volume"].values if "volume" in df.columns else None
-
-    patterns_detected = []
-    n = len(c)
-
-    # ---- Helpers ----
-    def body(i):
-        return abs(c[i] - o[i])
-
-    def upper_shadow(i):
-        return h[i] - max(c[i], o[i])
-
-    def lower_shadow(i):
-        return min(c[i], o[i]) - l[i]
-
-    def is_bullish(i):
-        return c[i] > o[i]
-
-    def is_bearish(i):
-        return c[i] < o[i]
-
-    avg_body = sum(body(i) for i in range(n)) / n if n > 0 else 1
-
-    # --- Single-candle patterns (last 3 days) ---
-    for i in range(max(0, n - 3), n):
-        bd = body(i)
-        us = upper_shadow(i)
-        ls = lower_shadow(i)
-        # Long-shadow candles are named by the trend before them: MA5 against MA10 on the closes
-        # before the candle, and only when the last of those closes is beyond MA5 the same way
-        # (below it in a decline, above it in an advance). Otherwise, or with fewer than 10 closes,
-        # the trend is unclear and the candle gets no name.
-        end = len(history_close) - n + i
-        falling = rising = False
-        if end >= 10:
-            before = history_close[end - 10:end]
-            ma5, ma10, prev_close = sum(before[5:]) / 5, sum(before) / 10, before[-1]
-            # isclose: values that tie as quoted can differ by float rounding once summed; a tie is no direction.
-            if not (math.isclose(ma5, ma10) or math.isclose(prev_close, ma5)):
-                falling = ma5 < ma10 and prev_close < ma5
-                rising = ma5 > ma10 and prev_close > ma5
-
-        # Doji
-        if bd < avg_body * 0.1 and (us + ls) > bd * 3:
-            patterns_detected.append({
-                "pattern": "十字星 (Doji)", "type": "reversal_signal",
-                "day_offset": -(n - 1 - i),
-                "strength": "弱", "desc": "多空平衡，可能变盘信号"
-            })
-
-        # Hammer after a decline / Hanging Man after an advance
-        if ls > body(i) * 2 and us < body(i) * 0.5 and (falling or rising):
-            label, desc = (
-                ("锤子线 (Hammer)", "下影线长，潜在支撑/反转") if falling
-                else ("上吊线 (Hanging Man)", "下影线长，上涨后的潜在见顶")
+    closed_df = _closed_pattern_df(df, stock_code, scan_days=scan_days)
+    try:
+        if pattern_filter is None:
+            legacy_patterns = detect_kline_patterns(
+                df,
+                days=scan_days,
+                single_candle_lookback=3,
+                include_chart_patterns=True,
+                legacy_compat_mode=True,
+                allow_missing_volume_breakout=True,
             )
-            patterns_detected.append({
-                "pattern": label, "type": "reversal_signal",
-                "day_offset": -(n - 1 - i),
-                "strength": "中", "desc": desc
-            })
-
-        # Inverted Hammer after a decline / Shooting Star after an advance
-        if us > body(i) * 2 and ls < body(i) * 0.5 and (falling or rising):
-            label, signal, desc = (
-                ("倒锤子", "reversal_signal", "上影线长，下跌后的潜在反转") if falling
-                else ("流星线 (Shooting Star)", "bearish_signal", "上影线长，潜在压力/反转")
+            detail_patterns = detect_kline_patterns(
+                closed_df,
+                days=scan_days,
+                single_candle_lookback=3,
+                include_chart_patterns=True,
+                legacy_compat_mode=False,
+                allow_missing_volume_breakout=False,
             )
-            patterns_detected.append({
-                "pattern": label, "type": signal,
-                "day_offset": -(n - 1 - i),
-                "strength": "中", "desc": desc
-            })
+        else:
+            legacy_patterns = detect_kline_patterns(
+                closed_df,
+                days=scan_days,
+                single_candle_lookback=3,
+                include_chart_patterns=True,
+                pattern_filter=pattern_filter,
+                legacy_compat_mode=False,
+                allow_missing_volume_breakout=False,
+            )
+            detail_patterns = legacy_patterns
+    except ValueError as exc:
+        return {"error": str(exc)}
 
-        # Big bullish / bearish candle
-        if bd > avg_body * 2.5:
-            label = "大阳线" if is_bullish(i) else "大阴线"
-            t = "bullish" if is_bullish(i) else "bearish"
-            patterns_detected.append({
-                "pattern": label, "type": t,
-                "day_offset": -(n - 1 - i),
-                "strength": "强", "desc": "实体大，方向明确"
-            })
+    latest_close = df["close"].iloc[-1]
+    try:
+        latest_close_val = float(latest_close)
+        current_price = round(latest_close_val, 2) if math.isfinite(latest_close_val) else None
+    except (TypeError, ValueError):
+        current_price = None
 
-    # --- Multi-candle patterns (use last 10 days) ---
-    if n >= 3:
-        i = n - 1
-        # Morning Star (早晨之星) — bottom reversal
-        if (is_bearish(i - 2) and body(i - 2) > avg_body * 1.5
-                and body(i - 1) < avg_body * 0.4
-                and is_bullish(i) and body(i) > avg_body * 1.5
-                and c[i] > (o[i - 2] + c[i - 2]) / 2):
-            patterns_detected.append({
-                "pattern": "早晨之星 (Morning Star)", "type": "bullish_reversal",
-                "day_offset": -2, "strength": "强", "desc": "三根K线底部反转形态"
-            })
-
-        # Evening Star (黄昏之星) — top reversal
-        if (is_bullish(i - 2) and body(i - 2) > avg_body * 1.5
-                and body(i - 1) < avg_body * 0.4
-                and is_bearish(i) and body(i) > avg_body * 1.5
-                and c[i] < (o[i - 2] + c[i - 2]) / 2):
-            patterns_detected.append({
-                "pattern": "黄昏之星 (Evening Star)", "type": "bearish_reversal",
-                "day_offset": -2, "strength": "强", "desc": "三根K线顶部反转形态"
-            })
-
-        # Engulfing (吞没形态)
-        if (is_bullish(i) and is_bearish(i - 1)
-                and o[i] < c[i - 1] and c[i] > o[i - 1]):
-            patterns_detected.append({
-                "pattern": "看涨吞没 (Bullish Engulfing)", "type": "bullish_reversal",
-                "day_offset": -1, "strength": "强", "desc": "阳线完全覆盖前一阴线"
-            })
-        elif (is_bearish(i) and is_bullish(i - 1)
-              and o[i] > c[i - 1] and c[i] < o[i - 1]):
-            patterns_detected.append({
-                "pattern": "看跌吞没 (Bearish Engulfing)", "type": "bearish_reversal",
-                "day_offset": -1, "strength": "强", "desc": "阴线完全覆盖前一阳线"
-            })
-
-    # --- Chart patterns over the window ---
-    # Double bottom detection (简化版: 两个相近低点 + 中间高点)
-    recent_lows_idx = sorted(range(n), key=lambda i: l[i])[:5]
-    if len(recent_lows_idx) >= 2:
-        lo1, lo2 = sorted(recent_lows_idx[:2])
-        if lo2 - lo1 >= 5 and abs(l[lo1] - l[lo2]) / max(l[lo1], l[lo2]) < 0.03:
-            mid_high = max(h[lo1:lo2 + 1])
-            if mid_high > l[lo1] * 1.03:
-                patterns_detected.append({
-                    "pattern": "双底 (Double Bottom)", "type": "bullish_reversal",
-                    "day_offset": -(n - 1 - lo2),
-                    "strength": "强", "desc": "两个相近低点，W型底部形态"
-                })
-
-    # Upward breakout: closes above 20d high (excluding last day itself)
-    if n >= 21:
-        high_20d = max(h[n - 21:n - 1])
-        if c[-1] > high_20d and (v is None or v[-1] > sum(v[n - 6:n - 1]) / 5 * 1.5):
-            patterns_detected.append({
-                "pattern": "放量突破20日高点", "type": "bullish_breakout",
-                "day_offset": 0, "strength": "强", "desc": "收盘突破近20日最高，量能配合"
-            })
-
-    # Price in consolidation box (box oscillation)
-    if n >= 10:
-        recent_high = max(h[n - 10:])
-        recent_low = min(l[n - 10:])
-        box_range_pct = (recent_high - recent_low) / recent_low * 100 if recent_low > 0 else 0
-        if box_range_pct < 8:
-            patterns_detected.append({
-                "pattern": "箱体震荡", "type": "consolidation",
-                "day_offset": 0, "strength": "中",
-                "desc": f"近10日波幅 {box_range_pct:.1f}%，价格在区间内震荡"
-            })
-
-    # Deduplicate by pattern name, keep most recent
-    seen = set()
-    unique_patterns = []
-    for p in reversed(patterns_detected):
-        if p["pattern"] not in seen:
-            seen.add(p["pattern"])
-            unique_patterns.append(p)
-    unique_patterns = list(reversed(unique_patterns))
+    legacy_summary = summarize_detected_patterns(legacy_patterns)
+    detail_summary = summarize_detected_patterns(detail_patterns)
 
     return {
         "code": stock_code,
         "source": source,
-        "period_days": len(df),
-        "current_price": round(float(c[-1]), 2),
-        "patterns_count": len(unique_patterns),
-        "patterns": unique_patterns,
-        "summary": (
-            "未发现明显形态" if not unique_patterns
-            else "、".join(p["pattern"] for p in unique_patterns)
-        ),
+        "period_days": period_days,
+        "current_price": current_price,
+        "patterns_count": len(legacy_patterns),
+        "patterns": [p.to_legacy_dict() for p in legacy_patterns],
+        "pattern_details": [p.to_detail_dict() for p in detail_patterns],
+        "extended_patterns_count": len(detail_patterns),
+        "bullish_count": detail_summary["bullish_count"],
+        "bearish_count": detail_summary["bearish_count"],
+        "neutral_count": detail_summary["neutral_count"],
+        "dominant_bias": detail_summary["dominant_bias"],
+        "extended_summary": detail_summary["summary"],
+        "summary": legacy_summary["summary"],
     }
 
 
 analyze_pattern_tool = ToolDefinition(
     name="analyze_pattern",
     description="Detect candlestick and chart patterns in recent price history. "
-                "Identifies: Doji, Hammer, Shooting Star, Morning/Evening Star, Engulfing, "
-                "Double Bottom, upward breakout, box oscillation, and more. "
-                "Returns pattern list with type (bullish/bearish/reversal) and strength.",
+                "When pattern_filter is omitted, `patterns`/`patterns_count`/`summary` preserve "
+                "legacy candlestick/chart compatibility while `pattern_details` returns the full "
+                "extended catalog with metadata: Red Three Soldiers (红三兵), Immortal Guide (仙人指路), "
+                "Rising Lotus (出水芙蓉), Bullish Cannon (多方炮), Three Black Crows (三只乌鸦), "
+                "Guillotine (断头铡刀), Piercing Line, Dark Cloud Cover, MA Pullback Support, "
+                "Double Top, plus all legacy patterns.",
     parameters=[
         ToolParameter(
             name="stock_code",
@@ -537,6 +521,14 @@ analyze_pattern_tool = ToolDefinition(
             description="Number of recent trading days to scan (default: 60)",
             required=False,
             default=60,
+        ),
+        ToolParameter(
+            name="pattern_filter",
+            type="string",
+            description="Optional filter: 'bullish', 'bearish', or comma-separated pattern IDs "
+                        "(e.g., 'red_three_soldiers,immortal_guide')",
+            required=False,
+            default=None,
         ),
     ],
     handler=_handle_analyze_pattern,

@@ -519,6 +519,8 @@ class AlertApiTestCase(unittest.TestCase):
             ),
             ("kdj_cross", {"direction": "bearish_cross", "period": 9, "k_period": 3, "d_period": 3}),
             ("cci_threshold", {"direction": "above", "period": 14, "threshold": 100}),
+            ("kline_pattern", {"patterns": ["red_three_soldiers", "immortal_guide"], "require_volume_confirm": False}),
+            ("kline_pattern", {"patterns": ["any_bullish"], "require_volume_confirm": True}),
         ]
 
         for alert_type, parameters in cases:
@@ -529,6 +531,55 @@ class AlertApiTestCase(unittest.TestCase):
             })
             self.assertEqual(created["alert_type"], alert_type)
             self.assertEqual(created["parameters"], parameters)
+
+    def test_kline_pattern_validation_and_normalization(self) -> None:
+        resp_created = self.client.post(
+            "/api/v1/alerts/rules",
+            json={
+                "target_scope": "single_symbol",
+                "target": "600519",
+                "alert_type": "kline_pattern",
+                "parameters": {"patterns": [" Red_Three_Soldiers ", "red_three_soldiers", "IMMORTAL_GUIDE"]},
+            },
+        )
+        self.assertEqual(resp_created.status_code, 200, resp_created.text)
+        created = resp_created.json()
+        self.assertEqual(
+            created["parameters"],
+            {"patterns": ["red_three_soldiers", "immortal_guide"], "require_volume_confirm": False},
+        )
+        self.assertIn("red_three_soldiers", created["name"])
+
+        invalid_cases = [
+            {"patterns": []},
+            {"patterns": "red_three_soldiers"},
+            {"patterns": ["unknown_pattern_xyz"]},
+            {"patterns": ["red_three_soldiers"], "require_volume_confirm": "yes"},
+        ]
+        for parameters in invalid_cases:
+            resp = self.client.post(
+                "/api/v1/alerts/rules",
+                json={
+                    "target_scope": "single_symbol",
+                    "target": "600519",
+                    "alert_type": "kline_pattern",
+                    "parameters": parameters,
+                },
+            )
+            self.assertEqual(resp.status_code, 400, resp.text)
+            self.assertEqual(resp.json()["error"], "validation_error")
+
+        for bad_scope, bad_target in (("portfolio_account", "all"), ("market", "cn")):
+            resp = self.client.post(
+                "/api/v1/alerts/rules",
+                json={
+                    "target_scope": bad_scope,
+                    "target": bad_target,
+                    "alert_type": "kline_pattern",
+                    "parameters": {"patterns": ["any_bullish"]},
+                },
+            )
+            self.assertEqual(resp.status_code, 400, resp.text)
 
     def test_p5_technical_indicator_rules_skip_legacy_event_validator(self) -> None:
         with patch("src.services.alert_service.validate_event_alert_rule") as legacy_validator:
@@ -1154,6 +1205,99 @@ class AlertApiTestCase(unittest.TestCase):
         self.assertEqual(item["analysis_visibility_source"], "analysis_history_snapshot")
         self.assertEqual(item["market_phase_summary"]["phase"], "postmarket")
         self.assertEqual(item["analysis_context_pack_overview"]["data_quality"]["level"], "good")
+
+    def test_kline_pattern_structured_ids_in_dry_run_and_triggers(self) -> None:
+        from src.services.alert_worker import AlertWorker
+        from src.services import alert_indicators
+
+        rule = self._create_rule({
+            "name": "Mixed Preset Structured IDs",
+            "alert_type": "kline_pattern",
+            "parameters": {"patterns": ["any_bullish"], "require_volume_confirm": False},
+        })
+        base = [
+            (20.0 + (0.03 if i % 2 == 0 else -0.02), 20.1, 19.9, 20.02)
+            for i in range(24)
+        ]
+        soldiers = [
+            (20.1, 20.65, 20.05, 20.60),
+            (20.5, 21.15, 20.45, 21.10),
+            (21.0, 21.75, 20.95, 21.70),
+        ]
+        df_no_vol = pd.DataFrame(base + soldiers, columns=["open", "high", "low", "close"])
+        df_no_vol["date"] = pd.date_range("2026-01-05", periods=len(df_no_vol), freq="B")
+        last_dt = pd.Timestamp(df_no_vol["date"].iloc[-1]).date()
+
+        manager = MagicMock()
+        manager.get_daily_data.return_value = (df_no_vol, "unit-test")
+
+        with patch("data_provider.DataFetcherManager", return_value=manager), \
+             patch.object(alert_indicators, "get_effective_trading_date", return_value=last_dt), \
+             patch.object(
+                 alert_indicators,
+                 "get_market_now",
+                 return_value=datetime(last_dt.year, last_dt.month, last_dt.day, 15, 5),
+             ):
+            resp = self.client.post(f"/api/v1/alerts/rules/{rule['id']}/test")
+
+        self.assertEqual(resp.status_code, 200, resp.text)
+        dry = resp.json()
+        self.assertTrue(dry["triggered"])
+        self.assertIn("red_three_soldiers", dry["matched_patterns"])
+        self.assertEqual(
+            set(dry["unavailable_patterns"]),
+            {"immortal_guide", "breakout_20d_high", "ma_pullback_support"},
+        )
+        self.assertEqual(dry["target_results"][0]["matched_patterns"], dry["matched_patterns"])
+
+        # Real worker execution writing triggered & degraded trigger history rows
+        df_flat_no_vol = pd.DataFrame(
+            [(20.0 + (0.03 if i % 2 == 0 else -0.02), 20.1, 19.9, 20.02) for i in range(27)],
+            columns=["open", "high", "low", "close"],
+        )
+        df_flat_no_vol["date"] = pd.date_range("2026-01-05", periods=len(df_flat_no_vol), freq="B")
+        flat_dt = pd.Timestamp(df_flat_no_vol["date"].iloc[-1]).date()
+        worker_cfg = SimpleNamespace(agent_event_monitor_enabled=True, agent_event_alert_rules_json="", trading_day_check_enabled=False)
+        notifier = MagicMock()
+        notifier.send_with_results.return_value = MagicMock(dispatched=False, success=False, status="no_channel", channel_results=[], message="no channel")
+        worker = AlertWorker(config_provider=lambda: worker_cfg, service=AlertService(self.db), notifier=notifier)
+
+        with patch("data_provider.DataFetcherManager", return_value=manager), \
+             patch.object(alert_indicators, "get_effective_trading_date", return_value=last_dt), \
+             patch.object(
+                 alert_indicators,
+                 "get_market_now",
+                 return_value=datetime(last_dt.year, last_dt.month, last_dt.day, 15, 5),
+             ):
+            worker.run_once()
+
+        manager.get_daily_data.return_value = (df_flat_no_vol, "unit-test")
+        with patch("data_provider.DataFetcherManager", return_value=manager), \
+             patch.object(alert_indicators, "get_effective_trading_date", return_value=flat_dt), \
+             patch.object(
+                 alert_indicators,
+                 "get_market_now",
+                 return_value=datetime(flat_dt.year, flat_dt.month, flat_dt.day, 15, 5),
+             ):
+            worker.run_once()
+
+        trig_ok = self.client.get("/api/v1/alerts/triggers", params={"rule_id": rule["id"], "status": "triggered"})
+        self.assertEqual(trig_ok.status_code, 200, trig_ok.text)
+        item_ok = trig_ok.json()["items"][0]
+        self.assertIn("red_three_soldiers", item_ok["matched_patterns"])
+        self.assertEqual(
+            set(item_ok["unavailable_patterns"]),
+            {"immortal_guide", "breakout_20d_high", "ma_pullback_support"},
+        )
+
+        trig_deg = self.client.get("/api/v1/alerts/triggers", params={"rule_id": rule["id"], "status": "degraded"})
+        self.assertEqual(trig_deg.status_code, 200, trig_deg.text)
+        item_deg = trig_deg.json()["items"][0]
+        self.assertEqual(item_deg["monitored_patterns"], ["any_bullish"])
+        self.assertEqual(
+            set(item_deg["unavailable_patterns"]),
+            {"immortal_guide", "breakout_20d_high", "ma_pullback_support"},
+        )
 
     def test_alert_cooldowns_table_create_all_is_idempotent(self) -> None:
         constraint_names = {constraint.name for constraint in AlertCooldownRecord.__table__.constraints}
