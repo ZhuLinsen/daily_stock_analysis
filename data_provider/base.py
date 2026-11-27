@@ -538,12 +538,15 @@ class BaseFetcher(ABC):
             
             # Step 2: 标准化列名
             df = self._normalize_data(raw_df, stock_code)
+            preserved_attrs = dict(getattr(df, "attrs", {}))
             
             # Step 3: 数据清洗
             df = self._clean_data(df)
             
             # Step 4: 计算技术指标
             df = self._calculate_indicators(df)
+            if preserved_attrs:
+                df.attrs.update(preserved_attrs)
 
             elapsed = time.time() - request_start
             logger.info(
