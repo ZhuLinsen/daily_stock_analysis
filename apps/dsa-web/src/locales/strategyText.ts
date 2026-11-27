@@ -2,7 +2,14 @@ import type { UiLanguage } from '../i18n/uiText';
 
 type StrategyText = { name: string; description: string };
 
-type LocalizableSkill = { id: string; name: string; description: string };
+export type LocalizableSkill = { id: string; name: string; description: string };
+
+type MessageSkillSource = {
+  skills?: string[];
+  skill?: string;
+  skillNames?: string[];
+  skillName?: string;
+};
 
 /**
  * Display text for the bundled strategies in `strategies/*.yaml`.
@@ -89,4 +96,75 @@ export function localizeSkill<T extends LocalizableSkill>(skill: T, language: Ui
     name: skill.name === text.zh.name ? localized.name : skill.name,
     description: skill.description === text.zh.description ? localized.description : skill.description,
   };
+}
+
+/**
+ * Localizes a historical/fallback skill display name without treating display
+ * names as built-in strategy IDs (prevents custom skills named e.g.
+ * `ma_golden_cross` from being mislabeled as the built-in strategy).
+ */
+export function localizeBuiltInSkillDisplayName(name: string, language: UiLanguage): string {
+  if (language === 'en' && name === '通用') {
+    return 'General';
+  }
+  if (language === 'zh' && name === 'General') {
+    return '通用';
+  }
+  const sourceLocale: UiLanguage = language === 'en' ? 'zh' : 'en';
+  for (const entry of Object.values(BUILTIN_STRATEGY_TEXT)) {
+    if (entry[sourceLocale].name === name) {
+      return entry[language].name;
+    }
+  }
+  return name;
+}
+
+/** Resolves message skill badges/headers using skill IDs when present and display-name lookup otherwise. */
+export function resolveMessageSkillLabels(
+  msg: MessageSkillSource,
+  language: UiLanguage,
+  availableSkills?: ReadonlyArray<LocalizableSkill>,
+): string[] {
+  const skillIds = msg.skills?.length
+    ? msg.skills
+    : msg.skill
+      ? [msg.skill]
+      : [];
+  const rawNames = msg.skillNames?.length
+    ? msg.skillNames
+    : msg.skillName
+      ? [msg.skillName]
+      : [];
+
+  if (skillIds.length > 0) {
+    return skillIds.map((id, index) => {
+      const rawName = rawNames[index];
+      const matched = availableSkills?.find((skill) => skill.id === id);
+      if (matched) {
+        return localizeSkill(matched, language).name;
+      }
+      if (Object.hasOwn(BUILTIN_STRATEGY_TEXT, id)) {
+        const entry = BUILTIN_STRATEGY_TEXT[id];
+        if (!rawName || rawName === id || rawName === entry.zh.name || rawName === entry.en.name) {
+          return entry[language].name;
+        }
+        return rawName;
+      }
+      const fallback = rawName || id;
+      if (language === 'en' && fallback === '通用') {
+        return 'General';
+      }
+      if (language === 'zh' && fallback === 'General') {
+        return '通用';
+      }
+      return fallback;
+    });
+  }
+
+  return rawNames.map((name) => localizeBuiltInSkillDisplayName(name, language));
+}
+
+/** @deprecated Prefer `resolveMessageSkillLabels` / `localizeBuiltInSkillDisplayName`. */
+export function localizeSkillLabel(name: string, language: UiLanguage): string {
+  return localizeBuiltInSkillDisplayName(name, language);
 }
