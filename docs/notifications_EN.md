@@ -56,7 +56,7 @@ Compatibility scope note:
 
 ## GitHub Actions Mapping
 
-The built-in `.github/workflows/00-daily-analysis.yml` imports an explicit set of variables. `scripts/generate_notification_actions_env_table.py` automatically verifies and syncs the Chinese baseline ([`docs/notifications.md`](notifications.md)); this English table is maintained in manual sync with it:
+The built-in `.github/workflows/00-daily-analysis.yml` imports an explicit set of variables. `scripts/generate_notification_actions_env_table.py` automatically verifies and syncs the Chinese baseline ([`docs/notifications.md`](https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/notifications.md)); this English table is maintained in manual sync with it:
 
 | Key | Tier | Channel / feature | Actions source | Default |
 | --- | --- | --- | --- | --- |

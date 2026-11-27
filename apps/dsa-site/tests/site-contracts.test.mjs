@@ -219,7 +219,8 @@ test('landing page and docs honor review regression guards', () => {
   const enEnvConfig = fs.readFileSync(path.join(SITE_ROOT, 'src', 'content', 'docs', 'en', 'docs', 'getting-started', 'env-config.mdx'), 'utf8');
   assert.equal(enEnvConfig.includes('deepseek-chat'), false);
   assert.equal(enEnvConfig.includes('openai/Qwen/Qwen3-32B'), true);
-  assert.equal(enEnvConfig.includes('deepseek-flash'), true);
+  assert.equal(enEnvConfig.includes('LITELLM_MODEL=deepseek/deepseek-flash'), true);
+  assert.equal(enEnvConfig.includes('LITELLM_MODEL=deepseek/deepseek-v4-pro'), true);
 
   const webuiDoc = fs.readFileSync(path.join(SITE_ROOT, 'src', 'content', 'docs', 'docs', 'features', 'webui-and-agent.mdx'), 'utf8');
   assert.equal(webuiDoc.includes('/decision-signals'), true);
@@ -242,7 +243,8 @@ test('landing page and docs honor review regression guards', () => {
   assert.equal(enActionsDoc.includes('LLM_X6AI_BASE_URL=https://api.x6.ai/v1'), true);
   assert.equal(enActionsDoc.includes('LLM_X6AI_MODELS='), true);
   assert.equal(enActionsDoc.includes('openai/Qwen/Qwen3-32B'), true);
-  assert.equal(enActionsDoc.includes('deepseek-flash'), true);
+  assert.equal(enActionsDoc.includes('LITELLM_MODEL=deepseek/deepseek-flash'), true);
+  assert.equal(enActionsDoc.includes('LITELLM_MODEL=deepseek/deepseek-v4-pro'), true);
   assert.doesNotMatch(enActionsDoc, /\|\s*`LLM_X6AI_API_KEY`\s*\|/);
 
   assert.equal(fs.existsSync(path.join(SITE_ROOT, 'public', 'assets', 'dsa-vi-dark.png')), false);
