@@ -148,10 +148,25 @@ const getLaneRowHeight = (laneId: string): number => (
 
 const isExpandableNode = (node: RunFlowNode): boolean => node.metadata?.topologyGroup === 'provider_attempts';
 
-const getEdgeLabel = (label: string | null | undefined, t: RunFlowT): string | null => {
+const EN_EDGE_LABEL_OVERRIDES: Record<string, string> = {
+  '降级': 'Fallback',
+  '重试': 'Retry',
+  '生成': 'Generate',
+  '保存': 'Save',
+  '通知': 'Notify',
+};
+
+const getEdgeLabel = (
+  label: string | null | undefined,
+  t: RunFlowT,
+  language: 'zh' | 'en',
+): string | null => {
   if (!label) return null;
   if (label === '调用') return t('runFlow.edgeLabel.invoke');
   if (label === '详情') return t('runFlow.edgeLabel.details');
+  if (language === 'en' && Object.hasOwn(EN_EDGE_LABEL_OVERRIDES, label)) {
+    return EN_EDGE_LABEL_OVERRIDES[label];
+  }
   return label;
 };
 
@@ -609,12 +624,12 @@ export const RunFlowGraph: React.FC<RunFlowGraphProps> = ({
     displayLabel: string | null;
     showLabel: boolean;
   }>>((items, item) => {
-    const displayLabel = getEdgeLabel(item.edge.label, t);
+    const displayLabel = getEdgeLabel(item.edge.label, t, language);
     const labelKey = `${item.edge.to}:${displayLabel || ''}`;
     const duplicateLabel = items.some((existing) => (
       existing.relatedToSelected
-      && getEdgeLabel(existing.edge.label, t)
-      && `${existing.edge.to}:${getEdgeLabel(existing.edge.label, t)}` === labelKey
+      && getEdgeLabel(existing.edge.label, t, language)
+      && `${existing.edge.to}:${getEdgeLabel(existing.edge.label, t, language)}` === labelKey
     ));
     items.push({
       ...item,

@@ -1,5 +1,6 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { analysisApi, DuplicateTaskError } from '../../api/analysis';
+import { localizeParsedApiError } from '../../api/error';
 import { historyApi } from '../../api/history';
 import type {
   AnalysisReport,
@@ -9,7 +10,12 @@ import type {
   TaskListResponse,
 } from '../../types/analysis';
 import { getRecentStartDate, getTodayInShanghai } from '../../utils/format';
-import { useStockPoolStore } from '../stockPoolStore';
+import { UI_LANGUAGE_STORAGE_KEY } from '../../utils/uiLanguage';
+import {
+  localizeStockPoolDuplicateError,
+  localizeStockPoolInputError,
+  useStockPoolStore,
+} from '../stockPoolStore';
 
 vi.mock('../../api/history', () => ({
   historyApi: {
@@ -1444,5 +1450,98 @@ describe('stockPoolStore', () => {
     const finalState = useStockPoolStore.getState();
     expect(finalState.stockBarItems).toEqual(latestItems);
     expect(finalState.stockBarRefreshFailed).toBe(false);
+  });
+
+  describe('localization (EN)', () => {
+    afterEach(() => {
+      window.localStorage.removeItem(UI_LANGUAGE_STORAGE_KEY);
+      document.documentElement.lang = '';
+    });
+
+    it('localizes validation, duplicate task, and failed task errors in English', async () => {
+      window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'en');
+
+      await useStockPoolStore.getState().submitAnalysis({ stockCode: '' });
+      expect(useStockPoolStore.getState().inputError).toBe('Please enter a stock code');
+
+      await useStockPoolStore.getState().submitAnalysis({ stockCode: 'AAPL??' });
+      expect(useStockPoolStore.getState().inputError).toBe('Please enter a valid stock code or stock name');
+
+      vi.mocked(analysisApi.analyzeAsync).mockRejectedValueOnce(new DuplicateTaskError('AAPL', 'task-dup'));
+      await useStockPoolStore.getState().submitAnalysis({ stockCode: 'AAPL' });
+      expect(useStockPoolStore.getState().duplicateError).toBe(
+        'Stock AAPL is already being analyzed; please wait for it to finish',
+      );
+
+      useStockPoolStore.getState().syncTaskFailed({
+        taskId: 'task-fail-en',
+        stockCode: 'AAPL',
+        stockName: 'Apple',
+        status: 'failed',
+        progress: 100,
+        reportType: 'detailed',
+        createdAt: '2026-03-18T08:00:00Z',
+        error: '',
+      });
+      expect(useStockPoolStore.getState().error).toMatchObject({
+        title: 'Request Failed',
+        message: 'Analysis failed',
+      });
+      expect(localizeParsedApiError(useStockPoolStore.getState().error!, 'zh')).toMatchObject({
+        title: '请求失败',
+        message: '分析失败',
+      });
+    });
+
+    it('uses the active language when DuplicateTaskError resolves after an in-flight switch', async () => {
+      window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'zh');
+      document.documentElement.lang = 'zh-CN';
+      const deferred = createDeferred<never>();
+      vi.mocked(analysisApi.analyzeAsync).mockReturnValueOnce(deferred.promise);
+
+      const pending = useStockPoolStore.getState().submitAnalysis({ stockCode: '600519' });
+      document.documentElement.lang = 'en';
+      deferred.reject(new DuplicateTaskError('600519', 'task-dup-switch'));
+      await pending;
+
+      expect(useStockPoolStore.getState().duplicateError).toBe(
+        'Stock 600519 is already being analyzed; please wait for it to finish',
+      );
+    });
+
+    it('re-localizes settled inputError and duplicateError across UI language changes (OR-COR-2f91c84a)', async () => {
+      window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'zh');
+
+      await useStockPoolStore.getState().submitAnalysis({ stockCode: '' });
+      expect(useStockPoolStore.getState().inputError).toBe('请输入股票代码');
+      expect(localizeStockPoolInputError(useStockPoolStore.getState(), 'en')).toBe('Please enter a stock code');
+
+      await useStockPoolStore.getState().submitAnalysis({ stockCode: '600519??' });
+      expect(useStockPoolStore.getState().inputError).toBe('请输入有效的股票代码或股票名称');
+      expect(localizeStockPoolInputError(useStockPoolStore.getState(), 'en')).toBe(
+        'Please enter a valid stock code or stock name',
+      );
+
+      await useStockPoolStore.getState().submitAnalysis({ stockCode: '1234567', selectionSource: 'autocomplete' });
+      expect(useStockPoolStore.getState().inputError).toBe('股票代码格式不正确');
+      expect(localizeStockPoolInputError(useStockPoolStore.getState(), 'en')).toBe(
+        'Invalid stock code format',
+      );
+
+      vi.mocked(analysisApi.analyzeAsync).mockRejectedValueOnce(new DuplicateTaskError('600519', 'task-dup-settled'));
+      await useStockPoolStore.getState().submitAnalysis({ stockCode: '600519' });
+      expect(useStockPoolStore.getState().duplicateError).toBe('股票 600519 正在分析中，请等待完成');
+      expect(localizeStockPoolDuplicateError(useStockPoolStore.getState(), 'en')).toBe(
+        'Stock 600519 is already being analyzed; please wait for it to finish',
+      );
+
+      // Direct manual overrides bypass the stored resolver safely.
+      useStockPoolStore.setState({ duplicateError: 'Custom banner message' });
+      expect(localizeStockPoolDuplicateError(useStockPoolStore.getState(), 'en')).toBe('Custom banner message');
+
+      useStockPoolStore.getState().clearInlineMessages();
+      expect(useStockPoolStore.getState().inputError).toBeUndefined();
+      expect(useStockPoolStore.getState().duplicateError).toBeNull();
+    });
   });
 });

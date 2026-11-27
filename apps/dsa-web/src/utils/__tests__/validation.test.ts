@@ -1,4 +1,5 @@
-import { describe, expect, test } from 'vitest';
+import { afterEach, describe, expect, test } from 'vitest';
+import { UI_LANGUAGE_STORAGE_KEY } from '../uiLanguage';
 import {
   isObviouslyInvalidStockQuery,
   looksLikeStockCode,
@@ -6,6 +7,9 @@ import {
 } from '../validation';
 
 describe('stock code validation', () => {
+  afterEach(() => {
+    window.localStorage.removeItem(UI_LANGUAGE_STORAGE_KEY);
+  });
   test.each(['BRK-B', 'BAC-PL'])('accepts Yahoo stock code %s', (code) => {
     expect(validateStockCode(code.toLowerCase())).toEqual({ valid: true, normalized: code });
     expect(isObviouslyInvalidStockQuery(code)).toBe(false);
@@ -69,5 +73,41 @@ describe('stock code validation', () => {
     // unregistered CSI at the backend boundary.
     expect(looksLikeStockCode('930956.CSI')).toBe(true);
     expect(validateStockCode('930956.CSI').valid).toBe(true);
+  });
+
+  test('returns validation error messages in active zh or en UI language', () => {
+    expect(validateStockCode('   ')).toEqual({
+      valid: false,
+      message: '请输入股票代码',
+      normalized: '',
+    });
+    expect(validateStockCode('INVALID!!')).toEqual({
+      valid: false,
+      message: '股票代码格式不正确',
+      normalized: 'INVALID!!',
+    });
+
+    expect(validateStockCode('   ', 'en')).toEqual({
+      valid: false,
+      message: 'Please enter a stock code',
+      normalized: '',
+    });
+    expect(validateStockCode('INVALID!!', 'en')).toEqual({
+      valid: false,
+      message: 'Invalid stock code format',
+      normalized: 'INVALID!!',
+    });
+
+    window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'en');
+    expect(validateStockCode('')).toEqual({
+      valid: false,
+      message: 'Please enter a stock code',
+      normalized: '',
+    });
+    expect(validateStockCode('bad!code')).toEqual({
+      valid: false,
+      message: 'Invalid stock code format',
+      normalized: 'BAD!CODE',
+    });
   });
 });

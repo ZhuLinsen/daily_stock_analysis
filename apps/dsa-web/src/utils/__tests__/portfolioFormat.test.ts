@@ -1,15 +1,19 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import {
   buildFxRefreshFeedback,
   formatBrokerLabel,
+  formatCashDirectionLabel,
+  formatCorporateActionLabel,
   formatMoney,
   formatPositionMoney,
   formatPositionPrice,
+  formatSideLabel,
   formatSignedPct,
   getCsvCommitVariant,
   getCsvParseVariant,
   getPositionPriceLabel,
 } from '../portfolioFormat';
+import { UI_LANGUAGE_STORAGE_KEY } from '../uiLanguage';
 import type { PortfolioPositionItem } from '../../types/portfolio';
 
 const pricedPosition: PortfolioPositionItem = {
@@ -30,6 +34,10 @@ const pricedPosition: PortfolioPositionItem = {
 };
 
 describe('portfolioFormat', () => {
+  afterEach(() => {
+    window.localStorage.removeItem(UI_LANGUAGE_STORAGE_KEY);
+  });
+
   it('formats money and signed percentages consistently', () => {
     expect(formatMoney(1234.5, 'USD')).toBe('USD 1,234.50');
     expect(formatMoney(null)).toBe('--');
@@ -77,5 +85,58 @@ describe('portfolioFormat', () => {
       staleCount: 0,
       errorCount: 0,
     })).toMatchObject({ tone: 'success' });
+  });
+
+  it('formats portfolio labels and FX messages in English when requested or stored', () => {
+    expect(getPositionPriceLabel(pricedPosition, 'en')).toBe('Live · longbridge');
+    expect(getPositionPriceLabel({ ...pricedPosition, priceProvider: undefined }, 'en')).toBe('Live');
+    expect(getPositionPriceLabel({ ...pricedPosition, priceSource: 'history_close', priceStale: true, priceDate: '2026-05-15' }, 'en')).toBe('Close · 2026-05-15');
+    expect(getPositionPriceLabel({ ...pricedPosition, priceAvailable: false, priceSource: 'missing' }, 'en')).toBe('No price');
+
+    expect(formatSideLabel('buy', 'en')).toBe('Buy');
+    expect(formatSideLabel('sell', 'en')).toBe('Sell');
+    expect(formatCashDirectionLabel('in', 'en')).toBe('Inflow');
+    expect(formatCashDirectionLabel('out', 'en')).toBe('Outflow');
+    expect(formatCorporateActionLabel('cash_dividend', 'en')).toBe('Cash dividend');
+    expect(formatCorporateActionLabel('split_adjustment', 'en')).toBe('Split / consolidation');
+    expect(formatBrokerLabel('huatai', undefined, 'en')).toBe('huatai (Huatai)');
+    expect(formatBrokerLabel('citic', undefined, 'en')).toBe('citic (CITIC)');
+    expect(formatBrokerLabel('cmb', undefined, 'en')).toBe('cmb (CMB)');
+    expect(formatBrokerLabel('custom', ' My Broker ', 'en')).toBe('custom (My Broker)');
+
+    window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'en');
+    expect(buildFxRefreshFeedback({
+      asOf: '2026-03-19',
+      accountCount: 1,
+      refreshEnabled: false,
+      disabledReason: 'disabled',
+      pairCount: 1,
+      updatedCount: 0,
+      staleCount: 0,
+      errorCount: 0,
+    })).toEqual({ tone: 'neutral', text: 'Online FX refresh is disabled.' });
+    expect(buildFxRefreshFeedback({
+      asOf: '2026-03-19',
+      accountCount: 1,
+      refreshEnabled: true,
+      disabledReason: null,
+      pairCount: 1,
+      updatedCount: 1,
+      staleCount: 0,
+      errorCount: 0,
+    })).toEqual({ tone: 'success', text: 'FX rates refreshed (1 pair updated).' });
+    expect(buildFxRefreshFeedback({
+      asOf: '2026-03-19',
+      accountCount: 1,
+      refreshEnabled: true,
+      disabledReason: null,
+      pairCount: 3,
+      updatedCount: 1,
+      staleCount: 1,
+      errorCount: 1,
+    })).toEqual({
+      tone: 'warning',
+      text: 'Refresh attempted, but some pairs still use stale/fallback rates. Updated 1, stale 1, failed 1.',
+    });
   });
 });

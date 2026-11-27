@@ -1,6 +1,12 @@
 import type React from 'react';
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
-import { createParsedApiError, getParsedApiError, type ParsedApiError } from '../api/error';
+import {
+  createLocalizedParsedApiError,
+  createParsedApiError,
+  getParsedApiError,
+  localizeParsedApiError,
+  type ParsedApiError,
+} from '../api/error';
 import { authApi } from '../api/auth';
 import { useStockPoolStore } from '../stores';
 
@@ -27,12 +33,16 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 function extractLoginError(err: unknown): ParsedApiError {
   const parsed = getParsedApiError(err);
   if (parsed.status === 429) {
-    return createParsedApiError({
-      title: '登录尝试过于频繁',
-      message: '尝试次数过多，请稍后再试。',
-      rawMessage: parsed.rawMessage,
-      status: parsed.status,
-      category: parsed.category,
+    return createLocalizedParsedApiError((language) => {
+      const localized = localizeParsedApiError(parsed, language);
+      const isEnglish = language === 'en';
+      return createParsedApiError({
+        title: isEnglish ? 'Too many login attempts' : '登录尝试过于频繁',
+        message: isEnglish ? 'Too many attempts. Please try again later.' : '尝试次数过多，请稍后再试。',
+        rawMessage: localized.rawMessage,
+        status: localized.status,
+        category: localized.category,
+      });
     });
   }
   return parsed;

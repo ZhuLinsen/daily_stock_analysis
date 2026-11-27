@@ -9,6 +9,7 @@ import { Component, useCallback, useRef, useEffect, useState } from 'react';
 import type { KeyboardEvent } from 'react';
 import type { ErrorInfo, ReactNode } from 'react';
 import { createPortal } from 'react-dom';
+import { useUiLanguage } from '../../contexts/UiLanguageContext';
 import { useStockIndex } from '../../hooks/useStockIndex';
 import { useAutocomplete } from '../../hooks/useAutocomplete';
 import { SuggestionsList } from './SuggestionsList';
@@ -45,10 +46,13 @@ function FallbackInput({
   onChange,
   onSubmit,
   disabled = false,
-  placeholder = '输入股票代码或名称',
+  placeholder,
   ariaLabel,
   className,
 }: StockAutocompleteProps) {
+  const { language } = useUiLanguage();
+  const resolvedPlaceholder = placeholder ?? (language === 'en' ? 'Enter stock code or name' : '输入股票代码或名称');
+
   return (
     <input
       type="text"
@@ -60,7 +64,7 @@ function FallbackInput({
           onSubmit(value);
         }
       }}
-      placeholder={placeholder}
+      placeholder={resolvedPlaceholder}
       aria-label={ariaLabel}
       disabled={disabled}
       className={cn(AUTOCOMPLETE_INPUT_CLASS, className)}
@@ -107,10 +111,12 @@ function StockAutocompleteInner({
   onChange,
   onSubmit,
   disabled = false,
-  placeholder = '输入股票代码或名称',
+  placeholder,
   ariaLabel,
   className,
 }: StockAutocompleteProps) {
+  const { language } = useUiLanguage();
+  const resolvedPlaceholder = placeholder ?? (language === 'en' ? 'Enter stock code or name' : '输入股票代码或名称');
   const { index, loading, fallback } = useStockIndex();
   const {
     // query,
@@ -281,7 +287,7 @@ function StockAutocompleteInner({
         onChange={onChange}
         onSubmit={onSubmit}
         disabled={disabled}
-        placeholder={placeholder}
+        placeholder={resolvedPlaceholder}
         ariaLabel={ariaLabel}
         className={className}
       />
@@ -308,7 +314,7 @@ function StockAutocompleteInner({
           }
         }}
         onBlur={handleBlur}
-        placeholder={placeholder}
+        placeholder={resolvedPlaceholder}
         aria-label={ariaLabel}
         disabled={disabled}
         className={cn(

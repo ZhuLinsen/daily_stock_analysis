@@ -3733,7 +3733,7 @@ class SystemConfigService:
             model = (effective_map.get("ANTHROPIC_MODEL") or "claude-sonnet-4-6").strip()
             return model if "/" in model else f"anthropic/{model}"
         if cls._has_any_config_value(effective_map, ("DEEPSEEK_API_KEYS", "DEEPSEEK_API_KEY")):
-            return "deepseek/deepseek-v4-flash"
+            return "deepseek/deepseek-flash"
         if cls._has_any_config_value(effective_map, ("OPENAI_API_KEYS", "OPENAI_API_KEY", "AIHUBMIX_KEY")):
             model = (effective_map.get("OPENAI_MODEL") or "gpt-6.1-sol").strip()
             return model if "/" in model else f"openai/{model}"

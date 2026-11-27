@@ -497,8 +497,8 @@ def _resolve_llm_model(channels: list[dict[str, object]]) -> str:
     if os.getenv("OLLAMA_API_BASE"):
         ollama_model = os.getenv("OLLAMA_MODEL", "").strip()
         return f"ollama/{ollama_model}" if ollama_model else DEFAULT_LLM_MODEL
-    if os.getenv("DEEPSEEK_API_KEY"):
-        return "deepseek/deepseek-v4-flash"
+    if _parse_csv_env("DEEPSEEK_API_KEYS", []) or (os.getenv("DEEPSEEK_API_KEY") or "").strip():
+        return "deepseek/deepseek-flash"
     if os.getenv("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEYS"):
         return _normalize_litellm_model(os.getenv("GEMINI_MODEL", DEFAULT_LLM_MODEL), "gemini")
     if os.getenv("OPENAI_API_KEY"):
@@ -529,7 +529,8 @@ def _resolve_llm_api_key(model: str) -> str:
         keys = _parse_csv_env("GEMINI_API_KEYS", [])
         return keys[0] if keys else os.getenv("GEMINI_API_KEY", "")
     if model.startswith("deepseek/"):
-        return os.getenv("DEEPSEEK_API_KEY", "")
+        keys = _parse_csv_env("DEEPSEEK_API_KEYS", [])
+        return keys[0] if keys else (os.getenv("DEEPSEEK_API_KEY") or "").strip()
     if model.startswith("anthropic/"):
         return os.getenv("ANTHROPIC_API_KEY", "")
     if os.getenv("AIHUBMIX_KEY"):
