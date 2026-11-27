@@ -318,7 +318,7 @@ describe('ChatPage', () => {
       </StrictMode>,
     );
 
-    expect(await screen.findByPlaceholderText(/分析 600519/)).toBeEnabled();
+    await waitFor(() => expect(screen.getByPlaceholderText(/分析 600519/)).toBeEnabled());
     expect(screen.queryByText('正在确认问股运行环境')).not.toBeInTheDocument();
   });
 
