@@ -59,6 +59,7 @@ __all__ = [
     "RunLoopResult",
     "parse_dashboard_json",
     "run_agent_loop",
+    "sanitize_non_finite_floats",
     "serialize_tool_result",
     "try_parse_json",
     "_build_tool_cache_key",
@@ -121,6 +122,57 @@ class RunLoopResult:
 # Helpers
 # ============================================================
 
+def sanitize_non_finite_floats(value: Any) -> Any:
+    """Iteratively replace NaN/Infinity floats with None without hitting Python recursion limits."""
+    root = [value]
+    active_ids: set[int] = set()
+    stack: List[tuple[str, Any, Any, Any]] = [("SET", root, 0, value)]
+    while stack:
+        action, parent, key, current = stack.pop()
+        if action == "EXIT":
+            active_ids.discard(parent)
+            continue
+        if action == "BUILD_TUPLE":
+            parent[key] = tuple(current)
+            active_ids.discard(id(current))
+            continue
+
+        if isinstance(current, float):
+            parent[key] = current if math.isfinite(current) else None
+        elif isinstance(current, dict):
+            obj_id = id(current)
+            if obj_id in active_ids:
+                parent[key] = None
+                continue
+            active_ids.add(obj_id)
+            cloned_dict = dict(current)
+            parent[key] = cloned_dict
+            stack.append(("EXIT", obj_id, None, None))
+            for child_key, child_val in cloned_dict.items():
+                if isinstance(child_val, (float, dict, list, tuple)):
+                    stack.append(("SET", cloned_dict, child_key, child_val))
+        elif isinstance(current, list):
+            obj_id = id(current)
+            if obj_id in active_ids:
+                parent[key] = None
+                continue
+            active_ids.add(obj_id)
+            cloned_list = list(current)
+            parent[key] = cloned_list
+            stack.append(("EXIT", obj_id, None, None))
+            for idx, child_val in enumerate(cloned_list):
+                if isinstance(child_val, (float, dict, list, tuple)):
+                    stack.append(("SET", cloned_list, idx, child_val))
+        elif isinstance(current, tuple):
+            staging = list(current)
+            active_ids.add(id(staging))
+            stack.append(("BUILD_TUPLE", parent, key, staging))
+            for idx, child_val in enumerate(staging):
+                if isinstance(child_val, (float, dict, list, tuple)):
+                    stack.append(("SET", staging, idx, child_val))
+    return root[0]
+
+
 def parse_dashboard_json(content: str) -> Optional[Dict[str, Any]]:
     """Extract and parse a Decision Dashboard JSON from agent text.
 
@@ -130,7 +182,7 @@ def parse_dashboard_json(content: str) -> Optional[Dict[str, Any]]:
     3. ``json_repair`` library
     4. Brace-delimited substring
     """
-    if not content:
+    if not isinstance(content, str) or not content:
         return None
 
     from json_repair import repair_json
@@ -172,11 +224,55 @@ def parse_dashboard_json(content: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+_SENTIMENT_SCORE_STR_RE = re.compile(
+    r"^\s*([+-]?\d+(?:\.\d+)?)\s*(?:分|%|点|점|pts?|points?|/100)?\s*$",
+    re.IGNORECASE,
+)
+
+
+def _parse_dashboard_sentiment_score(value: Any) -> Optional[int]:
+    """Parse a finite integer dashboard sentiment score within [0, 100]."""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        if isinstance(value, int):
+            return value if 0 <= value <= 100 else None
+        return int(value) if math.isfinite(value) and 0.0 <= value <= 100.0 else None
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            num = float(text)
+        except OverflowError:
+            return None
+        except ValueError:
+            match = _SENTIMENT_SCORE_STR_RE.match(text)
+            if not match:
+                return None
+            try:
+                num = float(match.group(1))
+            except (OverflowError, ValueError):
+                return None
+        return int(num) if math.isfinite(num) and 0.0 <= num <= 100.0 else None
+    return None
+
+
 def _finalize_dashboard_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     """Sanitize reserved fields before running normal dashboard normalization."""
     sanitized = sanitize_agent_dashboard_payload(payload)
+    sanitized = sanitize_non_finite_floats(sanitized)
+    if "sentiment_score" in sanitized:
+        if _parse_dashboard_sentiment_score(sanitized.get("sentiment_score")) is None:
+            sanitized["sentiment_score"] = None
+    nested_dashboard = sanitized.get("dashboard")
+    if isinstance(nested_dashboard, dict) and "sentiment_score" in nested_dashboard:
+        if _parse_dashboard_sentiment_score(nested_dashboard.get("sentiment_score")) is None:
+            nested_copy = dict(nested_dashboard)
+            nested_copy["sentiment_score"] = None
+            sanitized["dashboard"] = nested_copy
     normalize_report_signal_attribution(sanitized)
-    return sanitized
+    return sanitize_non_finite_floats(sanitized)
 
 
 def try_parse_json(text: str) -> Optional[Dict[str, Any]]:
@@ -191,7 +287,7 @@ def try_parse_json(text: str) -> Optional[Dict[str, Any]]:
     This is the shared utility that all agent ``post_process`` methods
     should use instead of duplicating the same logic.
     """
-    if not text:
+    if not isinstance(text, str) or not text:
         return None
 
     candidates: List[str] = []
@@ -578,7 +674,7 @@ def run_agent_loop(
             if progress_callback:
                 progress_callback(stream_event("generating", step=step + 1, message="正在生成最终分析..."))
 
-            final_content = response.content or ""
+            final_content = response.content if isinstance(response.content, str) else ""
             is_error = response.provider == "error"
 
             return _finish(RunLoopResult(

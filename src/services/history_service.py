@@ -1161,7 +1161,8 @@ class HistoryService:
 
         # Get signal level
         signal_text, signal_emoji, signal_tag = self._get_signal_level(result)
-        dashboard = result.dashboard if hasattr(result, 'dashboard') and result.dashboard else {}
+        raw_dashboard = getattr(result, 'dashboard', None)
+        dashboard = raw_dashboard if isinstance(raw_dashboard, dict) else {}
 
         report_lines = [
             f"# 📊 {name_escaped} ({result.code}) {labels['report_title']}",
@@ -1177,7 +1178,8 @@ class HistoryService:
             report_lines.extend([news_disclosure, ""])
 
         # ========== 舆情与基本面概览（放在最前面）==========
-        intel = dashboard.get('intelligence', {}) if dashboard else {}
+        intel = dashboard.get('intelligence') if isinstance(dashboard, dict) else None
+        intel = intel if isinstance(intel, dict) else {}
         if intel:
             report_lines.extend([
                 f"### 📰 {labels['info_heading']}",
@@ -1190,15 +1192,15 @@ class HistoryService:
             if intel.get('earnings_outlook'):
                 report_lines.append(f"**📊 {labels['earnings_outlook_label']}**: {intel['earnings_outlook']}")
             # 风险警报（醒目显示）
-            risk_alerts = intel.get('risk_alerts', [])
-            if risk_alerts:
+            risk_alerts = intel.get('risk_alerts')
+            if isinstance(risk_alerts, list) and risk_alerts:
                 report_lines.append("")
                 report_lines.append(f"**🚨 {labels['risk_alerts_label']}**:")
                 for alert in risk_alerts:
                     report_lines.append(f"- {alert}")
             # 利好催化
-            catalysts = intel.get('positive_catalysts', [])
-            if catalysts:
+            catalysts = intel.get('positive_catalysts')
+            if isinstance(catalysts, list) and catalysts:
                 report_lines.append("")
                 report_lines.append(f"**✨ {labels['positive_catalysts_label']}**:")
                 for cat in catalysts:
@@ -1210,10 +1212,12 @@ class HistoryService:
             report_lines.append("")
 
         # ========== 核心结论 ==========
-        core = dashboard.get('core_conclusion', {}) if dashboard else {}
+        core = dashboard.get('core_conclusion') if isinstance(dashboard, dict) else None
+        core = core if isinstance(core, dict) else {}
         one_sentence = core.get('one_sentence', result.analysis_summary)
         time_sense = core.get('time_sensitivity', labels['default_time_sensitivity'])
-        pos_advice = core.get('position_advice', {})
+        pos_advice = core.get('position_advice')
+        pos_advice = pos_advice if isinstance(pos_advice, dict) else {}
 
         report_lines.extend([
             f"### 📌 {labels['core_conclusion_heading']}",
@@ -1239,12 +1243,17 @@ class HistoryService:
         self._append_market_snapshot_to_report(report_lines, result, labels)
 
         # ========== 数据透视 ==========
-        data_persp = dashboard.get('data_perspective', {}) if dashboard else {}
+        data_persp = dashboard.get('data_perspective') if isinstance(dashboard, dict) else None
+        data_persp = data_persp if isinstance(data_persp, dict) else {}
         if data_persp:
-            trend_data = data_persp.get('trend_status', {})
-            price_data = data_persp.get('price_position', {})
-            vol_data = data_persp.get('volume_analysis', {})
-            chip_data = data_persp.get('chip_structure', {})
+            trend_data = data_persp.get('trend_status')
+            trend_data = trend_data if isinstance(trend_data, dict) else {}
+            price_data = data_persp.get('price_position')
+            price_data = price_data if isinstance(price_data, dict) else {}
+            vol_data = data_persp.get('volume_analysis')
+            vol_data = vol_data if isinstance(vol_data, dict) else {}
+            chip_data = data_persp.get('chip_structure')
+            chip_data = chip_data if isinstance(chip_data, dict) else {}
 
             report_lines.extend([
                 f"### 📊 {labels['data_perspective_heading']}",
@@ -1319,14 +1328,16 @@ class HistoryService:
                     ])
 
         # ========== 作战计划 ==========
-        battle = dashboard.get('battle_plan', {}) if dashboard else {}
+        battle = dashboard.get('battle_plan') if isinstance(dashboard, dict) else None
+        battle = battle if isinstance(battle, dict) else {}
         if battle:
             report_lines.extend([
                 f"### 🎯 {labels['battle_plan_heading']}",
                 "",
             ])
             # 狙击点位
-            sniper = battle.get('sniper_points', {})
+            sniper = battle.get('sniper_points')
+            sniper = sniper if isinstance(sniper, dict) else {}
             if sniper:
                 report_lines.extend([
                     f"**📍 {labels['action_points_heading']}**",
@@ -1340,7 +1351,8 @@ class HistoryService:
                     "",
                 ])
             # 仓位策略
-            position = battle.get('position_strategy', {})
+            position = battle.get('position_strategy')
+            position = position if isinstance(position, dict) else {}
             if position:
                 report_lines.extend([
                     f"**💰 {labels['suggested_position_label']}**: {position.get('suggested_position', 'N/A')}",
@@ -1349,8 +1361,8 @@ class HistoryService:
                     "",
                 ])
             # 检查清单
-            checklist = battle.get('action_checklist', []) if battle else []
-            if checklist:
+            checklist = battle.get('action_checklist') if battle else None
+            if isinstance(checklist, list) and checklist:
                 report_lines.extend([
                     f"**✅ {labels['checklist_heading']}**",
                     "",

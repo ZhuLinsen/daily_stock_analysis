@@ -19,7 +19,8 @@ import json
 import logging
 from typing import Optional
 
-from src.agent.agents.base_agent import BaseAgent
+from src.agent.agents.base_agent import BaseAgent, coerce_confidence, coerce_finite_float, coerce_text
+from src.report_language import normalize_report_language
 from src.agent.tools.fxmacrodata_tools import fxmacrodata_tool_names
 from src.agent.protocols import AgentContext, AgentOpinion
 from src.agent.runner import try_parse_json
@@ -46,7 +47,26 @@ class RiskAgent(BaseAgent):
     )
 
     def system_prompt(self, ctx: AgentContext) -> str:
-        return """\
+        lang = normalize_report_language(ctx.meta.get("report_language", "zh"))
+        lang_section = self._format_json_output_language_instruction(
+            ctx,
+            enum_fields="risk_level, signal_adjustment, flags[].category, flags[].severity, veto_buy",
+        )
+        if lang == "zh":
+            checks = """\
+1. **Insider / Major Shareholder Activity** — sell-downs (减持), pledges
+2. **Earnings Warnings** — pre-loss, downward revisions (业绩预亏, 业绩变脸)
+3. **Regulatory** — penalties, investigations, violations (监管处罚, 立案调查)
+4. **Industry Policy** — headwinds, sector crackdowns
+5. **Lock-up Expirations** — large block unlocks within 30 days (解禁)"""
+        else:
+            checks = """\
+1. **Insider / Major Shareholder Activity** — sell-downs, share pledges
+2. **Earnings Warnings** — pre-loss notices, downward earnings revisions
+3. **Regulatory** — penalties, investigations, compliance violations
+4. **Industry Policy** — headwinds, sector crackdowns
+5. **Lock-up Expirations** — large block share unlocks within 30 days"""
+        return f"""\
 You are a **Risk Screening Agent** focused exclusively on identifying \
 risks and red flags for the given stock.
 
@@ -54,11 +74,7 @@ Your task: search for and evaluate ALL potential risk factors, then \
 output a structured JSON risk assessment.
 
 ## Mandatory Risk Checks
-1. **Insider / Major Shareholder Activity** — sell-downs (减持), pledges
-2. **Earnings Warnings** — pre-loss, downward revisions (业绩预亏, 业绩变脸)
-3. **Regulatory** — penalties, investigations, violations (监管处罚, 立案调查)
-4. **Industry Policy** — headwinds, sector crackdowns
-5. **Lock-up Expirations** — large block unlocks within 30 days (解禁)
+{checks}
 6. **Valuation Extremes** — PE > 100 or negative, PB > 10 (flag as anomaly)
 7. **Technical Warning Signs** — death crosses, breaking key supports
 
@@ -69,25 +85,25 @@ output a structured JSON risk assessment.
 
 ## Output Format
 Return **only** a JSON object:
-{
+{{
   "risk_level": "high|medium|low|none",
   "risk_score": 0-100,
   "flags": [
-    {
+    {{
       "category": "insider|earnings|regulatory|industry|lockup|valuation|technical",
       "severity": "high|medium|low",
       "description": "Clear description of the risk",
       "source": "Where this information came from"
-    }
+    }}
   ],
   "veto_buy": true|false,
   "reasoning": "2-3 sentence overall risk assessment",
   "signal_adjustment": "none|downgrade_one|downgrade_two|veto"
-}
+}}
 
 Important: be thorough but factual. Only flag risks backed by evidence \
 from your search results. Do NOT invent risks.
-"""
+""" + lang_section
 
     def build_user_message(self, ctx: AgentContext) -> str:
         parts = [f"Screen stock **{ctx.stock_code}**"]
@@ -117,22 +133,38 @@ from your search results. Do NOT invent risks.
             logger.warning("[RiskAgent] mandatory risk assessment is incomplete or invalid")
             return None
 
+        confidence, conf_valid = coerce_confidence(
+            parsed.get("risk_score"),
+            default=0.5,
+            scale=100.0,
+            present=("risk_score" in parsed),
+        )
+        reasoning = coerce_text(parsed.get("reasoning"), default="")
         opinion = AgentOpinion(
             agent_name=self.agent_name,
-            signal=_risk_to_signal(parsed.get("risk_level", "none")),
-            confidence=float(parsed.get("risk_score", 50)) / 100.0,
-            reasoning=parsed.get("reasoning", ""),
+            signal=_risk_to_signal(parsed.get("risk_level")),
+            confidence=confidence,
+            reasoning=reasoning,
             raw_data=parsed,
         )
+        if not conf_valid:
+            opinion._confidence_input_valid = False
 
         # Propagate structured risk flags to context
-        for flag in parsed.get("flags", []):
-            if isinstance(flag, dict):
+        flags = parsed.get("flags")
+        if isinstance(flags, list):
+            for flag in flags:
+                if not isinstance(flag, dict):
+                    continue
+                category = coerce_text(flag.get("category"), default="unknown", fallback_on_empty=True).strip() or "unknown"
+                description = coerce_text(flag.get("description"), default="")
+                severity = coerce_text(flag.get("severity"), default="medium", fallback_on_empty=True).strip().lower() or "medium"
+                source = flag.get("source")
                 ctx.add_risk_flag(
-                    category=flag.get("category", "unknown"),
-                    description=flag.get("description", ""),
-                    severity=flag.get("severity", "medium"),
-                    source=flag.get("source"),
+                    category=category,
+                    description=description,
+                    severity=severity,
+                    source=source.strip() if isinstance(source, str) and source.strip() else None,
                 )
 
         return opinion
@@ -151,7 +183,9 @@ def is_complete_risk_review(assessment: object) -> bool:
     flags = assessment.get("flags")
     if (
         not isinstance(level, str) or level not in _RISK_SIGNALS
-        or type(score) not in (int, float) or not 0 <= score <= 100
+        or type(score) not in (int, float)
+        or coerce_finite_float(score) is None
+        or not 0 <= score <= 100
         or not isinstance(reasoning, str) or not reasoning.strip()
         or not isinstance(flags, list)
         or not isinstance(assessment.get("veto_buy"), bool)
@@ -166,7 +200,9 @@ def is_complete_risk_review(assessment: object) -> bool:
     )
 
 
-def _risk_to_signal(risk_level: str) -> str:
+def _risk_to_signal(risk_level: object) -> str:
     """Map risk level to a trading signal (inverted)."""
-    return _RISK_SIGNALS.get(risk_level, "hold")
+    if not isinstance(risk_level, str):
+        return "hold"
+    return _RISK_SIGNALS.get(risk_level.strip().lower(), "hold")
 

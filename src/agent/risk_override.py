@@ -258,7 +258,7 @@ def build_risk_override_plan(
         if isinstance(flag, dict)
     )
     risk_level_high = str(risk_raw.get("risk_level") or "").strip().lower() == "high"
-    veto_buy = bool(risk_raw.get("veto_buy")) or adjustment == "veto" or has_high_flag
+    veto_buy = (risk_raw.get("veto_buy") is True) or adjustment == "veto" or has_high_flag
     has_downgrade = adjustment in _DOWNGRADE_STEPS
     override_trigger_present = veto_buy or has_downgrade
     evidence_present = override_trigger_present or risk_level_high

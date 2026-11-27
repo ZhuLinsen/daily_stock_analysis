@@ -8,6 +8,7 @@ from __future__ import annotations
 from dataclasses import asdict, replace
 from typing import Any, Dict, Iterable, List, Optional
 
+from src.agent.agents.base_agent import coerce_finite_float
 from src.agent.protocols import (
     AgentOpinion,
     StrategyConflict,
@@ -28,6 +29,11 @@ _SCORE_TO_SIGNAL = [
 ]
 
 
+def _is_valid_strategy_opinion(opinion: StrategyOpinion) -> bool:
+    """Return True only when both signal and confidence input are valid."""
+    return not opinion.invalid_signal and opinion.confidence_input_valid
+
+
 def strategy_opinion_from_agent_opinion(opinion: AgentOpinion) -> StrategyOpinion:
     raw_data = opinion.raw_data if isinstance(opinion.raw_data, dict) else {}
     skill_id = str(raw_data.get("skill_id") or extract_skill_id(opinion.agent_name) or opinion.agent_name)
@@ -40,13 +46,13 @@ def strategy_opinion_from_agent_opinion(opinion: AgentOpinion) -> StrategyOpinio
 
     # If signal is truly missing (None), mark as invalid — no silent hold default
     if raw_signal is None:
-        return StrategyOpinion(
+        strategy = StrategyOpinion(
             skill_id=skill_id,
             agent_name=opinion.agent_name,
             signal="hold",
             confidence=opinion.confidence,
             reasoning=str(opinion.reasoning or raw_data.get("reasoning") or ""),
-            score_adjustment=_as_float(raw_data.get("score_adjustment"), 0.0),
+            score_adjustment=coerce_score_adjustment(raw_data.get("score_adjustment")),
             conditions_met=_as_string_list(raw_data.get("conditions_met")),
             conditions_missed=_as_string_list(raw_data.get("conditions_missed")),
             key_levels=key_levels,
@@ -54,6 +60,8 @@ def strategy_opinion_from_agent_opinion(opinion: AgentOpinion) -> StrategyOpinio
             original_signal="",
             invalid_signal=True,  # missing signal = invalid
         )
+        strategy._confidence_input_valid = opinion.confidence_input_valid
+        return strategy
 
     signal, invalid_signal, original_signal = normalize_strategy_signal(raw_signal)
 
@@ -62,13 +70,13 @@ def strategy_opinion_from_agent_opinion(opinion: AgentOpinion) -> StrategyOpinio
     normalized_raw_data["original_signal"] = original_signal
     normalized_raw_data["invalid_signal"] = invalid_signal
 
-    return StrategyOpinion(
+    strategy = StrategyOpinion(
         skill_id=skill_id,
         agent_name=opinion.agent_name,
         signal=signal,
         confidence=opinion.confidence,
         reasoning=str(opinion.reasoning or raw_data.get("reasoning") or ""),
-        score_adjustment=_as_float(raw_data.get("score_adjustment"), 0.0),
+        score_adjustment=coerce_score_adjustment(raw_data.get("score_adjustment")),
         conditions_met=_as_string_list(raw_data.get("conditions_met")),
         conditions_missed=_as_string_list(raw_data.get("conditions_missed")),
         key_levels=key_levels,
@@ -76,6 +84,8 @@ def strategy_opinion_from_agent_opinion(opinion: AgentOpinion) -> StrategyOpinio
         original_signal=original_signal,
         invalid_signal=invalid_signal,
     )
+    strategy._confidence_input_valid = opinion.confidence_input_valid
+    return strategy
 
 
 class ConflictDetector:
@@ -87,7 +97,7 @@ class ConflictDetector:
         *,
         final_signal: Optional[str] = None,
     ) -> List[StrategyConflict]:
-        valid_opinions = [op for op in opinions if not op.invalid_signal]
+        valid_opinions = [op for op in opinions if _is_valid_strategy_opinion(op)]
         if len(valid_opinions) < 2:
             return []
 
@@ -242,10 +252,10 @@ class StrategySynthesizer:
             insufficient_evidence=insufficient_evidence,
         )
 
-        valid_opinions = [op for op in opinions if not op.invalid_signal]
+        valid_opinions = [op for op in opinions if _is_valid_strategy_opinion(op)]
         # When called directly (e.g. unit tests), infer invalid_count from the opinions
         # list itself. In the E2E path the explicit partition value takes precedence.
-        invalid_count = max(invalid_count, sum(1 for op in opinions if op.invalid_signal))
+        invalid_count = max(invalid_count, sum(1 for op in opinions if not _is_valid_strategy_opinion(op)))
 
         payload = {
             "final_signal": final_signal,
@@ -298,7 +308,7 @@ class StrategySynthesizer:
         supporting: List[Dict[str, Any]] = []
         opposing: List[Dict[str, Any]] = []
         for op in opinions:
-            if op.invalid_signal:
+            if not _is_valid_strategy_opinion(op):
                 continue
             score = strategy_signal_score(op.signal)
             item = _opinion_to_item(op)
@@ -343,7 +353,7 @@ class StrategySynthesizer:
         if insufficient_evidence:
             return "insufficient"
 
-        valid_opinions = [op for op in opinions if not op.invalid_signal]
+        valid_opinions = [op for op in opinions if _is_valid_strategy_opinion(op)]
         if len(valid_opinions) <= 1:
             return "insufficient"
         if sum(op.confidence for op in valid_opinions) == 0:
@@ -389,7 +399,7 @@ class StrategySynthesizer:
         if deliberation is None:
             return None
 
-        valid_opinions = [op for op in opinions if not op.invalid_signal]
+        valid_opinions = [op for op in opinions if _is_valid_strategy_opinion(op)]
         if not valid_opinions:
             return None
 
@@ -440,11 +450,17 @@ class StrategySynthesizer:
         }
 
 
+def coerce_score_adjustment(value: Any) -> float:
+    """Parse score_adjustment within the prompt contract [-20, 20]."""
+    parsed = coerce_finite_float(value)
+    if parsed is None or not (-20.0 <= parsed <= 20.0):
+        return 0.0
+    return parsed
+
+
 def _as_float(value: Any, default: float) -> float:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return default
+    parsed = coerce_finite_float(value)
+    return parsed if parsed is not None else default
 
 
 def _as_string_list(value: Any) -> List[str]:
@@ -475,7 +491,7 @@ def _confidence_weighted_projection(opinions: List[StrategyOpinion]) -> tuple[fl
     weighted: List[tuple[StrategyOpinion, float]] = [
         (opinion, max(0.0, min(1.0, opinion.confidence)))
         for opinion in opinions
-        if not opinion.invalid_signal
+        if _is_valid_strategy_opinion(opinion)
     ]
     weight_sum = sum(weight for _, weight in weighted)
     if weight_sum <= 0:

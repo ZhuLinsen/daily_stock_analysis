@@ -1419,7 +1419,8 @@ class NotificationService(
         if not self._report_summary_only:
             for result in sorted_results:
                 signal_text, signal_emoji, signal_tag = self._get_signal_level(result)
-                dashboard = result.dashboard if hasattr(result, 'dashboard') and result.dashboard else {}
+                raw_dashboard = getattr(result, 'dashboard', None)
+                dashboard = raw_dashboard if isinstance(raw_dashboard, dict) else {}
 
                 # 股票名称（优先使用 dashboard 或 result 中的名称，转义 *ST 等特殊字符）
                 stock_name = self._get_display_name(result, report_language)
@@ -1429,7 +1430,8 @@ class NotificationService(
                     "",
                 ])
                 # ========== 舆情与基本面概览（放在最前面）==========
-                intel = dashboard.get('intelligence', {}) if dashboard else {}
+                intel = dashboard.get('intelligence') if isinstance(dashboard, dict) else None
+                intel = intel if isinstance(intel, dict) else {}
                 if intel:
                     report_lines.extend([
                         f"### 📰 {labels['info_heading']}",
@@ -1442,15 +1444,15 @@ class NotificationService(
                     if intel.get('earnings_outlook'):
                         report_lines.append(f"**📊 {labels['earnings_outlook_label']}**: {intel['earnings_outlook']}")
                     # 风险警报（醒目显示）
-                    risk_alerts = intel.get('risk_alerts', [])
-                    if risk_alerts:
+                    risk_alerts = intel.get('risk_alerts')
+                    if isinstance(risk_alerts, list) and risk_alerts:
                         report_lines.append("")
                         report_lines.append(f"**🚨 {labels['risk_alerts_label']}**:")
                         for alert in risk_alerts:
                             report_lines.append(f"- {alert}")
                     # 利好催化
-                    catalysts = intel.get('positive_catalysts', [])
-                    if catalysts:
+                    catalysts = intel.get('positive_catalysts')
+                    if isinstance(catalysts, list) and catalysts:
                         report_lines.append("")
                         report_lines.append(f"**✨ {labels['positive_catalysts_label']}**:")
                         for cat in catalysts:
@@ -1462,10 +1464,12 @@ class NotificationService(
                     report_lines.append("")
 
                 # ========== 核心结论 ==========
-                core = dashboard.get('core_conclusion', {}) if dashboard else {}
+                core = dashboard.get('core_conclusion') if isinstance(dashboard, dict) else None
+                core = core if isinstance(core, dict) else {}
                 one_sentence = core.get('one_sentence', result.analysis_summary)
                 time_sense = core.get('time_sensitivity', labels['default_time_sensitivity'])
-                pos_advice = core.get('position_advice', {})
+                pos_advice = core.get('position_advice')
+                pos_advice = pos_advice if isinstance(pos_advice, dict) else {}
 
                 report_lines.extend([
                     f"### 📌 {labels['core_conclusion_heading']}",
@@ -1490,12 +1494,17 @@ class NotificationService(
                 self._append_market_snapshot(report_lines, result)
 
                 # ========== 数据透视 ==========
-                data_persp = dashboard.get('data_perspective', {}) if dashboard else {}
+                data_persp = dashboard.get('data_perspective') if isinstance(dashboard, dict) else None
+                data_persp = data_persp if isinstance(data_persp, dict) else {}
                 if data_persp:
-                    trend_data = data_persp.get('trend_status', {})
-                    price_data = data_persp.get('price_position', {})
-                    vol_data = data_persp.get('volume_analysis', {})
-                    chip_data = data_persp.get('chip_structure', {})
+                    trend_data = data_persp.get('trend_status')
+                    trend_data = trend_data if isinstance(trend_data, dict) else {}
+                    price_data = data_persp.get('price_position')
+                    price_data = price_data if isinstance(price_data, dict) else {}
+                    vol_data = data_persp.get('volume_analysis')
+                    vol_data = vol_data if isinstance(vol_data, dict) else {}
+                    chip_data = data_persp.get('chip_structure')
+                    chip_data = chip_data if isinstance(chip_data, dict) else {}
 
                     report_lines.extend([
                         f"### 📊 {labels['data_perspective_heading']}",
@@ -1562,14 +1571,16 @@ class NotificationService(
                 self._append_phase_decision_block(report_lines, dashboard, labels)
 
                 # ========== 作战计划 ==========
-                battle = dashboard.get('battle_plan', {}) if dashboard else {}
+                battle = dashboard.get('battle_plan') if isinstance(dashboard, dict) else None
+                battle = battle if isinstance(battle, dict) else {}
                 if battle:
                     report_lines.extend([
                         f"### 🎯 {labels['battle_plan_heading']}",
                         "",
                     ])
                     # 狙击点位
-                    sniper = battle.get('sniper_points', {})
+                    sniper = battle.get('sniper_points')
+                    sniper = sniper if isinstance(sniper, dict) else {}
                     if sniper:
                         report_lines.extend([
                             f"**📍 {labels['action_points_heading']}**",
@@ -1583,7 +1594,8 @@ class NotificationService(
                             "",
                         ])
                     # 仓位策略
-                    position = battle.get('position_strategy', {})
+                    position = battle.get('position_strategy')
+                    position = position if isinstance(position, dict) else {}
                     if position:
                         report_lines.extend([
                             f"**💰 {labels['suggested_position_label']}**: {position.get('suggested_position', 'N/A')}",
@@ -1592,8 +1604,8 @@ class NotificationService(
                             "",
                         ])
                     # 检查清单
-                    checklist = battle.get('action_checklist', []) if battle else []
-                    if checklist:
+                    checklist = battle.get('action_checklist') if battle else None
+                    if isinstance(checklist, list) and checklist:
                         report_lines.extend([
                             f"**✅ {labels['checklist_heading']}**",
                             "",

@@ -31,7 +31,9 @@ import threading
 from dataclasses import dataclass
 from typing import List, Optional
 
+from src.agent.skills.base import render_skill_instructions
 from src.config import AGENT_MAX_STEPS_DEFAULT
+from src.report_language import normalize_report_language
 
 logger = logging.getLogger(__name__)
 
@@ -534,13 +536,14 @@ def resolve_skill_prompt_state(config=None, skills: Optional[List[str]] = None) 
 
     skill_manager.activate(skills_to_activate)
     logger.info("[AgentFactory] Activated skills: %s", skills_to_activate)
+    report_language = normalize_report_language(getattr(config, "report_language", "zh"))
 
     return SkillPromptState(
         skill_manager=skill_manager,
         skills_to_activate=skills_to_activate,
         explicit_skill_selection=explicit_skill_selection,
         use_legacy_default_prompt=use_legacy_default_prompt,
-        skill_instructions=skill_manager.get_skill_instructions(),
+        skill_instructions=render_skill_instructions(skill_manager, report_language),
         default_skill_policy=get_default_trading_skill_policy(
             explicit_skill_selection=not use_legacy_default_prompt,
         ),
@@ -599,6 +602,7 @@ def build_agent_executor(config=None, skills: Optional[List[str]] = None):
             llm_adapter,
             skill_manager,
             technical_skill_policy=prompt_state.technical_skill_policy,
+            skill_instructions=prompt_state.skill_instructions,
         )
 
     from src.agent.executor import AgentExecutor
@@ -622,6 +626,7 @@ def build_agent_executor(config=None, skills: Optional[List[str]] = None):
             0,
             field_name="agent_orchestrator_timeout_s",
         ),
+        skill_manager=skill_manager,
     )
 
 
@@ -670,10 +675,19 @@ def build_agent_chat_executor(config=None, skills: Optional[List[str]] = None):
             0,
             field_name="agent_orchestrator_timeout_s",
         ),
+        skill_manager=prompt_state.skill_manager,
     )
 
 
-def _build_orchestrator(config, registry, llm_adapter, skill_manager, *, technical_skill_policy: str = ""):
+def _build_orchestrator(
+    config,
+    registry,
+    llm_adapter,
+    skill_manager,
+    *,
+    technical_skill_policy: str = "",
+    skill_instructions: Optional[str] = None,
+):
     """Build and return an :class:`AgentOrchestrator` (multi-agent mode).
 
     The orchestrator presents the same ``run()`` / ``chat()`` interface as
@@ -683,11 +697,19 @@ def _build_orchestrator(config, registry, llm_adapter, skill_manager, *, technic
 
     mode = getattr(config, "agent_orchestrator_mode", "standard")
     logger.info("[AgentFactory] Building AgentOrchestrator (mode=%s)", mode)
+    resolved_instructions = (
+        skill_instructions
+        if skill_instructions is not None
+        else render_skill_instructions(
+            skill_manager,
+            normalize_report_language(getattr(config, "report_language", "zh")),
+        )
+    )
 
     return AgentOrchestrator(
         tool_registry=registry,
         llm_adapter=llm_adapter,
-        skill_instructions=skill_manager.get_skill_instructions(),
+        skill_instructions=resolved_instructions,
         technical_skill_policy=technical_skill_policy,
         max_steps=_coerce_config_int(
             getattr(config, "agent_max_steps", AGENT_MAX_STEPS_DEFAULT),

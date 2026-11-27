@@ -15,7 +15,9 @@ import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
+
+from src.report_language import localize_strategy_skill, normalize_report_language
 
 logger = logging.getLogger(__name__)
 
@@ -430,7 +432,7 @@ class SkillManager:
         activated = [s.name for s in self._skills.values() if s.enabled]
         logger.info(f"Activated skills: {activated}")
 
-    def get_skill_instructions(self) -> str:
+    def get_skill_instructions(self, report_language: str = "zh") -> str:
         """Generate combined instruction text for all active skills.
 
         Returns a formatted string ready to be injected into the agent
@@ -440,14 +442,24 @@ class SkillManager:
         if not active:
             return ""
 
+        lang = normalize_report_language(report_language)
         # Group by category
-        categories = {
-            "quant": "量化因子",
-            "trend": "趋势",
-            "pattern": "形态",
-            "reversal": "反转",
-            "framework": "框架",
-        }
+        if lang == "zh":
+            categories = {
+                "quant": "量化因子",
+                "trend": "趋势",
+                "pattern": "形态",
+                "reversal": "反转",
+                "framework": "框架",
+            }
+        else:
+            categories = {
+                "quant": "Quant Factor",
+                "trend": "Trend",
+                "pattern": "Pattern",
+                "reversal": "Reversal",
+                "framework": "Framework",
+            }
         grouped: Dict[str, List[Skill]] = {}
         for skill in active:
             cat = skill.category or "trend"
@@ -462,19 +474,38 @@ class SkillManager:
             if not skills_in_cat:
                 continue
             cat_label = categories.get(cat_key, cat_key)
-            parts.append(f"#### {cat_label}类技能\n")
+            if lang == "zh":
+                parts.append(f"#### {cat_label}类技能\n")
+            else:
+                parts.append(f"#### {cat_label} Skills\n")
             for skill in skills_in_cat:
-                rules_ref = ""
-                if skill.core_rules:
-                    rules_ref = f"（关联核心理念：第{'、'.join(str(r) for r in skill.core_rules)}条）"
                 support_ref = ""
                 if skill.bundle_dir and skill.entrypoint.endswith("SKILL.md"):
-                    support_ref = "（bundle）"
-                parts.append(
-                    f"### 技能 {idx}: {skill.display_name} {rules_ref}{support_ref}\n\n"
-                    f"**适用场景**: {skill.description}\n\n"
-                    f"{skill.instructions}\n"
-                )
+                    support_ref = "（bundle）" if lang == "zh" else " (bundle)"
+                if lang == "zh":
+                    rules_ref = ""
+                    if skill.core_rules:
+                        rules_ref = f"（关联核心理念：第{'、'.join(str(r) for r in skill.core_rules)}条）"
+                    parts.append(
+                        f"### 技能 {idx}: {skill.display_name} {rules_ref}{support_ref}\n\n"
+                        f"**适用场景**: {skill.description}\n\n"
+                        f"{skill.instructions}\n"
+                    )
+                else:
+                    localized_name = localize_strategy_skill(skill.name, lang)
+                    display_name = (
+                        localized_name
+                        if localized_name and localized_name != skill.name
+                        else (skill.display_name or skill.name)
+                    )
+                    rules_ref = ""
+                    if skill.core_rules:
+                        rules_ref = f" (Core rules: {', '.join(str(r) for r in skill.core_rules)})"
+                    parts.append(
+                        f"### Skill {idx}: {display_name}{rules_ref}{support_ref}\n\n"
+                        f"**Applicability**: {skill.description}\n\n"
+                        f"{skill.instructions}\n"
+                    )
                 idx += 1
 
         return "\n".join(parts)
@@ -485,3 +516,40 @@ class SkillManager:
         for s in self.list_active_skills():
             tools.update(s.required_tools)
         return list(tools)
+
+
+def render_skill_instructions(
+    skill_manager: Any,
+    report_language: str = "zh",
+    *,
+    fallback: str = "",
+) -> str:
+    """Render active skill instructions for ``report_language``, keeping zero-arg compatibility."""
+    if skill_manager is None or not hasattr(skill_manager, "get_skill_instructions"):
+        return fallback
+    lang = normalize_report_language(report_language)
+    if lang == "zh":
+        return skill_manager.get_skill_instructions()
+    try:
+        return skill_manager.get_skill_instructions(report_language=lang)
+    except TypeError:
+        return skill_manager.get_skill_instructions()
+
+
+def resolve_skill_instructions_for_language(
+    current_instructions: str,
+    skill_manager: Any,
+    report_language: str = "zh",
+) -> str:
+    """Re-render SkillManager instructions for request language unless caller overrode them."""
+    if skill_manager is None:
+        return current_instructions
+    lang = normalize_report_language(report_language)
+    zh_rendered = render_skill_instructions(skill_manager, "zh", fallback=current_instructions)
+    en_rendered = render_skill_instructions(skill_manager, "en", fallback=current_instructions)
+    ko_rendered = render_skill_instructions(skill_manager, "ko", fallback=current_instructions)
+    if current_instructions not in {zh_rendered, en_rendered, ko_rendered}:
+        return current_instructions
+    if lang == "zh":
+        return zh_rendered
+    return en_rendered if lang == "en" else ko_rendered

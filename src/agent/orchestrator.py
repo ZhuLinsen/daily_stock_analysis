@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 import inspect
 import logging
+import math
 import re
 import time
 from contextvars import copy_context
@@ -34,6 +35,7 @@ from dataclasses import dataclass, field
 from math import ceil
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
+from src.agent.agents.base_agent import coerce_finite_float, coerce_str_list, coerce_text
 from src.agent.chat_context import build_visible_chat_history
 from src.agent.dashboard_payload import sanitize_agent_dashboard_payload
 from src.agent.disagreement import (
@@ -53,6 +55,7 @@ from src.agent.protocols import (
     normalize_decision_signal,
     normalize_stage_failure_reason,
 )
+from src.agent.skills.base import resolve_skill_instructions_for_language
 from src.agent.skills.defaults import is_skill_agent_name
 from src.agent.skills.engine import EvidencePartition, StrategyEngine, StrategyResult, StrategyResultStatus
 from src.agent.skills.scheduler import AgentSkillScheduler, SkillBatchResult
@@ -68,12 +71,21 @@ from src.agent.runtime_facts import (
     PipelineTerminationFact,
     build_agent_runtime_facts,
 )
-from src.agent.runner import parse_dashboard_json
+from src.agent.runner import parse_dashboard_json, sanitize_non_finite_floats
 from src.agent.stock_scope import StockScopeResolution
 from src.agent.stream_events import stream_event
 from src.agent.tools.registry import ToolRegistry
 from src.config import AGENT_MAX_STEPS_DEFAULT, get_config
-from src.report_language import normalize_report_language
+from src.report_language import (
+    format_chat_failure_message,
+    get_placeholder_text,
+    get_report_labels,
+    localize_bias_status,
+    localize_chip_health,
+    localize_confidence_level,
+    localize_volume_status,
+    normalize_report_language,
+)
 from src.schemas.decision_action import localize_action_label, normalize_decision_action
 
 if TYPE_CHECKING:
@@ -100,6 +112,26 @@ _BUY_BLOCKED_BY_RISK_REVIEW_NOTE = {
     "zh": "风控审查要求暂缓买入。",
     "en": "Defer buying per the risk review.",
     "ko": "위험 검토 결과에 따라 매수를 보류하세요.",
+}
+_TIMEOUT_PARTIAL_NOTE = {
+    "zh": "多 Agent 超时，以下结论基于已完成阶段自动降级生成。",
+    "en": "Multi-agent pipeline timed out; this conclusion was downgraded from completed stages.",
+    "ko": "멀티 에이전트 시간 초과로 완료된 단계만을 기반으로 축소 생성된 결론입니다.",
+}
+_BUDGET_SKIP_PARTIAL_NOTE = {
+    "zh": "多 Agent 预算不足，以下结论基于已完成阶段自动降级生成。",
+    "en": "Multi-agent budget was insufficient; this conclusion was downgraded from completed stages.",
+    "ko": "멀티 에이전트 예산 부족으로 완료된 단계만을 기반으로 축소 생성된 결론입니다.",
+}
+_DEGRADED_RESULT_PREFIX = {
+    "zh": "[降级结果] ",
+    "en": "[Degraded Result] ",
+    "ko": "[축소 결과] ",
+}
+_EMPTY_RISK_WARNING = {
+    "zh": "暂无额外风险提示",
+    "en": "No additional risk warnings.",
+    "ko": "추가 위험 경고 없음",
 }
 
 
@@ -300,12 +332,14 @@ class AgentOrchestrator:
         dashboard = None
         content = ""
         if ctx is not None:
+            report_language = normalize_report_language(ctx.meta.get("report_language"))
             self._prepare_partial_debate_result(ctx, stats)
             dashboard, content = self._resolve_final_output(ctx, parse_dashboard=parse_dashboard)
             if parse_dashboard and dashboard is not None:
                 dashboard = self._mark_partial_dashboard(
                     dashboard,
-                    note="多 Agent 超时，以下结论基于已完成阶段自动降级生成。",
+                    note=_TIMEOUT_PARTIAL_NOTE[report_language],
+                    report_language=report_language,
                 )
                 ctx.set_data("final_dashboard", dashboard)
                 content = json.dumps(dashboard, ensure_ascii=False, indent=2)
@@ -345,12 +379,14 @@ class AgentOrchestrator:
         dashboard = None
         content = ""
         if ctx is not None:
+            report_language = normalize_report_language(ctx.meta.get("report_language"))
             self._prepare_partial_debate_result(ctx, stats)
             dashboard, content = self._resolve_final_output(ctx, parse_dashboard=parse_dashboard)
             if parse_dashboard and dashboard is not None:
                 dashboard = self._mark_partial_dashboard(
                     dashboard,
-                    note="多 Agent 预算不足，以下结论基于已完成阶段自动降级生成。",
+                    note=_BUDGET_SKIP_PARTIAL_NOTE[report_language],
+                    report_language=report_language,
                 )
                 ctx.set_data("final_dashboard", dashboard)
                 content = json.dumps(dashboard, ensure_ascii=False, indent=2)
@@ -591,8 +627,13 @@ class AgentOrchestrator:
         )
 
         # Persist assistant response
+        report_language = normalize_report_language(turn.context.meta.get("report_language"))
         if turn.accepted_snapshot is not None:
-            content = orch_result.content if orch_result.success else f"[分析失败] {orch_result.error or '未知错误'}"
+            content = (
+                orch_result.content
+                if orch_result.success
+                else format_chat_failure_message(orch_result.error, report_language)
+            )
             conversation_manager.add_message(
                 turn.session_id, "assistant", content, accepted_turn=turn.accepted_snapshot,
                 db_manager=turn.db_manager,
@@ -601,8 +642,9 @@ class AgentOrchestrator:
             conversation_manager.add_message(turn.session_id, "assistant", orch_result.content)
         else:
             conversation_manager.add_message(
-                turn.session_id, "assistant",
-                f"[分析失败] {orch_result.error or '未知错误'}",
+                turn.session_id,
+                "assistant",
+                format_chat_failure_message(orch_result.error, report_language),
             )
 
         return AgentResult(
@@ -1027,11 +1069,21 @@ class AgentOrchestrator:
     # Agent chain construction
     # -----------------------------------------------------------------
 
-    def _build_base_agent(self, agent_type):
+    def _resolve_skill_instructions(self, ctx: Optional[AgentContext]) -> str:
+        report_language = (
+            ctx.meta.get("report_language", "zh") if ctx is not None else "zh"
+        )
+        return resolve_skill_instructions_for_language(
+            self.skill_instructions,
+            self.skill_manager,
+            report_language,
+        )
+
+    def _build_base_agent(self, agent_type, *, skill_instructions: Optional[str] = None):
         return self._prepare_agent(agent_type(
             tool_registry=self.tool_registry,
             llm_adapter=self.llm_adapter,
-            skill_instructions=self.skill_instructions,
+            skill_instructions=self.skill_instructions if skill_instructions is None else skill_instructions,
             technical_skill_policy=self.technical_skill_policy,
         ))
 
@@ -1043,11 +1095,12 @@ class AgentOrchestrator:
         from src.agent.agents.risk_agent import RiskAgent
 
         self._skill_agent_names = set()
+        resolved_skills = self._resolve_skill_instructions(ctx)
 
-        technical = self._build_base_agent(TechnicalAgent)
-        intel = self._build_base_agent(IntelAgent)
-        risk = self._build_base_agent(RiskAgent)
-        decision = self._build_base_agent(DecisionAgent)
+        technical = self._build_base_agent(TechnicalAgent, skill_instructions=resolved_skills)
+        intel = self._build_base_agent(IntelAgent, skill_instructions=resolved_skills)
+        risk = self._build_base_agent(RiskAgent, skill_instructions=resolved_skills)
+        decision = self._build_base_agent(DecisionAgent, skill_instructions=resolved_skills)
 
         if self.mode == "quick":
             return [technical, decision]
@@ -1172,7 +1225,7 @@ class AgentOrchestrator:
             common_kwargs = dict(
                 tool_registry=self.tool_registry,
                 llm_adapter=self.llm_adapter,
-                skill_instructions=self.skill_instructions,
+                skill_instructions=self._resolve_skill_instructions(ctx),
                 technical_skill_policy=self.technical_skill_policy,
             )
             router = SkillRouter()
@@ -1304,9 +1357,14 @@ class AgentOrchestrator:
                 raw_display = raw_signal if isinstance(raw_signal, str) else None
                 is_valid = False
             elif is_valid_strategy_signal(raw_signal):
-                is_valid = True
-                reason = ""
-                raw_display = str(raw_signal)
+                if not op.confidence_input_valid:
+                    is_valid = False
+                    reason = "invalid_confidence"
+                    raw_display = str(raw_signal)
+                else:
+                    is_valid = True
+                    reason = ""
+                    raw_display = str(raw_signal)
             else:
                 is_valid = False
                 reason = "unrecognized_signal"
@@ -1408,11 +1466,25 @@ class AgentOrchestrator:
             return
 
         partition = self.strategy_engine.partition_only(ctx.opinions)
-        ctx.opinions = list(partition.non_skill_opinions) + list(partition.valid_skill_opinions)
+        kept_skills = []
+        extra_invalid: List[Dict[str, Any]] = []
+        for op in partition.valid_skill_opinions:
+            if not op.confidence_input_valid:
+                raw_data = op.raw_data if isinstance(op.raw_data, dict) else {}
+                extra_invalid.append({
+                    "agent_name": op.agent_name,
+                    "raw_signal": raw_data.get("original_signal") or op.signal,
+                    "confidence": op.confidence,
+                    "reason": "invalid_confidence",
+                })
+                continue
+            kept_skills.append(op)
+        ctx.opinions = list(partition.non_skill_opinions) + kept_skills
         invalid_bucket = ctx.meta.get("invalid_opinions")
         if not isinstance(invalid_bucket, list):
             invalid_bucket = []
         invalid_bucket.extend(partition.invalid_records)
+        invalid_bucket.extend(extra_invalid)
         ctx.meta["invalid_opinions"] = invalid_bucket
 
     def _prepare_decision_context(self, ctx: AgentContext, risk_stage: Optional[StageResult] = None) -> None:
@@ -1579,16 +1651,30 @@ class AgentOrchestrator:
     @staticmethod
     def _fallback_summary(ctx: AgentContext) -> str:
         """Build a plaintext summary when dashboard JSON is unavailable."""
-        lines = [f"# Analysis Summary: {ctx.stock_code} ({ctx.stock_name})", ""]
+        report_language = normalize_report_language(ctx.meta.get("report_language"))
+        if report_language == "ko":
+            heading = f"# 분석 요약: {ctx.stock_code} ({ctx.stock_name})"
+            signal_fmt = "신호: {signal} (신뢰도: {conf:.0%})"
+            risk_heading = "## 리스크 플래그"
+        else:
+            heading = f"# Analysis Summary: {ctx.stock_code} ({ctx.stock_name})"
+            signal_fmt = "Signal: {signal} (confidence: {conf:.0%})"
+            risk_heading = "## Risk Flags"
+
+        lines = [heading, ""]
         for op in ctx.opinions:
             lines.append(f"## {op.agent_name}")
-            lines.append(f"Signal: {op.signal} (confidence: {op.confidence:.0%})")
-            lines.append(op.reasoning)
+            conf = coerce_finite_float(op.confidence)
+            lines.append(signal_fmt.format(signal=op.signal, conf=conf if conf is not None else 0.0))
+            lines.append(str(op.reasoning or ""))
             lines.append("")
-        if ctx.risk_flags:
-            lines.append("## Risk Flags")
-            for rf in ctx.risk_flags:
-                lines.append(f"- [{rf['severity']}] {rf['description']}")
+        valid_flags = [rf for rf in ctx.risk_flags if isinstance(rf, dict)]
+        if valid_flags:
+            lines.append(risk_heading)
+            for rf in valid_flags:
+                severity = str(rf.get("severity") or "medium")
+                description = str(rf.get("description") or "")
+                lines.append(f"- [{severity}] {description}")
         return "\n".join(lines)
 
     def _resolve_final_output(
@@ -1756,11 +1842,12 @@ class AgentOrchestrator:
             ctx.meta.get("risk_review_required") and (risk_applied or self._risk_blocks_buy(ctx))
         )
         risk_adjusted = risk_applied or review_blocks_buy
-        confidence = float(base_opinion.confidence if base_opinion is not None else 0.5)
-        sentiment_score = payload.get("sentiment_score")
-        try:
-            sentiment_score = int(sentiment_score)
-        except (TypeError, ValueError):
+        raw_confidence = coerce_finite_float(getattr(base_opinion, "confidence", None))
+        confidence = max(0.0, min(1.0, raw_confidence)) if raw_confidence is not None else 0.5
+        parsed_score = coerce_finite_float(payload.get("sentiment_score"))
+        if parsed_score is not None:
+            sentiment_score = max(0, min(100, int(parsed_score)))
+        else:
             sentiment_score = _estimate_sentiment_score(decision_type, confidence)
         if risk_adjusted:
             sentiment_score = _adjust_sentiment_score(sentiment_score, decision_type)
@@ -1805,12 +1892,33 @@ class AgentOrchestrator:
                 getattr(base_opinion, "reasoning", ""),
             )
         if not analysis_summary:
-            analysis_summary = f"多 Agent 未生成完整仪表盘，当前按{_signal_to_operation(decision_type)}处理。"
+            op_label = _signal_to_operation(decision_type, report_language)
+            if report_language == "en":
+                analysis_summary = (
+                    f"Multi-agent pipeline did not produce a full dashboard; handling as {op_label}."
+                )
+            elif report_language == "ko":
+                analysis_summary = (
+                    f"멀티 에이전트가 전체 대시보드를 생성하지 못해 {op_label} 기준으로 처리했습니다."
+                )
+            else:
+                analysis_summary = f"多 Agent 未生成完整仪表盘，当前按{op_label}处理。"
         if risk_applied:
-            transition_prefix = (
-                f"[风控下调: {application.from_signal.value} -> "
-                f"{application.post_risk_signal.value}]"
-            )
+            if report_language == "en":
+                transition_prefix = (
+                    f"[Risk Downgrade: {application.from_signal.value} -> "
+                    f"{application.post_risk_signal.value}]"
+                )
+            elif report_language == "ko":
+                transition_prefix = (
+                    f"[리스크 하향: {application.from_signal.value} -> "
+                    f"{application.post_risk_signal.value}]"
+                )
+            else:
+                transition_prefix = (
+                    f"[风控下调: {application.from_signal.value} -> "
+                    f"{application.post_risk_signal.value}]"
+                )
             if not analysis_summary.startswith(transition_prefix):
                 analysis_summary = f"{transition_prefix} {analysis_summary}"
         analysis_summary = _truncate_text(analysis_summary, 220)
@@ -1823,12 +1931,34 @@ class AgentOrchestrator:
         if not trend_prediction:
             technical = self._latest_opinion(ctx, {"technical"})
             tech_raw = technical.raw_data if technical and isinstance(technical.raw_data, dict) else {}
-            ma_alignment = tech_raw.get("ma_alignment")
-            trend_score = tech_raw.get("trend_score")
-            if ma_alignment or trend_score is not None:
-                trend_prediction = f"技术面{ma_alignment or 'neutral'}，趋势评分 {trend_score if trend_score is not None else 'N/A'}"
+            ma_alignment = coerce_text(tech_raw.get("ma_alignment"), default="", fallback_on_empty=True).strip()
+            trend_score_num = coerce_finite_float(tech_raw.get("trend_score"))
+            if ma_alignment or trend_score_num is not None:
+                if trend_score_num is not None:
+                    score_display: Any = (
+                        int(trend_score_num)
+                        if trend_score_num.is_integer()
+                        else round(trend_score_num, 2)
+                    )
+                else:
+                    score_display = "N/A"
+                if report_language == "en":
+                    trend_prediction = (
+                        f"Technicals {ma_alignment or 'neutral'}, trend score {score_display}"
+                    )
+                elif report_language == "ko":
+                    trend_prediction = (
+                        f"기술적 추세 {ma_alignment or 'neutral'}, 추세 점수 {score_display}"
+                    )
+                else:
+                    trend_prediction = f"技术面{ma_alignment or 'neutral'}，趋势评分 {score_display}"
             else:
-                trend_prediction = "待结合更多阶段结果确认"
+                if report_language == "en":
+                    trend_prediction = "Pending further stage confirmation"
+                elif report_language == "ko":
+                    trend_prediction = "추가 단계 결과 확인 필요"
+                else:
+                    trend_prediction = "待结合更多阶段结果确认"
 
         operation_advice_raw = payload.get("operation_advice")
         if review_blocks_buy:
@@ -1841,20 +1971,23 @@ class AgentOrchestrator:
             pre_risk_advice = _normalize_operation_advice_value(
                 operation_advice_raw,
                 application.from_signal.value,
+                report_language,
             )
             operation_advice = _adjust_operation_advice(
                 pre_risk_advice,
                 decision_type,
+                report_language,
             )
         else:
             operation_advice = _normalize_operation_advice_value(
                 operation_advice_raw,
                 decision_type,
+                report_language,
             )
 
         existing_position = core.get("position_advice")
         if risk_adjusted:
-            position_advice = _post_risk_position_advice(decision_type)
+            position_advice = _post_risk_position_advice(decision_type, report_language)
         else:
             position_advice = (
                 dict(existing_position)
@@ -1874,7 +2007,7 @@ class AgentOrchestrator:
                     position_advice["no_position"] = no_position
                 if has_position and "has_position" not in position_advice:
                     position_advice["has_position"] = has_position
-            defaults = _default_position_advice(decision_type)
+            defaults = _default_position_advice(decision_type, report_language)
             position_advice.setdefault("no_position", defaults["no_position"])
             position_advice.setdefault("has_position", defaults["has_position"])
 
@@ -1904,28 +2037,39 @@ class AgentOrchestrator:
         if _level_values_equal(secondary_buy, sniper.get("ideal_buy")):
             secondary_buy = None
         sniper["secondary_buy"] = secondary_buy if secondary_buy is not None else "N/A"
-        sniper.setdefault(
-            "stop_loss",
-            key_levels.get("stop_loss")
-            or key_levels.get("strong_support_stop_loss")
-            or "待补充",
+        placeholder_text = get_placeholder_text(report_language)
+        stop_loss = _pick_first_level(
+            sniper.get("stop_loss"),
+            key_levels.get("stop_loss"),
+            key_levels.get("strong_support_stop_loss"),
         )
-        sniper.setdefault(
-            "take_profit",
-            key_levels.get("take_profit")
-            or key_levels.get("next_breakout_target")
-            or key_levels.get("current_resistance")
-            or key_levels.get("resistance")
-            or "N/A",
+        sniper["stop_loss"] = stop_loss if stop_loss is not None else placeholder_text
+        take_profit = _pick_first_level(
+            sniper.get("take_profit"),
+            key_levels.get("take_profit"),
+            key_levels.get("next_breakout_target"),
+            key_levels.get("current_resistance"),
+            key_levels.get("resistance"),
         )
+        sniper["take_profit"] = take_profit if take_profit is not None else "N/A"
 
         risk_alerts = self._collect_risk_alerts(ctx, intelligence)
         positive_catalysts = self._collect_positive_catalysts(ctx, intelligence)
         latest_news = _extract_latest_news_title(intelligence)
 
-        if not intelligence.get("risk_alerts"):
+        if not isinstance(intelligence.get("risk_alerts"), list):
+            intelligence["risk_alerts"] = coerce_str_list(intelligence.get("risk_alerts")) or risk_alerts
+        elif not intelligence.get("risk_alerts"):
             intelligence["risk_alerts"] = risk_alerts
-        if positive_catalysts and not intelligence.get("positive_catalysts"):
+        if not isinstance(intelligence.get("positive_catalysts"), list):
+            coerced_catalysts = coerce_str_list(intelligence.get("positive_catalysts"))
+            if coerced_catalysts:
+                intelligence["positive_catalysts"] = coerced_catalysts
+            elif positive_catalysts:
+                intelligence["positive_catalysts"] = positive_catalysts
+            else:
+                intelligence.pop("positive_catalysts", None)
+        elif positive_catalysts and not intelligence.get("positive_catalysts"):
             intelligence["positive_catalysts"] = positive_catalysts
         if latest_news and not intelligence.get("latest_news"):
             intelligence["latest_news"] = latest_news
@@ -1938,9 +2082,9 @@ class AgentOrchestrator:
             one_sentence = f"{transition_prefix} {one_sentence}"
         core["one_sentence"] = _truncate_text(one_sentence, 60)
         if not core.get("time_sensitivity"):
-            core["time_sensitivity"] = "本周内"
+            core["time_sensitivity"] = get_report_labels(report_language)["default_time_sensitivity"]
         if risk_adjusted or not core.get("signal_type"):
-            core["signal_type"] = _signal_to_signal_type(decision_type)
+            core["signal_type"] = _signal_to_signal_type(decision_type, report_language)
         core["position_advice"] = position_advice
 
         battle["sniper_points"] = sniper
@@ -1962,34 +2106,53 @@ class AgentOrchestrator:
             battle["action_checklist"] = [analysis_summary]
         elif "action_checklist" not in battle:
             battle["action_checklist"] = []
+        elif not isinstance(battle.get("action_checklist"), list):
+            battle["action_checklist"] = coerce_str_list(battle.get("action_checklist"))
         position_strategy = battle.get("position_strategy")
+        stop_loss_value = sniper.get("stop_loss", placeholder_text)
+        if report_language == "en":
+            risk_ctrl_adjusted = f"Stop-loss reference: {stop_loss_value}"
+            risk_ctrl_default = f"Stop-loss reference {stop_loss_value}"
+        elif report_language == "ko":
+            risk_ctrl_adjusted = f"손절 참고: {stop_loss_value}"
+            risk_ctrl_default = f"손절 참고 {stop_loss_value}"
+        else:
+            risk_ctrl_adjusted = f"止损参考：{stop_loss_value}"
+            risk_ctrl_default = f"止损参考 {stop_loss_value}"
         if risk_adjusted:
             position_strategy = (
                 dict(position_strategy)
                 if isinstance(position_strategy, dict)
                 else {}
             )
-            position_strategy["suggested_position"] = _default_position_size(decision_type)
+            position_strategy["suggested_position"] = _default_position_size(decision_type, report_language)
             position_strategy["entry_plan"] = position_advice["no_position"]
             if review_blocks_buy or "risk_control" not in position_strategy:
-                position_strategy["risk_control"] = f"止损参考：{sniper.get('stop_loss', '待补充')}"
+                position_strategy["risk_control"] = risk_ctrl_adjusted
             battle["position_strategy"] = position_strategy
         elif not isinstance(position_strategy, dict) or not position_strategy:
             battle["position_strategy"] = {
-                "suggested_position": _default_position_size(decision_type),
+                "suggested_position": _default_position_size(decision_type, report_language),
                 "entry_plan": position_advice["no_position"],
-                "risk_control": f"止损参考 {sniper.get('stop_loss', '待补充')}",
+                "risk_control": risk_ctrl_default,
             }
 
-        data_perspective = dashboard_block.get("data_perspective")
-        if not isinstance(data_perspective, dict):
-            data_perspective = {}
-        if not data_perspective:
-            built_data_perspective = self._build_data_perspective(ctx, key_levels)
-            if built_data_perspective:
-                data_perspective = built_data_perspective
+        raw_dp = dashboard_block.get("data_perspective")
+        data_perspective = (
+            _sanitize_data_perspective(raw_dp, report_language)
+            if isinstance(raw_dp, dict)
+            else {}
+        )
+        built_data_perspective = self._build_data_perspective(ctx, key_levels)
+        if built_data_perspective:
+            built_sanitized = _sanitize_data_perspective(built_data_perspective, report_language)
+            for section_key in ("trend_status", "price_position", "volume_analysis", "chip_structure"):
+                if section_key not in data_perspective and section_key in built_sanitized:
+                    data_perspective[section_key] = built_sanitized[section_key]
         if data_perspective:
             dashboard_block["data_perspective"] = data_perspective
+        else:
+            dashboard_block.pop("data_perspective", None)
 
         strategy_synthesis = self._collect_strategy_synthesis(ctx, dashboard_block)
         if strategy_synthesis:
@@ -2008,13 +2171,14 @@ class AgentOrchestrator:
                 and not (review_blocks_buy and op.agent_name == "decision")
             ][:5]
 
+        risk_sep = "；" if report_language == "zh" else "; "
         risk_warning = _first_non_empty_text(
             payload.get("risk_warning"),
-            "；".join(risk_alerts[:3]),
+            risk_sep.join(risk_alerts[:3]),
             getattr(self._latest_opinion(ctx, {"risk"}), "reasoning", ""),
         )
         if not risk_warning:
-            risk_warning = "暂无额外风险提示"
+            risk_warning = _EMPTY_RISK_WARNING[report_language]
         if risk_applied:
             risk_opinion = self._latest_opinion(ctx, {"risk"})
             risk_raw = (
@@ -2027,6 +2191,7 @@ class AgentOrchestrator:
                 risk_raw,
                 ctx.risk_flags,
                 decision_type,
+                report_language=report_language,
             )
         if review_incomplete and not risk_warning.startswith(review_note):
             risk_warning = f"{review_note} {risk_warning}"
@@ -2036,11 +2201,12 @@ class AgentOrchestrator:
         payload["trend_prediction"] = trend_prediction
         payload["operation_advice"] = operation_advice
         payload["decision_type"] = decision_type
-        payload["confidence_level"] = _confidence_label(confidence)
+        payload["confidence_level"] = _confidence_label(confidence, report_language)
         payload["analysis_summary"] = analysis_summary
         payload["key_points"] = key_points
         payload["risk_warning"] = risk_warning
         payload["dashboard"] = dashboard_block
+        payload = sanitize_non_finite_floats(payload)
         if risk_adjusted:
             for opinion in reversed(ctx.opinions):
                 if opinion.agent_name == "decision":
@@ -2108,7 +2274,9 @@ class AgentOrchestrator:
         key_levels: Dict[str, Any],
     ) -> Dict[str, Any]:
         """Build a lightweight data_perspective block from cached market data."""
+        report_language = normalize_report_language(ctx.meta.get("report_language"))
         realtime = ctx.get_data("realtime_quote")
+        realtime_dict = realtime if isinstance(realtime, dict) else {}
         chip = ctx.get_data("chip_distribution")
         trend = ctx.get_data("trend_result")
         technical = self._latest_opinion(ctx, {"technical"})
@@ -2116,31 +2284,61 @@ class AgentOrchestrator:
         trend_dict = trend if isinstance(trend, dict) else {}
 
         data_perspective: Dict[str, Any] = {}
-        ma_alignment = tech_raw.get("ma_alignment")
-        trend_score = tech_raw.get("trend_score")
-        if ma_alignment or trend_score is not None:
+        ma_alignment = coerce_text(tech_raw.get("ma_alignment"), default="", fallback_on_empty=True).strip()
+        trend_score_num = coerce_finite_float(tech_raw.get("trend_score"))
+        trend_score_display: Any = (
+            (int(trend_score_num) if trend_score_num.is_integer() else round(trend_score_num, 2))
+            if trend_score_num is not None
+            else None
+        )
+        if ma_alignment or trend_score_display is not None:
             data_perspective["trend_status"] = {
                 "ma_alignment": ma_alignment or "N/A",
-                "trend_score": trend_score if trend_score is not None else "N/A",
-                "is_bullish": str(ma_alignment).lower() == "bullish",
+                "trend_score": trend_score_display if trend_score_display is not None else "N/A",
+                "is_bullish": ma_alignment.lower() == "bullish",
             }
 
         def _bias_label(bias):
-            if not isinstance(bias, (int, float)):
+            val = coerce_finite_float(bias)
+            if val is None:
                 return ""
-            if bias > 5:
+            if report_language == "en":
+                if val > 5:
+                    return "Overbought"
+                if val > 2:
+                    return "Elevated"
+                if val < -5:
+                    return "Oversold"
+                if val < -2:
+                    return "Depressed"
+                return "Neutral"
+            if report_language == "ko":
+                if val > 5:
+                    return "과매수"
+                if val > 2:
+                    return "과열 주의"
+                if val < -5:
+                    return "과매도"
+                if val < -2:
+                    return "저평가 권역"
+                return "중립"
+            if val > 5:
                 return "超买"
-            elif bias > 2:
+            elif val > 2:
                 return "偏高"
-            elif bias < -5:
+            elif val < -5:
                 return "超卖"
-            elif bias < -2:
+            elif val < -2:
                 return "偏低"
             return "中性"
 
         def _r(val, n=2):
-            """Round numeric values for display."""
-            return round(val, n) if isinstance(val, (int, float)) else val
+            """Round finite numeric values for display."""
+            return _sanitize_display_number(val, round_digits=n, default="N/A")
+
+        def _clean_metric(val):
+            """Sanitize scalar numeric/string metrics and reject bool/containers/non-finite."""
+            return _sanitize_display_number(val, default="N/A")
 
         def _pick(primary_dict, primary_key, fallback_dict, fallback_key, default="N/A"):
             """Pick first non-None value, avoiding falsy-zero trap."""
@@ -2150,33 +2348,60 @@ class AgentOrchestrator:
             v2 = fallback_dict.get(fallback_key, default)
             return v2 if v2 is not None else default
 
-        if isinstance(realtime, dict) or trend_dict:
+        if realtime_dict or trend_dict:
+            support_val = _pick_first_level(
+                key_levels.get("support"),
+                key_levels.get("immediate_support"),
+            )
+            resistance_val = _pick_first_level(
+                key_levels.get("resistance"),
+                key_levels.get("current_resistance"),
+            )
+            fallback_bias_status = coerce_text(tech_raw.get("bias_status"), default="", fallback_on_empty=True).strip()
+            bias_status = _bias_label(trend_dict.get("bias_ma5")) or (
+                localize_bias_status(fallback_bias_status, report_language)
+                if fallback_bias_status
+                else "N/A"
+            )
+            raw_volume_status = trend_dict.get("volume_status") or tech_raw.get("volume_status")
+            volume_status_text = coerce_text(raw_volume_status, default="", fallback_on_empty=True).strip()
+            localized_volume_status = (
+                localize_volume_status(volume_status_text, report_language)
+                if volume_status_text
+                else "N/A"
+            )
             data_perspective["price_position"] = {
-                "current_price": _r(_pick(trend_dict, "current_price", realtime or {}, "price")),
+                "current_price": _r(_pick(trend_dict, "current_price", realtime_dict, "price")),
                 "ma5": _r(_pick(trend_dict, "ma5", tech_raw, "ma5")),
                 "ma10": _r(_pick(trend_dict, "ma10", tech_raw, "ma10")),
                 "ma20": _r(_pick(trend_dict, "ma20", tech_raw, "ma20")),
                 "bias_ma5": _r(_pick(trend_dict, "bias_ma5", tech_raw, "bias_ma5")),
-                "bias_status": _bias_label(trend_dict.get("bias_ma5")) or tech_raw.get("bias_status", "N/A"),
-                "support_level": key_levels.get("support") or key_levels.get("immediate_support") or "N/A",
-                "resistance_level": key_levels.get("resistance") or key_levels.get("current_resistance") or "N/A",
+                "bias_status": bias_status,
+                "support_level": support_val if support_val is not None else "N/A",
+                "resistance_level": resistance_val if resistance_val is not None else "N/A",
             }
             data_perspective["volume_analysis"] = {
-                "volume_ratio": (realtime or {}).get("volume_ratio", "N/A"),
-                "turnover_rate": (realtime or {}).get("turnover_rate", "N/A"),
-                "volume_status": trend_dict.get("volume_status") or tech_raw.get("volume_status", "N/A"),
-                "volume_meaning": tech_raw.get("reasoning", "") if tech_raw else "",
+                "volume_ratio": _clean_metric(realtime_dict.get("volume_ratio", "N/A")),
+                "turnover_rate": _clean_metric(realtime_dict.get("turnover_rate", "N/A")),
+                "volume_status": localized_volume_status,
+                "volume_meaning": coerce_text(tech_raw.get("reasoning"), default="") if tech_raw else "",
             }
 
         if isinstance(chip, dict):
             concentration = chip.get("concentration_90")
             if concentration is None:
                 concentration = chip.get("concentration")
+            raw_chip_health = coerce_text(chip.get("chip_health"), default="", fallback_on_empty=True).strip()
+            chip_health = (
+                localize_chip_health(raw_chip_health, report_language)
+                if raw_chip_health
+                else localize_chip_health("average", report_language)
+            )
             data_perspective["chip_structure"] = {
-                "profit_ratio": chip.get("profit_ratio", "N/A"),
-                "avg_cost": chip.get("avg_cost", "N/A"),
-                "concentration": concentration if concentration is not None else "N/A",
-                "chip_health": chip.get("chip_health", "一般"),
+                "profit_ratio": _clean_metric(chip.get("profit_ratio", "N/A")),
+                "avg_cost": _clean_metric(chip.get("avg_cost", "N/A")),
+                "concentration": _clean_metric(concentration) if concentration is not None else "N/A",
+                "chip_health": chip_health,
             }
 
         return data_perspective
@@ -2262,10 +2487,11 @@ class AgentOrchestrator:
         dashboard: Dict[str, Any],
         *,
         note: str,
+        report_language: str = "zh",
     ) -> Dict[str, Any]:
         tagged = dict(dashboard)
         summary = _first_non_empty_text(tagged.get("analysis_summary"))
-        prefix = "[降级结果] "
+        prefix = _DEGRADED_RESULT_PREFIX[normalize_report_language(report_language)]
         if summary and not summary.startswith(prefix):
             tagged["analysis_summary"] = prefix + summary
         elif not summary:
@@ -2338,6 +2564,8 @@ class AgentOrchestrator:
         risk_raw: Dict[str, Any],
         risk_flags: List[Dict[str, Any]],
         signal: str,
+        *,
+        report_language: str = "zh",
     ) -> str:
         """Build a concise risk warning after a forced downgrade."""
         warnings: List[str] = []
@@ -2346,11 +2574,19 @@ class AgentOrchestrator:
         if isinstance(risk_raw.get("reasoning"), str) and risk_raw["reasoning"].strip():
             warnings.append(risk_raw["reasoning"].strip())
         for flag in risk_flags[:3]:
+            if not isinstance(flag, dict):
+                continue
             description = str(flag.get("description", "")).strip()
             severity = str(flag.get("severity", "")).lower()
             if description:
                 warnings.append(f"[{severity or 'risk'}] {description}")
-        prefix = f"风控接管：最终信号已下调为 {signal}。"
+        lang = normalize_report_language(report_language)
+        if lang == "en":
+            prefix = f"Risk override active: final signal downgraded to {signal}."
+        elif lang == "ko":
+            prefix = f"리스크 통제 발동: 최종 신호가 {signal}(으)로 하향 조정되었습니다."
+        else:
+            prefix = f"风控接管：最终信号已下调为 {signal}。"
         merged = " ".join(dict.fromkeys([prefix] + warnings))
         return merged[:500]
 
@@ -2448,40 +2684,35 @@ def _adjust_sentiment_score(score: int, signal: str) -> int:
     return max(low, min(high, score))
 
 
-def _adjust_operation_advice(advice: str, signal: str) -> str:
-    """Normalize action wording to the overridden decision signal."""
-    mapping = {
-        "buy": "买入",
-        "hold": "观望",
-        "sell": "减仓/卖出",
-    }
-    if signal not in mapping:
-        return advice
-    if advice == mapping[signal]:
-        return advice
-    return f"{mapping[signal]}（原建议已被风控下调）"
+_SIGNAL_TO_OPERATION_MAP = {
+    "zh": {"buy": "买入", "hold": "观望", "sell": "减仓/卖出"},
+    "en": {"buy": "Buy", "hold": "Watch", "sell": "Reduce / Sell"},
+    "ko": {"buy": "매수", "hold": "관망", "sell": "비중축소/매도"},
+}
 
-
-def _signal_to_operation(signal: str) -> str:
-    mapping = {
-        "buy": "买入",
-        "hold": "观望",
-        "sell": "减仓/卖出",
-    }
-    return mapping.get(signal, "观望")
-
-
-def _signal_to_signal_type(signal: str) -> str:
-    mapping = {
+_SIGNAL_TO_SIGNAL_TYPE_MAP = {
+    "zh": {
         "buy": "🟢买入信号",
         "hold": "🟡持有观望",
         "sell": "🔴卖出信号",
-    }
-    return mapping.get(signal, "⚠️风险警告")
+        "_default": "⚠️风险警告",
+    },
+    "en": {
+        "buy": "🟢 Buy Signal",
+        "hold": "🟡 Hold / Watch",
+        "sell": "🔴 Sell Signal",
+        "_default": "⚠️ Risk Warning",
+    },
+    "ko": {
+        "buy": "🟢 매수 신호",
+        "hold": "🟡 보유 / 관망",
+        "sell": "🔴 매도 신호",
+        "_default": "⚠️ 리스크 경고",
+    },
+}
 
-
-def _default_position_advice(signal: str) -> Dict[str, str]:
-    mapping = {
+_DEFAULT_POSITION_ADVICE_MAP = {
+    "zh": {
         "buy": {
             "no_position": "可结合支撑位分批试仓，避免一次性追高。",
             "has_position": "可继续持有，回踩关键位不破再考虑加仓。",
@@ -2494,13 +2725,39 @@ def _default_position_advice(signal: str) -> Dict[str, str]:
             "no_position": "暂不参与，等待风险充分释放。",
             "has_position": "优先控制回撤，按计划减仓或离场。",
         },
-    }
-    return mapping.get(signal, mapping["hold"])
+    },
+    "en": {
+        "buy": {
+            "no_position": "Build a starter position in tranches near support and avoid chasing rallies.",
+            "has_position": "Hold core shares and add only if pullbacks hold key support.",
+        },
+        "hold": {
+            "no_position": "Avoid chasing; wait for a clearer entry signal.",
+            "has_position": "Hold and observe; enforce risk stops if key support breaks.",
+        },
+        "sell": {
+            "no_position": "Stay on the sidelines until downside risks clear.",
+            "has_position": "Prioritize drawdown control by trimming or exiting as planned.",
+        },
+    },
+    "ko": {
+        "buy": {
+            "no_position": "지지선 부근에서 분할 진입하고 추격 매수는 피하세요.",
+            "has_position": "보유를 유지하고 핵심 지지선 방어 시 추가 매수를 검토하세요.",
+        },
+        "hold": {
+            "no_position": "추격 매수를 자제하고 명확한 진입 조건을 기다리세요.",
+            "has_position": "관망을 우선하며 손절가 이탈 시 리스크 관리를 실행하세요.",
+        },
+        "sell": {
+            "no_position": "리스크가 충분히 해소될 때까지 신규 진입을 보류하세요.",
+            "has_position": "낙폭 방어를 우선하며 계획에 따라 비중 축소 또는 청산하세요.",
+        },
+    },
+}
 
-
-def _post_risk_position_advice(signal: str) -> Dict[str, str]:
-    """Return authoritative position advice after an applied risk transition."""
-    mapping = {
+_POST_RISK_POSITION_ADVICE_MAP = {
+    "zh": {
         "hold": {
             "no_position": "风险未解除前先观望，等待更清晰的入场条件。",
             "has_position": "谨慎持有并收紧止损，待风险缓解后再考虑加仓。",
@@ -2509,56 +2766,240 @@ def _post_risk_position_advice(signal: str) -> Dict[str, str]:
             "no_position": "风险明显偏高，暂不新开仓。",
             "has_position": "优先控制回撤，建议减仓或退出高风险仓位。",
         },
-    }
-    return dict(mapping.get(signal, _default_position_advice(signal)))
+    },
+    "en": {
+        "hold": {
+            "no_position": "Stay on the sidelines until risks ease and a clearer setup emerges.",
+            "has_position": "Hold cautiously with tighter stops; wait for risks to subside before adding.",
+        },
+        "sell": {
+            "no_position": "Elevated risk; do not open new positions.",
+            "has_position": "Prioritize drawdown control; trim or exit high-risk exposure.",
+        },
+    },
+    "ko": {
+        "hold": {
+            "no_position": "리스크가 해소되기 전까지 관망하며 명확한 진입 조건을 기다리세요.",
+            "has_position": "손절선을 강화해 신중히 보유하고 위험 완화 후 추가 매수를 검토하세요.",
+        },
+        "sell": {
+            "no_position": "리스크가 높아 신규 매수를 보류하세요.",
+            "has_position": "낙폭 방어를 우선하여 고위험 비중을 축소하거나 청산하세요.",
+        },
+    },
+}
+
+_DEFAULT_POSITION_SIZE_MAP = {
+    "zh": {"buy": "轻仓试仓", "hold": "控制仓位", "sell": "降仓防守"},
+    "en": {"buy": "Light probe position", "hold": "Controlled exposure", "sell": "Reduce / Defensive"},
+    "ko": {"buy": "소규모 탐색 진입", "hold": "비중 관리", "sell": "비중 축소·방어"},
+}
 
 
-def _default_position_size(signal: str) -> str:
-    mapping = {
-        "buy": "轻仓试仓",
-        "hold": "控制仓位",
-        "sell": "降仓防守",
-    }
-    return mapping.get(signal, "控制仓位")
+def _adjust_operation_advice(advice: str, signal: str, report_language: str = "zh") -> str:
+    """Normalize action wording to the overridden decision signal."""
+    lang = normalize_report_language(report_language)
+    mapping = _SIGNAL_TO_OPERATION_MAP[lang]
+    if signal not in mapping:
+        return advice
+    if advice == mapping[signal]:
+        return advice
+    if lang == "en":
+        return f"{mapping[signal]} (downgraded by risk control)"
+    if lang == "ko":
+        return f"{mapping[signal]} (리스크 통제로 하향)"
+    return f"{mapping[signal]}（原建议已被风控下调）"
 
 
-def _normalize_operation_advice_value(value: Any, signal: str) -> str:
+def _signal_to_operation(signal: str, report_language: str = "zh") -> str:
+    lang = normalize_report_language(report_language)
+    mapping = _SIGNAL_TO_OPERATION_MAP[lang]
+    return mapping.get(signal, mapping["hold"])
+
+
+def _signal_to_signal_type(signal: str, report_language: str = "zh") -> str:
+    lang = normalize_report_language(report_language)
+    mapping = _SIGNAL_TO_SIGNAL_TYPE_MAP[lang]
+    return mapping.get(signal, mapping["_default"])
+
+
+def _default_position_advice(signal: str, report_language: str = "zh") -> Dict[str, str]:
+    lang = normalize_report_language(report_language)
+    mapping = _DEFAULT_POSITION_ADVICE_MAP[lang]
+    return mapping.get(signal, mapping["hold"])
+
+
+def _post_risk_position_advice(signal: str, report_language: str = "zh") -> Dict[str, str]:
+    """Return authoritative position advice after an applied risk transition."""
+    lang = normalize_report_language(report_language)
+    mapping = _POST_RISK_POSITION_ADVICE_MAP[lang]
+    return dict(mapping.get(signal, _default_position_advice(signal, lang)))
+
+
+def _default_position_size(signal: str, report_language: str = "zh") -> str:
+    lang = normalize_report_language(report_language)
+    mapping = _DEFAULT_POSITION_SIZE_MAP[lang]
+    return mapping.get(signal, mapping["hold"])
+
+
+def _normalize_operation_advice_value(
+    value: Any,
+    signal: str,
+    report_language: str = "zh",
+) -> str:
     if isinstance(value, str) and value.strip():
         return value.strip()
-    return _signal_to_operation(signal)
+    return _signal_to_operation(signal, report_language)
 
 
-def _confidence_label(confidence: float) -> str:
-    if confidence >= 0.75:
-        return "高"
-    if confidence >= 0.45:
-        return "中"
-    return "低"
+def _confidence_label(confidence: float, report_language: str = "zh") -> str:
+    val = coerce_finite_float(confidence)
+    if val is None:
+        level = "low"
+    elif val >= 0.75:
+        level = "high"
+    elif val >= 0.45:
+        level = "medium"
+    else:
+        level = "low"
+    return localize_confidence_level(level, report_language)
 
 
 def _estimate_sentiment_score(signal: str, confidence: float) -> int:
-    confidence = max(0.0, min(1.0, float(confidence)))
+    parsed = coerce_finite_float(confidence)
+    clamped = max(0.0, min(1.0, parsed if parsed is not None else 0.5))
     bands = {
         "buy": (65, 79),
         "hold": (45, 59),
         "sell": (20, 39),
     }
     low, high = bands.get(signal, (45, 59))
-    return int(round(low + (high - low) * confidence))
+    return int(round(low + (high - low) * clamped))
+
+
+def _is_non_finite_numeric_str(text: str) -> bool:
+    stripped = text.strip()
+    if not stripped:
+        return False
+    try:
+        return not math.isfinite(float(stripped))
+    except OverflowError:
+        return True
+    except ValueError:
+        return False
+
+
+def _sanitize_display_number(
+    val: Any,
+    *,
+    round_digits: Optional[int] = None,
+    default: Any = "N/A",
+) -> Any:
+    """Return a finite display scalar, rejecting bool, containers, and non-finite inputs."""
+    if isinstance(val, (int, float)) and not isinstance(val, bool):
+        num = coerce_finite_float(val)
+        if num is None:
+            return default
+        return round(num, round_digits) if round_digits is not None else num
+    if isinstance(val, str):
+        if _is_non_finite_numeric_str(val):
+            return default
+        return val
+    return default
+
+
+def _sanitize_data_perspective(
+    dp: Dict[str, Any],
+    report_language: str,
+) -> Dict[str, Any]:
+    """Normalize and sanitize both model-authored and synthesized data_perspective blocks."""
+    cleaned = dict(dp)
+
+    trend_status = cleaned.get("trend_status")
+    if "trend_status" in cleaned and (not isinstance(trend_status, dict) or not trend_status):
+        cleaned.pop("trend_status", None)
+    elif isinstance(trend_status, dict):
+        ts = dict(trend_status)
+        ma = coerce_text(ts.get("ma_alignment"), default="", fallback_on_empty=True).strip()
+        ts["ma_alignment"] = ma or "N/A"
+        if "trend_score" in ts:
+            t_score = coerce_finite_float(ts.get("trend_score"))
+            if t_score is not None:
+                ts["trend_score"] = int(t_score) if t_score.is_integer() else round(t_score, 2)
+            else:
+                ts["trend_score"] = "N/A"
+        if "is_bullish" in ts and not isinstance(ts.get("is_bullish"), bool):
+            ts["is_bullish"] = ma.lower() == "bullish"
+        cleaned["trend_status"] = ts
+
+    price_position = cleaned.get("price_position")
+    if "price_position" in cleaned and (not isinstance(price_position, dict) or not price_position):
+        cleaned.pop("price_position", None)
+    elif isinstance(price_position, dict):
+        pp = dict(price_position)
+        for key in ("current_price", "ma5", "ma10", "ma20", "bias_ma5"):
+            if key in pp:
+                pp[key] = _sanitize_display_number(pp.get(key), round_digits=2, default="N/A")
+        for key in ("support_level", "resistance_level"):
+            if key in pp:
+                level_val = _coerce_level_value(pp.get(key))
+                pp[key] = level_val if level_val is not None else "N/A"
+        if "bias_status" in pp:
+            b_text = coerce_text(pp.get("bias_status"), default="", fallback_on_empty=True).strip()
+            pp["bias_status"] = localize_bias_status(b_text, report_language) if b_text else "N/A"
+        cleaned["price_position"] = pp
+
+    volume_analysis = cleaned.get("volume_analysis")
+    if "volume_analysis" in cleaned and (not isinstance(volume_analysis, dict) or not volume_analysis):
+        cleaned.pop("volume_analysis", None)
+    elif isinstance(volume_analysis, dict):
+        va = dict(volume_analysis)
+        for key in ("volume_ratio", "turnover_rate"):
+            if key in va:
+                va[key] = _sanitize_display_number(va.get(key), default="N/A")
+        if "volume_status" in va:
+            v_text = coerce_text(va.get("volume_status"), default="", fallback_on_empty=True).strip()
+            va["volume_status"] = localize_volume_status(v_text, report_language) if v_text else "N/A"
+        if "volume_meaning" in va:
+            va["volume_meaning"] = coerce_text(va.get("volume_meaning"), default="")
+        cleaned["volume_analysis"] = va
+
+    chip_structure = cleaned.get("chip_structure")
+    if "chip_structure" in cleaned and (not isinstance(chip_structure, dict) or not chip_structure):
+        cleaned.pop("chip_structure", None)
+    elif isinstance(chip_structure, dict):
+        cs = dict(chip_structure)
+        for key in ("profit_ratio", "avg_cost", "concentration"):
+            if key in cs:
+                cs[key] = _sanitize_display_number(cs.get(key), default="N/A")
+        if "chip_health" in cs:
+            c_text = coerce_text(cs.get("chip_health"), default="", fallback_on_empty=True).strip()
+            cs["chip_health"] = (
+                localize_chip_health(c_text, report_language)
+                if c_text
+                else localize_chip_health("average", report_language)
+            )
+        cleaned["chip_structure"] = cs
+
+    return cleaned
 
 
 def _coerce_level_value(value: Any) -> Any:
     if isinstance(value, bool) or value is None:
         return None
     if isinstance(value, (int, float)):
-        return round(float(value), 2)
-    text = str(value).replace(",", "").replace("，", "").strip()
+        numeric = coerce_finite_float(value)
+        return round(numeric, 2) if numeric is not None else None
+    if not isinstance(value, str):
+        return None
+    text = value.replace(",", "").replace("，", "").strip()
     if not text or text.upper() == "N/A" or text in {"-", "—"}:
         return None
     try:
-        return round(float(text), 2)
-    except ValueError:
+        numeric = float(text)
+    except (OverflowError, ValueError):
         return text
+    return round(numeric, 2) if math.isfinite(numeric) else None
 
 
 def _pick_first_level(*values: Any) -> Any:

@@ -96,7 +96,10 @@ class DeliberationMediator:
         *,
         final_signal: str,
     ) -> Optional[StrategyDeliberationResult]:
-        valid_opinions = [op for op in opinions if not op.invalid_signal]
+        valid_opinions = [
+            op for op in opinions
+            if not op.invalid_signal and op.confidence_input_valid
+        ]
         material_conflicts = self._material_conflicts(conflicts)
         if len(valid_opinions) < 2 or not material_conflicts:
             return None

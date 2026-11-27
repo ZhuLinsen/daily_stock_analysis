@@ -12,6 +12,7 @@ from src.agent.conversation import conversation_manager
 from src.agent.executor import AgentResult, PreparedAgentChat, prepare_agent_chat
 from src.agent.provider_trace import persist_provider_trace_turns
 from src.agent.stock_scope import StockScopeResolution
+from src.report_language import format_chat_failure_message
 from src.storage import DatabaseManager
 
 if TYPE_CHECKING:
@@ -46,6 +47,7 @@ class AgentChatExecutor:
         use_legacy_default_prompt: bool = False,
         max_steps: int = 10,
         timeout_seconds: Optional[float] = None,
+        skill_manager: Optional[Any] = None,
     ) -> None:
         self.backend = backend
         self.config = config
@@ -55,6 +57,7 @@ class AgentChatExecutor:
         self.use_legacy_default_prompt = use_legacy_default_prompt
         self.max_steps = max_steps
         self.timeout_seconds = timeout_seconds
+        self.skill_manager = skill_manager
 
     def chat(
         self,
@@ -114,6 +117,7 @@ class AgentChatExecutor:
             use_legacy_default_prompt=self.use_legacy_default_prompt,
             include_provider_trace=True,
             strict_initial_stock_scope=False,
+            skill_manager=self.skill_manager,
             **resolved_kwargs,
         )
         baseline_len = len(prepared.history_messages) + 2
@@ -194,7 +198,7 @@ class AgentChatExecutor:
                        if turn.accepted_snapshot is not None else {}),
                 )
         else:
-            failure_note = f"[分析失败] {result.error or '未知错误'}"
+            failure_note = format_chat_failure_message(result.error, turn.prepared.report_language)
             if turn.accepted_snapshot is not None:
                 conversation_manager.add_message(
                     turn.session_id, "assistant", failure_note, accepted_turn=turn.accepted_snapshot,

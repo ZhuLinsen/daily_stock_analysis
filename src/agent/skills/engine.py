@@ -149,9 +149,33 @@ class StrategyEngine:
         return self.process_partition(partition)
 
     def process_partition(self, partition: EvidencePartition) -> StrategyResult:
-        if not partition.valid_skill_opinions:
-            if partition.invalid_count > 0:
-                stub = self._build_no_consensus_stub(partition.invalid_count)
+        eligible_skill_opinions: List[AgentOpinion] = []
+        invalid_records = list(partition.invalid_records)
+        for opinion in partition.valid_skill_opinions:
+            if not opinion.confidence_input_valid:
+                raw_data = opinion.raw_data if isinstance(opinion.raw_data, dict) else {}
+                raw_display = raw_data.get("original_signal") or opinion.signal
+                invalid_records.append({
+                    "agent_name": opinion.agent_name,
+                    "raw_signal": raw_display,
+                    "confidence": opinion.confidence,
+                    "reason": "invalid_confidence",
+                })
+                logger.info(
+                    "[StrategyEngine] invalid skill opinion moved to diagnostics: agent=%s raw_signal=%r reason=%s",
+                    opinion.agent_name,
+                    raw_display,
+                    "invalid_confidence",
+                )
+                continue
+            eligible_skill_opinions.append(opinion)
+
+        invalid_count = max(partition.invalid_count, len(invalid_records))
+        evidence_opinions = list(partition.non_skill_opinions) + list(eligible_skill_opinions)
+
+        if not eligible_skill_opinions:
+            if invalid_count > 0:
+                stub = self._build_no_consensus_stub(invalid_count)
                 return StrategyResult(
                     status=StrategyResultStatus.NO_CONSENSUS,
                     synthesis_dict=stub,
@@ -165,27 +189,30 @@ class StrategyEngine:
                     },
                     valid_skill_opinions=[],
                     non_skill_opinions=list(partition.non_skill_opinions),
-                    invalid_records=list(partition.invalid_records),
-                    invalid_count=partition.invalid_count,
+                    evidence_opinions=list(partition.non_skill_opinions),
+                    invalid_records=invalid_records,
+                    invalid_count=invalid_count,
                 )
             return StrategyResult(
                 status=StrategyResultStatus.NO_SKILLS,
                 synthesis_dict=None,
                 valid_skill_opinions=[],
                 non_skill_opinions=list(partition.non_skill_opinions),
-                invalid_records=list(partition.invalid_records),
-                invalid_count=partition.invalid_count,
+                evidence_opinions=list(partition.non_skill_opinions),
+                invalid_records=invalid_records,
+                invalid_count=invalid_count,
             )
 
-        aggregation = self.aggregator.calculate(partition.valid_skill_opinions)
+        aggregation = self.aggregator.calculate(eligible_skill_opinions)
         if aggregation is None:
             return StrategyResult(
                 status=StrategyResultStatus.NO_SKILLS,
                 synthesis_dict=None,
-                valid_skill_opinions=list(partition.valid_skill_opinions),
+                valid_skill_opinions=list(eligible_skill_opinions),
                 non_skill_opinions=list(partition.non_skill_opinions),
-                invalid_records=list(partition.invalid_records),
-                invalid_count=partition.invalid_count,
+                evidence_opinions=evidence_opinions,
+                invalid_records=invalid_records,
+                invalid_count=invalid_count,
             )
 
         synthesis = StrategySynthesizer().synthesize(
@@ -195,7 +222,7 @@ class StrategyEngine:
             weighted_confidence=aggregation.weighted_confidence,
             conflicts=aggregation.conflicts,
             insufficient_evidence=aggregation.insufficient_evidence,
-            invalid_count=partition.invalid_count,
+            invalid_count=invalid_count,
         )
         consensus_opinion = self._build_consensus_opinion(aggregation, synthesis)
         return StrategyResult(
@@ -210,40 +237,16 @@ class StrategyEngine:
                 "strategy_synthesis": synthesis,
                 "conflicts": synthesis.get("conflicts", []),
             },
-            valid_skill_opinions=list(partition.valid_skill_opinions),
+            valid_skill_opinions=list(eligible_skill_opinions),
             non_skill_opinions=list(partition.non_skill_opinions),
-            invalid_records=list(partition.invalid_records),
-            invalid_count=partition.invalid_count,
+            evidence_opinions=evidence_opinions,
+            invalid_records=invalid_records,
+            invalid_count=invalid_count,
         )
 
     @staticmethod
     def _build_consensus_opinion(aggregation: AggregationData, synthesis: Dict[str, Any]) -> AgentOpinion:
-        reasoning_parts = [
-            f"Skill consensus from {len(aggregation.skill_opinions)} skills "
-            f"({', '.join(aggregation.skill_names)}): weighted score {aggregation.weighted_score:.2f}/5.0, "
-            f"consensus={synthesis['consensus_level']}, conflicts={synthesis['conflict_severity']}({synthesis['conflict_count']})"
-        ]
-        for opinion, weight in zip(aggregation.skill_opinions, aggregation.weights):
-            name = extract_skill_id(opinion.agent_name) or opinion.agent_name
-            reasoning_parts.append(f"  - {name}: {opinion.signal} ({opinion.confidence:.0%}) weight={weight:.2f}")
-
-        return AgentOpinion(
-            agent_name=SKILL_CONSENSUS_AGENT_NAME,
-            signal=aggregation.final_signal,
-            confidence=synthesis["confidence"],
-            reasoning="\n".join(reasoning_parts),
-            raw_data={
-                "weighted_score": round(aggregation.weighted_score, 2),
-                "total_adjustment": aggregation.total_adjustment,
-                "skill_count": len(aggregation.skill_opinions),
-                "individual_signals": aggregation.individual_signals,
-                "strategy_synthesis": synthesis,
-                "conflicts": synthesis["conflicts"],
-                "conflict_count": synthesis["conflict_count"],
-                "conflict_severity": synthesis["conflict_severity"],
-                "consensus_level": synthesis["consensus_level"],
-            },
-        )
+        return SkillAggregator.build_consensus_opinion(aggregation, synthesis)
 
     @staticmethod
     def _build_no_consensus_stub(invalid_count: int) -> Dict[str, Any]:

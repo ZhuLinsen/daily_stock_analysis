@@ -10,8 +10,9 @@ runner, and structured opinion output.
 
 from __future__ import annotations
 
-import logging
 import json
+import logging
+import math
 import time
 from abc import ABC, abstractmethod
 from typing import Any, Callable, Dict, List, Optional
@@ -34,6 +35,85 @@ from src.report_language import normalize_report_language
 from src.services.daily_market_context import format_daily_market_context_prompt_section
 
 logger = logging.getLogger(__name__)
+
+
+def coerce_finite_float(raw: Any) -> Optional[float]:
+    """Parse a finite float from scalar input, rejecting booleans and non-finite values."""
+    if raw is None or isinstance(raw, bool):
+        return None
+    if isinstance(raw, str):
+        stripped = raw.strip()
+        if not stripped:
+            return None
+        candidate: Any = stripped
+    else:
+        candidate = raw
+    try:
+        val = float(candidate)
+    except (OverflowError, TypeError, ValueError):
+        return None
+    return val if math.isfinite(val) else None
+
+
+def coerce_confidence(
+    raw: Any,
+    *,
+    default: float = 0.5,
+    scale: float = 1.0,
+    present: bool = True,
+) -> tuple[float, bool]:
+    """Coerce a raw confidence/score input to ``(clamped_0_to_1, input_valid)``."""
+    if not present:
+        return (default, False)
+    val = coerce_finite_float(raw)
+    if val is None or scale <= 0 or not math.isfinite(scale):
+        return (default, False)
+    scaled = val / scale
+    is_numeric_input = isinstance(raw, (int, float)) and not isinstance(raw, bool)
+    input_valid = is_numeric_input and (0.0 <= scaled <= 1.0)
+    return (max(0.0, min(1.0, scaled)), input_valid)
+
+
+def coerce_text(
+    raw: Any,
+    *,
+    default: str = "",
+    fallback_on_empty: bool = False,
+) -> str:
+    """Coerce an optional scalar value to text without crashing on None or containers."""
+    if raw is None:
+        return default
+    if isinstance(raw, str):
+        return raw if (raw.strip() or not fallback_on_empty) else default
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+        if coerce_finite_float(raw) is None:
+            return default
+        return str(raw)
+    return default
+
+
+def coerce_str_list(raw: Any) -> List[str]:
+    """Coerce a list or single string into non-empty strings without char iteration."""
+    if isinstance(raw, str):
+        text = raw.strip()
+        return [text] if text else []
+    if isinstance(raw, list):
+        return [item.strip() for item in raw if isinstance(item, str) and item.strip()]
+    return []
+
+
+def coerce_key_levels(raw: Any) -> Dict[str, float]:
+    """Extract finite numeric price levels from a dict-shaped key_levels payload."""
+    if not isinstance(raw, dict):
+        return {}
+    levels: Dict[str, float] = {}
+    for k, v in raw.items():
+        if not isinstance(k, str) or not k.strip():
+            continue
+        num = coerce_finite_float(v)
+        if num is not None:
+            levels[k] = num
+    return levels
 
 
 class BaseAgent(ABC):
@@ -92,6 +172,45 @@ class BaseAgent(ABC):
         analysis opinions should override this.
         """
         return None
+
+    def _format_json_output_language_instruction(
+        self,
+        ctx: AgentContext,
+        *,
+        enum_fields: str = "",
+    ) -> str:
+        """Build a shared output-language section for structured-JSON sub-agents."""
+        lang = normalize_report_language(ctx.meta.get("report_language", "zh"))
+        enum_en = (
+            f"- Canonical enum fields ({enum_fields}) must remain exact lowercase ASCII tokens.\n"
+            if enum_fields
+            else ""
+        )
+        enum_zh = (
+            f"- 枚举字段（{enum_fields}）必须保持约定的英文小写标识。\n"
+            if enum_fields
+            else ""
+        )
+        if lang == "en":
+            return (
+                "\n## Output Language\n"
+                "- Keep every JSON key unchanged.\n"
+                f"{enum_en}"
+                "- Write all human-readable string values (e.g. reasoning, alerts, descriptions, summaries) in English.\n"
+            )
+        if lang == "ko":
+            return (
+                "\n## Output Language\n"
+                "- Keep every JSON key unchanged.\n"
+                f"{enum_en}"
+                "- Write all human-readable string values (e.g. reasoning, alerts, descriptions, summaries) in Korean (한국어).\n"
+            )
+        return (
+            "\n## 输出语言\n"
+            "- 所有 JSON 键名保持不变。\n"
+            f"{enum_zh}"
+            "- 所有人类可读文本值（如 reasoning、alerts、descriptions、summary）必须使用中文。\n"
+        )
 
     # -----------------------------------------------------------------
     # Execution

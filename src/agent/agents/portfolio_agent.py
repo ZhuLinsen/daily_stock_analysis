@@ -25,7 +25,7 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from src.agent.agents.base_agent import BaseAgent
+from src.agent.agents.base_agent import BaseAgent, coerce_finite_float, coerce_text
 from src.agent.tools.fxmacrodata_tools import fxmacrodata_tool_names
 from src.agent.protocols import AgentContext, AgentOpinion
 from src.agent.runner import try_parse_json
@@ -65,6 +65,10 @@ class PortfolioAgent(BaseAgent):
     # ------------------------------------------------------------------
 
     def system_prompt(self, ctx: AgentContext) -> str:
+        lang_section = self._format_json_output_language_instruction(
+            ctx,
+            enum_fields="positions[].signal",
+        )
         return (
             "You are a professional **portfolio analyst** specializing in "
             "multi-asset allocation for A-share, HK, and US equity portfolios.\n\n"
@@ -95,6 +99,7 @@ class PortfolioAgent(BaseAgent):
             '  "summary": "Portfolio is moderately concentrated ..."\n'
             "}\n"
             "```\n"
+            + lang_section
         )
 
     def build_user_message(self, ctx: AgentContext) -> str:
@@ -135,21 +140,30 @@ class PortfolioAgent(BaseAgent):
 
     def post_process(self, ctx: AgentContext, raw_response: str) -> Optional[AgentOpinion]:
         """Extract portfolio assessment and store in context."""
-        data = try_parse_json(raw_response)
+        if not isinstance(raw_response, str):
+            logger.warning(
+                "[PortfolioAgent] post_process: expected string response, got %s",
+                type(raw_response).__name__,
+            )
+            return None
+        raw_text = raw_response
+        data = try_parse_json(raw_text)
         if data is None:
             logger.debug("[PortfolioAgent] post_process: failed to parse JSON")
             return AgentOpinion(
                 agent_name="portfolio",
                 signal="hold",
                 confidence=0.3,
-                reasoning=raw_response[:500],
-                raw_data={"raw": raw_response[:1000]},
+                reasoning=raw_text[:500],
+                raw_data={"raw": raw_text[:1000]},
             )
 
         # Store portfolio assessment in context
         ctx.data["portfolio_assessment"] = data
 
-        risk_score = data.get("portfolio_risk_score", 5)
+        risk_score = coerce_finite_float(data.get("portfolio_risk_score"))
+        if risk_score is None or not (1.0 <= risk_score <= 10.0):
+            risk_score = 5.0
         signal = "hold"
         if risk_score <= 3:
             signal = "buy"
@@ -160,6 +174,6 @@ class PortfolioAgent(BaseAgent):
             agent_name="portfolio",
             signal=signal,
             confidence=0.6,
-            reasoning=data.get("summary", raw_response[:300]),
+            reasoning=coerce_text(data.get("summary"), default=raw_text[:300], fallback_on_empty=True),
             raw_data=data,
         )
