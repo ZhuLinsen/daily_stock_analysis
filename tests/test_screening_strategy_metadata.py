@@ -667,3 +667,94 @@ screening:
     assert [pick.screen_score for pick in placeholder_result.picks] == pytest.approx(
         [pick.screen_score for pick in baseline_result.picks]
     )
+
+
+def test_pipeline_screen_preserves_tie_break_order_when_only_unknown_factor_weights(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import pandas as pd
+    from src.services.screening import pipeline as screening_pipeline
+    from src.services.screening.config import Config as RuntimeConfig
+
+    (tmp_path / "only_unknown_weights.yaml").write_text(
+        """
+name: only_unknown_weights
+display_name: Only Unknown Numeric Weights
+screening:
+  enabled: true
+  market_scope: [cn]
+  max_output: 1
+  factor_weights:
+    legacy_note: 1
+""".strip(),
+        encoding="utf-8",
+    )
+    (tmp_path / "empty_weights.yaml").write_text(
+        """
+name: empty_weights
+display_name: Empty Factor Weights
+screening:
+  enabled: true
+  market_scope: [cn]
+  max_output: 1
+""".strip(),
+        encoding="utf-8",
+    )
+
+    snapshot_df = pd.DataFrame([
+        {
+            "code": "600519", "name": "HighStab", "price": 100.0, "change_pct": 0.0,
+            "volume_ratio": 1.0, "turnover_rate": 2.0, "pe_ratio": 20.0, "pb_ratio": 3.0,
+            "total_mv": 5e10, "circ_mv": 4e10, "amount": 5e8,
+        },
+        {
+            "code": "000001", "name": "LowStab", "price": 12.0, "change_pct": 0.0,
+            "volume_ratio": 1.0, "turnover_rate": 2.0, "pe_ratio": 20.0, "pb_ratio": 3.0,
+            "total_mv": 5e10, "circ_mv": 4e10, "amount": 5e8,
+        },
+    ])
+    snapshot_df.attrs.update({
+        "snapshot_source": "test_snapshot",
+        "source_errors": [],
+        "fallback_used": False,
+    })
+
+    def fake_compute_scores(frame: pd.DataFrame, _screening) -> pd.DataFrame:
+        scored = frame.copy()
+        scored["factor_value_score"] = 50.0
+        scored["factor_liquidity_score"] = 50.0
+        scored["factor_momentum_score"] = 50.0
+        scored["factor_activity_score"] = 50.0
+        scored["factor_stability_score"] = [78.0 if code == "600519" else 69.0 for code in scored["code"]]
+        scored["screen_score"] = 50.0
+        return scored
+
+    runtime_cfg = RuntimeConfig(
+        strategies_dir=tmp_path,
+        daily_enrich_enabled=False,
+        post_analyzers=[],
+        risk_enabled=False,
+        portfolio_diversity_enabled=False,
+    )
+    monkeypatch.setattr(screening_pipeline, "fetch_snapshot_with_fallback", lambda *args, **kwargs: snapshot_df.copy())
+    monkeypatch.setattr(screening_pipeline, "compute_screen_scores", fake_compute_scores)
+    monkeypatch.setattr(screening_pipeline, "apply_dsa_provider_context", lambda picks, _ctx: [])
+
+    # Explicit non-empty factor_weights with only unknown keys falls back to [screen_score, code].
+    unknown_only_result = screening_pipeline.screen(
+        "only_unknown_weights",
+        market="cn",
+        use_llm=False,
+        config=runtime_cfg,
+    )
+    assert [pick.code for pick in unknown_only_result.picks] == ["000001"]
+
+    # Unconfigured factor_weights retains the default [stability, activity, momentum, value] tie-breaker.
+    empty_result = screening_pipeline.screen(
+        "empty_weights",
+        market="cn",
+        use_llm=False,
+        config=runtime_cfg,
+    )
+    assert [pick.code for pick in empty_result.picks] == ["600519"]
