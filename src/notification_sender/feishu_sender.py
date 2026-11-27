@@ -24,6 +24,7 @@ from urllib.parse import urlsplit
 import requests
 
 from src.config import Config
+from src.services.channel_renderers import is_public_web_url
 from src.formatters import (
     FENCED_CODE_BLOCK_RE,
     MIN_MAX_BYTES,
@@ -33,6 +34,7 @@ from src.formatters import (
     strip_hidden_markdown_metadata,
 )
 from src.report_language import SUPPORTED_REPORT_LANGUAGES, get_report_labels
+from src.services.channel_renderers import render_feishu_card_pages
 
 logger = logging.getLogger(__name__)
 
@@ -155,11 +157,7 @@ class FeishuSender:
 
     @staticmethod
     def _is_web_url(value: str) -> bool:
-        try:
-            url = urlsplit(value)
-            return url.scheme in {"http", "https"} and bool(url.hostname) and not any(char.isspace() for char in value)
-        except ValueError:
-            return False
+        return bool(value and is_public_web_url(value))
 
     @staticmethod
     def _is_risk_heading(line: str) -> bool:
@@ -369,7 +367,7 @@ class FeishuSender:
     # App Bot send helpers
     # ------------------------------------------------------------------
 
-    def _send_via_app_bot(self, content: str) -> bool:
+    def _send_via_app_bot(self, content: str, *, report_payload: Optional[Any] = None) -> bool:
         """Send message through the Feishu App Bot, chunking if necessary."""
         if not self._feishu_chat_id:
             logger.warning("FEISHU_CHAT_ID not configured, skipping App Bot send")
@@ -379,30 +377,51 @@ class FeishuSender:
         if client is None:
             return False
 
-        header = self._infer_card_header(content)
-        formatted = format_feishu_markdown(content)
-        web_url = self._web_url
-
-        def build_card(chunk: str) -> str:
-            return json.dumps(self._build_card_body(chunk, web_url=web_url, header=header), ensure_ascii=False)
-
-        def build_pages() -> list[tuple[str, str]]:
-            return self._build_card_pages(
-                formatted, build_card, self._feishu_max_bytes, self._app_card_request_bytes, _APP_MAX_REQUEST_BYTES,
-            )
-
-        try:
+        if report_payload is not None:
             try:
-                pages = build_pages()
-            except ValueError:
-                if not web_url:
-                    raise
-                logger.warning("App Bot card pagination budget insufficient, retrying without workbench button")
-                web_url = ""
-                pages = build_pages()
-        except ValueError as e:
-            logger.error("App Bot chunking failed: %s", e)
-            return False
+                card_pages = render_feishu_card_pages(
+                    report_payload,
+                    web_url=self._web_url,
+                    keyword="",
+                    max_bytes=self._feishu_max_bytes,
+                    request_limit=_APP_MAX_REQUEST_BYTES,
+                    request_bytes_fn=lambda card_body: self._app_card_request_bytes(
+                        json.dumps(card_body, ensure_ascii=False)
+                    ),
+                )
+                pages: list[tuple[str, str]] = [
+                    (plain, json.dumps(card_body, ensure_ascii=False))
+                    for plain, card_body in card_pages
+                ]
+            except Exception as e:
+                logger.warning("Feishu App Bot structured card build failed, falling back to Markdown rendering: %s", e)
+                report_payload = None
+
+        if report_payload is None:
+            header = self._infer_card_header(content)
+            formatted = format_feishu_markdown(content)
+            web_url = self._web_url
+
+            def build_card(chunk: str) -> str:
+                return json.dumps(self._build_card_body(chunk, web_url=web_url, header=header), ensure_ascii=False)
+
+            def build_pages() -> list[tuple[str, str]]:
+                return self._build_card_pages(
+                    formatted, build_card, self._feishu_max_bytes, self._app_card_request_bytes, _APP_MAX_REQUEST_BYTES,
+                )
+
+            try:
+                try:
+                    pages = build_pages()
+                except ValueError:
+                    if not web_url:
+                        raise
+                    logger.warning("App Bot card pagination budget insufficient, retrying without workbench button")
+                    web_url = ""
+                    pages = build_pages()
+            except ValueError as e:
+                logger.error("App Bot chunking failed: %s", e)
+                return False
 
         success = True
         for i, (chunk, card_payload) in enumerate(pages):
@@ -517,7 +536,13 @@ class FeishuSender:
     # Public API
     # ------------------------------------------------------------------
 
-    def send_to_feishu(self, content: str, *, timeout_seconds: Optional[float] = None) -> bool:
+    def send_to_feishu(
+        self,
+        content: str,
+        *,
+        report_payload: Optional[Any] = None,
+        timeout_seconds: Optional[float] = None,
+    ) -> bool:
         """
         Push a message to Feishu.
 
@@ -534,7 +559,15 @@ class FeishuSender:
             return False
         sanitized_content = strip_hidden_markdown_metadata(content).strip()
         if self._feishu_url:
+            if report_payload is not None:
+                return self._send_via_webhook(
+                    sanitized_content,
+                    report_payload=report_payload,
+                    timeout_seconds=timeout_seconds,
+                )
             return self._send_via_webhook(sanitized_content, timeout_seconds=timeout_seconds)
+        if report_payload is not None:
+            return self._send_via_app_bot(sanitized_content, report_payload=report_payload)
         return self._send_via_app_bot(sanitized_content)
 
     def send_feishu_file(self, file_path: str) -> bool:
@@ -695,49 +728,95 @@ class FeishuSender:
     # Webhook path
     # ------------------------------------------------------------------
 
-    def _send_via_webhook(self, content: str, *, timeout_seconds: Optional[float] = None) -> bool:
+    def _send_via_webhook(
+        self,
+        content: str,
+        *,
+        report_payload: Optional[Any] = None,
+        timeout_seconds: Optional[float] = None,
+    ) -> bool:
         """Budget the report using the same JSON encoding as requests.post."""
-        header = self._infer_card_header(content)
-        formatted_content = format_feishu_markdown(content)
         content_budget = self._feishu_max_bytes - len(self._get_keyword_prefix().encode("utf-8"))
         if content_budget <= 0:
             logger.error("Feishu keyword exceeds max bytes allowed per message, cannot send")
             return False
         sample_security_fields = self._build_security_fields()
         web_url = self._web_url
+        pages: Optional[list[Tuple[str, Optional[Dict[str, Any]]]]] = None
 
-        def build_payload(chunk: str) -> Dict[str, Any]:
-            return {
-                "msg_type": "interactive",
-                "card": self._build_card_body(self._apply_keyword_prefix(chunk), web_url=web_url, header=header),
-                **sample_security_fields,
-            }
-
-        try:
+        if report_payload is not None:
             try:
-                pages = self._build_card_pages(
-                    formatted_content, build_payload, content_budget, self._webhook_payload_bytes, _WEBHOOK_MAX_REQUEST_BYTES,
+                def _structured_request_bytes(card_body: Dict[str, Any]) -> int:
+                    return self._webhook_payload_bytes(
+                        {"msg_type": "interactive", "card": card_body, **sample_security_fields}
+                    )
+
+                card_pages = render_feishu_card_pages(
+                    report_payload,
+                    web_url=web_url,
+                    keyword=self._feishu_keyword,
+                    max_bytes=content_budget,
+                    request_limit=_WEBHOOK_MAX_REQUEST_BYTES,
+                    request_bytes_fn=_structured_request_bytes,
                 )
-            except ValueError:
-                if not web_url:
-                    raise
-                logger.warning(
-                    "Feishu Webhook card pagination budget insufficient, retrying without workbench button"
-                )
-                web_url = ""
-                pages = self._build_card_pages(
-                    formatted_content, build_payload, content_budget, self._webhook_payload_bytes, _WEBHOOK_MAX_REQUEST_BYTES,
-                )
-        except ValueError as e:
-            # A long keyword can fit in a text request but leave no room for a card.
-            text_payload = self._build_webhook_text_payload(formatted_content, sample_security_fields)
-            if (
-                len(formatted_content.encode("utf-8")) > content_budget
-                or self._webhook_payload_bytes(text_payload) > _WEBHOOK_MAX_REQUEST_BYTES
-            ):
-                logger.error("Feishu Webhook card build or chunking failed: %s", e)
-                return False
-            pages = [(formatted_content, None)]
+                kw_prefix = self._get_keyword_prefix()
+                pages = []
+                for plain_chunk, card_body in card_pages:
+                    fallback_plain = (
+                        plain_chunk[len(kw_prefix):]
+                        if kw_prefix and plain_chunk.startswith(kw_prefix)
+                        else plain_chunk
+                    )
+                    pages.append(
+                        (
+                            fallback_plain,
+                            {
+                                "msg_type": "interactive",
+                                "card": card_body,
+                                **sample_security_fields,
+                            },
+                        )
+                    )
+            except Exception as e:
+                logger.warning("Feishu Webhook structured card build failed, falling back to Markdown rendering: %s", e)
+                pages = None
+
+        if pages is None:
+            header = self._infer_card_header(content)
+            formatted_content = format_feishu_markdown(content)
+
+            def build_payload(chunk: str) -> Dict[str, Any]:
+                return {
+                    "msg_type": "interactive",
+                    "card": self._build_card_body(self._apply_keyword_prefix(chunk), web_url=web_url, header=header),
+                    **sample_security_fields,
+                }
+
+            try:
+                try:
+                    pages = self._build_card_pages(
+                        formatted_content, build_payload, content_budget, self._webhook_payload_bytes, _WEBHOOK_MAX_REQUEST_BYTES,
+                    )
+                except ValueError:
+                    if not web_url:
+                        raise
+                    logger.warning(
+                        "Feishu Webhook card pagination budget insufficient, retrying without workbench button"
+                    )
+                    web_url = ""
+                    pages = self._build_card_pages(
+                        formatted_content, build_payload, content_budget, self._webhook_payload_bytes, _WEBHOOK_MAX_REQUEST_BYTES,
+                    )
+            except ValueError as e:
+                # A long keyword can fit in a text request but leave no room for a card.
+                text_payload = self._build_webhook_text_payload(formatted_content, sample_security_fields)
+                if (
+                    len(formatted_content.encode("utf-8")) > content_budget
+                    or self._webhook_payload_bytes(text_payload) > _WEBHOOK_MAX_REQUEST_BYTES
+                ):
+                    logger.error("Feishu Webhook card build or chunking failed: %s", e)
+                    return False
+                pages = [(formatted_content, None)]
 
         total_chunks = len(pages)
         success_count = 0

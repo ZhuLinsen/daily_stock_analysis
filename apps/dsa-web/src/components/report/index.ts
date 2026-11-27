@@ -1,4 +1,5 @@
 export * from './ReportSummary';
+export * from './ReportDecisionBrief';
 export * from './ReportPriceLevelsChart';
 export * from './ReportDiagnostics';
 export * from './AnalysisContextSummary';
@@ -11,3 +12,4 @@ export * from './ReportMarkdown';
 export * from './ReportMarkdownBody';
 export * from './MarketReviewReportView';
 export * from './ShareImageButton';
+export * from './ExportHtmlButton';

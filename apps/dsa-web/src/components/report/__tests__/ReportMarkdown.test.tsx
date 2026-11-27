@@ -6,6 +6,7 @@ import { ReportMarkdown } from '../ReportMarkdown';
 vi.mock('../../../api/history', () => ({
   historyApi: {
     getMarkdown: vi.fn(),
+    exportHtml: vi.fn(),
   },
 }));
 
@@ -29,5 +30,6 @@ describe('ReportMarkdown', () => {
 
     expect(await screen.findByRole('button', { name: 'Copy Markdown Source' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Copy Plain Text' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Export HTML' })).toBeInTheDocument();
   });
 });

@@ -2939,3 +2939,27 @@ textarea {
   font-variant-numeric: tabular-nums slashed-zero;
   font-feature-settings: "tnum" 1, "zero" 1;
 }
+
+@media print {
+  @page {
+    margin: 14mm;
+  }
+
+  nav,
+  aside,
+  .print\:hidden {
+    display: none !important;
+  }
+
+  body {
+    background: #ffffff !important;
+    color: #0f172a !important;
+  }
+
+  .home-panel-card,
+  .home-report-hero,
+  .home-subpanel {
+    break-inside: avoid;
+    box-shadow: none !important;
+  }
+}

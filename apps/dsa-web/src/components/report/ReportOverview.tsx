@@ -1,19 +1,26 @@
 import type React from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Check, Copy, TriangleAlert } from 'lucide-react';
 import type {
   ReportDetails as ReportDetailsType,
   ReportMeta,
+  ReportStrategy as ReportStrategyType,
   ReportSummary as ReportSummaryType,
 } from '../../types/analysis';
 import { Badge, Button, Card, ScoreGauge } from '../common';
+import { Tooltip } from '../common/Tooltip';
 import { formatDateTime } from '../../utils/format';
 import { getMarketPhaseSummaryLabel, getPartialBarLabel } from '../../utils/marketPhase';
+import { buildDecisionBriefCopyText, parseReportMarketSnapshot } from '../../utils/reportDashboard';
 import { getReportText, normalizeReportLanguage } from '../../utils/reportLanguage';
 import { useUiLanguage } from '../../contexts/UiLanguageContext';
 import { ShareImageButton } from './ShareImageButton';
+import { ExportHtmlButton } from './ExportHtmlButton';
 
 interface ReportOverviewProps {
   meta: ReportMeta;
   summary: ReportSummaryType;
+  strategy?: ReportStrategyType;
   details?: ReportDetailsType;
   isHistory?: boolean;
   watchlist?: {
@@ -165,12 +172,59 @@ const buildPreparedRelatedBoards = (
 export const ReportOverview: React.FC<ReportOverviewProps> = ({
   meta,
   summary,
+  strategy,
   details,
   watchlist,
 }) => {
   const { t } = useUiLanguage();
   const reportLanguage = normalizeReportLanguage(meta.reportLanguage);
   const text = getReportText(reportLanguage);
+  const copyKey = `${meta.id ?? 'live'}:${meta.queryId || meta.stockCode}`;
+  const [copySnapshot, setCopySnapshot] = useState<{
+    key: string;
+    state: 'idle' | 'copied' | 'error';
+  }>(() => ({ key: copyKey, state: 'idle' }));
+  const copyResetTimerRef = useRef<number | null>(null);
+  const copyState = copySnapshot.key === copyKey ? copySnapshot.state : 'idle';
+
+  const clearCopyTimer = useCallback(() => {
+    if (copyResetTimerRef.current !== null) {
+      window.clearTimeout(copyResetTimerRef.current);
+      copyResetTimerRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => {
+    clearCopyTimer();
+    return () => {
+      clearCopyTimer();
+    };
+  }, [copyKey, clearCopyTimer]);
+
+  const decisionBriefCopyText = buildDecisionBriefCopyText({
+    meta,
+    summary,
+    strategy,
+    details,
+    language: reportLanguage,
+  });
+
+  const handleCopyBrief = async () => {
+    clearCopyTimer();
+    try {
+      await navigator.clipboard.writeText(decisionBriefCopyText);
+      setCopySnapshot({ key: copyKey, state: 'copied' });
+      copyResetTimerRef.current = window.setTimeout(() => {
+        setCopySnapshot((current) => (
+          current.key === copyKey ? { key: copyKey, state: 'idle' } : current
+        ));
+      }, 2200);
+    } catch (error) {
+      console.error('Copy decision brief failed:', error);
+      setCopySnapshot({ key: copyKey, state: 'error' });
+    }
+  };
+
   const marketPhaseLabel = getMarketPhaseSummaryLabel(meta.marketPhaseSummary, reportLanguage);
   const partialBarLabel = meta.marketPhaseSummary?.isPartialBar === true
     ? getPartialBarLabel(reportLanguage)
@@ -179,6 +233,40 @@ export const ReportOverview: React.FC<ReportOverviewProps> = ({
     .filter((board) => normalizeBoardName(board?.name).length > 0);
   const boardSignals = buildBoardSignalMaps(details);
   const preparedRelatedBoards = buildPreparedRelatedBoards(relatedBoards, boardSignals);
+  const marketSnapshot = parseReportMarketSnapshot(details);
+  const snapshotChips: Array<{ label: string; value: string }> = marketSnapshot
+    ? [
+        ...(marketSnapshot.open !== undefined
+          ? [{ label: text.openPrice, value: marketSnapshot.open.toFixed(2) }]
+          : []),
+        ...(marketSnapshot.high !== undefined && marketSnapshot.low !== undefined
+          ? [{
+              label: text.highLowRange,
+              value: `${marketSnapshot.high.toFixed(2)} / ${marketSnapshot.low.toFixed(2)}`,
+            }]
+          : []),
+        ...(marketSnapshot.amplitude !== undefined
+          ? [{ label: text.amplitude, value: `${marketSnapshot.amplitude.toFixed(2)}%` }]
+          : []),
+        ...(marketSnapshot.volumeRatio !== undefined
+          ? [{ label: text.volumeRatio, value: marketSnapshot.volumeRatio.toFixed(2) }]
+          : []),
+        ...(marketSnapshot.turnoverRate !== undefined
+          ? [{ label: text.turnoverRate, value: `${marketSnapshot.turnoverRate.toFixed(2)}%` }]
+          : []),
+        ...(marketSnapshot.peRatio !== undefined
+          ? [{ label: text.peRatio, value: marketSnapshot.peRatio.toFixed(1) }]
+          : []),
+        ...(marketSnapshot.pbRatio !== undefined
+          ? [{ label: text.pbRatio, value: marketSnapshot.pbRatio.toFixed(2) }]
+          : []),
+      ]
+    : [];
+  const copyBriefLabel = copyState === 'copied'
+    ? text.briefCopied
+    : copyState === 'error'
+      ? text.copyBriefFailed
+      : text.copyBrief;
 
   const getPriceChangeStyle = (changePct: number | undefined): React.CSSProperties | undefined => {
     if (changePct === undefined || changePct === null) {
@@ -250,10 +338,10 @@ export const ReportOverview: React.FC<ReportOverviewProps> = ({
         {/* 左侧：股票信息与结论 */}
         <div className="lg:col-span-2 space-y-5">
           {/* 股票头部 */}
-          <Card variant="gradient" padding="md" className="home-report-hero">
-            <div className="mb-5 flex items-start justify-between gap-3">
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-3">
+          <Card variant="gradient" padding="md" className="home-report-hero print:break-inside-avoid">
+            <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
+              <div className="min-w-[200px] flex-1">
+                <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
                   <h2 className="text-[28px] font-bold leading-tight text-foreground">
                     {meta.stockName || meta.stockCode}
                   </h2>
@@ -291,12 +379,52 @@ export const ReportOverview: React.FC<ReportOverviewProps> = ({
                   </span>
                 </div>
               </div>
-              <ShareImageButton
-                recordId={meta.id}
-                reportTitle={`${meta.stockName || meta.stockCode}-${meta.stockCode}`}
-                reportLanguage={reportLanguage}
-              />
+              <div className="flex flex-wrap items-center gap-2 print:hidden">
+                <Tooltip content={copyBriefLabel}>
+                  <span className="inline-flex shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => void handleCopyBrief()}
+                      className="home-surface-button flex h-10 shrink-0 items-center justify-center gap-2 whitespace-nowrap rounded-lg px-3 text-sm font-medium text-secondary-text hover:text-foreground"
+                      aria-label={copyBriefLabel}
+                    >
+                      {copyState === 'copied' ? <Check className="h-4 w-4 text-success" aria-hidden="true" /> : null}
+                      {copyState === 'error' ? <TriangleAlert className="h-4 w-4 text-danger" aria-hidden="true" /> : null}
+                      {copyState === 'idle' ? <Copy className="h-4 w-4" aria-hidden="true" /> : null}
+                      <span>{copyBriefLabel}</span>
+                    </button>
+                  </span>
+                </Tooltip>
+                <ExportHtmlButton
+                  recordId={meta.id}
+                  reportTitle={`${meta.stockName || meta.stockCode}-${meta.stockCode}`}
+                  reportLanguage={reportLanguage}
+                />
+                <ShareImageButton
+                  recordId={meta.id}
+                  reportTitle={`${meta.stockName || meta.stockCode}-${meta.stockCode}`}
+                  reportLanguage={reportLanguage}
+                />
+              </div>
             </div>
+
+            {snapshotChips.length > 0 ? (
+              <div
+                role="region"
+                aria-label={text.marketSnapshotLabel}
+                className="mb-4 flex flex-wrap gap-2"
+              >
+                {snapshotChips.map((chip) => (
+                  <div
+                    key={chip.label}
+                    className="home-subpanel inline-flex items-baseline gap-1.5 rounded-lg border border-border/60 px-2.5 py-1 text-xs"
+                  >
+                    <span className="text-muted-text">{chip.label}</span>
+                    <span className="num font-mono font-semibold text-foreground">{chip.value}</span>
+                  </div>
+                ))}
+              </div>
+            ) : null}
 
             {/* 关键结论 */}
             <div className="home-divider border-t pt-5">

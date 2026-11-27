@@ -16,7 +16,9 @@ A股自选股智能分析系统 - 通知层
 """
 from __future__ import annotations
 
+import inspect
 import logging
+import os
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -490,6 +492,53 @@ class NotificationService(
 
     def _should_show_llm_model(self) -> bool:
         return bool(getattr(self._config, "report_show_llm_model", self._report_show_llm_model))
+
+    def build_report_payload(
+        self,
+        results: List[AnalysisResult],
+        *,
+        report_date: Optional[str] = None,
+        single_stock: bool = False,
+        summary_only: Optional[bool] = None,
+        raw_markdown_fallback: str = "",
+    ):
+        """Build structured ViewModel payload for native multi-channel rendering."""
+        from src.services.report_payload import build_notification_report_payload
+
+        report_language = self._get_report_language(results)
+        web_url = os.environ.get("DSA_WEB_URL", "").strip()
+        effective_summary_only = (
+            bool(getattr(self, "_report_summary_only", False))
+            if summary_only is None
+            else bool(summary_only)
+        )
+        return build_notification_report_payload(
+            results,
+            report_date=report_date,
+            report_language=report_language,
+            single_stock=single_stock,
+            summary_only=effective_summary_only,
+            show_llm_model=self._should_show_llm_model(),
+            web_url=web_url,
+            market_status_line=self._public_market_status_line(results, report_language),
+            empty_news_fn=self._empty_news_disclosure,
+            raw_markdown_fallback=raw_markdown_fallback,
+        )
+
+    @staticmethod
+    def _supports_report_payload_kwarg(fn: Any) -> bool:
+        """Return True only when callable explicitly accepts a `report_payload` parameter."""
+        try:
+            param = inspect.signature(fn).parameters.get("report_payload")
+        except (TypeError, ValueError):
+            return False
+        return (
+            param is not None
+            and param.kind in (
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                inspect.Parameter.KEYWORD_ONLY,
+            )
+        )
 
     @staticmethod
     def detect_configured_channels(config: Config) -> List[NotificationChannel]:
@@ -2660,12 +2709,15 @@ class NotificationService(
         email_stock_codes: Optional[List[str]],
         email_send_to_all: bool,
         route_type: Optional[str] = None,
+        report_payload: Optional[Any] = None,
     ) -> bool:
         use_image = self._should_use_image_for_channel(channel, image_bytes)
         sanitized_content = strip_hidden_markdown_metadata(content).strip()
         if channel == NotificationChannel.WECHAT:
             if use_image:
                 return self._send_wechat_image(image_bytes)
+            if report_payload is not None and self._supports_report_payload_kwarg(self.send_to_wechat):
+                return self.send_to_wechat(content, report_payload=report_payload)
             return self.send_to_wechat(content)
         if channel == NotificationChannel.FEISHU:
             if getattr(self, "_feishu_send_as_file", False) and route_type == "report":
@@ -2674,12 +2726,16 @@ class NotificationService(
                     sanitized_content, filename=f"report_{date_str}.md"
                 )
                 return self.send_feishu_file(filepath)
+            if report_payload is not None and self._supports_report_payload_kwarg(self.send_to_feishu):
+                return self.send_to_feishu(sanitized_content, report_payload=report_payload)
             return self.send_to_feishu(sanitized_content)
         if channel == NotificationChannel.DINGTALK:
             return self.send_to_dingtalk(sanitized_content)
         if channel == NotificationChannel.TELEGRAM:
             if use_image:
                 return self._send_telegram_photo(image_bytes)
+            if report_payload is not None and self._supports_report_payload_kwarg(self.send_to_telegram):
+                return self.send_to_telegram(content, report_payload=report_payload)
             return self.send_to_telegram(content)
         if channel == NotificationChannel.EMAIL:
             receivers = None
@@ -2689,6 +2745,12 @@ class NotificationService(
                 receivers = self.get_receivers_for_stocks(email_stock_codes)
             if use_image:
                 return self._send_email_with_inline_image(image_bytes, receivers=receivers)
+            if report_payload is not None and self._supports_report_payload_kwarg(self.send_to_email):
+                return self.send_to_email(
+                    sanitized_content,
+                    receivers=receivers,
+                    report_payload=report_payload,
+                )
             return self.send_to_email(
                 sanitized_content,
                 receivers=receivers,
@@ -2728,6 +2790,7 @@ class NotificationService(
         dedup_key: Optional[str] = None,
         cooldown_key: Optional[str] = None,
         structured_payload: Optional[Dict[str, Any]] = None,
+        report_payload: Optional[Any] = None,
     ) -> NotificationDispatchResult:
         """
         Send a notification and return per-channel diagnostics.
@@ -2888,6 +2951,7 @@ class NotificationService(
                     email_stock_codes=email_stock_codes,
                     email_send_to_all=email_send_to_all,
                     route_type=route_type,
+                    report_payload=report_payload,
                 )
                 latency_ms = int((time.monotonic() - started_at) * 1000)
 
@@ -2950,6 +3014,7 @@ class NotificationService(
         dedup_key: Optional[str] = None,
         cooldown_key: Optional[str] = None,
         structured_payload: Optional[Dict[str, Any]] = None,
+        report_payload: Optional[Any] = None,
     ) -> bool:
         """
         统一发送接口 - 向所有已配置的渠道发送。
@@ -2966,6 +3031,7 @@ class NotificationService(
             dedup_key=dedup_key,
             cooldown_key=cooldown_key,
             structured_payload=structured_payload,
+            report_payload=report_payload,
         )
         return bool(result.success)
 

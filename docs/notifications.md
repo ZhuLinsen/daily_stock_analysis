@@ -43,14 +43,19 @@ Telegram 文本消息遇到 HTTP 429 时，优先按 [Bot API 的 `parameters.re
 
 ## 报告渲染与分片
 
-当前默认推送报告的入口、内容来源和整体版式保持不变。本阶段只收敛通知渲染的技术路线：沉淀渠道能力画像、发送前消息结构和结构感知分片能力，避免后续按渠道扩展时继续在各 sender 中堆叠平行逻辑。
+分析主流程（批量汇总与单股推送）现在通过 `src/services/report_payload.py` 构建结构化 `NotificationReportPayload`（含 Alert-First 紧急风险置顶排序、动态摘要标题、盈亏比与仓位/检查清单视图模型），并经 `src/services/channel_renderers.py` 为四大核心渠道执行原生渲染；未传 `report_payload`（如直接调用 `NotificationService.send(markdown)` 或交互式会话上下文回推）及其余渠道仍沿用既有 Markdown 渲染与分片逻辑：
 
-默认发送路径沿用既有 Markdown 兼容转换，企业微信、Slack 继续使用原有分片逻辑。飞书 Webhook 和 App Bot 从报告提取卡片标题、信号配色和独立风险警报面板，并按完整 JSON 请求体字节数分页。工作台按钮的配置见[飞书完整指南](full-guide.md#飞书)。渠道能力画像、PreparedMessage、renderer preset 和结构感知分片可用于后续接入渠道专用 renderer。
-
-兼容性排除说明：
-- `send_feishu_file()` 通过 App Bot 上传文件，Webhook 模式回退为发送文件内容文本。
-- `model_used` 只在报告渲染末尾展示，不参与 provider/model/base_url 的 runtime 选择、保存、清理或迁移。若某次 CI 扫描到“provider/API 兼容迁移”类关键词，命中范围应优先回归到测试夹具中的 `model_used` 示例与报告快照 fixture（`tests/fixtures/notification_reports/*.md`），以及 `src/notification.py` 对 `report_show_llm_model` 的仅展示开关逻辑。
-- `REPORT_SHOW_LLM_MODEL` 与 `report_renderer_enabled` 均为展示/降级策略开关：关闭仅影响报告可见结构，不会触发配置迁移或运行时参数回退；回退方式为恢复 `true`（或移除该项）或恢复默认配置。
+- **统一紧凑摘要与工作台链接**：`REPORT_SUMMARY_ONLY=true` 与 `REPORT_TYPE=brief` 对 Email、飞书、Telegram、企业微信四个结构化渲染渠道均生效（切换为紧凑摘要模式）；Email / Telegram 的 Web 跳转按钮统一读取 `DSA_WEB_URL`，飞书卡片沿用 `FEISHU_CARD_WEB_URL` 优先、留空回退 `DSA_WEB_URL`；为防止推送到移动端产生失效本地链接，`localhost`、`127.0.0.1`、`::1`、`0.0.0.0` 等回环或未指定地址将被自动忽略（未配置可访问地址时不展示工作台链接）。
+- **Alert-First 口径**：`alert_count` 统计触发紧急风险的标的数（卖出 / 减仓 / 异动告警，或附带风险警报且评分 `< 60` 的标的），置顶面板每只紧急标的最多展示 2 条（单股报告最多 4 条）、总计最多 6 条；当分析结果不含风险情报评估数据时，不展示虚假“未触发风险警报”提示框。
+- **Email**：直接基于结构化载荷生成内联样式表格 HTML（KPI 摘要条、Outlook MSO 固定宽度兼容包装、风险置顶面板、逐股决策卡与纯表格百分比价位标尺，无 CSS `position` 定位，不再在正文底部拼接原始 Markdown）。
+- **飞书（Webhook / App Bot）**：基于 `report_payload` 直接组装原生交互卡片 JSON（动态配色 `header`、`div.fields` 双列字段网格、风险面板、底部 `note` 与可选 Web CTA），对标的文本与情报文本做 `lark_md` 安全转义以防止 `<at>` 标签注入与格式错乱，按标的数量与完整请求字节上限安全分页；保留 `FEISHU_WEBHOOK_KEYWORD` 首段安全注入。
+- **Telegram**：直接渲染为 `parse_mode="HTML"`（`<blockquote>` 总览、`<blockquote expandable>` 折叠次要仓位/风险/检查清单细节、按 UTF-16 4000 上限整块分页并保留末尾链路与免责声明），HTML 解析失败时自动降级为纯文本重试；结构化渲染器异常时回退既有 Markdown 链路，实际网络发送失败时不重复回退。
+- **企业微信（Webhook）**：`markdown` 模式使用 `<font color="info|warning|comment">` 语义高亮并按 3950 UTF-8 字节边界安全切分；`text` 模式输出无标签纯文本并按 1950 字节切分；同样区分“渲染失败回退 Markdown”与“发送失败不重复整份重推”。
+- **离线 / 打印归档 HTML**：历史接口 `GET /api/v1/history/{record_id}/export-html` 复用同一结构化载荷渲染独立自包含 HTML（支持 `?inline=true`、内嵌 `<meta http-equiv="Content-Security-Policy">`、暗色模式与 `@media print` 浅色变量重置、内联 SVG 评分分布/价位标尺与关键估值量能快照，无内联脚本）。
+- 兼容性说明：
+  - `send_feishu_file()` 仍通过 App Bot 上传文件，Webhook 模式回退为发送文件内容文本。
+  - `model_used` 只在报告渲染末尾展示，不参与 provider/model/base_url 的 runtime 选择、保存、清理或迁移。若某次 CI 扫描到“provider/API 兼容迁移”类关键词，命中范围应优先回归到测试夹具中的 `model_used` 示例与报告快照 fixture（`tests/fixtures/notification_reports/*.md`），以及 `src/notification.py` 对 `report_show_llm_model` 的仅展示开关逻辑。
+  - `REPORT_SHOW_LLM_MODEL` 与 `report_renderer_enabled` 均为展示/降级策略开关：关闭仅影响报告可见结构，不会触发配置迁移或运行时参数回退；回退方式为恢复 `true`（或移除该项）或恢复默认配置。
 
 关联板块渲染保持报告正文生成阶段处理：没有行业/概念涨跌榜信号时，推送报告沿用原有单行样式，例如 `通信线缆及配套 / 通信设备 / 通信 / 江苏板块 / 科技风格`，不额外展示“类型”列。只有命中 `fundamental_context.boards.data` / `sector_rankings` 或 `fundamental_context.concept_boards.data` / `concept_rankings` 的领涨/领跌信号时，才使用表格展示“板块 / 类型 / 板块表现 / 板块涨跌幅”，其中“类型”列用于标明“行业板块”或“概念板块”。该逻辑仅影响报告展示，不改变 provider/model/Base URL、LiteLLM 路由、模型保存、迁移或清理逻辑。
 

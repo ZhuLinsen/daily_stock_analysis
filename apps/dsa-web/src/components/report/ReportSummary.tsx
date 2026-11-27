@@ -1,12 +1,14 @@
 import React from 'react';
 import type { AnalysisResult, AnalysisReport } from '../../types/analysis';
 import { ReportOverview } from './ReportOverview';
+import { ReportDecisionBrief } from './ReportDecisionBrief';
 import { ReportStrategy } from './ReportStrategy';
 import { ReportNews } from './ReportNews';
 import { ReportDetails } from './ReportDetails';
 import { ReportDiagnostics } from './ReportDiagnostics';
 import { AnalysisContextSummary } from './AnalysisContextSummary';
 import { MarketReviewReportView } from './MarketReviewReportView';
+import { getLegacyDecisionAction } from '../../utils/decisionAction';
 import { getReportText, normalizeReportLanguage } from '../../utils/reportLanguage';
 
 interface ReportSummaryProps {
@@ -57,15 +59,24 @@ export const ReportSummary: React.FC<ReportSummaryProps> = ({
     );
   }
 
+  const resolvedAction = summary.action ?? getLegacyDecisionAction(summary.operationAdvice) ?? undefined;
+
   return (
     <div className="space-y-5 pb-8 animate-fade-in">
       {/* 概览区（首屏） */}
       <ReportOverview
         meta={meta}
         summary={summary}
+        strategy={strategy}
         details={details}
         isHistory={isHistory}
         watchlist={watchlist}
+      />
+
+      {/* Alert-First 决策研报要点区（风险预警、仓位策略、利好归因与检查清单） */}
+      <ReportDecisionBrief
+        details={details}
+        language={reportLanguage}
       />
 
       {/* 策略点位区 */}
@@ -75,6 +86,7 @@ export const ReportSummary: React.FC<ReportSummaryProps> = ({
         recordId={recordId}
         stockCode={meta.stockCode}
         currentPrice={meta.currentPrice}
+        action={resolvedAction}
         historical={isHistory}
         reportDate={meta.createdAt}
       />

@@ -7,7 +7,7 @@ Telegram 发送提醒服务
 2. 通过 Telegram Bot API 发送 图片消息
 """
 import logging
-from typing import Optional
+from typing import Any, Optional
 import requests
 import time
 import re
@@ -19,6 +19,7 @@ from src.formatters import (
     strip_hidden_markdown_metadata,
     utf16_len,
 )
+from src.services.channel_renderers import render_telegram_html_chunks
 
 
 logger = logging.getLogger(__name__)
@@ -49,21 +50,15 @@ class TelegramSender:
         *,
         chat_id: Optional[str] = None,
         message_thread_id: Optional[str] = None,
+        report_payload: Optional[Any] = None,
         timeout_seconds: Optional[float] = None,
     ) -> bool:
         """
         推送消息到 Telegram 机器人
 
-        Telegram Bot API 格式：
-        POST https://api.telegram.org/bot<token>/sendMessage
-        {
-            "chat_id": "xxx",
-            "text": "消息内容",
-            "parse_mode": "Markdown"
-        }
-
         Args:
             content: 消息内容（Markdown 格式）
+            report_payload: 可选结构化报告载荷，存在时使用原生 HTML 渲染
 
         Returns:
             是否发送成功
@@ -89,6 +84,30 @@ class TelegramSender:
 
             # Telegram 消息最大长度 4096（按 UTF-16 code unit 计）
             max_length = 4096
+
+            if report_payload is not None:
+                html_chunks = []
+                try:
+                    html_chunks = render_telegram_html_chunks(report_payload, max_utf16_units=4000)
+                except Exception as e:
+                    logger.warning("Telegram structured HTML rendering failed, falling back to Markdown mode: %s", e)
+
+                if html_chunks:
+                    all_ok = True
+                    for html_chunk, plain_chunk in html_chunks:
+                        ok = self._send_telegram_message(
+                            api_url,
+                            chat_id,
+                            html_chunk,
+                            message_thread_id,
+                            timeout_seconds=timeout_seconds,
+                            markdown_converted=True,
+                            parse_mode="HTML",
+                            plain_fallback_text=plain_chunk,
+                        )
+                        if not ok:
+                            all_ok = False
+                    return all_ok
 
             sanitized_content = strip_hidden_markdown_metadata(content).strip()
             if not sanitized_content:
@@ -132,15 +151,18 @@ class TelegramSender:
         *,
         timeout_seconds: Optional[float] = None,
         markdown_converted: bool = False,
+        parse_mode: str = "Markdown",
+        plain_fallback_text: Optional[str] = None,
     ) -> bool:
         """Send a single Telegram message with exponential backoff retry (Fixes #287)"""
-        # Convert Markdown to Telegram-compatible format
+        # Convert Markdown to Telegram-compatible format unless preformatted
         telegram_text = text if markdown_converted else self._convert_to_telegram_markdown(text)
+        fallback_plain = plain_fallback_text if plain_fallback_text is not None else text
 
         payload = {
             "chat_id": chat_id,
             "text": telegram_text,
-            "parse_mode": "Markdown",
+            "parse_mode": parse_mode,
             "disable_web_page_preview": True
         }
 
@@ -171,9 +193,9 @@ class TelegramSender:
                     error_desc = result.get('description', 'unknown error')
                     logger.error(f"Telegram returned error: {error_desc}")
 
-                    # If Markdown parsing failed, fall back to plain text
+                    # If entity parsing failed, fall back to plain text
                     if self._should_fallback_to_plain_text(error_desc=error_desc):
-                        if self._send_plain_text_fallback(api_url, payload, text, timeout_seconds=timeout_seconds):
+                        if self._send_plain_text_fallback(api_url, payload, fallback_plain, timeout_seconds=timeout_seconds):
                             return True
 
                     return False
@@ -195,7 +217,7 @@ class TelegramSender:
                     time.sleep(delay)
                     continue
                 if self._should_fallback_to_plain_text(response_text=response.text):
-                    if self._send_plain_text_fallback(api_url, payload, text, timeout_seconds=timeout_seconds):
+                    if self._send_plain_text_fallback(api_url, payload, fallback_plain, timeout_seconds=timeout_seconds):
                         return True
                 logger.error(f"Telegram request failed: HTTP {response.status_code}")
                 logger.error(f"Response body: {response.text}")
@@ -231,6 +253,10 @@ class TelegramSender:
             "parse entities",
             "parse_mode",
             "markdown",
+            "unsupported start tag",
+            "can't parse",
+            "unexpected end tag",
+            "html",
         )
         return any(marker in haystack for marker in markers)
 

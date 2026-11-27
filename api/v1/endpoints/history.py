@@ -10,6 +10,7 @@
 """
 
 import logging
+import re
 from typing import Any, Mapping, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Depends, Body
@@ -65,6 +66,12 @@ from src.share_image import (
     build_share_image_html,
     share_image_branding_from_config,
 )
+from src.services.channel_renderers import render_standalone_html
+from src.services.report_payload import (
+    NotificationReportPayload,
+    build_history_report_payload,
+)
+from src.report_language import get_report_labels
 
 logger = logging.getLogger(__name__)
 
@@ -999,3 +1006,112 @@ def get_history_markdown(
         )
 
     return MarkdownReportResponse(content=markdown_content)
+
+
+@router.get(
+    "/{record_id}/export-html",
+    response_class=HTMLResponse,
+    responses={
+        200: {"description": "离线可打印 HTML 报告"},
+        404: {"description": "报告不存在", "model": ErrorResponse},
+        500: {"description": "报告生成失败", "model": ErrorResponse},
+    },
+    summary="导出历史报告独立 HTML",
+    description="根据历史分析记录生成独立、响应式且适配 A4 打印的 HTML 归档报告",
+)
+def export_history_html(
+    record_id: str,
+    inline: bool = Query(False, description="True 时浏览器内联打开，False 时作为离线 HTML 文件下载"),
+    db_manager: DatabaseManager = Depends(get_database_manager),
+) -> HTMLResponse:
+    """Export an analysis or market-review record as a standalone printable HTML document."""
+    service = HistoryService(db_manager)
+    result = service.resolve_and_get_detail(record_id)
+    if result is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": "not_found",
+                "message": f"未找到 id/query_id={record_id} 的分析记录",
+            },
+        )
+
+    raw_result = result.get("raw_result")
+    raw_map = raw_result if isinstance(raw_result, Mapping) else {}
+    report_lang = normalize_report_language(
+        result.get("report_language") or raw_map.get("report_language")
+    )
+    labels = get_report_labels(report_lang)
+    created_at = str(result.get("created_at") or "").strip()
+    report_date = created_at[:10] if len(created_at) >= 10 else ""
+    generated_at = created_at.replace("T", " ")[:16] if created_at else report_date
+    model_used = normalize_model_used(result.get("model_used"))
+
+    try:
+        if result.get("report_type") == "market_review":
+            try:
+                markdown_content = service.get_markdown_report(record_id) or ""
+            except MarkdownReportGenerationError:
+                markdown_content = ""
+            ctx = result.get("context_snapshot")
+            market_payload = ctx.get("market_review_payload") if isinstance(ctx, Mapping) else {}
+            market_map = market_payload if isinstance(market_payload, Mapping) else {}
+            title = str(
+                market_map.get("root_title")
+                or market_map.get("title")
+                or result.get("stock_name")
+                or "Market Review"
+            ).strip()
+            shell_payload = NotificationReportPayload(
+                report_date=report_date or "N/A",
+                generated_at=generated_at or "N/A",
+                report_language=report_lang,
+                single_stock=True,
+                summary_only=False,
+                dynamic_title=title,
+                header_tone="blue",
+                total_count=1,
+                buy_count=0,
+                hold_count=1,
+                sell_count=0,
+                alert_count=0,
+                avg_score=float(result.get("sentiment_score") or 50),
+                market_status_line="",
+                models_used=[model_used] if model_used else [],
+                disclaimer=labels["not_investment_advice"],
+                raw_markdown_fallback=markdown_content,
+            )
+            html = render_standalone_html(
+                shell_payload,
+                title_override=title,
+                market_review_markdown=markdown_content or str(result.get("analysis_summary") or ""),
+            )
+        else:
+            payload = build_history_report_payload(result)
+            html = render_standalone_html(payload)
+    except Exception as exc:
+        logger.error("Standalone HTML export failed for %s: %s", record_id, exc, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "generation_failed",
+                "message": "生成 HTML 导出报告失败",
+            },
+        ) from exc
+
+    raw_code = str(result.get("stock_code") or record_id or "report")
+    safe_code = re.sub(r"[^A-Za-z0-9_.-]+", "-", raw_code).strip("-") or "report"
+    record_pk = str(result.get("id") or safe_code)
+    safe_pk = re.sub(r"[^A-Za-z0-9_.-]+", "-", record_pk).strip("-") or "export"
+    filename = f"dsa-report-{safe_code}-{safe_pk}.html"
+    disposition = "inline" if inline else f'attachment; filename="{filename}"'
+
+    return HTMLResponse(
+        content=html,
+        headers={
+            "Content-Disposition": disposition,
+            "Cache-Control": "no-store",
+            "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; img-src data:",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
