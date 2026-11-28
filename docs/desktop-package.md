@@ -80,7 +80,7 @@ powershell -ExecutionPolicy Bypass -File scripts\build-all.ps1
 
 ### macOS 提示“应用已损坏，无法打开”
 
-当前 macOS DMG 尚未使用 Apple Developer 证书签名和公证。构建配置会显式生成 unsigned 应用，在 PyInstaller 产物首次执行前清理残缺签名，并通过 electron-builder `afterPack` hook 在 DMG 创建前再次清理完整 `.app`；CI 还会检查 Electron 原始 `.app` 和 DMG 挂载后的 `.app`，阻止再次发布带有 `code has no resources but signature indicates they must be present` 等损坏签名的产物。该处理只能缓解 v3.27.0 的残缺签名缺陷，**不会让应用获得 Apple 信任**。通过浏览器下载后，macOS Gatekeeper 仍可能提示“无法验证开发者”、阻止启动，或要求用户人工确认。
+当前 macOS DMG 尚未使用 Apple Developer 证书签名和公证。由于 Apple Silicon（arm64）强制要求 Mach-O 可执行文件具备有效代码签名（否则会被内核直接终止，点击图标无反应），构建配置会在禁用外部开发者证书的前提下（`identity: null`、`hardenedRuntime: false`），在 PyInstaller 冻结后端完成后、以及 electron-builder `afterPack` hook 创建 DMG 前，通过 `scripts/macos-signature-audit.sh normalize` 由内向外统一补齐一致的 **ad-hoc 签名（`codesign --force --sign - --timestamp=none`）**（包括重签遗留的第三方非 ad-hoc 证书签名，避免混合签名）；CI 还会审计 Electron 原始 `.app`、DMG 挂载后的 `.app`（要求全部 Mach-O 与 bundle 均为统一 `Signature=adhoc` 且通过 `codesign --verify --deep --strict`），并在本机架构上模拟从 DMG 安装后实际启动桌面端直到内置后端通过 `/api/health` 且主界面加载完成。该处理可解决无签名与残缺/混合签名导致的启动失败，但**不会让应用获得 Apple 公证信任**；通过浏览器下载后，macOS Gatekeeper 仍会给 `.dmg`/`.app` 添加 `com.apple.quarantine` 隔离属性，用户首次打开仍需在“隐私与安全性”点击“仍要打开”或执行一次 `xattr -dr com.apple.quarantine` 放行。
 
 请按以下顺序排查：
 
@@ -93,16 +93,25 @@ xattr -dr com.apple.quarantine "/Applications/Daily Stock Analysis.app"
 open "/Applications/Daily Stock Analysis.app"
 ```
 
-如果应用不在 `/Applications`，请将命令中的路径替换为实际 `.app` 路径。不要对整个“应用程序”目录执行 `xattr`，也不要对来源不明的应用执行此命令。不同 macOS 版本可能仍拒绝 unsigned 应用，清除 quarantine 不保证能够放行。长期彻底消除该提示需要在发布流程中接入 Apple Developer 签名与 notarization（公证），不属于上述临时放行步骤。
-
-维护者可用以下命令区分“预期的 unsigned 拒绝”和“不可发布的残缺签名”：
+如果仍使用未补齐 ad-hoc 签名的历史版本（如 `v3.35.0` 的 Apple Silicon arm64 打包产物）且清除了 quarantine 后点击依然无反应，**建议优先升级到已包含 `macos-signature-audit.sh` ad-hoc 签名修复的新版本 DMG**；如需就地临时修复，因 `codesign --deep` 不会递归处理放在 `Contents/Resources/backend` 中的冻结后端，须先补签后端 Mach-O 再重签外层 `.app`：
 
 ```bash
-codesign -d "/Applications/Daily Stock Analysis.app"
+find "/Applications/Daily Stock Analysis.app/Contents/Resources/backend" -type f -exec sh -c 'file -b "$1" | grep -q "Mach-O" && codesign --force --sign - --timestamp=none "$1"' _ {} \;
+codesign --force --deep --sign - --timestamp=none "/Applications/Daily Stock Analysis.app"
+open "/Applications/Daily Stock Analysis.app"
+```
+
+如果应用不在 `/Applications`，请将命令中的路径替换为实际 `.app` 路径。不要对整个“应用程序”目录执行 `xattr`，也不要对来源不明的应用执行上述命令。长期彻底消除 Gatekeeper 提示仍需要在发布流程中接入 Apple Developer 签名与 notarization（公证），不属于上述临时放行步骤。
+
+维护者可用以下命令区分“正常的 ad-hoc 未公证拒绝”和“不可发布的残缺/缺失签名”：
+
+```bash
+codesign -d --verbose=4 "/Applications/Daily Stock Analysis.app"
+codesign --verify --deep --strict --verbose=4 "/Applications/Daily Stock Analysis.app"
 spctl --assess --type execute --verbose=4 "/Applications/Daily Stock Analysis.app"
 ```
 
-当前 unsigned 产物的 `codesign -d` 预期包含 `code object is not signed at all`，`spctl` 预期拒绝；如果输出 `code has no resources but signature indicates they must be present` 或其它签名损坏信息，应视为发布阻断。
+当前 ad-hoc 签名产物的 `codesign -d --verbose=4` 与 `codesign --verify --deep --strict --verbose=4` 必须成功，允许 `spctl` 因缺少 Apple Developer 公证而拒绝；如果输出 `code object is not signed at all` 或 `code has no resources but signature indicates they must be present` 等签名损坏信息，应视为发布阻断。
 
 建议发布流程：
 

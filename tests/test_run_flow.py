@@ -1299,6 +1299,604 @@ class RunFlowTestCase(unittest.TestCase):
         self.assertIn("<redacted>", payload)
         self.assertIn("<redacted-path>", payload)
 
+    def test_active_concurrent_same_provider_calls_do_not_create_retry_edge(self) -> None:
+        flow_events: list[dict] = []
+        token = activate_run_diagnostic_context(
+            trace_id="trace-concurrent-ok",
+            task_id="task-concurrent-ok",
+            query_id="query-concurrent-ok",
+            stock_code="600519",
+            trigger_source="api",
+            event_sink=flow_events.append,
+        )
+        try:
+            record_provider_run_started(
+                data_type="realtime_quote",
+                provider="AkshareFetcher",
+                operation="get_realtime_quote",
+            )
+            record_provider_run_started(
+                data_type="realtime_quote",
+                provider="AkshareFetcher",
+                operation="get_realtime_quote",
+            )
+            record_provider_run(
+                data_type="realtime_quote",
+                provider="AkshareFetcher",
+                operation="get_realtime_quote",
+                success=True,
+                latency_ms=40,
+                record_count=1,
+            )
+            record_provider_run(
+                data_type="realtime_quote",
+                provider="AkshareFetcher",
+                operation="get_realtime_quote",
+                success=True,
+                latency_ms=55,
+                record_count=1,
+            )
+        finally:
+            reset_run_diagnostic_context(token)
+
+        snapshot = build_task_run_flow_snapshot(
+            TaskInfo(
+                task_id="task-concurrent-ok",
+                trace_id="trace-concurrent-ok",
+                stock_code="600519",
+                stock_name="贵州茅台",
+                status=TaskStatus.PROCESSING,
+                created_at=datetime(2026, 6, 8, 8, 0, 0),
+                flow_events=flow_events,
+            )
+        )
+        edge_payload = [edge.model_dump(by_alias=True) for edge in snapshot.edges]
+        self.assertEqual(snapshot.summary.fallback_count, 0)
+        self.assertFalse(any(edge["kind"] in {"fallback", "retry"} for edge in edge_payload))
+        provider_edges = [edge for edge in edge_payload if edge["to"].startswith("provider_")]
+        self.assertEqual(len(provider_edges), 2)
+        self.assertEqual(
+            {(edge["from"], edge["kind"]) for edge in provider_edges},
+            {("task_queue", "control")},
+        )
+
+    def test_active_snapshot_preserves_fallback_source_when_concurrent_call_succeeds(self) -> None:
+        flow_events: list[dict] = []
+        token = activate_run_diagnostic_context(
+            trace_id="trace-concurrent-fb",
+            task_id="task-concurrent-fb",
+            query_id="query-concurrent-fb",
+            stock_code="600519",
+            trigger_source="api",
+            event_sink=flow_events.append,
+        )
+        try:
+            record_provider_run_started(
+                data_type="realtime_quote",
+                provider="AkshareFetcher",
+                operation="get_realtime_quote",
+            )
+            record_provider_run_started(
+                data_type="realtime_quote",
+                provider="AkshareFetcher",
+                operation="get_realtime_quote",
+            )
+            record_provider_run(
+                data_type="realtime_quote",
+                provider="AkshareFetcher",
+                operation="get_realtime_quote",
+                success=False,
+                latency_ms=30,
+                error_type="empty",
+                fallback_to="akshare_sina",
+                record_count=0,
+            )
+            record_provider_run(
+                data_type="realtime_quote",
+                provider="AkshareFetcher",
+                operation="get_realtime_quote",
+                success=True,
+                latency_ms=45,
+                record_count=1,
+            )
+            record_provider_run_started(
+                data_type="realtime_quote",
+                provider="AkshareFetcher",
+                operation="get_realtime_quote",
+            )
+            record_provider_run(
+                data_type="realtime_quote",
+                provider="AkshareFetcher",
+                operation="get_realtime_quote",
+                success=True,
+                latency_ms=60,
+                fallback_from="tencent",
+                record_count=1,
+            )
+        finally:
+            reset_run_diagnostic_context(token)
+
+        snapshot = build_task_run_flow_snapshot(
+            TaskInfo(
+                task_id="task-concurrent-fb",
+                trace_id="trace-concurrent-fb",
+                stock_code="600519",
+                stock_name="贵州茅台",
+                status=TaskStatus.PROCESSING,
+                created_at=datetime(2026, 6, 8, 8, 0, 0),
+                flow_events=flow_events,
+            )
+        )
+        edge_payload = [edge.model_dump(by_alias=True) for edge in snapshot.edges]
+        self.assertEqual(snapshot.summary.fallback_count, 1)
+        fallback_edges = [edge for edge in edge_payload if edge["kind"] == "fallback"]
+        self.assertEqual(len(fallback_edges), 1)
+        self.assertEqual(fallback_edges[0]["from"], "provider_realtime_quote_aksharefetcher_1")
+        self.assertEqual(fallback_edges[0]["to"], "provider_realtime_quote_aksharefetcher_3")
+
+    def test_active_snapshot_ignores_unstarted_concurrent_success_when_linking_fallback(self) -> None:
+        flow_events: list[dict] = []
+        token = activate_run_diagnostic_context(
+            trace_id="trace-concurrent-direct-fb",
+            task_id="task-concurrent-direct-fb",
+            query_id="query-concurrent-direct-fb",
+            stock_code="600519",
+            trigger_source="api",
+            event_sink=flow_events.append,
+        )
+        try:
+            record_provider_run(
+                data_type="realtime_quote",
+                provider="AkshareFetcher",
+                operation="get_realtime_quote",
+                success=False,
+                latency_ms=30,
+                error_type="empty",
+                fallback_to="akshare_sina",
+                record_count=0,
+            )
+            record_provider_run(
+                data_type="realtime_quote",
+                provider="AkshareFetcher",
+                operation="get_realtime_quote",
+                success=True,
+                latency_ms=45,
+                record_count=1,
+            )
+            record_provider_run_started(
+                data_type="realtime_quote",
+                provider="AkshareFetcher",
+                operation="get_realtime_quote",
+            )
+            record_provider_run(
+                data_type="realtime_quote",
+                provider="AkshareFetcher",
+                operation="get_realtime_quote",
+                success=True,
+                latency_ms=60,
+                fallback_from="tencent",
+                record_count=1,
+            )
+        finally:
+            reset_run_diagnostic_context(token)
+
+        snapshot = build_task_run_flow_snapshot(
+            TaskInfo(
+                task_id="task-concurrent-direct-fb",
+                trace_id="trace-concurrent-direct-fb",
+                stock_code="600519",
+                stock_name="贵州茅台",
+                status=TaskStatus.PROCESSING,
+                created_at=datetime(2026, 6, 8, 8, 0, 0),
+                flow_events=flow_events,
+            )
+        )
+        edge_payload = [edge.model_dump(by_alias=True) for edge in snapshot.edges]
+        self.assertEqual(snapshot.summary.fallback_count, 1)
+        fallback_edges = [edge for edge in edge_payload if edge["kind"] == "fallback"]
+        self.assertEqual(len(fallback_edges), 1)
+        self.assertEqual(fallback_edges[0]["from"], "provider_realtime_quote_aksharefetcher_1")
+        self.assertEqual(fallback_edges[0]["to"], "provider_realtime_quote_aksharefetcher_3")
+
+    def test_active_and_history_ignore_mismatched_provider_start_for_explicit_fallback_target(self) -> None:
+        flow_events: list[dict] = []
+        token = activate_run_diagnostic_context(
+            trace_id="trace-fallback-steal",
+            task_id="task-fallback-steal",
+            query_id="query-fallback-steal",
+            stock_code="600519",
+            trigger_source="api",
+            event_sink=flow_events.append,
+        )
+        try:
+            record_provider_run_started(
+                data_type="realtime_quote",
+                provider="tencent",
+                operation="get_realtime_quote",
+            )
+            record_provider_run(
+                data_type="realtime_quote",
+                provider="tencent",
+                operation="get_realtime_quote",
+                success=False,
+                latency_ms=30,
+                error_type="empty",
+                fallback_to="akshare_sina",
+                record_count=0,
+            )
+            # Independent call B starts a tencent query and succeeds before call A starts akshare_sina.
+            record_provider_run_started(
+                data_type="realtime_quote",
+                provider="tencent",
+                operation="get_realtime_quote",
+            )
+            record_provider_run(
+                data_type="realtime_quote",
+                provider="tencent",
+                operation="get_realtime_quote",
+                success=True,
+                latency_ms=25,
+                record_count=1,
+            )
+            # Call A now starts its real fallback target akshare_sina and succeeds.
+            record_provider_run_started(
+                data_type="realtime_quote",
+                provider="akshare_sina",
+                operation="get_realtime_quote",
+            )
+            record_provider_run(
+                data_type="realtime_quote",
+                provider="akshare_sina",
+                operation="get_realtime_quote",
+                success=True,
+                latency_ms=40,
+                record_count=1,
+            )
+            diagnostics = current_diagnostic_snapshot()
+        finally:
+            reset_run_diagnostic_context(token)
+
+        self.assertIsNotNone(diagnostics)
+        active_snapshot = build_task_run_flow_snapshot(
+            TaskInfo(
+                task_id="task-fallback-steal",
+                trace_id="trace-fallback-steal",
+                stock_code="600519",
+                stock_name="贵州茅台",
+                status=TaskStatus.PROCESSING,
+                created_at=datetime(2026, 6, 8, 8, 0, 0),
+                flow_events=flow_events,
+            )
+        )
+        history_snapshot = build_history_run_flow_snapshot(
+            _history_record(context_snapshot={"diagnostics": diagnostics})
+        )
+
+        for label, snapshot in (("active", active_snapshot), ("history", history_snapshot)):
+            edges = [edge.model_dump(by_alias=True) for edge in snapshot.edges]
+            nodes = {node.id: node for node in snapshot.nodes}
+            self.assertEqual(snapshot.summary.fallback_count, 1, label)
+            fallback_edges = [edge for edge in edges if edge["kind"] in {"fallback", "retry"}]
+            self.assertEqual(len(fallback_edges), 1, label)
+            self.assertEqual(fallback_edges[0]["kind"], "fallback", label)
+            self.assertEqual(fallback_edges[0]["from"], "provider_realtime_quote_tencent_1", label)
+            self.assertEqual(fallback_edges[0]["to"], "provider_realtime_quote_akshare_sina_3", label)
+            self.assertEqual(nodes["provider_realtime_quote_tencent_2"].status, "success", label)
+            self.assertTrue(
+                any(
+                    edge["from"] == "task_queue"
+                    and edge["to"] == "provider_realtime_quote_tencent_2"
+                    and edge["kind"] == "control"
+                    for edge in edges
+                ),
+                label,
+            )
+
+        # Also verify fetcher class name matching: TencentFetcher fails with fallback_to="akshare_sina",
+        # independent TencentFetcher starts & succeeds, then AkshareFetcher claims the fallback edge.
+        fetcher_events: list[dict] = []
+        token = activate_run_diagnostic_context(
+            trace_id="trace-fallback-fetcher-token",
+            task_id="task-fallback-fetcher-token",
+            query_id="query-fallback-fetcher-token",
+            stock_code="600519",
+            trigger_source="api",
+            event_sink=fetcher_events.append,
+        )
+        try:
+            record_provider_run_started(
+                data_type="realtime_quote",
+                provider="TencentFetcher",
+                operation="get_realtime_quote",
+            )
+            record_provider_run(
+                data_type="realtime_quote",
+                provider="TencentFetcher",
+                operation="get_realtime_quote",
+                success=False,
+                latency_ms=30,
+                error_type="empty",
+                fallback_to="akshare_sina",
+                record_count=0,
+            )
+            record_provider_run_started(
+                data_type="realtime_quote",
+                provider="TencentFetcher",
+                operation="get_realtime_quote",
+            )
+            record_provider_run(
+                data_type="realtime_quote",
+                provider="TencentFetcher",
+                operation="get_realtime_quote",
+                success=True,
+                latency_ms=25,
+                record_count=1,
+            )
+            record_provider_run_started(
+                data_type="realtime_quote",
+                provider="AkshareFetcher",
+                operation="get_realtime_quote",
+            )
+            record_provider_run(
+                data_type="realtime_quote",
+                provider="AkshareFetcher",
+                operation="get_realtime_quote",
+                success=True,
+                latency_ms=40,
+                record_count=1,
+            )
+            fetcher_diagnostics = current_diagnostic_snapshot()
+        finally:
+            reset_run_diagnostic_context(token)
+
+        self.assertIsNotNone(fetcher_diagnostics)
+        fetcher_active = build_task_run_flow_snapshot(
+            TaskInfo(
+                task_id="task-fallback-fetcher-token",
+                trace_id="trace-fallback-fetcher-token",
+                stock_code="600519",
+                stock_name="贵州茅台",
+                status=TaskStatus.PROCESSING,
+                created_at=datetime(2026, 6, 8, 8, 0, 0),
+                flow_events=fetcher_events,
+            )
+        )
+        fetcher_history = build_history_run_flow_snapshot(
+            _history_record(context_snapshot={"diagnostics": fetcher_diagnostics})
+        )
+        for label, snapshot in (("fetcher_active", fetcher_active), ("fetcher_history", fetcher_history)):
+            edges = [edge.model_dump(by_alias=True) for edge in snapshot.edges]
+            fallback_edges = [edge for edge in edges if edge["kind"] in {"fallback", "retry"}]
+            self.assertEqual(snapshot.summary.fallback_count, 1, label)
+            self.assertEqual(len(fallback_edges), 1, label)
+            self.assertEqual(fallback_edges[0]["from"], "provider_realtime_quote_tencentfetcher_1", label)
+            self.assertEqual(fallback_edges[0]["to"], "provider_realtime_quote_aksharefetcher_3", label)
+
+    def test_history_concurrent_same_provider_fail_then_success_does_not_infer_retry(self) -> None:
+        flow_events: list[dict] = []
+        token = activate_run_diagnostic_context(
+            trace_id="trace-concurrent-fail-ok",
+            task_id="task-concurrent-fail-ok",
+            query_id="query-concurrent-fail-ok",
+            stock_code="600519",
+            trigger_source="api",
+            event_sink=flow_events.append,
+        )
+        try:
+            # Two independent concurrent AkshareFetcher quote calls (single source, no fallback_to).
+            record_provider_run_started(
+                data_type="realtime_quote",
+                provider="AkshareFetcher",
+                operation="get_realtime_quote",
+            )
+            record_provider_run_started(
+                data_type="realtime_quote",
+                provider="AkshareFetcher",
+                operation="get_realtime_quote",
+            )
+            record_provider_run(
+                data_type="realtime_quote",
+                provider="AkshareFetcher",
+                operation="get_realtime_quote",
+                success=False,
+                latency_ms=40,
+                error_type="TimeoutError",
+                record_count=0,
+            )
+            record_provider_run(
+                data_type="realtime_quote",
+                provider="AkshareFetcher",
+                operation="get_realtime_quote",
+                success=True,
+                latency_ms=55,
+                record_count=1,
+            )
+            diagnostics = current_diagnostic_snapshot()
+        finally:
+            reset_run_diagnostic_context(token)
+
+        self.assertIsNotNone(diagnostics)
+        active_snapshot = build_task_run_flow_snapshot(
+            TaskInfo(
+                task_id="task-concurrent-fail-ok",
+                trace_id="trace-concurrent-fail-ok",
+                stock_code="600519",
+                stock_name="贵州茅台",
+                status=TaskStatus.PROCESSING,
+                created_at=datetime(2026, 6, 8, 8, 0, 0),
+                flow_events=flow_events,
+            )
+        )
+        history_snapshot = build_history_run_flow_snapshot(
+            _history_record(context_snapshot={"diagnostics": diagnostics})
+        )
+
+        for label, snapshot in (("active", active_snapshot), ("history", history_snapshot)):
+            edges = [edge.model_dump(by_alias=True) for edge in snapshot.edges]
+            nodes = {node.id: node for node in snapshot.nodes}
+            self.assertEqual(snapshot.summary.fallback_count, 0, label)
+            self.assertFalse(any(edge["kind"] in {"fallback", "retry"} for edge in edges), label)
+            self.assertEqual(nodes["provider_realtime_quote_aksharefetcher_2"].status, "success", label)
+            provider_edges = [edge for edge in edges if edge["to"].startswith("provider_")]
+            self.assertEqual(len(provider_edges), 2, label)
+            self.assertEqual(
+                {(edge["from"], edge["kind"]) for edge in provider_edges},
+                {("task_queue", "control")},
+                label,
+            )
+
+        # Also verify legacy persisted diagnostics without start_seq/end_seq using created_at + latency_ms overlap.
+        legacy_diagnostics = {
+            "trace_id": "trace-legacy-concurrent",
+            "task_id": "task-legacy-concurrent",
+            "query_id": "query-legacy-concurrent",
+            "stock_code": "600519",
+            "provider_runs": [
+                {
+                    "trace_id": "trace-legacy-concurrent",
+                    "data_type": "realtime_quote",
+                    "provider": "AkshareFetcher",
+                    "operation": "get_realtime_quote",
+                    "success": False,
+                    "latency_ms": 200,
+                    "error_type": "TimeoutError",
+                    "created_at": "2026-06-08T10:00:01.200000",
+                },
+                {
+                    "trace_id": "trace-legacy-concurrent",
+                    "data_type": "realtime_quote",
+                    "provider": "AkshareFetcher",
+                    "operation": "get_realtime_quote",
+                    "success": True,
+                    "latency_ms": 250,
+                    "record_count": 1,
+                    "created_at": "2026-06-08T10:00:01.300000",
+                },
+            ],
+            "llm_runs": [],
+            "history_runs": [],
+            "notification_runs": [],
+        }
+        legacy_snapshot = build_history_run_flow_snapshot(
+            _history_record(context_snapshot={"diagnostics": legacy_diagnostics})
+        )
+        legacy_edges = [edge.model_dump(by_alias=True) for edge in legacy_snapshot.edges]
+        legacy_nodes = {node.id: node for node in legacy_snapshot.nodes}
+        self.assertEqual(legacy_snapshot.summary.fallback_count, 0)
+        self.assertFalse(any(edge["kind"] in {"fallback", "retry"} for edge in legacy_edges))
+        self.assertEqual(legacy_nodes["provider_realtime_quote_aksharefetcher_2"].status, "success")
+
+    def test_history_sequential_same_provider_retry_still_infers_retry_edge(self) -> None:
+        flow_events: list[dict] = []
+        token = activate_run_diagnostic_context(
+            trace_id="trace-sequential-retry",
+            task_id="task-sequential-retry",
+            query_id="query-sequential-retry",
+            stock_code="600519",
+            trigger_source="api",
+            event_sink=flow_events.append,
+        )
+        try:
+            record_provider_run_started(
+                data_type="realtime_quote",
+                provider="AkshareFetcher",
+                operation="get_realtime_quote",
+            )
+            record_provider_run(
+                data_type="realtime_quote",
+                provider="AkshareFetcher",
+                operation="get_realtime_quote",
+                success=False,
+                latency_ms=40,
+                error_type="TimeoutError",
+                record_count=0,
+            )
+            record_provider_run_started(
+                data_type="realtime_quote",
+                provider="AkshareFetcher",
+                operation="get_realtime_quote",
+            )
+            record_provider_run(
+                data_type="realtime_quote",
+                provider="AkshareFetcher",
+                operation="get_realtime_quote",
+                success=True,
+                latency_ms=55,
+                record_count=1,
+            )
+            diagnostics = current_diagnostic_snapshot()
+        finally:
+            reset_run_diagnostic_context(token)
+
+        self.assertIsNotNone(diagnostics)
+        active_snapshot = build_task_run_flow_snapshot(
+            TaskInfo(
+                task_id="task-sequential-retry",
+                trace_id="trace-sequential-retry",
+                stock_code="600519",
+                stock_name="贵州茅台",
+                status=TaskStatus.PROCESSING,
+                created_at=datetime(2026, 6, 8, 8, 0, 0),
+                flow_events=flow_events,
+            )
+        )
+        history_snapshot = build_history_run_flow_snapshot(
+            _history_record(context_snapshot={"diagnostics": diagnostics})
+        )
+
+        for label, snapshot in (("active", active_snapshot), ("history", history_snapshot)):
+            edges = [edge.model_dump(by_alias=True) for edge in snapshot.edges]
+            retry_edges = [edge for edge in edges if edge["kind"] == "retry"]
+            self.assertEqual(snapshot.summary.fallback_count, 1, label)
+            self.assertEqual(len(retry_edges), 1, label)
+            self.assertEqual(retry_edges[0]["from"], "provider_realtime_quote_aksharefetcher_1", label)
+            self.assertEqual(retry_edges[0]["to"], "provider_realtime_quote_aksharefetcher_2", label)
+
+        # Also verify persisted legacy sequential retry without start_seq/end_seq.
+        legacy_retry = {
+            "trace_id": "trace-legacy-retry",
+            "task_id": "task-legacy-retry",
+            "query_id": "query-legacy-retry",
+            "stock_code": "600519",
+            "provider_runs": [
+                {
+                    "trace_id": "trace-legacy-retry",
+                    "data_type": "realtime_quote",
+                    "provider": "AkshareFetcher",
+                    "operation": "get_realtime_quote",
+                    "success": False,
+                    "latency_ms": 200,
+                    "error_type": "TimeoutError",
+                    "created_at": "2026-06-08T10:00:01.200000",
+                },
+                {
+                    "trace_id": "trace-legacy-retry",
+                    "data_type": "realtime_quote",
+                    "provider": "AkshareFetcher",
+                    "operation": "get_realtime_quote",
+                    "success": True,
+                    "latency_ms": 150,
+                    "record_count": 1,
+                    "created_at": "2026-06-08T10:00:01.400000",
+                },
+            ],
+            "llm_runs": [],
+            "history_runs": [],
+            "notification_runs": [],
+        }
+        legacy_retry_snapshot = build_history_run_flow_snapshot(
+            _history_record(context_snapshot={"diagnostics": legacy_retry})
+        )
+        legacy_retry_edges = [
+            edge.model_dump(by_alias=True)
+            for edge in legacy_retry_snapshot.edges
+            if edge.kind == "retry"
+        ]
+        self.assertEqual(legacy_retry_snapshot.summary.fallback_count, 1)
+        self.assertEqual(len(legacy_retry_edges), 1)
+        self.assertEqual(legacy_retry_edges[0]["from"], "provider_realtime_quote_aksharefetcher_1")
+        self.assertEqual(legacy_retry_edges[0]["to"], "provider_realtime_quote_aksharefetcher_2")
+
 
 if __name__ == "__main__":
     unittest.main()

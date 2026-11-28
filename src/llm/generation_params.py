@@ -38,6 +38,7 @@ class GenerationParamRecovery:
 
     omit_params: Tuple[str, ...] = ()
     set_params: Mapping[str, Any] = field(default_factory=dict)
+    rename_params: Mapping[str, str] = field(default_factory=dict)
     reason: str = ""
 
 
@@ -359,10 +360,20 @@ def apply_litellm_param_recovery(
 ) -> Dict[str, Any]:
     """Return kwargs with a learned parameter recovery applied."""
     updated = dict(call_kwargs)
+    for old_param, new_param in recovery.rename_params.items():
+        if old_param in updated and new_param not in updated:
+            updated[new_param] = updated.pop(old_param)
     for param in recovery.omit_params:
         updated.pop(param, None)
     for param, value in recovery.set_params.items():
         updated[param] = value
+    # P1-10 / P1-8: Ensure recovery mutates adapter-injected OpenAI wire params too
+    # (including when max_tokens/max_completion_tokens came from deployment YAML defaults).
+    if recovery.reason == "max_completion_tokens_use_max_tokens":
+        updated["_dsa_force_max_tokens"] = True
+    elif recovery.reason == "stream_options_unsupported":
+        if updated.get("stream") or "stream_options" in call_kwargs:
+            updated["_dsa_disable_stream_options"] = True
     return updated
 
 

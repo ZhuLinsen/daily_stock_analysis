@@ -16,10 +16,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [修复] ChatGPT 授权刷新兼容合法缺省字段，设置页能在断开响应丢失或授权失效后回读连接状态。
 - [修复] ChatGPT 授权重试复用已签发注册，缩权时处理最新令牌并保留撤销结果，问股发送前确认账号和可见历史。
 - [修复] ChatGPT 换码与刷新先持久化待定操作，未确认撤销按账号保留。凭据写入结果无法核实时暂停派发，可在设置页点「重新检查连接」核对本地状态；启动时存储不可用会提示重启。显式问股每轮确认历史快照，冲突时保留草稿。
+- [改进] 新增原生 4 协议 HTTPX + SSE 传输引擎与共享解析器（#2622 Phase 2，默认保持 `LLM_TRANSPORT_MODE=litellm` 零行为变化）：新增 `src/llm/native_resolve.py`、`src/llm/native_types.py`、`src/llm/sse.py`、`src/llm/native_pool.py`、`src/llm/native_engine.py` 及 OpenAI Chat/Responses、Anthropic Messages、Gemini REST 协议适配器，支持 `auto` 按别名混合路由（云 IAM 委托 LiteLLM、同组其余原生运行）与 `native` 零 `litellm` 导入严格模式；实现确定性 R1 协议优先级（移除 `gpt-5`/`o3` 自动劫持）、fail-closed 端点与同源凭据绑定、`urlsplit` 查询/分号安全归一化、HTTP 200 HTML/WAF 403/带内错误分级与双处脱敏、单调截止与可关闭流句柄、`max_tokens`/`stream_options` 一键恢复、Doctor 模式报告及全链路离线与 LiteLLM 对等回归测试。
+- [改进] 引入统一 LLM 传输门面 `src/llm/transport.py` 与 `DeploymentSpec` 归一化契约（#2622 Phase 1）：将全部运行时 `litellm` 直接调用与延迟加载收敛至门面并在进程首次加载 `litellm` 前默认设置 `LITELLM_LOCAL_MODEL_COST_MAP=True`（离线安全，未显式覆盖时新模型定价走本地价目表/零成本兜底），提供线程/协程隔离的 `ContextVar` 传输切换与 CJK 感知 token 估算兜底；统一选股请求头代理以消除全局 `litellm.completion` monkey-patch 并修复跨主机/多路由凭据头泄漏，补齐 YAML `os.environ/...` 解析、OpenAI 通道 `dsa_api_surface`/`dsa_channel_protocol` 持久化、Vision `base_url` 与 `dsa_api_surface` 对齐、`SystemConfigService.test_llm_channel` 服务层 `api_surface`/`extra_headers` 透传与脱敏、配置重载缓存清理，并新增全仓 AST 导入边界守卫测试。
 - [修复] 历史决策信号回填和重评估保存时，按报告生成当日的服务器时区偏移换算 UTC，修复跨夏令时回填导致的创建和到期时间偏移。
 - [测试] 经只读 MCP 服务 `McpReadOnlySurface.call_tool` 校验 `analyze_pattern` 四种长影线形态的 `type`，覆盖工具白名单、股票范围、脱敏与序列化环节。
 - [修复] Web 界面切换为 EN 后，首页策略选择器与问股页策略选择区改为显示英文的内置策略名称与说明；自定义或已覆盖的策略保留接口返回的原文，中文界面与发送给后端的策略 ID 不变（Refs #2649）。
 - [新功能] 大盘复盘结构化字段（Issue #1584）：复盘 Prompt 要求 LLM 在报告末尾输出 ```json 结构化附录，后端提取剥离后并入 payload，新增可选 `summary`（市场温度/状态/建议仓位/核心结论）、`indices[].comment`（指数一句话点评）、`breadth.divergence_diagnosis`（宽度与分化诊断，LLM 缺省时按指数-家数背离确定性兜底）、`style_rotation`（风格轮动信号）、`catalysts[]`（利好/利空、影响范围、持续性、是否已消化）、`next_day_plan`（明日观察清单/仓位建议/失效条件）及可选 `cross_market_note`（跨市场参考，P3）；解析失败或字段缺失逐字段降级为 null/省略，绝不中断复盘，旧 Markdown/历史/推送渲染零差异，不新增任何配置键；Web 大盘复盘视图对新增字段可选渲染（无字段时与旧版一致）。
+- [新功能] Futu OpenD 数据源扩展至港股 + 沪深 A 股 + 美股：新增 `HK./SH./SZ./US.` 三市场符号映射与按市场区分的时间戳（美股按 America/New_York，DST 自适应）、交易日历、静态信息与证券类型查询；`FutuFetcher` 进入美股日 K 与美股实时行情链路，A 股日 K 启用前复权并补齐 A 股实时行情分派分支；数据中心能力声明与美股实时优先级视图同步更新；增加符号映射与时区单元测试。美股/A 股日 K 统一使用前复权（Futu `AuType.QFQ`，避免拆股被当作暴跌），A 股实时行情传入归一化代码并支持 `SH600519` / `600519.SS` 等既有别名；Futu 仅以 `FUTU_PRIORITY` 数值参与美股日 K 排序（不再抢占锚定首位），美股实时快照过期时自动回退并记录真实 `fallback_from`，成功后仍走原有补字段链；数据中心对美股日 K/实时的声明与实际路由保持一致。
+- [修复] 让 `FUTU_PRIORITY` 的美股实时语义与文档一致：美股实时行情改为与日 K 共用同一套数值优先级排序（仅在 Longbridge preferred 时锚定 Longbridge 首位，其余成员按 `fetcher.priority` 稳定排序），把该值调大即可把 Futu 退到实时链末位，不再出现"文档说能调、运行时仍抢先"的偏差；数据中心的美股日 K/实时优先级视图同步改为按各源当前 `*_PRIORITY` 数值复现运行时链路，未配置 Longbridge 时不再把它声明为次选来源；港股实时仍由 `FUTU_HK_REALTIME_SOURCE_PRIORITY`、A 股实时仍由 `REALTIME_SOURCE_PRIORITY` 控制，并补充对应用例。
 - [改进] CI 瘦身：PR 仅改文档或 `tests/fixtures/**` 时以 `docs-contract-tests` 替代三分片后端全量测试；`docker-build` 保留运行时输入触发并排除前端测试与 Markdown 改动；前端仅改单元测试文件时 `web-gate` 跳过构建与 Playwright（非 PR 事件触发 `web-gate` 时仍执行完整构建与 Playwright，`docker-build` 与文档契约后端全量在非 PR 事件下保持兜底）。
 
 - [新功能] 新增 DSA 内部因子契约（`FactorDefinition`/`FactorSnapshot`/`CandidatePoolRun`/`CandidateFactorScore`，契约版本 1.0）：将选股 `factor_scores` 映射为带字段版本、来源、数据质量与降级原因的内部结构（#1902 P0）；仅新增 schema 与纯映射函数，不改变现有选股、API、回测与 DecisionSignal 行为。`ScreenResult.created_at` 改为带本地偏移的 ISO 字符串（按部署进程本地时钟换算为 UTC），`pick_to_factor_snapshot` 的显式 `computed_at` 同样归一化；内置引擎来源守卫的作用域已修正，原创的 `factor_mapping.py` 不再被误判为 AlphaSift 派生文件。
@@ -56,6 +60,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [改进] Web 股票输入框的联想搜索为每只股票只规范化一次代码、名称、拼音和别名，后续搜索直接复用，不再每次都对约 3.2 万条索引重新做 Unicode 规范化。
 - [修复] 持仓页浮动盈亏与收益率改用 A 股习惯的红涨绿跌配色，新增 `text-price-up` / `text-price-down` 工具类并复用 `--home-price-up` / `--home-price-down` 变量，收益为 0 时保持中性色，与个股页保持一致。
 - [修复] 为 MiniMax-M3.1-Flash 推理模型在部署层自动合并默认 `reasoning_effort=low`（保留 YAML deployment 原有 `extra_body` 路由/隐私参数及用户显式推理设置），避免隐藏推理耗尽 `max_tokens` 后返回 HTTP 200 但内容为空。
+- [修复] Web 系统设置的 `DSA_TIMEOUT_PARTIAL_NOTIFY` 缺少中文说明、回退显示英文默认说明，且帮助详情复用了定时任务说明；现与 `DSA_RUNTIME_SCHEDULER_TIMEOUT_SECONDS` 使用各自的中英文帮助详情，`settings.system.schedule` 继续供 `SCHEDULE_*` 字段使用，配置行为不变。
 
 ## [3.35.0] - 2026-11-16
 

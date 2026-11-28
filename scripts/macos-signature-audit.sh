@@ -27,20 +27,53 @@ fi
 
 checked_count=0
 signed_count=0
-removed_count=0
+resigned_count=0
 
-remove_broken_signature() {
+is_signable_bundle_dir() {
   local candidate="$1"
+  case "${candidate}" in
+    *.app|*.xpc)
+      [[ -f "${candidate}/Contents/Info.plist" || -f "${candidate}/Info.plist" ]]
+      ;;
+    *.framework)
+      # PyInstaller --onedir may place partial framework directories (for example
+      # _internal/Python.framework without Versions/Current or Info.plist); sign
+      # their Mach-O binaries as files and only codesign complete framework bundles.
+      [[ -e "${candidate}/Versions/Current" || -f "${candidate}/Resources/Info.plist" || -f "${candidate}/Info.plist" ]]
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+is_adhoc_signature() {
+  local details="$1"
+  [[ "${details}" == *"Signature=adhoc"* ]] && [[ "${details}" != *"Authority="* ]]
+}
+
+ad_hoc_sign_candidate() {
+  local candidate="$1"
+  local reason="$2"
   local signature_details=""
 
-  echo "WARNING: removing invalid signature from unsigned macOS artifact: ${candidate}"
-  codesign --remove-signature "${candidate}"
-  removed_count=$((removed_count + 1))
+  echo "WARNING: applying ad-hoc signature (${reason}) to macOS artifact: ${candidate}"
+  codesign --force --sign - --timestamp=none "${candidate}"
+  resigned_count=$((resigned_count + 1))
 
-  signature_details="$(codesign -d "${candidate}" 2>&1 || true)"
-  if [[ "${signature_details}" != *"code object is not signed at all"* ]]; then
-    echo "ERROR: failed to remove invalid signature: ${candidate}" >&2
+  if ! signature_details="$(codesign -d --verbose=4 "${candidate}" 2>&1)"; then
+    echo "ERROR: failed to read ad-hoc signature after signing: ${candidate}" >&2
     echo "${signature_details}" >&2
+    exit 1
+  fi
+  if ! is_adhoc_signature "${signature_details}"; then
+    echo "ERROR: artifact signature is not ad-hoc after signing: ${candidate}" >&2
+    echo "${signature_details}" >&2
+    exit 1
+  fi
+  if ! codesign --verify --strict --verbose=4 "${candidate}" >/dev/null 2>&1; then
+    echo "ERROR: ad-hoc signature verification failed after signing: ${candidate}" >&2
+    codesign --verify --strict --verbose=4 "${candidate}" || true
     exit 1
   fi
 }
@@ -50,12 +83,20 @@ audit_candidate() {
   local signature_details=""
 
   checked_count=$((checked_count + 1))
-  if ! signature_details="$(codesign -d "${candidate}" 2>&1)"; then
+  if ! signature_details="$(codesign -d --verbose=4 "${candidate}" 2>&1)"; then
     if [[ "${signature_details}" == *"code object is not signed at all"* ]]; then
-      return 0
+      if [[ "${mode}" == "normalize" ]]; then
+        ad_hoc_sign_candidate "${candidate}" "unsigned"
+        signed_count=$((signed_count + 1))
+        return 0
+      fi
+      echo "ERROR: unsigned macOS artifact (unsupported on Apple Silicon arm64): ${candidate}" >&2
+      echo "${signature_details}" >&2
+      exit 1
     fi
     if [[ "${mode}" == "normalize" ]]; then
-      remove_broken_signature "${candidate}"
+      ad_hoc_sign_candidate "${candidate}" "unreadable signature"
+      signed_count=$((signed_count + 1))
       return 0
     fi
     echo "ERROR: unreadable or invalid signature in macOS artifact: ${candidate}" >&2
@@ -63,13 +104,24 @@ audit_candidate() {
     exit 1
   fi
 
-  signed_count=$((signed_count + 1))
   if codesign --verify --strict --verbose=4 "${candidate}" >/dev/null 2>&1; then
-    return 0
+    if is_adhoc_signature "${signature_details}"; then
+      signed_count=$((signed_count + 1))
+      return 0
+    fi
+    if [[ "${mode}" == "normalize" ]]; then
+      ad_hoc_sign_candidate "${candidate}" "non-adhoc signature"
+      signed_count=$((signed_count + 1))
+      return 0
+    fi
+    echo "ERROR: non-adhoc signature in macOS artifact (expected uniform ad-hoc signature): ${candidate}" >&2
+    echo "${signature_details}" >&2
+    exit 1
   fi
 
   if [[ "${mode}" == "normalize" ]]; then
-    remove_broken_signature "${candidate}"
+    ad_hoc_sign_candidate "${candidate}" "invalid signature"
+    signed_count=$((signed_count + 1))
     return 0
   fi
 
@@ -80,7 +132,9 @@ audit_candidate() {
 
 while IFS= read -r -d '' candidate; do
   if [[ -d "${candidate}" ]]; then
-    audit_candidate "${candidate}"
+    if is_signable_bundle_dir "${candidate}"; then
+      audit_candidate "${candidate}"
+    fi
   elif file -b "${candidate}" | grep -q "Mach-O"; then
     audit_candidate "${candidate}"
   fi
@@ -90,4 +144,4 @@ done < <(
     -print0
 )
 
-echo "macOS signature audit complete: mode=${mode}, checked=${checked_count}, signed=${signed_count}, removed=${removed_count}"
+echo "macOS signature audit complete: mode=${mode}, checked=${checked_count}, signed=${signed_count}, resigned=${resigned_count}"

@@ -6,12 +6,19 @@
 import copy
 import json
 import logging
-import os
 from dataclasses import dataclass
 
-from src.config import apply_litellm_api_surface
+from src.config import apply_litellm_api_surface, normalize_llm_channel_api_surface
 from src.llm.errors import call_litellm_with_param_recovery
 from src.llm.generation_params import apply_litellm_generation_params
+from src.llm.transport import (
+    NativeConfigError,
+    create_router,
+    dispatch_completion,
+    find_unresolved_env_var,
+    normalize_model_list_entries,
+    silence_litellm_logs,
+)
 from src.services.screening.models import Pick
 from src.services.screening.normalize import (
     bounded_float as _bounded_float,
@@ -576,11 +583,9 @@ def _call_llm(
     timeout_sec: float = 60.0,
     max_tokens: int | None = 2048,
 ) -> str:
-    """Call LLM via litellm with fallback models and channel configs."""
-    import litellm
-
+    """Call LLM via configured transport with fallback models and channel configs."""
     if silent:
-        _silence_litellm_logs(litellm)
+        silence_litellm_logs()
 
     messages = [
         {"role": "system", "content": _RANKING_SYSTEM_INSTRUCTIONS},
@@ -591,7 +596,7 @@ def _call_llm(
 
     if config_path:
         router_result = _call_litellm_router(
-            litellm,
+            None,
             config_path=config_path,
             model_chain=model_chain,
             messages=messages,
@@ -624,7 +629,7 @@ def _call_llm(
             )
             try:
                 response = _call_screening_litellm_completion(
-                    lambda request_kwargs: litellm.completion(**request_kwargs),
+                    lambda request_kwargs: dispatch_completion(**request_kwargs),
                     model=candidate_model,
                     call_kwargs=kwargs,
                 )
@@ -970,7 +975,7 @@ def _extract_partial_ranking_array(response: str, errors: list[str]):
 
 
 def _call_litellm_router(
-    litellm,
+    litellm=None,
     *,
     config_path: str,
     model_chain: list[str],
@@ -985,10 +990,35 @@ def _call_litellm_router(
 
         with open(config_path, "r", encoding="utf-8") as handle:
             data = yaml.safe_load(handle) or {}
-        model_list = data.get("model_list")
-        if not isinstance(model_list, list) or not model_list:
+        raw_model_list = data.get("model_list")
+        if not isinstance(raw_model_list, list) or not raw_model_list:
             return None
-        router = litellm.Router(model_list=model_list)
+        requested_aliases = {str(m).strip() for m in model_chain if str(m).strip()}
+        for raw_entry in raw_model_list:
+            if not isinstance(raw_entry, dict):
+                continue
+            raw_params = raw_entry.get("litellm_params")
+            if not isinstance(raw_params, dict):
+                continue
+            entry_alias = (
+                str(raw_entry.get("model_name") or "").strip()
+                or str(raw_params.get("model") or "").strip()
+            )
+            # P1-1: Validate unset endpoint env vars ONLY on YAML entries matching requested
+            # model_chain aliases so unrelated unused aliases do not break default screening.
+            if requested_aliases and entry_alias not in requested_aliases:
+                continue
+            for endpoint_key in ("base_url", "api_base"):
+                missing_var = find_unresolved_env_var(raw_params.get(endpoint_key))
+                if missing_var is not None:
+                    raise ValueError(
+                        f"Screening YAML deployment {endpoint_key} environment variable '{missing_var}' is not set"
+                    )
+        model_list = normalize_model_list_entries(raw_model_list)
+        if not model_list:
+            return None
+        router_factory = getattr(litellm, "Router", None) if litellm is not None else None
+        router = create_router(model_list, router_factory=router_factory)
         for model in model_chain:
             kwargs = {
                 "model": model,
@@ -1008,7 +1038,7 @@ def _call_litellm_router(
             )
             try:
                 response = _call_screening_litellm_completion(
-                    lambda request_kwargs: router.completion(**request_kwargs),
+                    lambda request_kwargs: dispatch_completion(router=router, **request_kwargs),
                     model=model,
                     call_kwargs=kwargs,
                     model_list=model_list,
@@ -1017,7 +1047,16 @@ def _call_litellm_router(
             except Exception:
                 raise
     except Exception as exc:
-        if _is_timeout_error(exc):
+        if (
+            _is_timeout_error(exc)
+            or isinstance(exc, NativeConfigError)
+            or getattr(exc, "error_code", None) == "unknown_router_alias"
+            or (
+                isinstance(exc, ValueError)
+                and "environment variable" in str(exc)
+                and "is not set" in str(exc)
+            )
+        ):
             raise
         logger.warning("LiteLLM router config failed, falling back to direct calls: %s", exc)
     return None
@@ -1064,6 +1103,8 @@ def _call_screening_litellm_completion(
         # duplicate expensive work while the first request is still running.
         retry_kwargs = dict(call_kwargs)
         retry_kwargs.pop("response_format", None)
+        # P1-10: Also suppress any inherited deployment YAML request_defaults["response_format"].
+        retry_kwargs["_dsa_disable_response_format"] = True
         return call_litellm_with_param_recovery(
             call,
             model=model,
@@ -1072,17 +1113,6 @@ def _call_screening_litellm_completion(
             logger=logger,
             log_label="[Screening LiteLLM]",
         )
-
-
-def _silence_litellm_logs(litellm) -> None:
-    os.environ.setdefault("LITELLM_LOG", "ERROR")
-    try:
-        litellm.set_verbose = False
-        litellm.suppress_debug_info = True
-    except Exception:
-        pass
-    for logger_name in ("LiteLLM", "litellm"):
-        logging.getLogger(logger_name).setLevel(logging.WARNING)
 
 
 def _build_litellm_attempts(
@@ -1094,22 +1124,61 @@ def _build_litellm_attempts(
 ) -> list[dict[str, object]]:
     attempts = []
     matched_channel = False
+    outer_base_url = str(base_url or "").strip()
+    outer_api_key = str(api_key or "").strip()
     for channel in channels:
         if not _channel_matches_model(channel, model):
             continue
         matched_channel = True
-        api_keys = channel.get("api_keys", [])
-        if not isinstance(api_keys, list) or not api_keys:
-            api_keys = [api_key] if api_key else [""]
+        raw_channel_keys = channel.get("api_keys", [])
+        raw_key_list = raw_channel_keys if isinstance(raw_channel_keys, list) else []
+        channel_keys = [str(k or "").strip() for k in raw_key_list if str(k or "").strip()]
+        explicit_keyless_channel = bool(raw_key_list) and not channel_keys
+        if explicit_keyless_channel:
+            # Config represents supported keyless local channels (e.g. Ollama /
+            # localhost) with ``api_keys=[""]``; preserve keyless mode instead
+            # of leaking an unrelated outer API key onto the local endpoint.
+            inherited_outer_key = False
+            api_keys = [""]
+        else:
+            inherited_outer_key = (not channel_keys) and bool(outer_api_key)
+            api_keys = channel_keys if channel_keys else ([outer_api_key] if outer_api_key else [""])
+
+        channel_base_url = str(channel.get("base_url", "") or "").strip()
+        inherited_outer_base = (not channel_base_url) and bool(outer_base_url)
+        effective_base_url = channel_base_url or outer_base_url
+
+        raw_api_surface = str(channel.get("api_surface", "") or "").strip()
+        channel_api_surface = normalize_llm_channel_api_surface(raw_api_surface)
         wire_model = apply_litellm_api_surface(
             model,
-            str(channel.get("api_surface", "") or ""),
+            channel_api_surface,
+        )
+        effective_surface = (
+            channel_api_surface
+            if channel_api_surface == "responses"
+            or str(channel.get("protocol", "") or "").strip().lower() == "openai"
+            or wire_model.startswith("openai/")
+            else ""
+        )
+        raw_headers = channel.get("extra_headers")
+        # Never bind a channel's private extra_headers onto an inherited outer
+        # base_url or outer api_key that this channel does not own.
+        extra_headers = (
+            dict(raw_headers)
+            if isinstance(raw_headers, dict)
+            and raw_headers
+            and not inherited_outer_base
+            and not inherited_outer_key
+            else None
         )
         for channel_key in api_keys:
             attempts.append(_completion_kwargs(
                 wire_model,
                 api_key=str(channel_key or ""),
-                base_url=str(channel.get("base_url", "") or base_url or ""),
+                base_url=effective_base_url,
+                api_surface=effective_surface,
+                extra_headers=extra_headers,
             ))
 
     if not matched_channel:
@@ -1117,12 +1186,23 @@ def _build_litellm_attempts(
     return _unique_attempts(attempts)
 
 
-def _completion_kwargs(model: str, *, api_key: str, base_url: str) -> dict[str, object]:
+def _completion_kwargs(
+    model: str,
+    *,
+    api_key: str,
+    base_url: str,
+    api_surface: str = "",
+    extra_headers: dict[str, object] | None = None,
+) -> dict[str, object]:
     kwargs: dict[str, object] = {"model": model}
     if api_key:
         kwargs["api_key"] = api_key
     if base_url:
         kwargs["api_base"] = base_url
+    if api_surface:
+        kwargs["api_surface"] = api_surface
+    if extra_headers:
+        kwargs["extra_headers"] = dict(extra_headers)
     return kwargs
 
 
@@ -1151,7 +1231,19 @@ def _unique_attempts(items: list[dict[str, object]]) -> list[dict[str, object]]:
     seen = set()
     result = []
     for item in items:
-        key = (item.get("model"), item.get("api_key"), item.get("api_base"))
+        raw_headers = item.get("extra_headers")
+        headers_key = (
+            tuple(sorted((str(k).strip().lower(), str(v)) for k, v in raw_headers.items()))
+            if isinstance(raw_headers, dict)
+            else ()
+        )
+        key = (
+            item.get("model"),
+            item.get("api_key"),
+            item.get("api_base"),
+            item.get("api_surface"),
+            headers_key,
+        )
         if key not in seen:
             seen.add(key)
             result.append(item)

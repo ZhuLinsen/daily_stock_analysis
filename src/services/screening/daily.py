@@ -18,6 +18,21 @@ from typing import Callable
 import pandas as pd
 import requests
 
+from data_provider.baostock_fetcher import (
+    BAOSTOCK_SESSION_LOCK,
+    acquire_baostock_session_lock,
+    baostock_socket_io_guard,
+    check_baostock_pagination_complete,
+)
+from src.core.stock_execution_context import raise_if_stock_cancelled
+from src.services.screening.source_guard import (
+    SourceCallTimeout,
+    call_with_timeout,
+    get_current_source_call_cancel_event,
+    get_current_source_call_deadline,
+    parse_source_timeout_seconds,
+    register_source_call_cancel_callback,
+)
 from data_provider.tushare_fetcher import (
     TUSHARE_PERMISSION_COOLDOWN_SECONDS,
     _build_tushare_token_scope,
@@ -25,7 +40,6 @@ from data_provider.tushare_fetcher import (
 )
 from src.utils.rsi import wilder_rsi
 from src.core.trading_calendar import MarketPhase, build_market_phase_context, get_market_for_stock, is_market_open
-from src.services.screening.source_guard import call_with_timeout, parse_source_timeout_seconds
 
 _DAILY_FEATURE_DEFAULTS = {
     "daily_data_points": pd.NA,
@@ -60,8 +74,7 @@ _SOURCE_HEALTH_FAILURE_THRESHOLD = 3
 _SOURCE_HEALTH_COOLDOWN_SECONDS = 5 * 60
 _DAILY_CALL_TIMEOUT_SECONDS = 20.0
 _DEFAULT_TUSHARE_HTTP_URL = "http://api.waditu.com"
-_BAOSTOCK_LOCK = threading.Lock()
-_BAOSTOCK_OUTAGE_ERROR: str | None = None
+_BAOSTOCK_LOCK = BAOSTOCK_SESSION_LOCK
 _SOURCE_HEALTH: dict[str, dict[str, object]] = {}
 _SOURCE_HEALTH_LOCK = threading.Lock()
 
@@ -951,46 +964,88 @@ def _fetch_daily_baostock(code: str, *, lookback_days: int) -> pd.DataFrame:
     except ImportError as exc:
         raise RuntimeError("baostock not installed; pip install baostock") from exc
 
-    global _BAOSTOCK_OUTAGE_ERROR
-    if _BAOSTOCK_OUTAGE_ERROR is not None:
-        raise RuntimeError(_BAOSTOCK_OUTAGE_ERROR)
+    cancel_event = get_current_source_call_cancel_event()
+    call_deadline = get_current_source_call_deadline()
 
+    def _cancel_exc() -> SourceCallTimeout:
+        return SourceCallTimeout("daily source baostock cancelled after timeout")
+
+    def _raise_if_cancelled() -> None:
+        if cancel_event is not None and cancel_event.is_set():
+            raise _cancel_exc()
+        if call_deadline is not None and time.monotonic() >= call_deadline:
+            raise _cancel_exc()
+        raise_if_stock_cancelled()
+
+    _raise_if_cancelled()
     bs_code = _to_baostock_code(code)
     start_date = (datetime.now() - timedelta(days=max(lookback_days * 2, 90))).strftime("%Y-%m-%d")
     end_date = datetime.now().strftime("%Y-%m-%d")
 
-    with _BAOSTOCK_LOCK:
-        if _BAOSTOCK_OUTAGE_ERROR is not None:
-            raise RuntimeError(_BAOSTOCK_OUTAGE_ERROR)
-
-        login_result = bs.login()
-        try:
-            login_error_code = str(getattr(login_result, "error_code", "0"))
-            if login_error_code not in {"", "0"}:
-                login_error_msg = getattr(login_result, "error_msg", "")
-                raise RuntimeError(f"baostock login error {login_error_code}: {login_error_msg}")
-
-            rs = bs.query_history_k_data_plus(
-                bs_code,
-                "date,open,high,low,close,volume,amount",
-                start_date=start_date,
-                end_date=end_date,
-                frequency="d",
-                adjustflag="2",
-            )
-            if rs.error_code != "0":
-                message = f"baostock error {rs.error_code}: {rs.error_msg}"
-                if _is_baostock_network_outage(rs.error_code, rs.error_msg):
-                    _BAOSTOCK_OUTAGE_ERROR = message
-                raise RuntimeError(message)
-            rows = []
-            while rs.next():
-                rows.append(rs.get_row_data())
-        finally:
+    lock_timeout = (
+        max(0.0, call_deadline - time.monotonic())
+        if call_deadline is not None
+        else None
+    )
+    with acquire_baostock_session_lock(
+        lock=_BAOSTOCK_LOCK,
+        timeout_seconds=lock_timeout,
+        cancel_event=cancel_event,
+        cancel_exc_factory=_cancel_exc,
+        timeout_exc_factory=SourceCallTimeout if call_deadline is not None else None,
+    ):
+        with baostock_socket_io_guard(
+            deadline=call_deadline,
+            cancel_event=cancel_event,
+            register_cancel_callback=register_source_call_cancel_callback,
+        ) as io_guard:
+            _raise_if_cancelled()
+            logged_in = False
             try:
-                bs.logout()
-            except Exception:
-                pass
+                login_result = bs.login()
+                login_error_code = str(getattr(login_result, "error_code", "0") or "").strip()
+                if login_error_code not in {"", "0"}:
+                    _raise_if_cancelled()
+                    login_error_msg = getattr(login_result, "error_msg", "")
+                    raise RuntimeError(f"baostock login error {login_error_code}: {login_error_msg}")
+                logged_in = True
+                _raise_if_cancelled()
+
+                rs = bs.query_history_k_data_plus(
+                    bs_code,
+                    "date,open,high,low,close,volume,amount",
+                    start_date=start_date,
+                    end_date=end_date,
+                    frequency="d",
+                    adjustflag="2",
+                )
+                _raise_if_cancelled()
+                initial_error_code = str(getattr(rs, "error_code", "0") or "").strip()
+                if initial_error_code != "0":
+                    raise RuntimeError(
+                        f"baostock error {initial_error_code}: {getattr(rs, 'error_msg', '')}"
+                    )
+                rows = []
+                while True:
+                    _raise_if_cancelled()
+                    if not rs.next():
+                        break
+                    rows.append(rs.get_row_data())
+
+                _raise_if_cancelled()
+                check_baostock_pagination_complete(
+                    rs,
+                    transient_exc_type=RuntimeError,
+                    fatal_exc_type=RuntimeError,
+                    io_error=io_guard.io_error,
+                )
+            finally:
+                if logged_in:
+                    io_guard.enter_logout()
+                    try:
+                        bs.logout()
+                    except Exception:
+                        pass
 
     if not rows:
         raise RuntimeError(f"baostock daily history empty for {code}")
@@ -1022,12 +1077,6 @@ def _to_tencent_code(code: str) -> str:
     if raw.startswith(("6", "9", "5")):
         return f"sh{raw}"
     return f"sz{raw}"
-
-
-def _is_baostock_network_outage(error_code: object, error_msg: object) -> bool:
-    code = str(error_code)
-    message = str(error_msg)
-    return code in {"10002007"} or "网络" in message or "接收" in message
 
 
 def compute_daily_features(hist: pd.DataFrame) -> dict[str, object]:

@@ -3310,7 +3310,10 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     },
     "DSA_RUNTIME_SCHEDULER_TIMEOUT_SECONDS": {
         "title": "Runtime Scheduler Timeout",
-        "description": "Hard timeout in seconds for each Web/API scheduled analysis.",
+        "description": (
+            "Hard timeout in seconds for each Web/API scheduled analysis; the "
+            "isolated analysis process is terminated on timeout, minimum 60 seconds."
+        ),
         "category": "system",
         "data_type": "integer",
         "ui_control": "number",
@@ -3321,7 +3324,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "options": [],
         "validation": {"min": 60},
         "display_order": 12,
-        "help_key": "settings.system.schedule",
+        "help_key": "settings.system.DSA_RUNTIME_SCHEDULER_TIMEOUT_SECONDS",
         "examples": [
             "DSA_RUNTIME_SCHEDULER_TIMEOUT_SECONDS=2700",
         ],
@@ -3336,8 +3339,9 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     "DSA_TIMEOUT_PARTIAL_NOTIFY": {
         "title": "Timeout Partial Notification",
         "description": (
-            "After a Web/API runtime scheduler hard timeout, send a partial "
-            "notification for analyses already saved to history."
+            "After a Web/API scheduled analysis hard timeout, attempt a partial "
+            "notification only when saved results exist and "
+            "DSA_TIMEOUT_PARTIAL_NOTIFY allows pushing."
         ),
         "category": "system",
         "data_type": "boolean",
@@ -3349,7 +3353,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "options": [],
         "validation": {},
         "display_order": 13,
-        "help_key": "settings.system.schedule",
+        "help_key": "settings.system.DSA_TIMEOUT_PARTIAL_NOTIFY",
         "examples": [
             "DSA_TIMEOUT_PARTIAL_NOTIFY=true",
             "DSA_TIMEOUT_PARTIAL_NOTIFY=false",

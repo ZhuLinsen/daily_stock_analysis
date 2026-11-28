@@ -37,6 +37,8 @@ _RUN_STATUS_MAP = {
     "cancelled": "cancelled",
 }
 
+_ACTIVE_NODE_STATUSES = {"pending", "running", "cancel_requested"}
+
 _DATA_TYPE_LABELS = {
     "realtime_quote": "实时行情",
     "daily_data": "日线K线",
@@ -378,7 +380,7 @@ def _append_provider_runs(
         data_type: any(_as_mapping(run).get("success") is True for run in runs)
         for data_type, runs in _group_provider_runs(provider_runs).items()
     }
-    previous_node_by_type: Dict[str, Tuple[str, Dict[str, Any]]] = {}
+    provider_history_by_type: Dict[str, List[Tuple[str, Dict[str, Any]]]] = defaultdict(list)
     provider_success_by_block: Dict[str, str] = {}
     attempt_index_by_type: Dict[str, int] = defaultdict(int)
 
@@ -393,11 +395,21 @@ def _append_provider_runs(
         label = _DATA_TYPE_LABELS.get(data_type, data_type)
         node_id = f"provider_{_safe_key(data_type)}_{_safe_key(provider)}_{attempt_index}"
         success = run.get("success") is True
-        had_previous_failure = data_type in previous_node_by_type and previous_node_by_type[data_type][1].get("success") is False
+        previous = _select_preceding_provider_node(
+            provider_history_by_type[data_type],
+            current_node_id=node_id,
+            current_provider=provider,
+            nodes=nodes,
+            edges=edges,
+            fallback_from=run.get("fallback_from"),
+            allow_fallback_link=True,
+            current_run=run,
+        )
+        had_previous_failure = bool(previous and previous[1].get("success") is False)
         status = _provider_run_status(run, had_previous_failure=had_previous_failure)
         duration_ms = _safe_int(run.get("latency_ms"))
         timestamp = _datetime_to_iso(run.get("created_at"))
-        started_at = _started_at_from_end_and_duration(timestamp, duration_ms)
+        started_at = _provider_run_started_at(run)
         message = _provider_run_message(label, provider, run, success=success)
         block_key = _DATA_TYPE_TO_BLOCK_KEY.get(data_type, data_type)
 
@@ -428,7 +440,6 @@ def _append_provider_runs(
             },
         )
 
-        previous = previous_node_by_type.get(data_type)
         if previous:
             previous_node_id, previous_run = previous
             edge_kind = _provider_transition_kind(previous_run, run)
@@ -438,7 +449,7 @@ def _append_provider_runs(
                 node_id,
                 edge_kind,
                 status,
-                label="降级" if edge_kind == "fallback" else "重试",
+                label="降级" if edge_kind == "fallback" else ("重试" if edge_kind == "retry" else "调用"),
                 message=_safe_text(run.get("fallback_from") or run.get("fallback_to"), max_length=120),
             )
         else:
@@ -466,7 +477,7 @@ def _append_provider_runs(
                 "error_type": run.get("error_type"),
             },
         )
-        previous_node_by_type[data_type] = (node_id, run)
+        _upsert_provider_history_entry(provider_history_by_type[data_type], node_id, run)
 
     return provider_success_by_block
 
@@ -932,6 +943,159 @@ def _append_task_events(events: List[Dict[str, Any]], task: Any, flow_status: st
         )
 
 
+_FALLBACK_SOURCE_PROVIDER_FAMILIES = {
+    "akshare_em": "akshare",
+    "akshare_sina": "akshare",
+    "akshare_qq": "akshare",
+    "akshare_hk": "akshare",
+    "tencent": "akshare",
+}
+
+
+def _normalize_provider_token(value: Any) -> str:
+    key = _safe_key(value)
+    if not key:
+        return ""
+    if key.endswith("_fetcher") and len(key) > len("_fetcher"):
+        return key[: -len("_fetcher")]
+    if key.endswith("fetcher") and len(key) > len("fetcher"):
+        return key[: -len("fetcher")]
+    return key
+
+
+def _provider_matches_fallback_target(provider: Any, fallback_to: Any) -> bool:
+    target_key = _safe_key(fallback_to)
+    provider_key = _safe_key(provider)
+    if not target_key or not provider_key:
+        return False
+    if provider_key == target_key:
+        return True
+    provider_base = _normalize_provider_token(provider_key)
+    target_base = _normalize_provider_token(target_key)
+    if provider_base == target_base:
+        return True
+    if target_key.startswith(f"{provider_base}_") or provider_key.startswith(f"{target_base}_"):
+        return True
+    mapped_target_family = _FALLBACK_SOURCE_PROVIDER_FAMILIES.get(target_key)
+    return bool(mapped_target_family and provider_base == mapped_target_family)
+
+
+def _provider_run_started_at(run: Dict[str, Any]) -> Optional[str]:
+    explicit = _datetime_to_iso(run.get("started_at"))
+    if explicit:
+        return explicit
+    return _started_at_from_end_and_duration(
+        _datetime_to_iso(run.get("created_at")),
+        _safe_int(run.get("latency_ms")),
+    )
+
+
+def _provider_runs_overlapped(previous_run: Dict[str, Any], current_run: Dict[str, Any]) -> bool:
+    prev_end_seq = _safe_int(previous_run.get("end_seq"))
+    curr_start_seq = _safe_int(current_run.get("start_seq"))
+    if prev_end_seq is not None and curr_start_seq is not None:
+        return curr_start_seq < prev_end_seq
+
+    prev_ended = _datetime_for_elapsed(previous_run.get("created_at"))
+    curr_started = _datetime_for_elapsed(_provider_run_started_at(current_run))
+    if prev_ended is not None and curr_started is not None:
+        return curr_started < prev_ended
+    return False
+
+
+def _has_outgoing_fallback_or_retry_edge(edges: List[Dict[str, Any]], node_id: str) -> bool:
+    return any(
+        edge.get("from") == node_id and edge.get("kind") in {"fallback", "retry"}
+        for edge in edges
+    )
+
+
+def _select_preceding_provider_node(
+    history: List[Tuple[str, Dict[str, Any]]],
+    *,
+    current_node_id: str,
+    current_provider: Optional[str],
+    nodes: Dict[str, Dict[str, Any]],
+    edges: List[Dict[str, Any]],
+    fallback_from: Optional[str],
+    allow_fallback_link: bool = True,
+    current_run: Optional[Dict[str, Any]] = None,
+) -> Optional[Tuple[str, Dict[str, Any]]]:
+    candidates = [
+        (prev_id, prev_run)
+        for prev_id, prev_run in history
+        if prev_id != current_node_id
+        and (current_run is None or not _provider_runs_overlapped(prev_run, current_run))
+    ]
+    if not candidates:
+        return None
+
+    if allow_fallback_link:
+        explicit_fallback = [
+            item
+            for item in candidates
+            if item[1].get("fallback_to")
+            and not _has_outgoing_fallback_or_retry_edge(edges, item[0])
+            and (
+                bool(fallback_from)
+                or _provider_matches_fallback_target(current_provider, item[1].get("fallback_to"))
+            )
+        ]
+        if explicit_fallback:
+            if fallback_from:
+                matched_explicit = [
+                    item
+                    for item in explicit_fallback
+                    if _provider_matches_fallback_target(item[1].get("provider"), fallback_from)
+                    or _provider_matches_fallback_target(current_provider, item[1].get("fallback_to"))
+                ]
+                if matched_explicit:
+                    return matched_explicit[-1]
+            return explicit_fallback[-1]
+
+    if fallback_from:
+        fallback_from_candidates = [
+            item
+            for item in candidates
+            if not _has_outgoing_fallback_or_retry_edge(edges, item[0])
+            and nodes.get(item[0], {}).get("status") not in _ACTIVE_NODE_STATUSES
+            and (item[1].get("success") is False or bool(item[1].get("fallback_to")))
+        ]
+        if fallback_from_candidates:
+            matched_from = [
+                item
+                for item in fallback_from_candidates
+                if _provider_matches_fallback_target(item[1].get("provider"), fallback_from)
+            ]
+            if matched_from:
+                return matched_from[-1]
+            return fallback_from_candidates[-1]
+
+    settled_candidates = [
+        item
+        for item in candidates
+        if nodes.get(item[0], {}).get("status") not in _ACTIVE_NODE_STATUSES
+        and not item[1].get("fallback_to")
+        and (
+            item[1].get("success") is not False
+            or (allow_fallback_link and not _has_outgoing_fallback_or_retry_edge(edges, item[0]))
+        )
+    ]
+    return settled_candidates[-1] if settled_candidates else None
+
+
+def _upsert_provider_history_entry(
+    history: List[Tuple[str, Dict[str, Any]]],
+    node_id: str,
+    provider_run: Dict[str, Any],
+) -> None:
+    for idx, (existing_id, _) in enumerate(history):
+        if existing_id == node_id:
+            history[idx] = (node_id, provider_run)
+            return
+    history.append((node_id, provider_run))
+
+
 def _append_active_flow_events(
     nodes: Dict[str, Dict[str, Any]],
     edges: List[Dict[str, Any]],
@@ -944,7 +1108,7 @@ def _append_active_flow_events(
         return
 
     known_node_ids = set(nodes)
-    last_provider_node_by_type: Dict[str, Tuple[str, Dict[str, Any]]] = {}
+    provider_history_by_type: Dict[str, List[Tuple[str, Dict[str, Any]]]] = defaultdict(list)
     last_llm_node: Optional[str] = None
     last_history_node: Optional[str] = None
 
@@ -996,7 +1160,11 @@ def _append_active_flow_events(
         if node_id and node_id in nodes and node_id in known_node_ids:
             _refresh_incoming_edge_status(edges, node_id, nodes[node_id].get("status"))
             if provider_data_type and provider_run:
-                last_provider_node_by_type[provider_data_type] = (node_id, provider_run)
+                _upsert_provider_history_entry(
+                    provider_history_by_type[provider_data_type],
+                    node_id,
+                    provider_run,
+                )
             elif event_type in {"llm_run", "llm_run_started"}:
                 last_llm_node = node_id
             elif event_type == "history_run":
@@ -1004,7 +1172,20 @@ def _append_active_flow_events(
 
         if node_id and node_id in nodes and node_id not in known_node_ids:
             if provider_data_type and provider_run:
-                previous_provider = last_provider_node_by_type.get(provider_data_type)
+                allow_fallback_link = (
+                    event_type == "provider_run_started"
+                    or bool(provider_run.get("fallback_from"))
+                    or nodes[node_id].get("status") != "success"
+                )
+                previous_provider = _select_preceding_provider_node(
+                    provider_history_by_type[provider_data_type],
+                    current_node_id=node_id,
+                    current_provider=provider_run.get("provider"),
+                    nodes=nodes,
+                    edges=edges,
+                    fallback_from=provider_run.get("fallback_from"),
+                    allow_fallback_link=allow_fallback_link,
+                )
                 if previous_provider:
                     previous_provider_node, previous_provider_run = previous_provider
                     edge_kind = _provider_transition_kind(previous_provider_run, provider_run)
@@ -1018,7 +1199,11 @@ def _append_active_flow_events(
                     )
                 else:
                     _append_edge(edges, "task_queue", node_id, "control", nodes[node_id].get("status", "unknown"), label="调用")
-                last_provider_node_by_type[provider_data_type] = (node_id, provider_run)
+                _upsert_provider_history_entry(
+                    provider_history_by_type[provider_data_type],
+                    node_id,
+                    provider_run,
+                )
             elif event_type in {"llm_run", "llm_run_started"}:
                 anchor = "analysis_pipeline" if "analysis_pipeline" in nodes else "task_queue"
                 _append_edge(edges, anchor, node_id, "data", nodes[node_id].get("status", "unknown"), label="生成")
@@ -1081,7 +1266,7 @@ def _provider_transition_kind(previous_run: Dict[str, Any], current_run: Dict[st
     current_provider = _safe_text(current_run.get("provider"), max_length=80)
     if previous_run.get("fallback_to") or current_run.get("fallback_from"):
         return "fallback"
-    if previous_provider and previous_provider == current_provider:
+    if previous_run.get("success") is False and previous_provider and previous_provider == current_provider:
         return "retry"
     if previous_run.get("success") is False:
         return "fallback"

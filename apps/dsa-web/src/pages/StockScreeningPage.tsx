@@ -43,8 +43,25 @@ import {
 } from '../api/screening';
 import { getParsedApiError, toApiErrorMessage, type ParsedApiError } from '../api/error';
 import { useUiLanguage } from '../contexts/UiLanguageContext';
-import type { UiLanguage } from '../i18n/uiText';
+import { formatUiText, type UiLanguage } from '../i18n/uiText';
 import { SCREENING_TEXT, screeningText, type ScreeningTextKey } from '../locales/screening';
+import { SCREENING_QUANT_TEXT } from '../locales/screeningQuantText';
+import {
+  CandidateComparisonMatrix,
+  ScreeningResultsToolbar,
+  StrategyFactorBlueprint,
+} from '../components/screening/ScreeningQuantExplorer';
+import {
+  compareNullableDesc,
+  exportCandidatesCsv,
+  factorBarColorClass,
+  getCandidateExplicitFactorScore,
+  getCandidateFactorValue,
+  getFactorLabel,
+  lookupOwnString,
+  type CandidateRiskFilter,
+  type CandidateSortKey,
+} from '../utils/screeningQuant';
 import { AppPage, Button, InlineAlert, Select } from '../components/common';
 import { Tooltip } from '../components/common/Tooltip';
 
@@ -67,7 +84,11 @@ const formatStrategyCategory = (language: UiLanguage, value?: string) => {
   if (!normalized) {
     return SCREENING_TEXT[language].custom;
   }
-  return SCREENING_TEXT[language][STRATEGY_CATEGORY_LABELS[normalized.toLowerCase()]] || normalized;
+  const labelKey = lookupOwnString(STRATEGY_CATEGORY_LABELS, normalized.toLowerCase());
+  if (!labelKey) {
+    return normalized;
+  }
+  return lookupOwnString(SCREENING_TEXT[language], labelKey) ?? normalized;
 };
 
 type PersistedScreenTask = {
@@ -198,20 +219,6 @@ const formatPercent = (value: unknown) => {
     return '-';
   }
   return `${(Number(value) * 100).toFixed(0)}%`;
-};
-
-const FACTOR_LABELS: Record<string, ScreeningTextKey> = {
-  value: 'valuation',
-  liquidity: 'liquidity',
-  momentum: 'momentum',
-  reversal: 'reversal',
-  activity: 'activity',
-  stability: 'stability',
-  size: 'size',
-  themeHeat: 'themeHeat',
-  theme_heat: 'themeHeat',
-  topicAlignment: 'topicAlignment',
-  topic_alignment: 'topicAlignment',
 };
 
 const HOTSPOT_QUALITY_LABELS: Record<string, ScreeningTextKey> = {
@@ -953,8 +960,13 @@ const StockScreeningPage: React.FC = () => {
   const [activeTaskId, setActiveTaskId] = useState<string | null>(restoredTask?.taskId ?? null);
   const [taskProgress, setTaskProgress] = useState(restoredTask?.taskId ? 10 : 0);
   const [taskMessage, setTaskMessage] = useScreeningMessage(language, (language) => restoredTask?.taskId ? SCREENING_TEXT[language].restoringTask : '');
+  const [candidateQuery, setCandidateQuery] = useState('');
+  const [candidateRiskFilter, setCandidateRiskFilter] = useState<CandidateRiskFilter>('all');
+  const [candidateSortKey, setCandidateSortKey] = useState<CandidateSortKey>('default');
+  const [comparedCodes, setComparedCodes] = useState<string[]>([]);
 
   const copy = SCREENING_TEXT[language];
+  const qcopy = SCREENING_QUANT_TEXT[language];
   const selectedStrategy = useMemo(() => strategies.find((item) => item.id === strategy), [strategies, strategy]);
   const selectedStrategyTitle = selectedStrategy?.name || selectedStrategy?.title || copy.customStrategy;
   const selectedStrategyTag = formatStrategyCategory(language,
@@ -987,7 +999,76 @@ const StockScreeningPage: React.FC = () => {
     setScreenMeta(result);
     setCandidates(nextCandidates);
     setExpandedCode(nextCandidates[0]?.code ?? null);
+    setCandidateQuery('');
+    setCandidateRiskFilter('all');
+    setCandidateSortKey('default');
+    setComparedCodes([]);
   }, []);
+
+  const filteredSortedCandidates = useMemo(() => {
+    const q = candidateQuery.trim().toLowerCase();
+    const filtered = candidates.filter((item) => {
+      if (candidateRiskFilter !== 'all' && item.riskLevel !== candidateRiskFilter) {
+        return false;
+      }
+      if (q) {
+        const hay = `${item.code} ${item.name} ${item.industry || ''}`.toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    });
+    if (candidateSortKey === 'default') return filtered;
+    const copyList = [...filtered];
+    copyList.sort((a, b) => {
+      switch (candidateSortKey) {
+        case 'score_desc':
+          return compareNullableDesc(
+            getCandidateExplicitFactorScore(a),
+            getCandidateExplicitFactorScore(b),
+          );
+        case 'llm_desc':
+          return compareNullableDesc(a.llmScore, b.llmScore);
+        case 'change_desc':
+          return compareNullableDesc(a.changePct, b.changePct);
+        case 'momentum_desc':
+          return compareNullableDesc(
+            getCandidateFactorValue(a, 'momentum'),
+            getCandidateFactorValue(b, 'momentum'),
+          );
+        case 'value_desc':
+          return compareNullableDesc(
+            getCandidateFactorValue(a, 'value'),
+            getCandidateFactorValue(b, 'value'),
+          );
+        case 'stability_desc':
+          return compareNullableDesc(
+            getCandidateFactorValue(a, 'stability'),
+            getCandidateFactorValue(b, 'stability'),
+          );
+        case 'liquidity_desc':
+          return compareNullableDesc(
+            getCandidateFactorValue(a, 'liquidity'),
+            getCandidateFactorValue(b, 'liquidity'),
+          );
+        default:
+          return 0;
+      }
+    });
+    return copyList;
+  }, [candidates, candidateQuery, candidateRiskFilter, candidateSortKey]);
+
+  const comparedCandidates = useMemo(
+    () => comparedCodes.map((code) => candidates.find((c) => c.code === code)).filter((c): c is ScreeningCandidate => Boolean(c)),
+    [candidates, comparedCodes],
+  );
+
+  const toggleCompareCandidate = (code: string) => {
+    setComparedCodes((prev) => {
+      if (prev.includes(code)) return prev.filter((item) => item !== code);
+      if (prev.length >= 3) return [...prev.slice(1), code];
+      return [...prev, code];
+    });
+  };
 
   const loadHistory = useCallback(async () => {
     setHistoryLoading(true);
@@ -1057,11 +1138,15 @@ const StockScreeningPage: React.FC = () => {
     }
   }, [setError, setHistoryError, setTaskMessage, applyScreenResult, market, maxResults, strategy]);
 
-  const clearScreeningResults = () => {
+  const clearScreeningResults = useCallback(() => {
     setCandidates([]);
     setScreenMeta(null);
     setExpandedCode(null);
-  };
+    setCandidateQuery('');
+    setCandidateRiskFilter('all');
+    setCandidateSortKey('default');
+    setComparedCodes([]);
+  }, []);
 
   const loadHotspotDetail = useCallback(async (
     topic: string,
@@ -1389,17 +1474,14 @@ const StockScreeningPage: React.FC = () => {
           }
         } else {
           setError((language) => SCREENING_TEXT[language].completedWithoutResult);
-          setCandidates([]);
-          setScreenMeta(null);
+          clearScreeningResults();
         }
         finishTask();
         return;
       }
 
       if (task.status === 'failed') {
-        setCandidates([]);
-        setScreenMeta(null);
-        setExpandedCode(null);
+        clearScreeningResults();
         setError((language) => formatScreenTaskFailure(language, task.error || task.message));
         clearPersistedScreenTask();
         finishTask();
@@ -1431,8 +1513,7 @@ const StockScreeningPage: React.FC = () => {
         const parsedError = getParsedApiError(err);
         if (isUnrecoverableScreenTaskError(parsedError)) {
           setError((language) => formatScreeningApiError(language, parsedError, SCREENING_TEXT[language].resubmitTask));
-          setCandidates([]);
-          setScreenMeta(null);
+          clearScreeningResults();
           clearPersistedScreenTask();
           finishTask();
           return;
@@ -1451,7 +1532,7 @@ const StockScreeningPage: React.FC = () => {
         window.clearTimeout(timer);
       }
     };
-  }, [activeTaskId, applyScreenResult, restoreResolved, market, strategy, maxResults, screenMeta?.runId, setError, setTaskMessage]);
+  }, [activeTaskId, applyScreenResult, clearScreeningResults, restoreResolved, market, strategy, maxResults, screenMeta?.runId, setError, setTaskMessage]);
 
   const handleEnable = async () => {
     setEnabling(true);
@@ -1521,7 +1602,7 @@ const StockScreeningPage: React.FC = () => {
       setTaskProgress(0);
       setTaskMessage((language) => formatScreenTaskMessage(language, task.message, 'pending') || SCREENING_TEXT[language].submitted);
     } catch (err) {
-      setCandidates([]);
+      clearScreeningResults();
       setLoading(false);
       setError((language) => formatScreeningApiError(language, err, SCREENING_TEXT[language].submitFailed));
     }
@@ -1946,6 +2027,9 @@ const StockScreeningPage: React.FC = () => {
             ? strategyLoadError
             : selectedStrategy?.description || copy.strategyHint}
         </div>
+        {selectedStrategy ? (
+          <StrategyFactorBlueprint strategy={selectedStrategy} language={language} />
+        ) : null}
       </section>
 
       {loading || screenMeta ? (
@@ -2009,7 +2093,12 @@ const StockScreeningPage: React.FC = () => {
             <h2 className="text-base font-semibold text-foreground">{copy.results}</h2>
           <div className="flex items-center gap-2 rounded-full border border-border bg-surface px-3 py-2 text-xs text-secondary-text">
             <Search className="h-4 w-4 text-cyan" />
-            {screeningText(language, 'candidateCount', { count: candidates.length })}</div>
+            {candidateQuery.trim().length > 0 || candidateRiskFilter !== 'all'
+              ? formatUiText(qcopy.filteredCandidateCount, {
+                  visible: filteredSortedCandidates.length,
+                  total: candidates.length,
+                })
+              : screeningText(language, 'candidateCount', { count: candidates.length })}</div>
           </div>
 
         {candidates.length === 0 ? (
@@ -2017,6 +2106,40 @@ const StockScreeningPage: React.FC = () => {
             <p className="text-sm font-medium text-foreground">{copy.emptyCandidates}</p>
           </div>
         ) : (
+          <>
+          <ScreeningResultsToolbar
+            language={language}
+            query={candidateQuery}
+            onQueryChange={setCandidateQuery}
+            riskFilter={candidateRiskFilter}
+            onRiskFilterChange={setCandidateRiskFilter}
+            sortKey={candidateSortKey}
+            onSortKeyChange={setCandidateSortKey}
+            onExportCsv={() => exportCandidatesCsv(filteredSortedCandidates, screenMeta.strategy || strategy, language)}
+            canExport={filteredSortedCandidates.length > 0}
+          />
+          <CandidateComparisonMatrix
+            candidates={comparedCandidates}
+            language={language}
+            onRemove={(code) => setComparedCodes((prev) => prev.filter((item) => item !== code))}
+            onClear={() => setComparedCodes([])}
+          />
+          {filteredSortedCandidates.length === 0 ? (
+            <div className="flex flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-border bg-surface/70 px-5 py-10 text-center">
+              <p className="text-sm font-medium text-foreground">{qcopy.noFilteredCandidates}</p>
+              <button
+                type="button"
+                className="rounded-lg border border-border bg-card px-3 py-1.5 text-xs font-medium text-cyan hover:border-cyan"
+                onClick={() => {
+                  setCandidateQuery('');
+                  setCandidateRiskFilter('all');
+                  setCandidateSortKey('default');
+                }}
+              >
+                {qcopy.resetCandidateFilters}
+              </button>
+            </div>
+          ) : (
           <div className="overflow-x-auto rounded-xl border border-border">
             <table className="w-full min-w-[860px] border-collapse text-sm">
               <thead className="bg-surface text-left text-xs text-secondary-text">
@@ -2034,8 +2157,10 @@ const StockScreeningPage: React.FC = () => {
                 </tr>
               </thead>
               <tbody>
-                {candidates.map((item) => {
+                {filteredSortedCandidates.map((item) => {
                   const expanded = expandedCode === item.code;
+                  const isCompared = comparedCodes.includes(item.code);
+                  const explicitFactorScore = getCandidateExplicitFactorScore(item);
                   const factors = getFactorEntries(item);
                   const selectionExplanations = getSelectionExplanations(language, item);
                   const selectionQuality = item.whySelected?.length
@@ -2054,7 +2179,14 @@ const StockScreeningPage: React.FC = () => {
                         <td className="px-4 py-3 text-secondary-text">{item.industry || '-'}</td>
                         <td className="px-4 py-3 text-secondary-text">{formatNumber(item.price)}</td>
                         <td className="px-4 py-3 text-secondary-text">{formatNumber(item.changePct)}%</td>
-                        <td className="px-4 py-3 font-bold text-cyan">{formatScore(item.score)}</td>
+                        <td className="px-4 py-3 font-bold text-cyan">
+                          <div>{formatScore(item.score)}</div>
+                          {explicitFactorScore != null ? (
+                            <div className="mt-0.5 text-[11px] font-normal text-secondary-text">
+                              {qcopy.compareFactorScore} {formatScore(explicitFactorScore)}
+                            </div>
+                          ) : null}
+                        </td>
                         <td className="px-4 py-3 text-secondary-text">{factorRanking ? copy.factorRanking : formatScore(item.llmScore)}</td>
                         <td className="px-4 py-3">
                           <span className={`rounded-lg px-2.5 py-1 text-xs font-semibold ${getRiskClassName(item.riskLevel)}`}>
@@ -2062,13 +2194,27 @@ const StockScreeningPage: React.FC = () => {
                           </span>
                         </td>
                         <td className="px-4 py-3">
-                          <button
-                            className="text-sm font-semibold text-cyan transition-colors hover:text-foreground"
-                            type="button"
-                            onClick={() => setExpandedCode(expanded ? null : item.code)}
-                          >
-                            {expanded ? copy.collapse : copy.expand}
-                          </button>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <button
+                              className="text-sm font-semibold text-cyan transition-colors hover:text-foreground"
+                              type="button"
+                              onClick={() => setExpandedCode(expanded ? null : item.code)}
+                            >
+                              {expanded ? copy.collapse : copy.expand}
+                            </button>
+                            <button
+                              className={`rounded-md border px-2 py-0.5 text-xs transition-colors ${
+                                isCompared
+                                  ? 'border-cyan/60 bg-cyan/15 font-semibold text-cyan'
+                                  : 'border-border text-secondary-text hover:border-cyan/50 hover:text-foreground'
+                              }`}
+                              type="button"
+                              aria-pressed={isCompared}
+                              onClick={() => toggleCompareCandidate(item.code)}
+                            >
+                              {isCompared ? qcopy.compareAdded : qcopy.compareAdd}
+                            </button>
+                          </div>
                         </td>
                       </tr>
                       {expanded ? (
@@ -2144,12 +2290,23 @@ const StockScreeningPage: React.FC = () => {
                                   <p className="text-xs font-semibold text-secondary-text">{copy.factors}</p>
                                   <div className="mt-2 grid grid-cols-2 gap-2">
                                     {factors.length > 0 ? (
-                                      factors.map(([key, value]) => (
-                                        <div key={key} className="rounded-lg border border-border bg-card px-3 py-2">
-                                          <span className="block text-xs text-secondary-text">{copy[FACTOR_LABELS[key]] || key}</span>
-                                          <span className="text-sm font-semibold text-foreground">{formatNumber(value)}</span>
-                                        </div>
-                                      ))
+                                      factors.map(([key, value]) => {
+                                        const pctWidth = Math.min(100, Math.max(4, Number(value) || 0));
+                                        return (
+                                          <div key={key} className="rounded-lg border border-border bg-card px-3 py-2">
+                                            <div className="flex items-center justify-between gap-2">
+                                              <span className="block text-xs text-secondary-text">{getFactorLabel(language, key)}</span>
+                                              <span className="font-mono text-sm font-semibold text-foreground">{formatNumber(value)}</span>
+                                            </div>
+                                            <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-surface">
+                                              <div
+                                                className={`h-full rounded-full ${factorBarColorClass(Number(value) || 0)}`}
+                                                style={{ width: `${pctWidth}%` }}
+                                              />
+                                            </div>
+                                          </div>
+                                        );
+                                      })
                                     ) : (
                                       <span className="text-sm text-secondary-text">{copy.noFactors}</span>
                                     )}
@@ -2216,6 +2373,8 @@ const StockScreeningPage: React.FC = () => {
               </tbody>
             </table>
           </div>
+          )}
+          </>
         )}
         </section>
       ) : null}

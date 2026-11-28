@@ -3,11 +3,11 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { BellRing } from 'lucide-react';
 import { alertsApi } from '../api/alerts';
 import type { ParsedApiError } from '../api/error';
-import { getParsedApiError } from '../api/error';
+import { createParsedApiError, getParsedApiError } from '../api/error';
 import { AlertRuleForm } from '../components/alerts/AlertRuleForm';
 import {
   AlertRuleList,
-  type AlertRuleBusyState,
+  type AlertRuleBusyAction,
   type AlertRuleEnabledFilter,
   type AlertTypeFilter,
 } from '../components/alerts/AlertRuleList';
@@ -18,6 +18,7 @@ import type {
   AlertRuleCreateRequest,
   AlertRuleItem,
   AlertRuleListResponse,
+  AlertRuleTargetResult,
   AlertRuleTestResponse,
   AlertTriggerItem,
   AlertType,
@@ -41,6 +42,133 @@ function testVariant(result: AlertRuleTestResponse): 'success' | 'warning' | 'da
   return result.triggered ? 'success' : 'warning';
 }
 
+type RuleTestFeedback =
+  | { kind: 'error'; error: ParsedApiError }
+  | { kind: 'warning'; title: string; message: string };
+
+function isFailedTarget(item: AlertRuleTargetResult): boolean {
+  return item.status === 'evaluation_error' || item.recordStatus === 'failed';
+}
+
+function isDegradedTarget(item: AlertRuleTargetResult): boolean {
+  return item.recordStatus === 'degraded' || (item.status as string) === 'degraded';
+}
+
+function isSkippedTarget(item: AlertRuleTargetResult): boolean {
+  return item.recordStatus === 'skipped' || (item.status as string) === 'skipped';
+}
+
+function formatTargetDiagnostics(items: AlertRuleTargetResult[]): string {
+  return items
+    .map((item) => `${item.displayTarget ?? item.target}: ${item.message || item.recordStatus || item.status}`)
+    .join('；');
+}
+
+function buildOutOfOrderTestFeedback(
+  rule: AlertRuleItem,
+  result: AlertRuleTestResponse,
+): RuleTestFeedback | null {
+  const targetResults = result.targetResults ?? [];
+  const failedTargets = targetResults.filter(isFailedTarget);
+  const degradedTargets = targetResults.filter(isDegradedTarget);
+  const skippedTargets = targetResults.filter(isSkippedTarget);
+  const isTruncated = result.evaluatedCount != null && result.evaluatedCount > targetResults.length;
+  const legacyFailedMatch =
+    result.failedCount == null && isTruncated
+      ? /\b([1-9]\d*)\s+failed\b/i.exec(result.message ?? '')
+      : null;
+  const failedCount = Math.max(
+    result.failedCount ?? (legacyFailedMatch ? Number(legacyFailedMatch[1]) : 0),
+    failedTargets.length,
+  );
+  const degradedCount = Math.max(result.degradedCount ?? 0, degradedTargets.length);
+  const skippedCount = Math.max(result.skippedCount ?? 0, skippedTargets.length);
+  const isMultiTarget = (result.evaluatedCount ?? targetResults.length) > 1;
+
+  if (result.status === 'evaluation_error') {
+    const failedDetails = isMultiTarget ? formatTargetDiagnostics(failedTargets) : '';
+    const hiddenFailedCount = isMultiTarget ? Math.max(0, failedCount - failedTargets.length) : 0;
+    const hiddenNote = hiddenFailedCount > 0
+      ? (failedTargets.length > 0
+        ? `另有 ${hiddenFailedCount} 个标的评估失败（超出展示上限未逐条列出）`
+        : `共 ${failedCount} 个标的评估失败（超出展示上限未逐条列出）`)
+      : '';
+    const combinedMessage = [result.message, failedDetails, hiddenNote].filter(Boolean).join('；');
+    return {
+      kind: 'error',
+      error: createParsedApiError({
+        title: `规则「${rule.name}」测试失败`,
+        message: combinedMessage || '规则测试评估失败',
+        rawMessage: combinedMessage || undefined,
+        category: 'unknown',
+      }),
+    };
+  }
+
+  if (failedCount > 0) {
+    const failedDetails = formatTargetDiagnostics(failedTargets);
+    const hiddenFailedCount = isMultiTarget ? Math.max(0, failedCount - failedTargets.length) : 0;
+    const hiddenNote = hiddenFailedCount > 0
+      ? (failedTargets.length > 0
+        ? `另有 ${hiddenFailedCount} 个标的评估失败（超出展示上限未逐条列出）`
+        : `共 ${failedCount} 个标的评估失败（超出展示上限未逐条列出）`)
+      : '';
+    const combinedMessage = [result.message, failedDetails, hiddenNote].filter(Boolean).join('；');
+    return {
+      kind: 'error',
+      error: createParsedApiError({
+        title: isMultiTarget ? `规则「${rule.name}」部分标的测试失败` : `规则「${rule.name}」测试失败`,
+        message: combinedMessage || failedDetails || '部分标的测试评估失败',
+        rawMessage: combinedMessage || undefined,
+        category: 'unknown',
+      }),
+    };
+  }
+
+  const topLevelStatus = result.status as string;
+  if (degradedCount > 0 || skippedCount > 0 || topLevelStatus === 'skipped' || topLevelStatus === 'degraded') {
+    const diagnosticTargets = [...degradedTargets, ...skippedTargets];
+    const totalDiagnosticCount = degradedCount + skippedCount;
+    if (!isMultiTarget) {
+      const baseMessage = result.message?.trim();
+      const singleTargetMessage = diagnosticTargets[0]?.message?.trim();
+      const messageParts: string[] = [];
+      if (baseMessage) {
+        messageParts.push(baseMessage);
+      }
+      if (singleTargetMessage && (!baseMessage || !baseMessage.includes(singleTargetMessage))) {
+        messageParts.push(singleTargetMessage);
+      }
+      const isDegradedOnly =
+        (degradedCount > 0 || topLevelStatus === 'degraded')
+        && skippedCount === 0
+        && topLevelStatus !== 'skipped';
+      const fallbackMessage = isDegradedOnly ? '规则测试数据降级，未完成评估' : '规则测试已跳过，未完成评估';
+      return {
+        kind: 'warning',
+        title: isDegradedOnly ? `规则「${rule.name}」测试数据降级` : `规则「${rule.name}」测试未评估`,
+        message: messageParts.join('；') || fallbackMessage,
+      };
+    }
+
+    const diagnosticDetails = formatTargetDiagnostics(diagnosticTargets);
+    const hiddenDiagnosticCount = Math.max(0, totalDiagnosticCount - diagnosticTargets.length);
+    const hiddenNote = hiddenDiagnosticCount > 0
+      ? (diagnosticTargets.length > 0
+        ? `另有 ${hiddenDiagnosticCount} 个标的降级或跳过（超出展示上限未逐条列出）`
+        : `共 ${totalDiagnosticCount} 个标的降级或跳过（超出展示上限未逐条列出）`)
+      : '';
+    const combinedMessage = [result.message, diagnosticDetails, hiddenNote].filter(Boolean).join('；');
+    return {
+      kind: 'warning',
+      title: `规则「${rule.name}」部分标的未完成评估`,
+      message: combinedMessage || diagnosticDetails || '部分标的未完成评估',
+    };
+  }
+
+  return null;
+}
+
 function renderTestResultMessage(result: AlertRuleTestResponse): React.ReactNode {
   const targetResults = result.targetResults ?? [];
   return (
@@ -57,12 +185,13 @@ function renderTestResultMessage(result: AlertRuleTestResponse): React.ReactNode
       {result.evaluatedCount != null && result.evaluatedCount > 1 ? (
         <div className="text-xs">
           评估 {result.evaluatedCount} · 触发 {result.triggeredCount ?? 0} · 降级 {result.degradedCount ?? 0} · 跳过 {result.skippedCount ?? 0}
+          {result.failedCount != null ? ` · 失败 ${result.failedCount}` : ''}
         </div>
       ) : null}
       {targetResults.length > 1 ? (
         <div className="grid gap-1 text-xs">
-          {targetResults.slice(0, 20).map((item) => (
-            <div key={`${item.target}-${item.status}`} className="flex flex-wrap justify-between gap-2">
+          {targetResults.slice(0, 20).map((item, index) => (
+            <div key={`${item.target}-${item.status}-${index}`} className="flex flex-wrap justify-between gap-2">
               <span>{item.displayTarget ?? item.target}</span>
               <span>
                 {item.status}
@@ -125,14 +254,53 @@ const AlertsPage: React.FC = () => {
   const [createLoading, setCreateLoading] = useState(false);
   const [createError, setCreateError] = useState<ParsedApiError | null>(null);
   const [createSuccess, setCreateSuccess] = useState<string | null>(null);
-  const [busyRule, setBusyRule] = useState<AlertRuleBusyState | null>(null);
-  const [testResult, setTestResult] = useState<AlertRuleTestResponse | null>(null);
+  const [busyRules, setBusyRules] = useState<Record<number, AlertRuleBusyAction>>({});
+  const [testResult, setTestResult] = useState<{ ruleId: number; response: AlertRuleTestResponse } | null>(null);
+  const [testFeedback, setTestFeedback] = useState<Record<number, RuleTestFeedback>>({});
+  const mountedRef = useRef(true);
   const rulesRequestIdRef = useRef(0);
+  const triggersRequestIdRef = useRef(0);
+  const notificationsRequestIdRef = useRef(0);
+  const testRequestIdRef = useRef(0);
+  const activeTestRuleIdRef = useRef<number | null>(null);
+  const ruleTestEpochRef = useRef<Record<number, number>>({});
+  const createInFlightRef = useRef(false);
+  const busyRuleIdsRef = useRef<Set<number>>(new Set());
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      rulesRequestIdRef.current += 1;
+      triggersRequestIdRef.current += 1;
+      notificationsRequestIdRef.current += 1;
+      testRequestIdRef.current += 1;
+      activeTestRuleIdRef.current = null;
+      ruleTestEpochRef.current = {};
+      busyRuleIdsRef.current = new Set();
+    };
+  }, []);
+
+  const setRuleBusy = useCallback((ruleId: number, action: AlertRuleBusyAction) => {
+    busyRuleIdsRef.current.add(ruleId);
+    setBusyRules((previous) => ({ ...previous, [ruleId]: action }));
+  }, []);
+
+  const clearRuleBusy = useCallback((ruleId: number) => {
+    busyRuleIdsRef.current.delete(ruleId);
+    if (!mountedRef.current) return;
+    setBusyRules((previous) => {
+      if (!(ruleId in previous)) return previous;
+      const next = { ...previous };
+      delete next[ruleId];
+      return next;
+    });
+  }, []);
 
   const loadRules = useCallback(async () => {
     const requestId = rulesRequestIdRef.current + 1;
     rulesRequestIdRef.current = requestId;
-    const isLatestRequest = () => rulesRequestIdRef.current === requestId;
+    const isLatestRequest = () => mountedRef.current && rulesRequestIdRef.current === requestId;
     const requestedPage = rulesPage;
     const baseQuery = {
       enabled: enabledFilterToQuery(enabledFilter),
@@ -167,28 +335,42 @@ const AlertsPage: React.FC = () => {
   }, [alertTypeFilter, enabledFilter, rulesPage]);
 
   const loadTriggers = useCallback(async () => {
+    const requestId = triggersRequestIdRef.current + 1;
+    triggersRequestIdRef.current = requestId;
+    const isLatestRequest = () => mountedRef.current && triggersRequestIdRef.current === requestId;
     setTriggersLoading(true);
     try {
       const response = await alertsApi.listTriggers({ page: 1, pageSize: PAGE_SIZE });
+      if (!isLatestRequest()) return;
       setTriggers(response.items);
       setTriggersError(null);
     } catch (error) {
+      if (!isLatestRequest()) return;
       setTriggersError(getParsedApiError(error));
     } finally {
-      setTriggersLoading(false);
+      if (isLatestRequest()) {
+        setTriggersLoading(false);
+      }
     }
   }, []);
 
   const loadNotifications = useCallback(async () => {
+    const requestId = notificationsRequestIdRef.current + 1;
+    notificationsRequestIdRef.current = requestId;
+    const isLatestRequest = () => mountedRef.current && notificationsRequestIdRef.current === requestId;
     setNotificationsLoading(true);
     try {
       const response = await alertsApi.listNotifications({ page: 1, pageSize: PAGE_SIZE });
+      if (!isLatestRequest()) return;
       setNotifications(response.items);
       setNotificationsError(null);
     } catch (error) {
+      if (!isLatestRequest()) return;
       setNotificationsError(getParsedApiError(error));
     } finally {
-      setNotificationsLoading(false);
+      if (isLatestRequest()) {
+        setNotificationsLoading(false);
+      }
     }
   }, []);
 
@@ -203,61 +385,119 @@ const AlertsPage: React.FC = () => {
   }, [loadNotifications, loadTriggers, rulesLoaded]);
 
   const handleCreateRule = async (payload: AlertRuleCreateRequest) => {
+    if (createInFlightRef.current) return false;
+    createInFlightRef.current = true;
     setCreateLoading(true);
     setCreateError(null);
     setCreateSuccess(null);
     try {
       const created = await alertsApi.createRule(payload);
+      if (!mountedRef.current) return false;
       setCreateSuccess(`已创建告警规则「${created.name}」`);
       setRulesPage(1);
       setRulesRefreshKey((value) => value + 1);
       return true;
     } catch (error) {
+      if (!mountedRef.current) return false;
       setCreateError(getParsedApiError(error));
       return false;
     } finally {
-      setCreateLoading(false);
+      createInFlightRef.current = false;
+      if (mountedRef.current) {
+        setCreateLoading(false);
+      }
     }
   };
 
   const handleToggleEnabled = async (rule: AlertRuleItem) => {
-    setBusyRule({ id: rule.id, action: 'toggle' });
+    if (busyRuleIdsRef.current.has(rule.id)) return;
+    setRuleBusy(rule.id, 'toggle');
     try {
       if (rule.enabled) {
         await alertsApi.disableRule(rule.id);
       } else {
         await alertsApi.enableRule(rule.id);
       }
+      if (!mountedRef.current) return;
       setRulesRefreshKey((value) => value + 1);
     } catch (error) {
+      if (!mountedRef.current) return;
       setRulesError(getParsedApiError(error));
     } finally {
-      setBusyRule(null);
+      clearRuleBusy(rule.id);
     }
   };
 
   const handleDeleteRule = async (rule: AlertRuleItem) => {
-    setBusyRule({ id: rule.id, action: 'delete' });
+    if (busyRuleIdsRef.current.has(rule.id)) return;
+    setRuleBusy(rule.id, 'delete');
     try {
       await alertsApi.deleteRule(rule.id);
+      if (!mountedRef.current) return;
+      ruleTestEpochRef.current[rule.id] = (ruleTestEpochRef.current[rule.id] ?? 0) + 1;
+      if (activeTestRuleIdRef.current === rule.id) {
+        testRequestIdRef.current += 1;
+        activeTestRuleIdRef.current = null;
+      }
+      setTestResult((current) => (current?.ruleId === rule.id ? null : current));
+      setTestFeedback((previous) => {
+        if (!(rule.id in previous)) return previous;
+        const next = { ...previous };
+        delete next[rule.id];
+        return next;
+      });
       setRulesRefreshKey((value) => value + 1);
     } catch (error) {
+      if (!mountedRef.current) return;
       setRulesError(getParsedApiError(error));
     } finally {
-      setBusyRule(null);
+      clearRuleBusy(rule.id);
     }
   };
 
   const handleTestRule = async (rule: AlertRuleItem) => {
-    setBusyRule({ id: rule.id, action: 'test' });
+    if (busyRuleIdsRef.current.has(rule.id)) return;
+    const requestId = testRequestIdRef.current + 1;
+    testRequestIdRef.current = requestId;
+    const ruleEpoch = (ruleTestEpochRef.current[rule.id] ?? 0) + 1;
+    ruleTestEpochRef.current[rule.id] = ruleEpoch;
+    activeTestRuleIdRef.current = rule.id;
+    setRuleBusy(rule.id, 'test');
     setTestResult(null);
+    setTestFeedback((previous) => {
+      if (!(rule.id in previous)) return previous;
+      const next = { ...previous };
+      delete next[rule.id];
+      return next;
+    });
     try {
       const result = await alertsApi.testRule(rule.id);
-      setTestResult(result);
+      if (!mountedRef.current || ruleTestEpochRef.current[rule.id] !== ruleEpoch) {
+        return;
+      }
+      if (testRequestIdRef.current !== requestId) {
+        const feedback = buildOutOfOrderTestFeedback(rule, result);
+        if (feedback) {
+          setTestFeedback((previous) => ({
+            ...previous,
+            [rule.id]: feedback,
+          }));
+        }
+        return;
+      }
+      setTestResult({ ruleId: rule.id, response: result });
     } catch (error) {
-      setRulesError(getParsedApiError(error));
+      if (!mountedRef.current || ruleTestEpochRef.current[rule.id] !== ruleEpoch) return;
+      const parsedError = getParsedApiError(error);
+      setTestFeedback((previous) => ({
+        ...previous,
+        [rule.id]: { kind: 'error', error: parsedError },
+      }));
     } finally {
-      setBusyRule(null);
+      if (testRequestIdRef.current === requestId) {
+        activeTestRuleIdRef.current = null;
+      }
+      clearRuleBusy(rule.id);
     }
   };
 
@@ -283,6 +523,39 @@ const AlertsPage: React.FC = () => {
         />
       ) : null}
       {rulesError ? <ApiErrorAlert error={rulesError} onDismiss={() => setRulesError(null)} /> : null}
+      {Object.entries(testFeedback).map(([ruleIdStr, feedback]) => {
+        const targetRuleId = Number(ruleIdStr);
+        const dismissFeedback = () => {
+          setTestFeedback((previous) => {
+            if (!(targetRuleId in previous)) return previous;
+            const next = { ...previous };
+            delete next[targetRuleId];
+            return next;
+          });
+        };
+        if (feedback.kind === 'warning') {
+          return (
+            <InlineAlert
+              key={`test-feedback-${ruleIdStr}`}
+              title={feedback.title}
+              message={feedback.message}
+              variant="warning"
+              action={(
+                <button type="button" className="text-sm underline" onClick={dismissFeedback}>
+                  关闭
+                </button>
+              )}
+            />
+          );
+        }
+        return (
+          <ApiErrorAlert
+            key={`test-feedback-${ruleIdStr}`}
+            error={feedback.error}
+            onDismiss={dismissFeedback}
+          />
+        );
+      })}
       {!rulesError && ruleSources && ruleSources.legacyConfigured > 0 ? (
         <InlineAlert
           title="存在环境变量告警规则"
@@ -315,13 +588,13 @@ const AlertsPage: React.FC = () => {
             onToggleEnabled={(rule) => void handleToggleEnabled(rule)}
             onDelete={(rule) => void handleDeleteRule(rule)}
             onTest={(rule) => void handleTestRule(rule)}
-            busyRule={busyRule}
+            busyRules={busyRules}
           />
           {testResult ? (
             <InlineAlert
               title="测试结果"
-              variant={testVariant(testResult)}
-              message={renderTestResultMessage(testResult)}
+              variant={testVariant(testResult.response)}
+              message={renderTestResultMessage(testResult.response)}
             />
           ) : null}
         </div>

@@ -15,24 +15,30 @@ import json
 import logging
 import random
 import re
-import sys
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from src.config import Config, channel_allows_empty_api_key, get_config
+from src.config import (
+    Config,
+    apply_litellm_api_surface,
+    channel_allows_empty_api_key,
+    get_config,
+    normalize_llm_channel_api_surface,
+)
 from src.llm.hermes import route_has_hermes
+from src.llm.native_resolve import normalize_endpoint_url
+from src.llm.transport import (
+    create_litellm_compat_proxy,
+    dispatch_completion,
+    find_unresolved_env_var,
+    resolve_env_reference,
+    resolve_litellm_params_env,
+)
 
 logger = logging.getLogger(__name__)
 
-
-class _LiteLLMPlaceholder:
-    """Provide a patchable placeholder before litellm is imported."""
-
-    completion = None
-
-
-# Keep a patchable module attribute while still avoiding a hard import at module load.
-litellm = sys.modules.get("litellm") or _LiteLLMPlaceholder()
+# Keep a patchable module attribute while avoiding a hard import at module load.
+litellm = create_litellm_compat_proxy()
 
 EXTRACT_PROMPT = """请分析这张股票市场截图或图片，提取其中所有可见的股票代码及名称。
 
@@ -241,11 +247,59 @@ def _matching_vision_deployments(model: str, cfg: Config) -> List[Dict[str, Any]
     ]
 
 
+def _normalize_vision_endpoint_url(url: str) -> str:
+    """Normalize scheme/host case and trailing slash via ``urlsplit``, preserving semicolon params & query."""
+    return normalize_endpoint_url(url)
+
+
+def _has_deployment_endpoint_conflict(deployment: Dict[str, Any]) -> bool:
+    """Return True when a vision deployment specifies conflicting ``api_base`` and ``base_url``."""
+    raw_params = resolve_litellm_params_env(deployment.get("litellm_params") or {})
+    has_explicit_base_url = "base_url" in raw_params and raw_params.get("base_url") is not None
+    if not has_explicit_base_url:
+        return False
+    raw_resolved_base_url = str(raw_params.get("base_url")).strip()
+    raw_resolved_api_base = str(raw_params.get("api_base") or "").strip()
+    if not raw_resolved_api_base:
+        return False
+    return _normalize_vision_endpoint_url(raw_resolved_base_url) != _normalize_vision_endpoint_url(
+        raw_resolved_api_base
+    )
+
+
+def _find_deployment_unresolved_endpoint_env(
+    deployment: Dict[str, Any],
+) -> Optional[Tuple[str, str]]:
+    """Return ``(endpoint_key, missing_env_var)`` when a vision deployment endpoint env var is unset."""
+    raw_info = deployment.get("model_info")
+    if isinstance(raw_info, dict):
+        marker = str(raw_info.get("_dsa_unresolved_endpoint_env") or "").strip()
+        if marker:
+            if ":" in marker:
+                endpoint_key, missing_var = marker.split(":", 1)
+                return endpoint_key.strip() or "api_base", missing_var.strip() or "<empty>"
+            return "api_base", marker
+    raw_params = deployment.get("litellm_params") or {}
+    if isinstance(raw_params, dict):
+        for endpoint_key in ("base_url", "api_base"):
+            missing_var = find_unresolved_env_var(raw_params.get(endpoint_key))
+            if missing_var is not None:
+                return endpoint_key, missing_var
+    return None
+
+
+def _resolve_deployment_api_key(deployment: Dict[str, Any]) -> str:
+    raw_params = deployment.get("litellm_params") or {}
+    if not isinstance(raw_params, dict):
+        return ""
+    return str(resolve_env_reference(raw_params.get("api_key")) or "").strip()
+
+
 def _get_api_keys_for_model(model: str, cfg: Config) -> List[str]:
     """Return available API keys for the given litellm model."""
     deployment_keys: List[str] = []
     for deployment in _matching_vision_deployments(model, cfg):
-        key = str((deployment.get("litellm_params") or {}).get("api_key") or "").strip()
+        key = _resolve_deployment_api_key(deployment)
         if key and len(key) >= 8 and key not in deployment_keys:
             deployment_keys.append(key)
     if deployment_keys:
@@ -259,17 +313,20 @@ def _get_api_keys_for_model(model: str, cfg: Config) -> List[str]:
 
 def _deployment_allows_empty_api_key(deployment: Dict[str, Any]) -> bool:
     """Return whether a configured vision deployment is a supported keyless endpoint."""
-    params = deployment.get("litellm_params") or {}
+    params = resolve_litellm_params_env(deployment.get("litellm_params") or {})
     if str(params.get("api_key") or "").strip():
         return False
     wire_model = str(params.get("model") or "").strip()
     protocol = wire_model.split("/", 1)[0] if "/" in wire_model else None
-    return channel_allows_empty_api_key(protocol, params.get("api_base"))
+    if "base_url" in params and params.get("base_url") is not None:
+        api_base = params.get("base_url")
+    else:
+        api_base = params.get("api_base")
+    return channel_allows_empty_api_key(protocol, api_base)
 
 
 def _call_litellm_vision(image_b64: str, mime_type: str, api_key: Optional[str] = None) -> str:
-    """Extract stock codes from an image using litellm (all providers via OpenAI vision format)."""
-    global litellm
+    """Extract stock codes from an image using the configured LLM transport (OpenAI vision format)."""
     cfg = get_config()
     model = _resolve_vision_model()
     if not model:
@@ -282,12 +339,13 @@ def _call_litellm_vision(image_b64: str, mime_type: str, api_key: Optional[str] 
     key = api_key if api_key and api_key in keys else (random.choice(keys) if keys else None)
 
     deployment_params: Dict[str, Any] = {}
+    deployment_info: Dict[str, Any] = {}
     if deployments:
         deployment = next(
             (
                 item
                 for item in deployments
-                if str((item.get("litellm_params") or {}).get("api_key") or "").strip() == key
+                if _resolve_deployment_api_key(item) == key
             ),
             None,
         )
@@ -299,10 +357,43 @@ def _call_litellm_vision(image_b64: str, mime_type: str, api_key: Optional[str] 
             if deployment is not None:
                 key = None
         if deployment is not None:
-            deployment_params = dict(deployment.get("litellm_params") or {})
+            unresolved = _find_deployment_unresolved_endpoint_env(deployment)
+            if unresolved is not None:
+                endpoint_key, missing_var = unresolved
+                raise ValueError(
+                    f"Vision deployment {endpoint_key} environment variable '{missing_var}' is not set"
+                )
+            deployment_params = resolve_litellm_params_env(deployment.get("litellm_params") or {})
+            raw_info = deployment.get("model_info")
+            if isinstance(raw_info, dict):
+                deployment_info = dict(raw_info)
+        else:
+            # Fail closed instead of falling back to legacy OpenAI routing when
+            # any matching deployment has an unset endpoint env var or URL conflict.
+            for item in deployments:
+                unresolved = _find_deployment_unresolved_endpoint_env(item)
+                if unresolved is not None:
+                    endpoint_key, missing_var = unresolved
+                    raise ValueError(
+                        f"Vision deployment {endpoint_key} environment variable '{missing_var}' is not set"
+                    )
+                if _has_deployment_endpoint_conflict(item):
+                    raise ValueError("Vision deployment has conflicting api_base and base_url values")
     if key is None and not deployment_params:
         raise ValueError(f"No API key found for vision model {model}")
     wire_model = str(deployment_params.get("model") or model).strip()
+    raw_api_surface = str(
+        deployment_info.get("dsa_api_surface")
+        or deployment_params.get("api_surface")
+        or ""
+    ).strip()
+    resolved_api_surface = (
+        normalize_llm_channel_api_surface(raw_api_surface)
+        if raw_api_surface
+        else ""
+    )
+    if resolved_api_surface == "responses":
+        wire_model = apply_litellm_api_surface(wire_model, resolved_api_surface)
 
     data_url = f"data:{mime_type};base64,{image_b64}"
     call_kwargs: dict = {
@@ -322,8 +413,41 @@ def _call_litellm_vision(image_b64: str, mime_type: str, api_key: Optional[str] 
     effective_api_key = str(deployment_params.get("api_key") or key or "").strip()
     if effective_api_key:
         call_kwargs["api_key"] = effective_api_key
-    if deployment_params.get("api_base"):
-        call_kwargs["api_base"] = deployment_params["api_base"]
+    has_explicit_base_url = (
+        "base_url" in deployment_params and deployment_params.get("base_url") is not None
+    )
+    raw_resolved_base_url = (
+        str(deployment_params.get("base_url")).strip() if has_explicit_base_url else ""
+    )
+    raw_resolved_api_base = str(deployment_params.get("api_base") or "").strip()
+    if (
+        has_explicit_base_url
+        and raw_resolved_api_base
+        and _normalize_vision_endpoint_url(raw_resolved_base_url)
+        != _normalize_vision_endpoint_url(raw_resolved_api_base)
+    ):
+        raise ValueError("Vision deployment has conflicting api_base and base_url values")
+    deployment_api_base = (
+        raw_resolved_base_url if has_explicit_base_url else raw_resolved_api_base
+    )
+    if deployment_api_base:
+        call_kwargs["api_base"] = deployment_api_base
+    if resolved_api_surface:
+        call_kwargs["api_surface"] = resolved_api_surface
+    # P1-12: Preserve deployment routing metadata when building direct Vision kwargs.
+    raw_wire_protocol = str(deployment_params.get("wire_protocol") or "").strip()
+    if raw_wire_protocol:
+        call_kwargs["wire_protocol"] = raw_wire_protocol
+    raw_custom_provider = str(deployment_params.get("custom_llm_provider") or "").strip()
+    if raw_custom_provider:
+        call_kwargs["custom_llm_provider"] = raw_custom_provider
+    raw_channel_protocol = str(
+        deployment_info.get("dsa_channel_protocol")
+        or deployment_params.get("dsa_channel_protocol")
+        or ""
+    ).strip()
+    if raw_channel_protocol:
+        call_kwargs["dsa_channel_protocol"] = raw_channel_protocol
     if deployment_params.get("extra_headers"):
         call_kwargs["extra_headers"] = dict(deployment_params["extra_headers"])
     # Add api_base and custom headers for OpenAI-compatible providers
@@ -333,10 +457,7 @@ def _call_litellm_vision(image_b64: str, mime_type: str, api_key: Optional[str] 
         if cfg.openai_base_url and "aihubmix.com" in cfg.openai_base_url:
             call_kwargs["extra_headers"] = {"APP-Code": "GPIJ3886"}
 
-    if getattr(litellm, "completion", None) is None:
-        import litellm as litellm_module
-        litellm = litellm_module
-    response = litellm.completion(**call_kwargs)
+    response = dispatch_completion(compat_proxy=litellm, config=cfg, **call_kwargs)
     if response and response.choices and response.choices[0].message.content:
         return response.choices[0].message.content
     raise ValueError("LiteLLM vision returned empty response")

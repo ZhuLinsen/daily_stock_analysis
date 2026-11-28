@@ -1,6 +1,6 @@
 # LLM 服务商配置指南
 
-本文面向首次配置用户，说明如何选择 LLM 配置方式、如何把 Web 设置页「AI 模型配置」预设映射到 `.env` / GitHub Actions，以及如何处理常见检测错误。
+本文面向首次配置用户，说明如何选择 LLM 配置方式、如何把 Web 设置页「AI 模型配置」预设映射到 `.env` / GitHub Actions，以及如何处理常见检测错误。关于原生 4 协议 HTTPX + SSE 传输引擎与三种中转站接入模式（env-only `LLM_TRANSPORT_MODE=litellm|auto|native`，默认 `litellm`），另见 [原生 HTTPX 传输说明](./llm-native-transport.md)。
 
 > 本页未引入新的外部 provider、模型名或 Base URL 兼容行为，仅整理配置参考与官方来源；实际兼容性仍以仓库当前运行时依赖与测试结论为准。
 

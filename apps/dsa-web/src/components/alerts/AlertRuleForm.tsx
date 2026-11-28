@@ -1,5 +1,5 @@
 import type React from 'react';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { portfolioApi } from '../../api/portfolio';
 import type {
   AlertRuleCreateRequest,
@@ -156,6 +156,15 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
   const [marketLightStatuses, setMarketLightStatuses] = useState<MarketLightStatus[]>(['red', 'yellow']);
   const [minDrop, setMinDrop] = useState('10');
   const [formError, setFormError] = useState<string | null>(null);
+  const mountedRef = useRef(true);
+  const submittingRef = useRef(false);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     if (!isPortfolioScope(targetScope)) return undefined;
@@ -370,6 +379,7 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (isSubmitting || submittingRef.current) return;
     let resolvedTarget = target.trim();
     if (targetScope === 'single_symbol') {
       const targetValidation = validateStockCode(target);
@@ -390,16 +400,24 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
     if (parameters == null) return;
 
     setFormError(null);
-    const submitted = await onSubmit({
-      name: name.trim() || undefined,
-      targetScope,
-      target: resolvedTarget,
-      alertType,
-      parameters,
-      severity,
-      enabled,
-    });
-    if (submitted === false) return;
+    submittingRef.current = true;
+    let submitted: boolean | void = false;
+    try {
+      submitted = await onSubmit({
+        name: name.trim() || undefined,
+        targetScope,
+        target: resolvedTarget,
+        alertType,
+        parameters,
+        severity,
+        enabled,
+      });
+    } catch {
+      submitted = false;
+    } finally {
+      submittingRef.current = false;
+    }
+    if (!mountedRef.current || submitted === false) return;
     setName('');
     setTarget('');
     setPortfolioTarget('all');

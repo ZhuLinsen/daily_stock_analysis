@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { analysisApi } from '../../../api/analysis';
 import { historyApi } from '../../../api/history';
@@ -488,5 +488,39 @@ describe('RunFlowPanel', () => {
     } finally {
       consoleError.mockRestore();
     }
+  });
+
+  it('keeps graph rendered during manual refresh and displays inline error alert if refresh fails', async () => {
+    let rejectRefresh: (reason?: unknown) => void = () => undefined;
+    const refreshPromise = new Promise<RunFlowSnapshot>((_resolve, reject) => {
+      rejectRefresh = reject;
+    });
+    vi.mocked(analysisApi.getTaskFlow)
+      .mockResolvedValueOnce(snapshot)
+      .mockReturnValueOnce(refreshPromise);
+
+    render(<RunFlowPanel source={{ type: 'task', taskId: 'task-1' }} />);
+
+    expect(await screen.findByTestId('run-flow-graph')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '刷新' }));
+
+    expect(screen.queryByTestId('run-flow-panel-loading')).not.toBeInTheDocument();
+    expect(screen.getByTestId('run-flow-graph')).toBeInTheDocument();
+    await waitFor(() => expect(analysisApi.getTaskFlow).toHaveBeenCalledTimes(2));
+
+    await act(async () => {
+      rejectRefresh({
+        response: {
+          status: 500,
+          data: { message: '刷新服务繁忙' },
+        },
+      });
+      await Promise.resolve();
+    });
+
+    expect(screen.getByTestId('run-flow-graph')).toBeInTheDocument();
+    expect(screen.queryByTestId('run-flow-panel-error')).not.toBeInTheDocument();
+    expect(await screen.findByText('刷新服务繁忙')).toBeInTheDocument();
   });
 });

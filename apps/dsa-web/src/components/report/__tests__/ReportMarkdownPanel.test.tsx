@@ -69,17 +69,22 @@ describe('ReportMarkdownPanel', () => {
       return btn;
     });
 
+    vi.useFakeTimers();
     fireEvent.click(markdownButton);
-    await waitFor(() => {
-      expect(screen.getByRole('button', { name: '已复制' })).toBeInTheDocument();
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
     });
+    expect(screen.getByRole('button', { name: '已复制' })).toBeInTheDocument();
     expect(copiedValues[0]).toBe('# Full Report\n\n**Buy** signal');
 
     const plainTextButton = screen.getByRole('button', { name: '复制纯文本' });
     fireEvent.click(plainTextButton);
-    await waitFor(() => {
-      expect(copiedValues).toHaveLength(2);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
     });
+    expect(copiedValues).toHaveLength(2);
     expect(copiedValues[1]).toContain('Full Report');
     expect(copiedValues[1]).not.toContain('**');
   });
@@ -113,14 +118,19 @@ describe('ReportMarkdownPanel', () => {
       return btn;
     });
 
+    vi.useFakeTimers();
     fireEvent.click(markdownButton);
-    const failedButton = await screen.findByRole('button', { name: 'Copy failed' });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const failedButton = screen.getByRole('button', { name: 'Copy failed' });
     expect(failedButton).not.toBeDisabled();
     expect(consoleError).toHaveBeenCalled();
 
-    vi.useFakeTimers();
     fireEvent.click(failedButton);
     await act(async () => {
+      await Promise.resolve();
       await Promise.resolve();
     });
     expect(screen.getByRole('button', { name: 'Copied!' })).toBeInTheDocument();
@@ -179,13 +189,16 @@ describe('ReportMarkdownPanel', () => {
       return btn;
     });
 
+    vi.useFakeTimers();
     fireEvent.click(screen.getByRole('button', { name: /原始分析结果/ }));
     fireEvent.click(screen.getByRole('button', { name: '复制' }));
-
     fireEvent.click(markdownButton);
-    await waitFor(() => {
-      expect(screen.getByRole('button', { name: '已复制' })).toBeInTheDocument();
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
     });
+    expect(screen.getByRole('button', { name: '已复制' })).toBeInTheDocument();
 
     await act(async () => {
       rejectRawWrite?.(new Error('NotAllowedError'));

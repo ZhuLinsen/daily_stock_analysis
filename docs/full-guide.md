@@ -449,6 +449,7 @@ daily_stock_analysis/
 | `TICKFLOW_BATCH_DAILY_ENABLED` | 是否启用 TickFlow 批量日 K 预取；权限不足会短期缓存失败状态，并继续走常规回退。 | `true` | 可选 |
 | `TICKFLOW_BATCH_SIZE` | TickFlow 日 K 与实时行情批量请求的单批最大标的数。 | `100` | 可选 |
 | `FUTU_HK_REALTIME_SOURCE_PRIORITY` | 港股实时行情独立优先级，可选 `futu`、`longbridge`、`akshare`、`yfinance`，按逗号分隔；失败自动回退。 | `futu,longbridge,akshare,yfinance` | 可选 |
+| `FUTU_PRIORITY` | Futu 数据源优先级（数字越小越早尝试，默认 `2`），美股日 K 与美股实时行情共用同一套排序规则：该数值参与各源 `*_PRIORITY` 的数值排序（默认 `2` 与 Finnhub 同档，Futu 排在 Finnhub 之后）；已启用 Longbridge 首选（`LONGBRIDGE_*`）时 Longbridge 仍锚定美股首位，Futu 排其后；把该值调大（如 `99`）即可让 Futu 退到美股日 K 与实时链末位。港股实时由 `FUTU_HK_REALTIME_SOURCE_PRIORITY` 控制，A 股实时由 `REALTIME_SOURCE_PRIORITY` 的字符串顺序控制（均不受本值影响）；配置 OpenD 后覆盖港股、沪深 A 股与美股的取数；未配置 OpenD 时自动跳过、链路与旧版一致。 | `2` | 可选 |
 | `LONGBRIDGE_OAUTH_CLIENT_ID` | Longbridge OAuth client_id；留空且无 Legacy Access Token 时会兼容使用 `LONGBRIDGE_APP_KEY` | - | 可选 |
 | `LONGBRIDGE_OAUTH_TOKEN_CACHE_B64` | OAuth token 缓存文件的 base64 内容，供 GitHub Actions / Docker 等 headless 环境使用 | - | 可选 |
 | `LONGBRIDGE_APP_KEY` | Longbridge Legacy App Key；无 `LONGBRIDGE_ACCESS_TOKEN` 时也可作为 OAuth client_id 兼容别名 | - | 可选 |

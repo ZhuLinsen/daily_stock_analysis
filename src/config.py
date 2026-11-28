@@ -14,7 +14,6 @@ import json
 import logging
 import os
 import re
-import sys
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Mapping, Optional, Tuple
@@ -452,36 +451,46 @@ def is_supported_llm_channel_api_surface_value(value: Optional[str]) -> bool:
 
 
 @lru_cache(maxsize=1)
-def get_litellm_model_providers() -> frozenset[str]:
-    """Return provider identifiers from the installed LiteLLM routing enum.
-
-    LiteLLM adds direct providers independently of this repository. Loading
-    its enum keeps channel validation aligned with the actual router instead
-    of relying on a permanently incomplete local allow-list. The fallback is
-    only for lightweight test stubs or a broken optional import; a production
-    installation gets the complete provider set from its pinned LiteLLM.
-    """
+def _get_cached_litellm_model_providers() -> frozenset[str]:
     providers = set(_FALLBACK_LITELLM_MODEL_PROVIDERS)
-    had_litellm = "litellm" in sys.modules
-    prev_cost_map_env = os.environ.get("LITELLM_LOCAL_MODEL_COST_MAP")
-    if not had_litellm and prev_cost_map_env is None:
-        # Prevent litellm.__init__ from fetching GitHub's model_prices JSON
-        # during offline config/doctor initialization.
-        os.environ["LITELLM_LOCAL_MODEL_COST_MAP"] = "True"
     try:
-        from litellm.types.utils import LlmProviders
+        from src.llm.transport import get_model_providers
 
-        providers.update(
-            str(provider.value).strip().lower()
-            for provider in LlmProviders
-            if str(getattr(provider, "value", "")).strip()
-        )
+        resolved = get_model_providers()
+        if resolved:
+            providers.update(resolved)
+        else:
+            logger.debug("LiteLLM provider metadata unavailable; using the compatibility fallback")
     except (ImportError, AttributeError, TypeError):
         logger.debug("LiteLLM provider metadata unavailable; using the compatibility fallback")
-    finally:
-        if not had_litellm and prev_cost_map_env is None:
-            os.environ.pop("LITELLM_LOCAL_MODEL_COST_MAP", None)
     return frozenset(providers)
+
+
+def get_litellm_model_providers() -> frozenset[str]:
+    """Return provider identifiers from the active LLM transport backend.
+
+    Under the default LiteLLM transport this loads LiteLLM's routing enum via
+    ``src.llm.transport.get_model_providers()``; the fallback allow-list is only
+    used for lightweight stubs or unavailable metadata.
+    """
+    from src.llm.transport import get_transport_override
+
+    override = get_transport_override()
+    if override is not None:
+        providers = set(_FALLBACK_LITELLM_MODEL_PROVIDERS)
+        try:
+            resolved = override.get_model_providers()
+            if resolved:
+                providers.update(resolved)
+            else:
+                logger.debug("LiteLLM provider metadata unavailable; using the compatibility fallback")
+        except (ImportError, AttributeError, TypeError):
+            logger.debug("LiteLLM provider metadata unavailable; using the compatibility fallback")
+        return frozenset(providers)
+    return _get_cached_litellm_model_providers()
+
+
+get_litellm_model_providers.cache_clear = _get_cached_litellm_model_providers.cache_clear  # type: ignore[attr-defined]
 
 
 def get_explicit_llm_channel_model_provider(model: str) -> str:
@@ -1039,6 +1048,7 @@ class Config:
     # === AI 分析配置 ===
     generation_backend: str = LITELLM_BACKEND_ID
     generation_fallback_backend: str = LITELLM_BACKEND_ID
+    llm_transport_mode: str = "litellm"
     generation_backend_timeout_seconds: int = DEFAULT_LOCAL_CLI_TIMEOUT_SECONDS
     generation_backend_max_output_bytes: int = DEFAULT_LOCAL_CLI_MAX_OUTPUT_BYTES
     generation_backend_max_concurrency: int = DEFAULT_GENERATION_BACKEND_MAX_CONCURRENCY
@@ -1991,6 +2001,7 @@ class Config:
             ),
             generation_backend=generation_backend,
             generation_fallback_backend=generation_fallback_backend,
+            llm_transport_mode=cls._resolve_llm_transport_mode(),
             generation_backend_timeout_seconds=generation_backend_timeout_seconds,
             generation_backend_max_output_bytes=generation_backend_max_output_bytes,
             generation_backend_max_concurrency=generation_backend_max_concurrency,
@@ -2567,6 +2578,8 @@ class Config:
             _logger.warning("LITELLM_CONFIG: model_list must be a list")
             return []
 
+        from src.llm.transport import find_unresolved_env_var, resolve_litellm_params_env
+
         valid_model_list: List[Dict[str, Any]] = []
         for entry in model_list:
             if not isinstance(entry, dict):
@@ -2575,13 +2588,21 @@ class Config:
             if params is not None and not isinstance(params, dict):
                 _logger.warning("LITELLM_CONFIG: skipping model entry with non-mapping litellm_params")
                 continue
-            resolved_params = params or {}
-            # Resolve os.environ/ references in string params
-            for key in list(resolved_params.keys()):
-                val = resolved_params.get(key)
-                if isinstance(val, str) and val.startswith('os.environ/'):
-                    env_name = val.split('/', 1)[1]
-                    resolved_params[key] = os.getenv(env_name, '')
+            raw_params = params or {}
+            unresolved_endpoint = None
+            for endpoint_key in ('base_url', 'api_base'):
+                missing_var = find_unresolved_env_var(raw_params.get(endpoint_key))
+                if missing_var is not None:
+                    unresolved_endpoint = f"{endpoint_key}:{missing_var}"
+                    break
+            resolved_params = resolve_litellm_params_env(raw_params)
+            entry = dict(entry)
+            entry['litellm_params'] = resolved_params
+            if unresolved_endpoint is not None:
+                raw_info = entry.get('model_info')
+                model_info = dict(raw_info) if isinstance(raw_info, dict) else {}
+                model_info['_dsa_unresolved_endpoint_env'] = unresolved_endpoint
+                entry['model_info'] = model_info
             route_name = str(entry.get('model_name') or '').strip()
             wire_model = str(resolved_params.get('model') or '').strip()
             if not route_name and not wire_model:
@@ -2916,8 +2937,26 @@ class Config:
                         entry["model_info"] = hermes_model_info(
                             str((model_ref or {}).get("display_model") or "")
                         )
-                    elif api_surface == "responses":
-                        entry["model_info"] = {"dsa_api_surface": "responses"}
+                    else:
+                        explicit_model_provider = get_explicit_llm_channel_model_provider(str(model_name))
+                        channel_protocol = resolve_llm_channel_protocol(
+                            ch.get("protocol"),
+                            base_url=ch.get("base_url"),
+                            models=[str(model_name)],
+                            channel_name=ch.get("name"),
+                        )
+                        effective_protocol = (
+                            explicit_model_provider
+                            if explicit_model_provider and explicit_model_provider != channel_protocol
+                            else channel_protocol
+                        )
+                        model_info: Dict[str, Any] = {}
+                        if effective_protocol:
+                            model_info["dsa_channel_protocol"] = effective_protocol
+                        if effective_protocol == "openai" or api_surface == "responses":
+                            model_info["dsa_api_surface"] = api_surface
+                        if model_info:
+                            entry["model_info"] = model_info
                     model_list.append(entry)
         return model_list
 
@@ -3294,6 +3333,12 @@ class Config:
 
         return default_priority
 
+    @staticmethod
+    def _resolve_llm_transport_mode() -> str:
+        from src.llm.transport import resolve_llm_transport_mode
+
+        return resolve_llm_transport_mode(os.getenv("LLM_TRANSPORT_MODE"))
+
     @classmethod
     def reset_instance(cls) -> None:
         """重置单例（主要用于测试）"""
@@ -3301,6 +3346,9 @@ class Config:
         cls._BOOTSTRAP_RUNTIME_ENV_OVERRIDES_CAPTURED = False
         cls._BOOTSTRAP_RUNTIME_ENV_OVERRIDES = frozenset()
         cls._BOOTSTRAP_RUNTIME_ENV_PRESENT_KEYS = frozenset()
+        from src.llm.transport import reset_transport_cache
+
+        reset_transport_cache()
 
     def has_searxng_enabled(self) -> bool:
         """Whether SearXNG fallback is enabled via self-hosted or public mode."""

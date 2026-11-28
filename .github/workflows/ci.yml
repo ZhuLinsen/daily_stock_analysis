@@ -56,7 +56,7 @@ jobs:
               - '!apps/dsa-web/tests/**'
               - '!apps/dsa-web/e2e/**'
             futu_packaging:
-              - '{requirements.txt,main.py,src/brokers/futu/**,scripts/build-backend.ps1,scripts/build-backend-macos.sh,scripts/macos-signature-audit.sh,scripts/build-all.ps1,scripts/build-all-macos.sh,apps/dsa-desktop/**,.github/workflows/ci.yml,.github/workflows/release.yml}'
+              - '{requirements.txt,main.py,src/brokers/futu/**,scripts/build-backend.ps1,scripts/build-backend-macos.sh,scripts/build-desktop-macos.sh,scripts/macos-signature-audit.sh,scripts/build-all.ps1,scripts/build-all-macos.sh,apps/dsa-desktop/**,.github/workflows/ci.yml,.github/workflows/release.yml}'
               - '!**/*.md'
       - name: 🧭 Filter backend-safe frontend paths
         id: backend-filter
@@ -349,7 +349,7 @@ jobs:
         run: npm ci --prefix apps/dsa-web
       - name: 🧊 Build and verify frozen backend
         run: bash scripts/build-backend-macos.sh
-      - name: 📦 Build and verify unsigned desktop package
+      - name: 📦 Build and verify ad-hoc signed desktop package
         run: bash scripts/build-desktop-macos.sh
 
   web-gate:

@@ -16,7 +16,8 @@ YfinanceFetcher - 兜底数据源 (Priority 4)
 
 import csv
 import logging
-from datetime import datetime, timedelta
+import math
+from datetime import date, datetime, timedelta
 from io import StringIO
 from typing import Optional, List, Dict, Any
 from urllib.error import HTTPError, URLError
@@ -608,7 +609,16 @@ class YfinanceFetcher(BaseFetcher):
             logger.warning(f"[Stooq] No quote data available for {symbol}")
             return None
 
-        def _fetch_prev_close() -> Optional[float]:
+        def _parse_quote_date(quote_date_text: str) -> Optional[date]:
+            # The quote CSV can use either YYYYMMDD or YYYY-MM-DD.
+            if len(quote_date_text) == 8 and quote_date_text.isdigit():
+                quote_date_text = f"{quote_date_text[:4]}-{quote_date_text[4:6]}-{quote_date_text[6:]}"
+            try:
+                return date.fromisoformat(quote_date_text)
+            except ValueError:
+                return None
+
+        def _fetch_prev_close(quote_date: date) -> Optional[float]:
             history_url = f"https://stooq.com/q/d/l/?s={stooq_symbol}&i=d"
             history_request = Request(
                 history_url,
@@ -641,26 +651,21 @@ class YfinanceFetcher(BaseFetcher):
                 date_index = header_tokens.index("date")
                 close_index = header_tokens.index("close")
 
-                daily_rows: list[tuple[datetime, float]] = []
+                previous_date = None
+                previous_close_text = None
                 for row in reader:
-                    if not row:
-                        continue
-                    date_text = row[date_index].strip() if len(row) > date_index else ""
-                    close_text = row[close_index].strip() if len(row) > close_index else ""
-                    if not date_text or not close_text:
+                    if len(row) <= date_index:
                         continue
                     try:
-                        dt = datetime.strptime(date_text, "%Y-%m-%d")
-                        close_val = float(close_text)
-                    except Exception:
+                        session_date = date.fromisoformat(row[date_index].strip())
+                    except ValueError:
                         continue
-                    daily_rows.append((dt, close_val))
+                    if session_date < quote_date and (previous_date is None or session_date > previous_date):
+                        previous_date = session_date
+                        previous_close_text = row[close_index] if len(row) > close_index else None
 
-                if len(daily_rows) < 2:
-                    return None
-
-                daily_rows.sort(key=lambda item: item[0])
-                return daily_rows[-2][1]
+                close = _safe_float(previous_close_text)
+                return close if close is not None and math.isfinite(close) and close > 0 else None
             except Exception:
                 return None
 
@@ -671,7 +676,7 @@ class YfinanceFetcher(BaseFetcher):
                 raise ValueError(f"unexpected Stooq payload: {payload}")
 
             normalized_first_row = [cell.strip() for cell in first_row]
-            header_tokens = {cell.lower() for cell in normalized_first_row if cell}
+            header_tokens = [cell.lower() for cell in normalized_first_row]
             has_header = 'open' in header_tokens and 'close' in header_tokens
             row = next(reader, None) if has_header else first_row
             if row is None:
@@ -694,11 +699,18 @@ class YfinanceFetcher(BaseFetcher):
             price = float(normalized_row[price_index])
             volume = int(float(normalized_row[volume_index]))
 
-            prev_close = _fetch_prev_close()
+            quote_date_text = (
+                dict(zip(header_tokens, normalized_row)).get("date", "") if has_header else normalized_row[1]
+            )
+            quote_date = _parse_quote_date(quote_date_text)
+            if quote_date is None and not has_header and len(normalized_row) == 7:
+                # Seven-column quotes may start with Date,Time instead of Symbol,Date.
+                quote_date = _parse_quote_date(normalized_row[0])
+            prev_close = _fetch_prev_close(quote_date) if quote_date is not None else None
             change_amount = None
             change_pct = None
             amplitude = None
-            if prev_close is not None and prev_close > 0:
+            if prev_close is not None:
                 change_amount = price - prev_close
                 change_pct = (change_amount / prev_close) * 100
                 amplitude = ((high - low) / prev_close) * 100
