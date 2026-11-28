@@ -54,7 +54,7 @@ English | [简体中文](../README.md) | [繁體中文](README_CHT.md)
 
 | Capability | Coverage |
 |------------|----------|
-| AI decision reports | Core conclusion, score, trend, entry/exit levels, risk alerts, catalysts, and action checklist |
+| AI decision reports | Core conclusion, score, trend, entry/exit levels, risk alerts, catalysts, and action checklist; supports Chinese, English, and Korean output (`REPORT_LANGUAGE=zh/en/ko`) |
 | Multi-market data | Covers A-shares, Hong Kong, US, Japanese, Korean, Taiwan stocks, and ETFs, with quotes, K-lines, technical indicators, news, announcements, fundamentals, and report context. Data-source coverage and market boundaries are documented in [market boundaries](./market-support_EN.md) |
 | Web / desktop workspace | Manual analysis, task progress, history, full Markdown reports, backtest, portfolio, settings, and light/dark themes |
 | Agent strategy chat | Multi-turn Q&A with 20 built-in strategies across Web/Bot/API |
