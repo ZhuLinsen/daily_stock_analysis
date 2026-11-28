@@ -619,7 +619,7 @@ def commit_csv_import(
             records=list(parsed.get("records", [])),
             dry_run=dry_run,
         )
-        return PortfolioImportCommitResponse(**result)
+        return PortfolioImportCommitResponse(**result, skipped_count=parsed["skipped_count"])
     except ValueError as exc:
         raise _bad_request(exc)
     except Exception as exc:

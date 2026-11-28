@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [修复] 持仓 CSV 导入不再将单独的成交时刻记为导入当天。解析时使用文件中的交易日期，缺少完整日期的行计入跳过数。
 - [改进] 引入统一 LLM 传输门面 `src/llm/transport.py` 与 `DeploymentSpec` 归一化契约（#2622 Phase 1）：将全部运行时 `litellm` 直接调用与延迟加载收敛至门面并在进程首次加载 `litellm` 前默认设置 `LITELLM_LOCAL_MODEL_COST_MAP=True`（离线安全，未显式覆盖时新模型定价走本地价目表/零成本兜底），提供线程/协程隔离的 `ContextVar` 传输切换与 CJK 感知 token 估算兜底；统一选股请求头代理以消除全局 `litellm.completion` monkey-patch 并修复跨主机/多路由凭据头泄漏，补齐 YAML `os.environ/...` 解析、OpenAI 通道 `dsa_api_surface`/`dsa_channel_protocol` 持久化、Vision `base_url` 与 `dsa_api_surface` 对齐、`SystemConfigService.test_llm_channel` 服务层 `api_surface`/`extra_headers` 透传与脱敏、配置重载缓存清理，并新增全仓 AST 导入边界守卫测试。
 - [修复] 历史决策信号回填和重评估保存时，按报告生成当日的服务器时区偏移换算 UTC，修复跨夏令时回填导致的创建和到期时间偏移。
 - [测试] 经只读 MCP 服务 `McpReadOnlySurface.call_tool` 校验 `analyze_pattern` 四种长影线形态的 `type`，覆盖工具白名单、股票范围、脱敏与序列化环节。

@@ -7,11 +7,13 @@ import hashlib
 import io
 import logging
 import math
+import re
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, time, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
+from dateutil.parser import parser, parserinfo
 
 from data_provider.base import canonical_stock_code
 from src.repositories.portfolio_repo import PortfolioRepository
@@ -23,6 +25,28 @@ from src.services.portfolio_service import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class _StandaloneTradeTime(ValueError):
+    """The cell contains a valid clock time but no calendar date."""
+
+
+class _TradeDateInfo(parserinfo):
+    """Require a calendar date before dateutil fills missing fields from today."""
+
+    def validate(self, result) -> bool:
+        date_parts = (result.year, result.month, result.day)
+        # Validate explicit offsets before taking the broker's local calendar date.
+        if result.tzoffset is not None:
+            timezone(timedelta(seconds=result.tzoffset))
+        if date_parts == (None, None, None) and result.weekday is None and result.hour is not None:
+            time(result.hour, result.minute or 0, result.second or 0, result.microsecond or 0)
+            raise _StandaloneTradeTime
+        return None not in date_parts and super().validate(result)
+
+
+_TRADE_DATE_PARSER = parser(_TradeDateInfo())
+
 
 @dataclass(frozen=True)
 class CsvParserSpec:
@@ -308,7 +332,7 @@ class PortfolioImportService:
     ) -> Optional[Dict[str, Any]]:
         broker_hints = parser_spec.column_hints
 
-        trade_date_raw = self._pick(
+        trade_date_obj = self._pick_trade_date(
             row,
             *(broker_hints.get("trade_date") or ()),
             "成交日期",
@@ -316,7 +340,6 @@ class PortfolioImportService:
             "日期",
             "成交时间",
         )
-        trade_date_obj = self._parse_date(trade_date_raw)
         if trade_date_obj is None:
             return None
 
@@ -419,16 +442,23 @@ class PortfolioImportService:
         return number
 
     @staticmethod
-    def _parse_date(value: Any) -> Optional[date]:
-        if value is None:
-            return None
-        text = str(value).strip()
-        if not text or text.lower() == "nan":
-            return None
-        parsed = pd.to_datetime(text, errors="coerce")
-        if pd.isna(parsed):
-            return None
-        return parsed.date()
+    def _pick_trade_date(row: pd.Series, *columns: str) -> Optional[date]:
+        """Read dates in broker order, skipping a standalone execution time."""
+        for column in dict.fromkeys(columns):
+            text = str(row.get(column, "")).strip()
+            if not text or text.lower() == "nan":
+                continue
+            try:
+                return _TRADE_DATE_PARSER.parse(text).date()
+            except _StandaloneTradeTime:
+                if column != "成交时间":
+                    return None
+            except (ValueError, OverflowError):
+                # Preserve legacy six-digit dates first so reimports use the same dedup hash.
+                if column == "成交时间" and re.fullmatch(r"(?:[01][0-9]|2[0-3])[0-5][0-9][0-5][0-9]", text):
+                    continue
+                return None
+        return None
 
     @staticmethod
     def _normalize_side(value: Any) -> Optional[str]:

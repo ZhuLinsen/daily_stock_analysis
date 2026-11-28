@@ -32,6 +32,7 @@ lark-oapi>=1.0.0             # Feishu API
 
 # Data processing
 pandas>=2.0.0               # Data analysis
+python-dateutil>=2.8.2      # Broker CSV trade date parsing
 pypinyin>=0.50.0            # Name-to-code resolver (pinyin matching)
 openpyxl>=3.1.0             # Excel (.xlsx) parsing for import
 numpy>=1.24.0               # Numeric computing

@@ -1779,8 +1779,10 @@ A: Check if Actions is enabled, and if cron expression is correct (note it's UTC
 
 ## Portfolio Web Notes
 
-### Numeric validation for portfolio events and CSV imports
+### Validation for portfolio events and CSV imports
 
+- Each CSV trade needs a calendar date or a dated execution timestamp. A standalone execution time such as `09:35:11` lets the importer use a separate date column. Six-digit values keep their legacy date interpretation when one exists. For example, `231224` means December 23, 2024, even if a backup date is present. Use colon-separated times to avoid ambiguity. An impossible calendar date or an offset of 24 hours or more in either direction skips the row.
+- Preview, dry-run, and commit all return the number of skipped rows in `skipped_count`. The Web import result displays a warning when rows were skipped. Before reimporting an older file, check the ledger for trades previously recorded on the upload date to avoid duplicates.
 - Trade quantity, price, fees, taxes, cash amounts, dividends per share, and split ratios must be finite. Manual event APIs return `422` for non-finite inputs such as `NaN`, `Infinity`, and overflowing values such as `1e309`.
 - If a recognized CSV trade row contains a non-finite number or its combined fees/taxes overflow, parsing, dry-run, and commit all return `400` with the row and field. No rows from that upload are written; correct the file and retry. Blank optional fees retain their existing zero default.
 - This validation does not clean up existing ledger data or change oversell checks, deduplication, or per-row busy/conflict handling after successful parsing.

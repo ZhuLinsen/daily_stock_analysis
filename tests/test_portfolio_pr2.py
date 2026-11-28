@@ -267,6 +267,73 @@ class PortfolioPr2TestCase(unittest.TestCase):
         self.assertEqual(parsed["record_count"], 1)
         self.assertEqual(parsed["records"][0]["symbol"], "000001")
 
+    def test_csv_trade_dates_in_preview_and_ledger(self) -> None:
+        account = self.service.create_account(name="Main", broker="huatai", market="cn", base_currency="CNY")
+        content = (
+            "成交时间,发生日期,证券代码,买卖标志,成交数量,成交均价\n"
+            "09:35:11,2024-01-31,000001,买入,10,7.5\n"
+            "2024-02-01T00:15:00+08:00,,000001,买入,20,7.6\n"
+            "09:36:00,,000001,买入,30,7.7\n"
+            "2024-02-30T09:35:11,2024-03-01,000001,买入,NaN,7.5\n"
+            "2024-02-01T00:15:00+99:00,,000001,买入,50,7.5\n"
+            "241224,2024-12-25,000001,买入,10,7.5\n"
+        ).encode()
+        files = {"file": ("trades.csv", content, "text/csv")}
+        route = "/api/v1/portfolio/imports/csv"
+        preview = self.client.post(f"{route}/parse", data={"broker": "huatai"}, files=files)
+        self.assertEqual(preview.status_code, 200, preview.text)
+        expected_dates = ["2024-01-31", "2024-02-01", "2024-12-24"]
+        self.assertEqual([r["trade_date"] for r in preview.json()["records"]], expected_dates)
+        self.assertEqual(preview.json()["skipped_count"], 3)
+
+        data = {"account_id": account["id"], "broker": "huatai"}
+        for dry_run, inserted, duplicates in ((True, 3, 0), (False, 3, 0), (False, 0, 3)):
+            response = self.client.post(f"{route}/commit", data={**data, "dry_run": dry_run}, files=files)
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(response.json()["inserted_count"], inserted)
+            self.assertEqual(response.json()["duplicate_count"], duplicates)
+            self.assertEqual(response.json()["skipped_count"], 3)
+        trades = self.service.list_trade_events(account_id=account["id"])["items"]
+        self.assertCountEqual([trade["trade_date"] for trade in trades], expected_dates)
+
+    def test_csv_trade_dates_follow_broker_column_order(self) -> None:
+        header = "成交日期,发生日期,成交时间,证券代码,买卖标志,成交数量,成交均价\n"
+        for broker, columns, expected in (
+            ("huatai", "20240229,2024/03/01,09:30", date(2024, 2, 29)),
+            ("zhongxin", "20240229,2024/03/01,09:30", date(2024, 3, 1)),
+            ("huatai", ",2024/03/01,093511", date(2024, 3, 1)),
+            ("cmb", ",,093511", None),
+            ("huatai", ",2024/03/01,093011", date(2011, 9, 30)),
+            ("huatai", ",,231224", date(2024, 12, 23)),
+            ("huatai", ",,241224", date(2024, 12, 24)),
+            ("huatai", ",2024-03-01,9:30 PM", date(2024, 3, 1)),
+            ("huatai", ",2024-03-01,25:35:11", None),
+            ("huatai", ",2024-03-01,2024-02", None),
+            ("huatai", ",2024-03-01,2024-02-01T00:15:00+99:00", None),
+            ("cmb", "2024-02,,", None),
+            ("cmb", "2024-02-30,2024-03-01,", None),
+        ):
+            with self.subTest(broker=broker, columns=columns):
+                content = (header + columns + ",000001,买入,10,7.5\n").encode()
+                result = self.import_service.parse_trade_csv(broker=broker, content=content)
+                self.assertEqual([r["trade_date"] for r in result["records"]], [expected] if expected else [])
+
+    def test_reimport_of_ambiguous_six_digit_date_matches_existing_ledger_trade(self) -> None:
+        account = self.service.create_account(name="Main", broker="huatai", market="cn", base_currency="CNY")
+        data = {"account_id": account["id"], "broker": "huatai"}
+        header = "成交时间,发生日期,证券代码,买卖标志,成交数量,成交均价\n"
+        route = "/api/v1/portfolio/imports/csv/commit"
+        # Seed the same dated trade and source line that the legacy importer stored for 231224.
+        for value, inserted, duplicates in (("2024-12-23", 1, 0), ("231224", 0, 1)):
+            content = (header + f"{value},2024-12-24,000001,买入,10,7.5\n").encode()
+            response = self.client.post(route, data=data, files={"file": ("trades.csv", content, "text/csv")})
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(response.json()["inserted_count"], inserted)
+            self.assertEqual(response.json()["duplicate_count"], duplicates)
+            self.assertEqual(response.json()["skipped_count"], 0)
+        trades = self.service.list_trade_events(account_id=account["id"])["items"]
+        self.assertEqual([trade["trade_date"] for trade in trades], ["2024-12-23"])
+
     def test_import_dry_run_counts_in_file_duplicates(self) -> None:
         account = self.service.create_account(name="Main", broker="Demo", market="cn", base_currency="CNY")
         aid = account["id"]

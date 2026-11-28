@@ -181,7 +181,8 @@ export function getCsvParseVariant(result: PortfolioImportParseResponse): Portfo
   return result.errorCount > 0 || result.skippedCount > 0 ? 'warning' : 'info';
 }
 
-export function getCsvCommitVariant(result: PortfolioImportCommitResponse, isDryRun: boolean): PortfolioAlertVariant {
-  if (isDryRun) return 'info';
+export function getCsvCommitVariant(result: PortfolioImportCommitResponse): PortfolioAlertVariant {
+  if (result.skippedCount) return 'warning';
+  if (result.dryRun) return 'info';
   return result.failedCount > 0 || result.duplicateCount > 0 ? 'warning' : 'success';
 }
