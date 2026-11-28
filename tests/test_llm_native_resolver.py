@@ -1074,11 +1074,21 @@ def test_round3_f1_ark_channel_and_hard_config_errors_in_auto_mode(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Round 3 F1: dsa_channel_protocol='ark' uses verified Ark base; hard config errors raise NativeConfigError in BOTH native and auto modes across populated router, empty router, and direct completion."""
-    # 1. Bare model + dsa_channel_protocol="ark" -> verified Volcengine Ark base (NOT api.openai.com)
+    # 1. Bare model + dsa_channel_protocol="ark" (both chat and bare responses/<m>) -> verified Volcengine Ark base (NOT api.openai.com)
     ark_spec = resolve_deployment("doubao-pro", params={"dsa_channel_protocol": "ark", "api_key": "sk-ark-1"})
     assert isinstance(ark_spec, DeploymentSpec)
     assert ark_spec.provider == "ark"
     assert ark_spec.endpoint_url == "https://ark.cn-beijing.volces.com/api/v3/chat/completions"
+
+    ark_resp_spec = resolve_deployment("responses/doubao-pro", params={"dsa_channel_protocol": "ark", "api_key": "sk-ark-1"})
+    assert isinstance(ark_resp_spec, DeploymentSpec)
+    assert ark_resp_spec.provider == "ark"
+    assert ark_resp_spec.endpoint_url == "https://ark.cn-beijing.volces.com/api/v3/responses"
+
+    bare_resp_spec = resolve_deployment("responses/gpt-5", params={"api_key": "sk-oai-1"})
+    assert isinstance(bare_resp_spec, DeploymentSpec)
+    assert bare_resp_spec.provider == "openai"
+    assert bare_resp_spec.endpoint_url == "https://api.openai.com/v1/responses"
 
     class _FailIfFallbackCalled:
         def create_router(self, *_a: Any, **_kw: Any) -> Any:

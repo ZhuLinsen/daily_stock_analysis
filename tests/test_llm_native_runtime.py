@@ -1930,8 +1930,8 @@ def test_round2_p1_6a_p1_7a_p1_8_p1_10_p2_recovery_ranker_proxy_and_system_confi
     assert "max_completion_tokens" in yaml_bodies[0]
     assert yaml_bodies[1]["max_tokens"] == 256 and "max_completion_tokens" not in yaml_bodies[1]
 
-    # 4. P1-8 & F9: Tuple and httpx.Timeout preserve per-phase bounds (e.g. connect=0.2 is NEVER lengthened) while shrinking read under one monotonic deadline!
-    for raw_t, initial_read in (((0.2, 1.0), 1.0), (httpx.Timeout(connect=0.2, read=1.0, write=0.3, pool=0.4), 1.0)):
+    # 4. P1-8 & F9: Tuple and httpx.Timeout preserve per-phase bounds (including pool=0.0 and connect=0.2) while shrinking read under one monotonic deadline!
+    for raw_t, initial_read in (((0.2, 1.0), 1.0), (httpx.Timeout(connect=0.2, read=1.0, write=0.3, pool=0.0), 1.0)):
         seen_t: List[Any] = []
 
         def _slow_rec(kw: Dict[str, Any]) -> str:
@@ -1957,7 +1957,7 @@ def test_round2_p1_6a_p1_7a_p1_8_p1_10_p2_recovery_ranker_proxy_and_system_confi
             assert isinstance(seen_t[1], httpx.Timeout)
             assert seen_t[1].connect == pytest.approx(0.2)
             assert seen_t[1].write == pytest.approx(0.3)
-            assert seen_t[1].pool == pytest.approx(0.4)
+            assert seen_t[1].pool == pytest.approx(0.0)
             assert seen_t[1].read is not None and seen_t[1].read < initial_read - 0.03
 
     # 5. P1-10: Ranker JSON-mode fallback retry suppresses inherited deployment YAML response_format!
@@ -2214,7 +2214,7 @@ def test_round3_f2_f3_f4_f5_f6_final_runtime_convergence() -> None:
             lambda _r: httpx.Response(
                 200,
                 headers={"Content-Type": "text/plain"},
-                stream=_ChunksStream([b"  \n<ht", b"ml><body><h1>Bad Gateway</h1></body></html>"]),
+                stream=_ChunksStream([b" " * 600, b"<ht", b"ml><body><h1>Bad Gateway</h1></body></html>"]),
             )
         )
     )
@@ -2227,6 +2227,42 @@ def test_round3_f2_f3_f4_f5_f6_final_runtime_convergence() -> None:
             stream=True,
         )
     assert exc_html.value.error_code == "non_json_html"
+
+    # F3 micro-fix: malformed Location authority fallback strips user:pass@ too
+    from src.llm.native_engine import _sanitize_redirect_location
+
+    sanitized_bad_auth = _sanitize_redirect_location("https://user:superpass@[bad-ipv6/cb?sig=999", [])
+    assert "superpass" not in sanitized_bad_auth
+    assert "sig=999" not in sanitized_bad_auth
+
+    # F5 micro-fix: _sync_shared_pricing_to_transport writes to SDK only without re-writing _SHARED_MODEL_COSTS
+    from types import SimpleNamespace
+    from src.llm import transport as llm_transport_mod
+
+    sdk_costs: Dict[str, Any] = {}
+    lt_sync = llm_transport_mod.LiteLLMTransport()
+    lt_sync._load_litellm = staticmethod(  # type: ignore[method-assign]
+        lambda: SimpleNamespace(
+            model_cost=sdk_costs,
+            register_model=lambda m: sdk_costs.update(m),
+        )
+    )
+    with llm_transport_mod._SHARED_MODEL_COSTS_LOCK:
+        llm_transport_mod._SHARED_MODEL_COSTS["sync-race-model"] = {
+            "input_cost_per_token": 0.002,
+            "output_cost_per_token": 0.002,
+        }
+    try:
+        llm_transport_mod._sync_shared_pricing_to_transport(
+            lt_sync,
+            {"sync-race-model": {"input_cost_per_token": 0.001, "output_cost_per_token": 0.001}},
+        )
+        assert sdk_costs["sync-race-model"]["input_cost_per_token"] == 0.002
+        with llm_transport_mod._SHARED_MODEL_COSTS_LOCK:
+            assert llm_transport_mod._SHARED_MODEL_COSTS["sync-race-model"]["input_cost_per_token"] == 0.002
+    finally:
+        with llm_transport_mod._SHARED_MODEL_COSTS_LOCK:
+            llm_transport_mod._SHARED_MODEL_COSTS.pop("sync-race-model", None)
 
     tr_plain_sse = NativeUnifiedTransport(
         http_transport=httpx.MockTransport(

@@ -462,7 +462,8 @@ def _sync_shared_pricing_to_transport(
                     continue
                 filtered[model_name] = spec
             if filtered:
-                transport.register_model(filtered)
+                sync_register = getattr(transport, "_register_model_sdk_only", None) or transport.register_model
+                sync_register(filtered)
     except Exception as exc:
         logger.debug("Skipping shared model cost sync to fallback transport: %s", exc)
 
@@ -544,12 +545,15 @@ class LiteLLMTransport:
             return False
         return callable(getattr(module, "register_model", None))
 
-    def register_model(self, model_cost: Mapping[str, Any]) -> None:
-        with _SHARED_MODEL_COSTS_LOCK:
-            _SHARED_MODEL_COSTS.update(dict(model_cost))
+    def _register_model_sdk_only(self, model_cost: Mapping[str, Any]) -> None:
         register = getattr(self._load_litellm(), "register_model", None)
         if callable(register):
             register(dict(model_cost))
+
+    def register_model(self, model_cost: Mapping[str, Any]) -> None:
+        with _SHARED_MODEL_COSTS_LOCK:
+            _SHARED_MODEL_COSTS.update(dict(model_cost))
+        self._register_model_sdk_only(model_cost)
 
     def get_model_cost(self) -> Dict[str, Any]:
         try:

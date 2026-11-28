@@ -29,6 +29,7 @@ import json
 import logging
 import math
 import os
+import re
 import threading
 import time
 from typing import Any, Callable, Dict, Iterable, Iterator, List, Mapping, Optional, Tuple
@@ -513,7 +514,7 @@ def _sanitize_redirect_location(raw_location: str, secrets: Iterable[str]) -> st
             netloc = netloc.split("@", 1)[1]
         stripped = urlunsplit((parts.scheme, netloc, parts.path, "", ""))
     except Exception:
-        stripped = loc.split("?", 1)[0].split("#", 1)[0]
+        stripped = re.sub(r"(://)[^/@]+@", r"\1", loc.split("?", 1)[0].split("#", 1)[0])
     return sanitize_error_message(stripped, loc_secrets)
 
 
@@ -1476,7 +1477,7 @@ def _open_stream_attempt(
                     _release_resources(ctx)
                 return _handle_json_stream_body(json_text, content_type or "text/plain")
 
-            preview_text = combined_lead[:512].decode("utf-8-sig", errors="replace")
+            preview_text = stripped_lead[:512].decode("utf-8-sig", errors="replace")
             if looks_like_html(preview_text, ignore_content_type=True):
                 try:
                     raw_html = _read_bytes_bounded(

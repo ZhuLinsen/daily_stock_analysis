@@ -1375,6 +1375,16 @@ def test_round3_f7_f8_responses_sse_dedup_gemini_leading_text_and_jsonpath_escap
     dedup_blocks = [b for ch in dedup_chunks for b in (ch.choices[0].delta.provider_blocks or [])]
     assert [(b["id"], b.get("encrypted_content")) for b in dedup_blocks] == [("r1", "ENC_1"), ("r2", "ENC_2")]
 
+    # F7 micro-fix: If response.completed omits encrypted_content that was already present on deferred r2, preserve prior ciphertext!
+    sse_keep_prior = (
+        b'data: {"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"r1","summary":[{"type":"summary_text","text":"s1"}]}}\n\n'
+        b'data: {"type":"response.output_item.done","output_index":1,"item":{"type":"reasoning","id":"r2","summary":[{"type":"summary_text","text":"s2"}],"encrypted_content":"ENC_2_PRIOR"}}\n\n'
+        b'data: {"type":"response.completed","response":{"id":"resp_kp","model":"gpt-5","status":"completed","output":[{"type":"reasoning","id":"r1","summary":[{"type":"summary_text","text":"s1"}],"encrypted_content":"ENC_1"},{"type":"reasoning","id":"r2","summary":[{"type":"summary_text","text":"s2"}]}]}}\n\n'
+    )
+    kp_chunks = list(iter_openai_stream_chunks(resp_spec, [sse_keep_prior]))
+    kp_blocks = [b for ch in kp_chunks for b in (ch.choices[0].delta.provider_blocks or [])]
+    assert [(b["id"], b.get("encrypted_content")) for b in kp_blocks] == [("r1", "ENC_1"), ("r2", "ENC_2_PRIOR")]
+
     # F7 Responses store=True non-stream preserves reasoning items even without encrypted_content
     parsed_store_true = parse_responses_api_response(
         {
@@ -1453,3 +1463,9 @@ def test_round3_f7_f8_responses_sse_dedup_gemini_leading_text_and_jsonpath_escap
         )
         with pytest.raises(NativeBadRequestError):
             list(iter_gemini_stream_chunks([f"data: {bad_payload}\n\n".encode("utf-8")]))
+
+    # F8 micro-fix: Literal lone surrogate already decoded by JSON parser is also rejected!
+    from src.llm.gemini_transport import _parse_json_path_tokens
+
+    with pytest.raises(NativeBadRequestError):
+        _parse_json_path_tokens("$['\ud800']")

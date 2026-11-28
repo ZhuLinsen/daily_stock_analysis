@@ -911,6 +911,13 @@ def _parse_json_path_tokens(path: str) -> List[Any]:
                         idx += 1
                         closed = True
                         break
+                    if 0xD800 <= ord(cur_ch) <= 0xDFFF:
+                        raise NativeBadRequestError(
+                            f"Unpaired surrogate character in Gemini partialArgs jsonPath: {path!r}",
+                            status_code=400,
+                            provider="gemini",
+                            error_code="invalid_partial_args_path",
+                        )
                     chars.append(cur_ch)
                     idx += 1
                 if not closed or idx >= n or raw[idx] != "]":

@@ -1130,8 +1130,11 @@ def _iter_responses_stream_chunks(
                 if rkey in emitted_reasoning_ids:
                     continue
                 emitted_reasoning_ids.add(rkey)
-                pending_reasoning_blocks.pop(rkey, None)
-                missing.append(_build_reasoning_block(out_item))
+                prior = pending_reasoning_blocks.pop(rkey, None)
+                block = _build_reasoning_block(out_item)
+                if prior and block.get("encrypted_content") is None and prior.get("encrypted_content") is not None:
+                    block["encrypted_content"] = prior["encrypted_content"]
+                missing.append(block)
         for rkey, pending_block in list(pending_reasoning_blocks.items()):
             if rkey not in emitted_reasoning_ids:
                 emitted_reasoning_ids.add(rkey)

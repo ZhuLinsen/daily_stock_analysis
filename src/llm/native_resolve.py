@@ -631,7 +631,7 @@ def _parse_responses_encoding(model: str) -> Tuple[Optional[str], Optional[str],
     prefix_l = prefix.strip().lower()
     rest_clean = rest.strip()
     if prefix_l == "responses" and rest_clean:
-        return "openai", rest_clean, "responses"
+        return None, rest_clean, "responses"
     if prefix_l in {"openai", "openai_compatible"} and rest_clean.lower().startswith("responses/"):
         inner = rest_clean.split("/", 1)[1].strip()
         if inner:

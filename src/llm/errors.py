@@ -199,18 +199,18 @@ def _clamp_recovery_timeout(raw_timeout: Any, remaining: float) -> Any:
         return remaining
     if isinstance(raw_timeout, (int, float)) and not isinstance(raw_timeout, bool):
         val = float(raw_timeout)
-        return min(val, remaining) if math.isfinite(val) and val > 0 else remaining
+        return min(val, remaining) if math.isfinite(val) and val >= 0 else remaining
     if isinstance(raw_timeout, tuple):
         return tuple(
             min(float(v), remaining)
-            if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(float(v)) and float(v) > 0
+            if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(float(v)) and float(v) >= 0
             else (remaining if v is None else v)
             for v in raw_timeout
         )
     if isinstance(raw_timeout, list):
         return [
             min(float(v), remaining)
-            if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(float(v)) and float(v) > 0
+            if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(float(v)) and float(v) >= 0
             else (remaining if v is None else v)
             for v in raw_timeout
         ]
@@ -218,7 +218,7 @@ def _clamp_recovery_timeout(raw_timeout: Any, remaining: float) -> Any:
         clamped_phases: Dict[str, Any] = {}
         for attr in ("connect", "read", "write", "pool"):
             phase_val = getattr(raw_timeout, attr, None)
-            if isinstance(phase_val, (int, float)) and not isinstance(phase_val, bool) and math.isfinite(float(phase_val)) and float(phase_val) > 0:
+            if isinstance(phase_val, (int, float)) and not isinstance(phase_val, bool) and math.isfinite(float(phase_val)) and float(phase_val) >= 0:
                 clamped_phases[attr] = min(float(phase_val), remaining)
             else:
                 clamped_phases[attr] = remaining
