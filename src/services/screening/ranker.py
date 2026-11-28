@@ -1098,11 +1098,7 @@ def _build_litellm_attempts(
         matched_channel = True
         raw_channel_keys = channel.get("api_keys", [])
         raw_key_list = raw_channel_keys if isinstance(raw_channel_keys, list) else []
-        channel_keys = [
-            (k.strip() if isinstance(k, str) else str(k or "").strip())
-            for k in raw_key_list
-            if (k.strip() if isinstance(k, str) else str(k or "").strip())
-        ]
+        channel_keys = [str(k or "").strip() for k in raw_key_list if str(k or "").strip()]
         explicit_keyless_channel = bool(raw_key_list) and not channel_keys
         if explicit_keyless_channel:
             # Config represents supported keyless local channels (e.g. Ollama /
@@ -1145,7 +1141,7 @@ def _build_litellm_attempts(
         for channel_key in api_keys:
             attempts.append(_completion_kwargs(
                 wire_model,
-                api_key=channel_key if isinstance(channel_key, str) else str(channel_key or ""),
+                api_key=str(channel_key or ""),
                 base_url=effective_base_url,
                 api_surface=effective_surface,
                 extra_headers=extra_headers,

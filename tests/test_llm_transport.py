@@ -1505,48 +1505,34 @@ model_list:
             )
     assert "extra_headers" not in fake_sib.completion_calls[0]
 
-    # 5. P1-6: Single-pass YAML env resolution across Config._parse_litellm_yaml -> Vision & Screening.
-    monkeypatch.setenv("LITERAL_ENV_KEY", "os.environ/SECOND_HOP_SECRET")
-    monkeypatch.setenv("SECOND_HOP_SECRET", "SHOULD_NEVER_EXPAND")
-    single_pass_yaml = tmp_path / "single_pass.yaml"
-    single_pass_yaml.write_text(
-        """
-model_list:
-  - model_name: openai/gpt-5
-    litellm_params:
-      model: openai/gpt-5
-      api_key: os.environ/LITERAL_ENV_KEY
-      api_base: https://single-pass.example/v1
-      extra_headers:
-        X-Route: single-pass
-""".strip(),
-        encoding="utf-8",
+    # 5. End-to-end keyless local channel normalization preserves api_keys=[""] from Config -> screening_service -> ranker.
+    cfg_keyless_screen = Config(
+        llm_channels=[
+            {
+                "name": "local-ollama",
+                "protocol": "ollama",
+                "api_surface": "",
+                "base_url": "http://127.0.0.1:11434/v1",
+                "api_keys": [""],
+                "models": ["ollama/qwen3:8b"],
+                "extra_headers": {"X-Local-Tag": "ollama"},
+                "enabled": True,
+            }
+        ]
     )
-    parsed_single = Config._parse_litellm_yaml(str(single_pass_yaml))
-    assert parsed_single[0]["litellm_params"]["api_key"] == "os.environ/SECOND_HOP_SECRET"
-    assert normalize_deployment_spec(parsed_single[0]).api_key == "os.environ/SECOND_HOP_SECRET"
-
-    cfg_single = Config(vision_model="openai/gpt-5", litellm_model="openai/gpt-5", llm_model_list=parsed_single)
-    fake_single_vision = _RecordingTransport(response_text="[]")
-    monkeypatch.setattr(image_stock_extractor, "get_config", lambda: cfg_single)
-    with use_transport(fake_single_vision):
-        image_stock_extractor._call_litellm_vision("aGVsbG8=", "image/png")
-    assert fake_single_vision.completion_calls[0]["api_key"] == "os.environ/SECOND_HOP_SECRET"
-
-    fake_single_screen = _RecordingTransport(response_text="ok")
-    with use_transport(fake_single_screen):
-        with screening_service._screening_litellm_headers(cfg_single):
-            create_router(parsed_single)
-            dispatch_completion(
-                model="openai/gpt-5",
-                api_key=parsed_single[0]["litellm_params"]["api_key"],
-                api_base="https://single-pass.example/v1",
-                messages=[],
-            )
-    assert fake_single_screen.router_calls[0]["model_list"][0]["litellm_params"]["extra_headers"] == {
-        "X-Route": "single-pass"
-    }
-    assert fake_single_screen.completion_calls[0]["extra_headers"] == {"X-Route": "single-pass"}
+    normalized_keyless_channels = screening_service._normalize_dsa_llm_channels(cfg_keyless_screen)
+    assert len(normalized_keyless_channels) == 1
+    assert normalized_keyless_channels[0]["api_keys"] == [""]
+    assert screening_service._channel_keys_for_provider(normalized_keyless_channels, {"ollama"}) == []
+    normalized_attempts = ranker._build_litellm_attempts(
+        "ollama/qwen3:8b",
+        api_key="sk-outer-must-not-leak",
+        base_url="",
+        channels=normalized_keyless_channels,
+    )
+    assert len(normalized_attempts) == 1
+    assert "api_key" not in normalized_attempts[0]
+    assert normalized_attempts[0]["extra_headers"] == {"X-Local-Tag": "ollama"}
 
     # 6. P1-4 + Opus P2-1: hyphenated "responses-api", prebuilt Router Responses guard, and non-OpenAI YAML create_router warning.
     captured_completions: List[Dict[str, Any]] = []
@@ -1603,7 +1589,7 @@ model_list:
             yield SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content="OK"))])
 
         def close(self) -> None:
-            raise RuntimeError("close failed with bare-tok-9999")
+            raise RuntimeError("close failed with bare-tok-9999 and alfa1234/beta5678")
 
     class _StreamCloseTransport(_RecordingTransport):
         def completion(self, **kwargs: Any) -> Any:
@@ -1626,7 +1612,9 @@ model_list:
                 extra_headers={
                     "X-Format": "json",
                     "Content-Type": "application/json",
+                    "Accept": "application/json",
                     "X-Custom-Tenant": "acme",
+                    "X-Relay": "alfa1234/beta5678",
                     "Authorization": "Bearer bare-tok-9999",
                 },
             )
@@ -1635,4 +1623,16 @@ model_list:
     assert res["capability_results"]["json"]["status"] == "passed"
     assert res["capability_results"]["json"]["details"]["capability"] == "json"
     assert "bare-tok-9999" not in caplog.text
+    assert "alfa1234/beta5678" not in caplog.text
     assert "[REDACTED]" in caplog.text
+    redactions = service._build_extra_header_redaction_values(
+        {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "X-Format": "json",
+            "X-Relay": "alfa1234/beta5678",
+        }
+    )
+    assert "application/json" not in redactions
+    assert "json" not in redactions
+    assert "alfa1234/beta5678" in redactions

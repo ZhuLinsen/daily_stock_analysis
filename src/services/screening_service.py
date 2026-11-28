@@ -3099,24 +3099,18 @@ def _resolve_canonical_screening_api_base(
     model_info: Optional[Mapping[str, Any]] = None,
 ) -> Tuple[str, bool]:
     """Resolve one canonical base URL, flagging conflict or unresolved env refs."""
-    from src.llm.transport import (
-        find_unresolved_env_var,
-        is_resolved_litellm_params,
-        resolve_env_reference,
-    )
+    from src.llm.transport import find_unresolved_env_var, resolve_env_reference
 
     if isinstance(model_info, Mapping) and str(model_info.get("_dsa_unresolved_endpoint_env") or "").strip():
         return "", True
 
-    already_resolved = is_resolved_litellm_params(params)
     raw_api_base = params.get("api_base")
     raw_base_url = params.get("base_url")
-    if not already_resolved:
-        if find_unresolved_env_var(raw_base_url) is not None or find_unresolved_env_var(raw_api_base) is not None:
-            return "", True
+    if find_unresolved_env_var(raw_base_url) is not None or find_unresolved_env_var(raw_api_base) is not None:
+        return "", True
 
-    resolved_api_base = raw_api_base if already_resolved else resolve_env_reference(raw_api_base)
-    resolved_base_url = raw_base_url if already_resolved else resolve_env_reference(raw_base_url)
+    resolved_api_base = resolve_env_reference(raw_api_base)
+    resolved_base_url = resolve_env_reference(raw_base_url)
     has_explicit_base_url = "base_url" in params and raw_base_url is not None
 
     norm_api_base = _normalize_screening_api_base(resolved_api_base)
@@ -3309,7 +3303,7 @@ def _match_screening_litellm_headers(
     model_alias: Any = None,
     model_info: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
-    from src.llm.transport import is_resolved_litellm_params, resolve_env_reference
+    from src.llm.transport import resolve_env_reference
 
     model = _env_text(kwargs.get("model"))
     if not model and args:
@@ -3319,10 +3313,7 @@ def _match_screening_litellm_headers(
     if not candidate_models:
         return {}
 
-    raw_api_key = kwargs.get("api_key")
-    api_key = _env_text(
-        raw_api_key if is_resolved_litellm_params(kwargs) else resolve_env_reference(raw_api_key)
-    )
+    api_key = _env_text(resolve_env_reference(kwargs.get("api_key")))
     api_base, has_conflict = _resolve_canonical_screening_api_base(kwargs, model_info=model_info)
     if has_conflict:
         return {}
@@ -3412,7 +3403,11 @@ def _normalize_dsa_llm_channels(config: Config) -> List[Dict[str, Any]]:
         if not isinstance(raw, dict):
             continue
         name = _env_text(raw.get("name")) or f"channel{index + 1}"
-        api_keys = _dedupe_strings(raw.get("api_keys") if isinstance(raw.get("api_keys"), list) else [])
+        raw_api_keys = raw.get("api_keys") if isinstance(raw.get("api_keys"), list) else []
+        non_empty_api_keys = _dedupe_strings(raw_api_keys)
+        # Preserve the keyless local/Ollama channel sentinel ``api_keys=[""]``
+        # produced by Config so ranker does not substitute an outer API key.
+        api_keys = [""] if raw_api_keys and not non_empty_api_keys else non_empty_api_keys
         models = _dedupe_strings(raw.get("models") if isinstance(raw.get("models"), list) else [])
         channel = {
             "name": name,
@@ -3424,7 +3419,7 @@ def _normalize_dsa_llm_channels(config: Config) -> List[Dict[str, Any]]:
             "extra_headers": raw.get("extra_headers") if isinstance(raw.get("extra_headers"), dict) else {},
             "enabled": bool(raw.get("enabled", True)),
         }
-        if channel["enabled"] and (api_keys or models or channel["base_url"] or channel["extra_headers"]):
+        if channel["enabled"] and (non_empty_api_keys or models or channel["base_url"] or channel["extra_headers"]):
             channels.append(channel)
     return channels
 
@@ -3440,7 +3435,7 @@ def _channel_keys_for_provider(channels: List[Dict[str, Any]], providers: set[st
             if isinstance(model, str) and "/" in model
         }
         if protocol in providers or model_providers.intersection(providers):
-            keys.extend(channel.get("api_keys") or [])
+            keys.extend(key for key in (channel.get("api_keys") or []) if _env_text(key))
     return keys
 
 
@@ -3491,7 +3486,7 @@ def _env_text(value: Any) -> str:
         return ""
     if isinstance(value, float) and not math.isfinite(value):
         return ""
-    text = value.strip() if isinstance(value, str) else str(value).strip()
+    text = str(value).strip()
     if text.lower() in {"nan", "none", "null"}:
         return ""
     return text

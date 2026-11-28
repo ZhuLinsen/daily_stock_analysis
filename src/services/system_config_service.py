@@ -4523,7 +4523,6 @@ class SystemConfigService:
         redactions: Set[str] = set()
         auth_scheme_pattern = re.compile(r"(?i)^\s*(?:bearer|token|basic|apikey|api-key)\s+(.+?)\s*$")
         secret_prefix_pattern = re.compile(r"(?i)^(?:sk-|pk-|ghp_|gho_|glpat-|eyj[a-z0-9_-]{8,})")
-        mime_type_pattern = re.compile(r"^[a-z0-9.+-]+/[a-z0-9.+-]+(?:\s*;.*)?$", re.IGNORECASE)
         auth_name_markers = (
             "auth",
             "token",
@@ -4568,11 +4567,13 @@ class SystemConfigService:
             is_auth_header = any(marker in lower_name for marker in auth_name_markers)
             scheme_match = auth_scheme_pattern.match(value)
             looks_like_secret = bool(secret_prefix_pattern.match(value))
+            # Only standard content-type/accept headers (already in non_secret_header_names)
+            # are exempt from opaque-token redaction; custom headers containing '/' (e.g.
+            # "alfa1234/beta5678") are still redacted.
             is_opaque_custom_secret = (
                 lower_name not in non_secret_header_names
                 and len(value) >= 12
                 and not any(ch.isspace() for ch in value)
-                and not mime_type_pattern.match(value)
             )
             if is_auth_header or scheme_match or looks_like_secret or is_opaque_custom_secret:
                 redactions.update(cls._build_redaction_values(value))

@@ -31,7 +31,6 @@ from src.llm.transport import (
     create_litellm_compat_proxy,
     dispatch_completion,
     find_unresolved_env_var,
-    is_resolved_litellm_params,
     resolve_env_reference,
     resolve_litellm_params_env,
 )
@@ -277,7 +276,7 @@ def _find_deployment_unresolved_endpoint_env(
                 return endpoint_key.strip() or "api_base", missing_var.strip() or "<empty>"
             return "api_base", marker
     raw_params = deployment.get("litellm_params") or {}
-    if isinstance(raw_params, dict) and not is_resolved_litellm_params(raw_params):
+    if isinstance(raw_params, dict):
         for endpoint_key in ("base_url", "api_base"):
             missing_var = find_unresolved_env_var(raw_params.get(endpoint_key))
             if missing_var is not None:
@@ -289,9 +288,7 @@ def _resolve_deployment_api_key(deployment: Dict[str, Any]) -> str:
     raw_params = deployment.get("litellm_params") or {}
     if not isinstance(raw_params, dict):
         return ""
-    raw_key = raw_params.get("api_key")
-    resolved_key = raw_key if is_resolved_litellm_params(raw_params) else resolve_env_reference(raw_key)
-    return str(resolved_key or "").strip()
+    return str(resolve_env_reference(raw_params.get("api_key")) or "").strip()
 
 
 def _get_api_keys_for_model(model: str, cfg: Config) -> List[str]:

@@ -64,25 +64,6 @@ _ALLOWED_REQUEST_DEFAULT_KEYS: frozenset[str] = frozenset(
 )
 
 
-class _ResolvedEnvStr(str):
-    """String marker indicating an ``os.environ/`` value was already resolved once."""
-
-    def strip(self, chars: Optional[str] = None) -> str:
-        stripped = super().strip(chars)
-        if stripped.startswith("os.environ/"):
-            return _ResolvedEnvStr(stripped)
-        return stripped
-
-
-class _ResolvedLitellmParams(dict):
-    """Dict marker indicating ``litellm_params`` already underwent env resolution."""
-
-
-def is_resolved_litellm_params(params: Any) -> bool:
-    """Return whether ``params`` was already resolved by ``resolve_litellm_params_env``."""
-    return isinstance(params, _ResolvedLitellmParams)
-
-
 def _apply_disable_streaming_logging(module: Any) -> None:
     """Keep LiteLLM per-chunk async streaming logging disabled (Issue #2524)."""
     if module is None:
@@ -95,8 +76,6 @@ def _apply_disable_streaming_logging(module: Any) -> None:
 
 def find_unresolved_env_var(value: Any) -> Optional[str]:
     """Return the missing env var name if ``value`` is an unset ``os.environ/VAR`` ref."""
-    if isinstance(value, _ResolvedEnvStr):
-        return None
     if not isinstance(value, str) or not value.startswith("os.environ/"):
         return None
     env_name = value.split("/", 1)[1].strip()
@@ -109,12 +88,9 @@ def find_unresolved_env_var(value: Any) -> Optional[str]:
 
 def resolve_env_reference(value: Any) -> Any:
     """Resolve ``os.environ/VAR`` syntax used in LiteLLM YAML configs."""
-    if isinstance(value, _ResolvedEnvStr):
-        return value
     if isinstance(value, str) and value.startswith("os.environ/"):
         env_name = value.split("/", 1)[1].strip()
-        resolved = os.getenv(env_name, "") if env_name else ""
-        return _ResolvedEnvStr(resolved) if resolved.startswith("os.environ/") else resolved
+        return os.getenv(env_name, "") if env_name else ""
     return value
 
 
@@ -130,17 +106,15 @@ def resolve_headers_env(headers: Optional[Mapping[str, Any]]) -> Dict[str, str]:
         value = resolve_env_reference(raw_value)
         if value is None:
             continue
-        resolved[header_name] = value if isinstance(value, str) else str(value)
+        resolved[header_name] = str(value)
     return resolved
 
 
 def resolve_litellm_params_env(params: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
-    """Return a non-mutating copy of ``litellm_params`` with ``os.environ/`` resolved once."""
+    """Return a non-mutating copy of ``litellm_params`` with ``os.environ/`` resolved."""
     if not isinstance(params, Mapping):
-        return _ResolvedLitellmParams()
-    if isinstance(params, _ResolvedLitellmParams):
-        return _ResolvedLitellmParams(copy.deepcopy(params))
-    resolved: Dict[str, Any] = _ResolvedLitellmParams()
+        return {}
+    resolved: Dict[str, Any] = {}
     for key, value in params.items():
         if key == "extra_headers" and isinstance(value, Mapping):
             resolved[key] = resolve_headers_env(value)
