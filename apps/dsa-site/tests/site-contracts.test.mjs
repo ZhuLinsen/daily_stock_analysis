@@ -330,3 +330,24 @@ test('prepareDocs generates English counterparts for beginner setup, market supp
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   }
 });
+
+test('curated ZH and EN site docs stay in sync with built-in strategy count', () => {
+  const repoRoot = path.resolve(SITE_ROOT, '..', '..');
+  const strategyCount = fs
+    .readdirSync(path.join(repoRoot, 'strategies'))
+    .filter((file) => file.endsWith('.yaml'))
+    .length;
+  assert.ok(strategyCount >= 20, `Expected at least 20 strategy YAML files, found ${strategyCount}`);
+
+  const zhIndex = fs.readFileSync(path.join(SITE_ROOT, 'src', 'content', 'docs', 'docs', 'index.mdx'), 'utf8');
+  const enIndex = fs.readFileSync(path.join(SITE_ROOT, 'src', 'content', 'docs', 'en', 'docs', 'index.mdx'), 'utf8');
+  const zhWebui = fs.readFileSync(path.join(SITE_ROOT, 'src', 'content', 'docs', 'docs', 'features', 'webui-and-agent.mdx'), 'utf8');
+  const enWebui = fs.readFileSync(path.join(SITE_ROOT, 'src', 'content', 'docs', 'en', 'docs', 'features', 'webui-and-agent.mdx'), 'utf8');
+
+  assert.equal(zhIndex.includes(`${strategyCount} 种内置策略`), true);
+  assert.equal(enIndex.includes(`${strategyCount}-strategy`), true);
+  assert.equal(zhWebui.includes(`${strategyCount} 种内置策略`), true);
+  assert.equal(enWebui.includes(`${strategyCount} built-in strategies`), true);
+  assert.equal(enWebui.includes(`${strategyCount} Built-In Agent Strategies`), true);
+  assert.equal(/\b15[- ]strategy\b|\b15 built-in strategies\b|\b15 Built-In Agent Strategies\b/.test(enIndex + '\n' + enWebui), false);
+});

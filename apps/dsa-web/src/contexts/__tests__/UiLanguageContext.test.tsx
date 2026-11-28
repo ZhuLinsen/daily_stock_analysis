@@ -50,7 +50,7 @@ describe('UiLanguageContext', () => {
     })).toBe('en');
   });
 
-  it('falls back from invalid storage to the first supported browser language and then zh', () => {
+  it('falls back from invalid storage to browser language, defaulting unsupported non-zh locales to en and empty navigator to zh', () => {
     expect(resolveInitialUiLanguage({
       storage: createStorage('fr'),
       navigatorLike: { language: 'en-US', languages: ['en-US'] },
@@ -63,7 +63,22 @@ describe('UiLanguageContext', () => {
 
     expect(resolveInitialUiLanguage({
       storage: createStorage(null),
+      navigatorLike: { language: 'ko-KR', languages: ['ko-KR'] },
+    })).toBe('en');
+
+    expect(resolveInitialUiLanguage({
+      storage: createStorage(null),
+      navigatorLike: { language: 'ja-JP', languages: ['ja-JP'] },
+    })).toBe('en');
+
+    expect(resolveInitialUiLanguage({
+      storage: createStorage(null),
       navigatorLike: { language: 'tr-TR', languages: ['tr-TR'] },
+    })).toBe('en');
+
+    expect(resolveInitialUiLanguage({
+      storage: createStorage(null),
+      navigatorLike: { language: '', languages: [] },
     })).toBe('zh');
   });
 

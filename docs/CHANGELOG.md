@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [修复] 修复中英文文档与多语言回退漂移：同步英文官网文档的内置策略数量（`15 → 20`）并新增 `site-contracts.test.mjs` 策略数量一致性校验；补齐 `docs/FAQ_EN.md` 缺失的 `Q14.1`（Docker DNS）与 `Q18`（周末非交易日手动触发）并修正后续题号；同步 `docs/full-guide_EN.md` 缺失的 `FUTU_PRIORITY` 说明；在官网中英文最小配置页补充 `REPORT_LANGUAGE=zh/en/ko` 说明；将 Web 端 `getBrowserUiLanguage()` 对非中/英文浏览器（如 `ko-KR`/`ja-JP`）的默认回退由 `zh` 修正为 `en`（无语言信息时保持 `zh`）。
 - [修复] 图片导入纯文本回退保留有效 `.AX` 代码并拒绝格式错误的类符号 token，不再提取裸美股片段（OR-COR-45b3d3c1）。
 - [修复] 澳股跨资产上下文风险偏好标题使用“澳股 / Australia ASX”，不再因市场标签缺失回退为“A股 / A-share”；覆盖中英韩提示语、信号不足与 pipeline 到模型提示语路径，默认关闭的配置语义不变（OR-COR-7f0389ac）。
 - [新功能] 新增原生澳股 `au`：显式 `.AX` 代码使用 Yahoo 数据、XASX/悉尼日历和澳洲提示语，保留报价/财报币种及 ETF 类型，拒绝跨市场 fallback 与污染缓存；支持 AU 指数复盘，详见 `docs/asx_support.md`。

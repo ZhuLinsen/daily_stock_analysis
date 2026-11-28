@@ -332,7 +332,30 @@ Work through the following 5 checkpoints in order:
 
 ---
 
-### Q14.1: Where is the software version stored when I install with Docker?
+### Q14.1: Network/DNS resolution fails inside Docker (e.g., `api.tushare.pro` or `searchapi.eastmoney.com` cannot be resolved)?
+
+**Symptom**: Logs report `Temporary failure in name resolution` or `NameResolutionError`, preventing both stock data APIs and LLM APIs from connecting.
+
+**Cause**: On a custom Docker bridge network, containers rely on Docker's embedded DNS, which can fail behind side-router or specialized corporate/LAN DNS setups.
+
+**Solutions** (try in order):
+
+1. **Configure explicit DNS servers**: Add a `dns` block under `x-common` in `docker/docker-compose.yml`:
+   ```yaml
+   dns:
+     - 223.5.5.5
+     - 119.29.29.29
+     - 8.8.8.8
+   ```
+   Then run `docker-compose down` followed by `docker-compose up -d --force-recreate` to recreate the containers.
+
+2. **Switch to host networking**: If explicit DNS still fails, add `network_mode: host` to the `server` service and remove its `ports` mapping. In host mode `ports` is ignored and **the port is controlled by `--port` in `command`**. If the default port is already in use on the host, change it (for example `API_PORT=8080` in `.env`) and access `http://localhost:8080`.
+
+> 📌 Related Issue: [#372](https://github.com/ZhuLinsen/daily_stock_analysis/issues/372)
+
+---
+
+### Q14.2: Where is the software version stored when I install with Docker?
 
 **Short answer**: For Docker users, the authoritative version is **the image tag you actually deployed**, not a hardcoded constant in a Python source file.
 
@@ -405,7 +428,26 @@ python main.py --market-only
 
 ---
 
-### Q18: Why didn't GitHub Actions run automatically on schedule in my fork, and how do I keep it updated?
+### Q18: Why does a manual weekend trigger in GitHub Actions still skip as a non-trading day?
+
+**Symptom**: Even when manually triggering a run (or after configuring `TRADING_DAY_CHECK_ENABLED`), the log reports that all target markets are closed today and skips execution.
+
+**Solutions**:
+1. Open `Actions → 每日股票分析 → Run workflow`
+2. Set `force_run` to `true` when manually triggering (forces a single run)
+3. To disable trading-day checks permanently, configure in `Settings → Secrets and variables → Actions`:
+   ```bash
+   TRADING_DAY_CHECK_ENABLED=false
+   ```
+
+**Rules**:
+- `TRADING_DAY_CHECK_ENABLED=true` and `force_run=false`: skip non-trading days (default)
+- `force_run=true`: execute this run even on a non-trading day
+- `TRADING_DAY_CHECK_ENABLED=false`: bypass trading-day checks for both scheduled and manual runs
+
+---
+
+### Q19: Why didn't GitHub Actions run automatically on schedule in my fork, and how do I keep it updated?
 
 **Causes**:
 1. GitHub disables scheduled workflows on newly forked repositories until you manually enable them in the `Actions` tab.
@@ -428,4 +470,4 @@ If the above content doesn't solve your issue, welcome to:
 
 ---
 
-*Last updated: 2026-08-03*
+*Last updated: 2026-11-28*

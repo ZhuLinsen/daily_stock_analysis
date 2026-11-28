@@ -51,6 +51,10 @@ function getBrowserUiLanguage(navigatorLike?: Pick<Navigator, 'language' | 'lang
     navigatorLike?.language,
   ].filter((language): language is string => Boolean(language));
 
+  if (languageCandidates.length === 0) {
+    return 'zh';
+  }
+
   for (const candidate of languageCandidates) {
     const normalized = candidate.toLowerCase();
     if (normalized.startsWith('zh')) {
@@ -61,7 +65,7 @@ function getBrowserUiLanguage(navigatorLike?: Pick<Navigator, 'language' | 'lang
     }
   }
 
-  return 'zh';
+  return 'en';
 }
 
 export function resolveInitialUiLanguage({
