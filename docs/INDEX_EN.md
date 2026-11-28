@@ -83,6 +83,8 @@ This is the entry point for project documentation. The README covers the project
 | --- | --- |
 | [Chinese Documentation Index](INDEX.md) | Chinese documentation entry point |
 | [Traditional Chinese README](README_CHT.md) | Traditional Chinese project overview and quick start |
+| [Japanese README](README_JA.md) | Concise Japanese entry card and quick start (routes deep docs to English) |
+| [Korean README](README_KO.md) | Concise Korean entry card and quick start highlighting `REPORT_LANGUAGE=ko` |
 
 ## China-Market Glossary
 
