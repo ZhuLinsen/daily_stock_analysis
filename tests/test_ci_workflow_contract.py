@@ -323,7 +323,14 @@ def test_backend_filter_covers_mixed_changes_and_shared_web_assets() -> None:
     assert outputs(["src/config.py"]) == (True, False, True, False, False, False)
     assert outputs(["src/services/screening/pipeline.py"]) == (True, False, True, False, False, False)
     assert outputs(["requirements.txt"]) == (True, False, True, False, False, True)
+    assert outputs(["requirements-litellm.txt"]) == (True, False, True, False, False, False)
     assert outputs(["docker/Dockerfile"]) == (True, False, True, False, False, False)
+
+    docker_smoke_step = next(
+        step for step in ci["jobs"]["docker-build"]["steps"] if step.get("name") == "🔍 Docker smoke imports"
+    )
+    assert "importlib.util.find_spec(pkg) is None" in docker_smoke_step["run"]
+    assert "('litellm', 'orjson', 'openai')" in docker_smoke_step["run"]
     assert outputs(["apps/dsa-web/src/App.tsx"]) == (False, False, True, True, True, False)
     assert outputs(["apps/dsa-web/package-lock.json"]) == (False, False, True, True, True, False)
     assert outputs(["apps/dsa-web/src/pages/__tests__/PortfolioPage.test.tsx"]) == (

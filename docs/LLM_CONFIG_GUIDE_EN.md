@@ -4,7 +4,7 @@
 
 Welcome! Whether you are a beginner newly exposed to AI or a veteran skilled with various APIs, this guide will help you set up Large Language Models (LLMs) quickly.
 
-This project provides a unified AI model setup for official APIs, arbitrary third-party relays (One-API / New-API / proxies), and local models (Ollama / vLLM / LM Studio). By default it uses the native 4-protocol HTTPX + SSE transport (`LLM_TRANSPORT_MODE=auto`, delegating cloud-IAM providers to [LiteLLM](https://docs.litellm.ai/), with instant env-only rollback via `LLM_TRANSPORT_MODE=litellm`).
+This project provides a unified AI model setup for official APIs, arbitrary third-party relays (One-API / New-API / proxies), and local models (Ollama / vLLM / LM Studio). By default it runs on the native 4-protocol HTTPX + SSE transport (`LLM_TRANSPORT_MODE=auto`, with zero `litellm`/`openai`/`orjson` required in `requirements.txt`); install the optional extra `pip install -r requirements-litellm.txt` (includes `google-auth` for Vertex AI ADC) only if you need Cloud IAM providers (AWS Bedrock, Google Vertex AI, Azure, SageMaker, Cohere), LiteLLM-only YAML params, or `LLM_TRANSPORT_MODE=litellm` rollback via [LiteLLM](https://docs.litellm.ai/).
 
 If you are choosing a concrete provider, setting up GitHub Actions Secrets / Variables, troubleshooting a `details.reason` / `details.hint_code` error, or rolling back an LLM configuration, start with the [Provider Configuration Guide](./llm-providers.md). For the native 4-protocol HTTPX + SSE transport engine and env-only `LLM_TRANSPORT_MODE=auto|litellm|native` switch (default `auto`), see [Native HTTPX Transport](./llm-native-transport.md).
 

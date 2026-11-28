@@ -435,24 +435,76 @@ def filter_non_hermes_deployments(model_list: Sequence[Dict[str, Any]]) -> List[
     return [deployment for deployment in (model_list or []) if not is_hermes_deployment(deployment)]
 
 
+class _HermesNoProxyClient:
+    """Lightweight native no-proxy HTTPX client duck-typed for ``extract_client_overrides``."""
+
+    _dsa_hermes_no_proxy = True
+
+    def __init__(self, *, api_key: str, base_url: str, http_client: Any) -> None:
+        self.api_key = api_key
+        self.base_url = base_url
+        self._client = http_client
+
+    def close(self) -> None:
+        self._client.close()
+
+    def __repr__(self) -> str:
+        return f"_HermesNoProxyClient(base_url={self.base_url!r}, api_key='[REDACTED]')"
+
+
 @contextmanager
 def open_hermes_no_proxy_client(*, api_key: str, base_url: str, timeout: float) -> Iterator[Any]:
-    """Yield an OpenAI client with a no-proxy httpx transport and close it."""
+    """Yield a no-proxy Hermes client and close its underlying ``httpx.Client`` on exit.
+
+    Uses a lightweight native wrapper with zero ``openai`` SDK import under the
+    default native HTTPX transport (``auto`` / ``native``). Only imports ``openai``
+    lazily when ``LLM_TRANSPORT_MODE=litellm`` is explicitly active.
+    """
 
     import httpx
-    import openai
 
     canonical_base_url = canonicalize_hermes_base_url(base_url)
+
+    from src.llm.transport import LiteLLMTransport, get_transport
+
+    use_openai_sdk = isinstance(get_transport(), LiteLLMTransport)
+    openai_mod: Any = None
+    if use_openai_sdk:
+        try:
+            import openai as openai_mod
+        except ModuleNotFoundError as exc:
+            from src.llm.native_types import NativeConfigError
+
+            raise NativeConfigError(
+                "LLM_TRANSPORT_MODE=litellm requires optional LiteLLM/OpenAI dependencies. "
+                "Run 'pip install -r requirements-litellm.txt', or unset LLM_TRANSPORT_MODE "
+                "(default 'auto') to use native HTTPX.",
+                status_code=400,
+                provider="openai",
+                error_code="litellm_optional_dependency_missing",
+            ) from exc
+
     http_client = httpx.Client(
         trust_env=False,
         follow_redirects=False,
         timeout=timeout,
     )
-    client = openai.OpenAI(
-        api_key=api_key,
-        base_url=canonical_base_url,
-        http_client=http_client,
-    )
+    if use_openai_sdk and openai_mod is not None:
+        try:
+            client: Any = openai_mod.OpenAI(
+                api_key=api_key,
+                base_url=canonical_base_url,
+                http_client=http_client,
+            )
+        except Exception:
+            http_client.close()
+            raise
+    else:
+        client = _HermesNoProxyClient(
+            api_key=api_key,
+            base_url=canonical_base_url,
+            http_client=http_client,
+        )
     try:
         yield client
     finally:

@@ -7,6 +7,7 @@ import ast
 import asyncio
 import importlib.abc
 import importlib.machinery
+import json
 import logging
 import math
 import os
@@ -16,7 +17,7 @@ import sys
 import threading
 import time
 from types import ModuleType, SimpleNamespace
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Dict, Iterable, List, Mapping, Optional
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -162,12 +163,14 @@ class _RecordingTransport:
         return _RecordedTransportError
 
 
+def _is_module_name_constant(node: Optional[ast.AST], roots: frozenset[str]) -> bool:
+    if not (isinstance(node, ast.Constant) and isinstance(node.value, str)):
+        return False
+    return node.value.split(".", 1)[0] in roots
+
+
 def _is_litellm_name_constant(node: Optional[ast.AST]) -> bool:
-    return (
-        isinstance(node, ast.Constant)
-        and isinstance(node.value, str)
-        and (node.value == "litellm" or node.value.startswith("litellm."))
-    )
+    return _is_module_name_constant(node, frozenset({"litellm"}))
 
 
 def _call_target_module_arg(node: ast.Call) -> Optional[ast.AST]:
@@ -188,29 +191,47 @@ def _is_sys_modules_expr(node: ast.AST) -> bool:
     )
 
 
-def _find_litellm_boundary_violations(source: str, rel_path: str) -> List[str]:
-    """Inspect a Python module AST for direct LiteLLM coupling outside src/llm/transport.py."""
-    forbidden_litellm_attrs = {
-        "completion",
-        "acompletion",
-        "Router",
-        "register_model",
-        "token_counter",
-    }
+def _iter_module_level_nodes(tree: ast.Module) -> Iterable[ast.AST]:
+    """Yield eager module/class-body AST nodes without descending into function/lambda bodies."""
+    stack: List[ast.AST] = list(reversed(tree.body))
+    while stack:
+        node = stack.pop()
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            continue
+        yield node
+        children = list(ast.iter_child_nodes(node))
+        stack.extend(reversed(children))
+
+
+def _find_optional_sdk_import_violations(
+    source: str,
+    rel_path: str,
+    *,
+    forbidden_roots: frozenset[str] = frozenset({"litellm", "tiktoken", "tiktoken_ext", "orjson", "openai"}),
+    top_level_only: bool = False,
+) -> List[str]:
+    """Inspect a Python module AST for imports/loads of optional LiteLLM stack packages."""
     tree = ast.parse(source, filename=rel_path)
     violations: List[str] = []
 
-    for node in ast.walk(tree):
+    if top_level_only:
+        nodes: Iterable[ast.AST] = _iter_module_level_nodes(tree)
+    else:
+        nodes = ast.walk(tree)
+
+    for node in nodes:
         if isinstance(node, ast.Import):
             for alias in node.names:
-                if alias.name == "litellm" or alias.name.startswith("litellm."):
-                    violations.append(f"{rel_path}:{node.lineno}: direct import {alias.name}")
+                if alias.name.split(".", 1)[0] in forbidden_roots:
+                    scope = "top-level " if top_level_only else "direct "
+                    violations.append(f"{rel_path}:{node.lineno}: {scope}import {alias.name}")
         elif isinstance(node, ast.ImportFrom):
             module_name = node.module or ""
-            if module_name == "litellm" or module_name.startswith("litellm."):
-                violations.append(f"{rel_path}:{node.lineno}: direct from-import {module_name}")
-        elif isinstance(node, ast.Subscript):
-            if _is_sys_modules_expr(node.value) and _is_litellm_name_constant(node.slice):
+            if module_name.split(".", 1)[0] in forbidden_roots:
+                scope = "top-level " if top_level_only else "direct "
+                violations.append(f"{rel_path}:{node.lineno}: {scope}from-import {module_name}")
+        elif not top_level_only and isinstance(node, ast.Subscript):
+            if _is_sys_modules_expr(node.value) and _is_module_name_constant(node.slice, forbidden_roots):
                 violations.append(
                     f"{rel_path}:{node.lineno}: direct sys.modules[{node.slice.value!r}] access"
                 )
@@ -222,30 +243,56 @@ def _find_litellm_boundary_violations(source: str, rel_path: str) -> List[str]:
                     (isinstance(func, ast.Attribute) and func.attr == "import_module")
                     or (isinstance(func, ast.Name) and func.id == "import_module")
                 )
-                and _is_litellm_name_constant(first_or_name_arg)
+                and _is_module_name_constant(first_or_name_arg, forbidden_roots)
             ):
+                scope = "top-level " if top_level_only else "dynamic "
                 violations.append(
-                    f"{rel_path}:{node.lineno}: dynamic import_module({first_or_name_arg.value!r})"
+                    f"{rel_path}:{node.lineno}: {scope}import_module({first_or_name_arg.value!r})"
                 )
             elif (
                 isinstance(func, ast.Name)
                 and func.id == "__import__"
-                and _is_litellm_name_constant(first_or_name_arg)
+                and _is_module_name_constant(first_or_name_arg, forbidden_roots)
             ):
+                scope = "top-level " if top_level_only else "dynamic "
                 violations.append(
-                    f"{rel_path}:{node.lineno}: dynamic __import__({first_or_name_arg.value!r})"
+                    f"{rel_path}:{node.lineno}: {scope}__import__({first_or_name_arg.value!r})"
                 )
             elif (
-                isinstance(func, ast.Attribute)
+                not top_level_only
+                and isinstance(func, ast.Attribute)
                 and _is_sys_modules_expr(func.value)
                 and func.attr in {"get", "pop", "setdefault"}
                 and node.args
-                and _is_litellm_name_constant(node.args[0])
+                and _is_module_name_constant(node.args[0], forbidden_roots)
             ):
                 violations.append(
                     f"{rel_path}:{node.lineno}: direct sys.modules.{func.attr}({node.args[0].value!r})"
                 )
-            elif (
+
+    return violations
+
+
+def _find_litellm_boundary_violations(source: str, rel_path: str) -> List[str]:
+    """Inspect a Python module AST for direct LiteLLM coupling outside src/llm/transport.py."""
+    forbidden_litellm_attrs = {
+        "completion",
+        "acompletion",
+        "Router",
+        "register_model",
+        "token_counter",
+    }
+    tree = ast.parse(source, filename=rel_path)
+    violations: List[str] = _find_optional_sdk_import_violations(
+        source,
+        rel_path,
+        forbidden_roots=frozenset({"litellm"}),
+    )
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            func = node.func
+            if (
                 isinstance(func, ast.Attribute)
                 and isinstance(func.value, ast.Name)
                 and func.value.id == "litellm"
@@ -268,18 +315,18 @@ def _find_litellm_boundary_violations(source: str, rel_path: str) -> List[str]:
 
 
 def test_repo_wide_ast_guard_forbids_direct_litellm_imports_and_calls() -> None:
-    """AST guard preventing direct litellm imports/loads/sys.modules/SDK calls outside src/llm/transport.py."""
+    """AST guard preventing direct litellm/tiktoken/orjson/openai coupling outside controlled lazy boundaries."""
     scan_roots = [
         REPO_ROOT / "src",
         REPO_ROOT / "api",
         REPO_ROOT / "bot",
         REPO_ROOT / "data_provider",
+        REPO_ROOT / "scripts",
         REPO_ROOT / "main.py",
         REPO_ROOT / "server.py",
     ]
-    exempt_files = {
-        (REPO_ROOT / "src" / "llm" / "transport.py").resolve(),
-    }
+    transport_file = (REPO_ROOT / "src" / "llm" / "transport.py").resolve()
+    hermes_file = (REPO_ROOT / "src" / "llm" / "hermes.py").resolve()
 
     py_files: List[Path] = []
     for root in scan_roots:
@@ -290,16 +337,45 @@ def test_repo_wide_ast_guard_forbids_direct_litellm_imports_and_calls() -> None:
 
     violations: List[str] = []
     for path in py_files:
-        if path.resolve() in exempt_files:
-            continue
+        resolved = path.resolve()
         rel = path.relative_to(REPO_ROOT).as_posix()
-        violations.extend(_find_litellm_boundary_violations(path.read_text(encoding="utf-8"), rel))
+        source = path.read_text(encoding="utf-8")
+
+        # tiktoken/tiktoken_ext and orjson must NEVER be imported anywhere in runtime code.
+        violations.extend(
+            _find_optional_sdk_import_violations(
+                source,
+                rel,
+                forbidden_roots=frozenset({"tiktoken", "tiktoken_ext", "orjson"}),
+            )
+        )
+        # Top-level imports of any optional SDK package are forbidden everywhere (even transport.py / hermes.py).
+        violations.extend(
+            _find_optional_sdk_import_violations(
+                source,
+                rel,
+                forbidden_roots=frozenset({"litellm", "tiktoken", "tiktoken_ext", "orjson", "openai"}),
+                top_level_only=True,
+            )
+        )
+        # litellm imports/calls are allowed lazily ONLY in src/llm/transport.py.
+        if resolved != transport_file:
+            violations.extend(_find_litellm_boundary_violations(source, rel))
+        # openai imports are allowed lazily ONLY in src/llm/transport.py and src/llm/hermes.py.
+        if resolved not in {transport_file, hermes_file}:
+            violations.extend(
+                _find_optional_sdk_import_violations(
+                    source,
+                    rel,
+                    forbidden_roots=frozenset({"openai"}),
+                )
+            )
 
     assert violations == []
 
 
 def test_ast_guard_catches_all_bypass_patterns_and_allows_clean_code() -> None:
-    """Positive and negative unit tests verifying AST guard catches indirect LiteLLM import bypasses."""
+    """Positive and negative unit tests verifying AST guard catches indirect optional SDK import bypasses."""
     bad_snippets = [
         "import litellm\n",
         "from litellm.types.utils import LlmProviders\n",
@@ -314,6 +390,31 @@ def test_ast_guard_catches_all_bypass_patterns_and_allows_clean_code() -> None:
     for snippet in bad_snippets:
         assert _find_litellm_boundary_violations(snippet, "src/example.py"), snippet
 
+    for opt_snippet in (
+        "import openai\n",
+        "from openai import OpenAI\n",
+        "import tiktoken\n",
+        "import orjson\n",
+        "import importlib\nimportlib.import_module('tiktoken_ext')\n",
+        "import sys\nsys.modules.get('orjson')\n",
+    ):
+        assert _find_optional_sdk_import_violations(opt_snippet, "src/example.py"), opt_snippet
+
+    assert _find_optional_sdk_import_violations(
+        "import openai\n",
+        "src/llm/hermes.py",
+        top_level_only=True,
+    )
+    assert _find_optional_sdk_import_violations(
+        "try:\n    import openai\nexcept ImportError:\n    pass\n",
+        "src/llm/hermes.py",
+        top_level_only=True,
+    )
+    assert _find_optional_sdk_import_violations(
+        "def lazy():\n    import openai\n",
+        "src/llm/hermes.py",
+        top_level_only=True,
+    ) == []
     assert _find_litellm_boundary_violations("Router(model_list=[])\n", "src/analyzer.py")
     assert _find_litellm_boundary_violations(
         "from src.llm.transport import dispatch_completion\ndispatch_completion(model='openai/gpt-4o')\n",
@@ -322,20 +423,23 @@ def test_ast_guard_catches_all_bypass_patterns_and_allows_clean_code() -> None:
 
 
 def test_importing_runtime_modules_does_not_eagerly_import_litellm() -> None:
-    """Importing runtime modules must not trigger litellm import at module load time."""
+    """Importing runtime modules must not require litellm/tiktoken/orjson/openai or eagerly import LLM SDKs."""
     probe = """
 import sys
 import src.llm
+import src.llm.hermes
 import src.llm.transport
 import src.config
 import src.analyzer
 import src.agent.llm_adapter
 import src.agent.chat_context
+import src.services.doctor_service
 import src.services.image_stock_extractor
 import src.services.screening.ranker
 import src.services.screening_service
 import src.services.system_config_service
-assert "litellm" not in sys.modules, f"litellm eagerly imported"
+for pkg in ("litellm", "tiktoken", "tiktoken_ext", "openai"):
+    assert pkg not in sys.modules, f"{pkg} eagerly imported"
 """
     env = dict(os.environ)
     env["PYTHONPATH"] = str(REPO_ROOT)
@@ -348,6 +452,45 @@ assert "litellm" not in sys.modules, f"litellm eagerly imported"
         timeout=30,
     )
     assert proc.returncode == 0, f"stderr={proc.stderr}\nstdout={proc.stdout}"
+
+    # Also prove all core runtime modules import cleanly when litellm/tiktoken/orjson/openai are absent.
+    blocked_probe = """
+import importlib.abc, sys
+BLOCKED = frozenset({"litellm", "tiktoken", "tiktoken_ext", "orjson", "openai"})
+class _Filter(importlib.abc.MetaPathFinder):
+    def __init__(self, inner):
+        self._inner = inner
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname.split(".", 1)[0] in BLOCKED:
+            return None
+        return self._inner.find_spec(fullname, path, target)
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+sys.meta_path[:] = [_Filter(f) for f in sys.meta_path]
+import src.llm
+import src.llm.hermes
+import src.llm.transport
+import src.config
+import src.analyzer
+import src.agent.llm_adapter
+import src.agent.chat_context
+import src.services.doctor_service
+import src.services.image_stock_extractor
+import src.services.screening.ranker
+import src.services.screening_service
+import src.services.system_config_service
+for pkg in ("litellm", "tiktoken", "tiktoken_ext", "orjson", "openai"):
+    assert pkg not in sys.modules, f"{pkg} unexpectedly present when blocked"
+"""
+    proc_blocked = subprocess.run(
+        [sys.executable, "-c", blocked_probe],
+        cwd=str(REPO_ROOT),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert proc_blocked.returncode == 0, f"stderr={proc_blocked.stderr}\nstdout={proc_blocked.stdout}"
 
 
 def test_load_litellm_sets_local_model_cost_map_default(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1639,3 +1782,1122 @@ model_list:
     assert "application/json" not in redactions
     assert "json" not in redactions
     assert "alfa1234/beta5678" in redactions
+
+
+class _BlockOptionalDepsFinder(importlib.abc.MetaPathFinder):
+    """MetaPathFinder simulating an environment without optional LiteLLM stack packages."""
+
+    def __init__(self, blocked_roots: frozenset[str] = frozenset({"litellm", "tiktoken", "orjson", "openai"})) -> None:
+        self._blocked_roots = blocked_roots
+
+    def find_spec(self, fullname: str, path: Any, target: Any = None) -> Any:
+        if fullname.split(".", 1)[0] in self._blocked_roots:
+            raise ModuleNotFoundError(f"No module named {fullname!r}", name=fullname)
+        return None
+
+
+def _block_optional_deps(
+    monkeypatch: pytest.MonkeyPatch,
+    blocked_roots: frozenset[str] = frozenset({"litellm", "tiktoken", "orjson", "openai"}),
+) -> _BlockOptionalDepsFinder:
+    for mod_name in list(sys.modules.keys()):
+        if mod_name.split(".", 1)[0] in blocked_roots:
+            monkeypatch.delitem(sys.modules, mod_name, raising=False)
+    finder = _BlockOptionalDepsFinder(blocked_roots)
+    monkeypatch.setattr(sys, "meta_path", [finder, *sys.meta_path])
+    return finder
+
+
+def test_phase4_missing_litellm_ux_across_explicit_mode_cloud_iam_and_system_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Phase 4: missing optional LiteLLM raises typed NativeConfigError with pip install remediation."""
+    import httpx
+    from src.llm import transport as llm_transport_mod
+    from src.llm.native_types import NativeConfigError
+
+    _block_optional_deps(monkeypatch)
+    reset_transport_cache()
+    try:
+        # (i) Explicit LLM_TRANSPORT_MODE=litellm -> completion() & create_router() raise NativeConfigError.
+        lt = LiteLLMTransport()
+        with pytest.raises(NativeConfigError) as exc_comp:
+            lt.completion(model="openai/gpt-4o", messages=[{"role": "user", "content": "hi"}])
+        assert exc_comp.value.status_code == 400
+        assert exc_comp.value.error_code == "litellm_optional_dependency_missing"
+        assert "pip install -r requirements-litellm.txt" in str(exc_comp.value)
+        assert "LLM_TRANSPORT_MODE=litellm" in str(exc_comp.value)
+
+        with pytest.raises(NativeConfigError) as exc_router:
+            lt.create_router([{"model_name": "openai/gpt-4o", "litellm_params": {"model": "openai/gpt-4o"}}])
+        assert exc_router.value.status_code == 400
+        assert exc_router.value.error_code == "litellm_optional_dependency_missing"
+        assert "pip install -r requirements-litellm.txt" in str(exc_router.value)
+
+        # Hidden bug fix: register_model() swallows missing litellm while updating _SHARED_MODEL_COSTS.
+        lt.register_model({"phase4-custom-model": {"input_cost_per_token": 0.001, "output_cost_per_token": 0.002}})
+        assert "phase4-custom-model" in lt.get_model_cost()
+        assert lt.can_register_model() is False
+
+        # _build_litellm_no_redirect_client() raises litellm_optional_dependency_missing when openai is missing.
+        with pytest.raises(NativeConfigError) as exc_no_redir:
+            llm_transport_mod._build_litellm_no_redirect_client(
+                {"model": "openai/gpt-4o-mini", "api_base": "https://relay.example/v1", "api_key": "sk-test"},
+                SimpleNamespace(route_all_chat_openai_to_responses=False),
+            )
+        assert exc_no_redir.value.error_code == "litellm_optional_dependency_missing"
+        assert "pip install -r requirements-litellm.txt" in str(exc_no_redir.value)
+
+        # (ii) LLM_TRANSPORT_MODE=auto Cloud IAM direct + hybrid router delegation -> actionable NativeConfigError,
+        # while sibling native aliases in the SAME router keep working with zero litellm import!
+        def _native_mock(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "id": "cmpl-native",
+                    "model": "gpt-4o-mini",
+                    "choices": [{"index": 0, "message": {"role": "assistant", "content": "native-ok"}, "finish_reason": "stop"}],
+                },
+            )
+
+        auto_transport = llm_transport_mod.create_native_transport(
+            http_transport=httpx.MockTransport(_native_mock),
+            fallback_to_litellm=True,
+        )
+        for cloud_model, expected_provider in (
+            ("azure/gpt-4o", "azure"),
+            ("bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0", "bedrock"),
+            ("vertex_ai/gemini-2.5-pro", "vertex_ai"),
+            ("sagemaker/jumpstart-model", "sagemaker"),
+            ("cohere/command-r-plus", "cohere"),
+        ):
+            with pytest.raises(NativeConfigError) as exc_cloud:
+                auto_transport.completion(
+                    model=cloud_model,
+                    messages=[{"role": "user", "content": "hi"}],
+                )
+            assert exc_cloud.value.status_code == 400
+            assert exc_cloud.value.error_code == "litellm_optional_dependency_missing"
+            assert exc_cloud.value.llm_provider == expected_provider
+            assert "pip install -r requirements-litellm.txt" in str(exc_cloud.value)
+            assert expected_provider in str(exc_cloud.value)
+
+        hybrid_router = auto_transport.create_router(
+            [
+                {
+                    "model_name": "openai/gpt-4o-mini",
+                    "litellm_params": {
+                        "model": "openai/gpt-4o-mini",
+                        "api_base": "https://relay.example/v1",
+                        "api_key": "sk-native",
+                    },
+                },
+                {
+                    "model_name": "bedrock/claude-sonnet",
+                    "litellm_params": {
+                        "model": "bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0",
+                    },
+                },
+            ]
+        )
+        native_resp = hybrid_router.completion(
+            model="openai/gpt-4o-mini",
+            messages=[{"role": "user", "content": "hi"}],
+        )
+        assert native_resp.choices[0].message.content == "native-ok"
+        with pytest.raises(NativeConfigError) as exc_hybrid:
+            hybrid_router.completion(
+                model="bedrock/claude-sonnet",
+                messages=[{"role": "user", "content": "hi"}],
+            )
+        assert exc_hybrid.value.error_code == "litellm_optional_dependency_missing"
+        assert "bedrock" in str(exc_hybrid.value)
+        assert "pip install -r requirements-litellm.txt" in str(exc_hybrid.value)
+
+        # (iii) SystemConfigService._classify_llm_exception & test_llm_channel classify missing LiteLLM cleanly.
+        diag = SystemConfigService._classify_llm_exception(exc_hybrid.value)
+        assert diag.error_code == "config_error"
+        assert diag.retryable is False
+        assert diag.reason == "litellm_optional_dependency_missing"
+        assert diag.details["hint_code"] == "litellm_optional_dependency_missing"
+
+        service = SystemConfigService()
+        monkeypatch.delenv("LLM_TRANSPORT_MODE", raising=False)
+        reset_transport_cache()
+        test_res = service.test_llm_channel(
+            name="vertex_cloud",
+            protocol="vertex_ai",
+            base_url="",
+            api_key="sk-test-vertex",
+            models=["vertex_ai/gemini-2.5-pro"],
+        )
+        assert test_res["success"] is False, test_res
+        assert test_res["error_code"] == "config_error", test_res
+        assert test_res["retryable"] is False
+        assert test_res["details"]["reason"] == "litellm_optional_dependency_missing"
+        assert test_res["details"]["hint_code"] == "litellm_optional_dependency_missing"
+        assert "pip install -r requirements-litellm.txt" in (test_res["error"] or "")
+
+        # Explicit LLM_TRANSPORT_MODE=litellm test_llm_channel also surfaces actionable config_error.
+        monkeypatch.setenv("LLM_TRANSPORT_MODE", "litellm")
+        reset_transport_cache()
+        litellm_mode_res = service.test_llm_channel(
+            name="custom",
+            protocol="openai",
+            base_url="http://127.0.0.1:9/v1",
+            api_key="sk-test-key",
+            models=["gpt-4o-mini"],
+        )
+        assert litellm_mode_res["success"] is False, litellm_mode_res
+        assert litellm_mode_res["error_code"] == "config_error", litellm_mode_res
+        assert litellm_mode_res["retryable"] is False
+        assert litellm_mode_res["details"]["reason"] == "litellm_optional_dependency_missing"
+        assert litellm_mode_res["details"]["hint_code"] == "litellm_optional_dependency_missing"
+        assert "pip install -r requirements-litellm.txt" in (litellm_mode_res["error"] or "")
+    finally:
+        monkeypatch.delenv("LLM_TRANSPORT_MODE", raising=False)
+        reset_transport_cache()
+
+
+def test_phase4_hermes_no_proxy_client_works_without_openai_in_native_and_errors_cleanly_in_litellm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Phase 4: Hermes uses native _HermesNoProxyClient with zero openai import in auto/native modes."""
+    import httpx
+    from src.llm.hermes import _HermesNoProxyClient, open_hermes_no_proxy_client
+    from src.llm.native_types import NativeConfigError, extract_client_overrides
+
+    _block_optional_deps(monkeypatch, frozenset({"litellm", "tiktoken", "orjson", "openai"}))
+    reset_transport_cache()
+    try:
+        for mode in ("auto", "native"):
+            monkeypatch.setenv("LLM_TRANSPORT_MODE", mode)
+            reset_transport_cache()
+            secret = "sk-hermes-super-secret-98765"
+            with open_hermes_no_proxy_client(
+                api_key=secret,
+                base_url="http://localhost:8642/v1",
+                timeout=7.5,
+            ) as client:
+                assert isinstance(client, _HermesNoProxyClient)
+                assert secret not in repr(client)
+                assert "127.0.0.1:8642/v1" in repr(client)
+                ext_key, ext_base, ext_http = extract_client_overrides({"client": client})
+                assert ext_key == secret
+                assert ext_base == "http://127.0.0.1:8642/v1"
+                assert isinstance(ext_http, httpx.Client)
+                assert not ext_http.is_closed
+                assert "openai" not in sys.modules
+            assert ext_http.is_closed
+
+        # Explicit LLM_TRANSPORT_MODE=litellm with openai blocked fails cleanly without creating/leaking httpx.Client.
+        monkeypatch.setenv("LLM_TRANSPORT_MODE", "litellm")
+        reset_transport_cache()
+        with patch("httpx.Client") as mock_httpx_client:
+            with pytest.raises(NativeConfigError) as exc_info:
+                with open_hermes_no_proxy_client(
+                    api_key="sk-hermes-secret",
+                    base_url="http://127.0.0.1:8642/v1",
+                    timeout=5.0,
+                ):
+                    pass
+        assert exc_info.value.status_code == 400
+        assert exc_info.value.error_code == "litellm_optional_dependency_missing"
+        assert "pip install -r requirements-litellm.txt" in str(exc_info.value)
+        mock_httpx_client.assert_not_called()
+    finally:
+        monkeypatch.delenv("LLM_TRANSPORT_MODE", raising=False)
+        reset_transport_cache()
+
+
+def test_phase4_round2_hermes_router_adaptation_and_downstream_remediation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Round 2 P1-3, P1-5, P1-6: Hermes fallback router adaptation/YAML params & remediation in Agent/Ranker/Analyzer/Vision."""
+    import httpx
+    from src.llm import transport as llm_transport_mod
+    from src.llm.hermes import _HermesNoProxyClient
+    from src.services.screening.models import Pick
+
+    # 1. P1-3a: Populated NativeUnifiedRouter fallback adapts _HermesNoProxyClient before SDK router dispatch.
+    captured_router_kwargs: List[Dict[str, Any]] = []
+
+    class _FakeLitellmSDKRouter:
+        __module__ = "litellm.router"
+
+        def completion(self, **kwargs: Any) -> Any:
+            captured_router_kwargs.append(dict(kwargs))
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content="sdk-router-ok"))]
+            )
+
+    class _FakeOpenAIClient:
+        def __init__(self, *, api_key: str, base_url: Any, http_client: Any) -> None:
+            self.api_key = api_key
+            self.base_url = base_url
+            self._client = http_client
+
+    fake_openai_mod = ModuleType("openai")
+    fake_openai_mod.OpenAI = _FakeOpenAIClient  # type: ignore[attr-defined]
+
+    class _FallbackTransport:
+        transport_engine = "litellm"
+
+        def create_router(self, model_list: List[Dict[str, Any]], **kwargs: Any) -> Any:
+            return _FakeLitellmSDKRouter()
+
+        def can_register_model(self) -> bool:
+            return False
+
+    auto_t = llm_transport_mod.create_native_transport(fallback_transport=_FallbackTransport())
+    router = auto_t.create_router(
+        [
+            {
+                "model_name": "openai/hermes-org",
+                "litellm_params": {
+                    "model": "openai/hermes-agent",
+                    "api_base": "http://127.0.0.1:8642/v1",
+                    "api_key": "sk-hermes-key",
+                    "organization": "org-123",
+                },
+            }
+        ]
+    )
+    http_client = httpx.Client(trust_env=False, follow_redirects=False, timeout=5.0)
+    try:
+        hermes_wrapper = _HermesNoProxyClient(
+            api_key="sk-hermes-key",
+            base_url="http://127.0.0.1:8642/v1",
+            http_client=http_client,
+        )
+        with patch.dict(sys.modules, {"openai": fake_openai_mod}, clear=False):
+            resp = router.completion(
+                model="openai/hermes-org",
+                messages=[{"role": "user", "content": "hi"}],
+                client=hermes_wrapper,
+            )
+        assert resp.choices[0].message.content == "sdk-router-ok"
+        assert isinstance(captured_router_kwargs[0]["client"], _FakeOpenAIClient)
+        assert captured_router_kwargs[0]["client"]._client is http_client
+    finally:
+        http_client.close()
+
+    # 2. P1-3b: GeminiAnalyzer Hermes dispatch preserves YAML params (e.g. organization) instead of dropping them.
+    hermes_yaml_cfg = Config(
+        litellm_model="openai/hermes-agent",
+        llm_model_list=[
+            {
+                "model_name": "openai/hermes-agent",
+                "litellm_params": {
+                    "model": "openai/hermes-agent",
+                    "api_base": "http://127.0.0.1:8642/v1",
+                    "api_key": "sk-hermes-key",
+                    "organization": "org-hermes-yaml",
+                },
+                "model_info": {"dsa_channel": "hermes"},
+            }
+        ],
+    )
+    recording = _RecordingTransport(response_text="ok")
+    analyzer_h = GeminiAnalyzer.__new__(GeminiAnalyzer)
+    analyzer_h._router = None
+    with use_transport(recording):
+        analyzer_h._dispatch_litellm_completion(
+            "openai/hermes-agent",
+            {"model": "openai/hermes-agent", "messages": [{"role": "user", "content": "hi"}]},
+            config=hermes_yaml_cfg,
+            use_channel_router=True,
+            router_model_names={"openai/hermes-agent"},
+        )
+    assert recording.completion_calls[0]["organization"] == "org-hermes-yaml"
+
+    # 3. P1-5 & P1-6 with optional litellm/openai blocked:
+    _block_optional_deps(monkeypatch)
+    reset_transport_cache()
+    try:
+        # 3a. Agent LLMToolAdapter preserves pip install remediation when router init fails in LLM_TRANSPORT_MODE=litellm.
+        monkeypatch.setenv("LLM_TRANSPORT_MODE", "litellm")
+        reset_transport_cache()
+        agent_cfg = Config(
+            litellm_model="openai/gpt-4o-mini",
+            llm_model_list=[
+                {
+                    "model_name": "openai/gpt-4o-mini",
+                    "litellm_params": {
+                        "model": "openai/gpt-4o-mini",
+                        "api_base": "https://relay.example/v1",
+                        "api_key": "sk-agent",
+                    },
+                }
+            ],
+        )
+        adapter = LLMToolAdapter(agent_cfg)
+        agent_resp = adapter.call_text([{"role": "user", "content": "ping"}])
+        assert agent_resp.provider == "error"
+        assert "pip install -r requirements-litellm.txt" in (agent_resp.content or "")
+
+        # 3b. Screening ranker preserves remediation when all models fail AND still falls back to native sibling!
+        monkeypatch.setenv("LLM_TRANSPORT_MODE", "auto")
+        reset_transport_cache()
+        picks = [Pick(rank=1, code="600519", name="贵州茅台", final_score=90.0, screen_score=90.0)]
+        failed_rank = ranker.rank_candidates_with_metadata(
+            picks,
+            ranking_hints="Prefer leaders",
+            llm_api_key="sk-test",
+            llm_model="bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0",
+            llm_base_url="",
+            fallback_models=[],
+            max_retries=1,
+            silent=True,
+        )
+        assert failed_rank.ranked is False
+        assert any(
+            "litellm_optional_dependency_missing" in err and "pip install -r requirements-litellm.txt" in err
+            for err in failed_rank.errors
+        ), failed_rank.errors
+
+        def _rank_native_handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "id": "cmpl-rank",
+                    "model": "gpt-4o-mini",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {
+                                "role": "assistant",
+                                "content": '{"ranked":[{"code":"600519","reason":"strong","llm_score":92}]}',
+                            },
+                            "finish_reason": "stop",
+                        }
+                    ],
+                },
+            )
+
+        with use_transport(
+            llm_transport_mod.create_native_transport(
+                http_transport=httpx.MockTransport(_rank_native_handler),
+                fallback_to_litellm=True,
+            )
+        ):
+            recovered_rank = ranker.rank_candidates_with_metadata(
+                picks,
+                ranking_hints="Prefer leaders",
+                llm_api_key="sk-native",
+                llm_model="bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0",
+                llm_base_url="https://relay.example/v1",
+                fallback_models=["openai/gpt-4o-mini"],
+                max_retries=0,
+                silent=True,
+            )
+        assert recovered_rank.ranked is True
+        assert recovered_rank.model_used == "openai/gpt-4o-mini"
+
+        # 3c. Market review / generate_text_with_metadata preserves remediation in diagnostics!
+        review_cfg = Config(
+            litellm_model="bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0",
+            llm_model_list=[
+                {
+                    "model_name": "bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0",
+                    "litellm_params": {"model": "bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0"},
+                }
+            ],
+            generation_backend="litellm",
+            generation_fallback_backend="",
+        )
+        analyzer_rev = GeminiAnalyzer(config=review_cfg)
+        gen_res = analyzer_rev.generate_text_with_metadata("Market review prompt")
+        assert gen_res.text == ""
+        assert gen_res.diagnostics["reason"] == "litellm_optional_dependency_missing"
+        assert "pip install -r requirements-litellm.txt" in gen_res.diagnostics.get("message", "")
+
+        # 3d. Vision extractor fails fast on NativeConfigError with zero sleep/retry and surfaces install instruction
+        # for BOTH Cloud IAM (auto mode, keyless) and explicit LLM_TRANSPORT_MODE=litellm (keyed OpenAI route).
+        vision_cfg = Config(
+            vision_model="bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0",
+            llm_model_list=[],
+        )
+        monkeypatch.setattr(image_stock_extractor, "get_config", lambda: vision_cfg)
+        png_bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+        with (
+            patch.object(image_stock_extractor.time, "sleep") as mock_sleep,
+            pytest.raises(ValueError) as vision_exc,
+        ):
+            image_stock_extractor.extract_stock_codes_from_image(png_bytes, "image/png")
+        mock_sleep.assert_not_called()
+        assert "pip install -r requirements-litellm.txt" in str(vision_exc.value)
+        assert "请检查 API Key 与网络" not in str(vision_exc.value)
+
+        monkeypatch.setenv("LLM_TRANSPORT_MODE", "litellm")
+        reset_transport_cache()
+        vision_litellm_cfg = Config(
+            vision_model="openai/gpt-4o-mini",
+            openai_api_keys=["sk-vision-key-1234"],
+            llm_model_list=[],
+        )
+        monkeypatch.setattr(image_stock_extractor, "get_config", lambda: vision_litellm_cfg)
+        with (
+            patch.object(image_stock_extractor.time, "sleep") as mock_sleep_litellm,
+            pytest.raises(ValueError) as vision_litellm_exc,
+        ):
+            image_stock_extractor.extract_stock_codes_from_image(png_bytes, "image/png")
+        mock_sleep_litellm.assert_not_called()
+        assert "pip install -r requirements-litellm.txt" in str(vision_litellm_exc.value)
+        assert "请检查 API Key 与网络" not in str(vision_litellm_exc.value)
+    finally:
+        monkeypatch.delenv("LLM_TRANSPORT_MODE", raising=False)
+        reset_transport_cache()
+
+
+def test_phase4_round3_hermes_base_url_vision_iam_anthropic_screening_and_market_review(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Round 3 P1-4/6/7/8/9 & P2-2: Hermes base_url, Vision IAM/bare keys/params, Anthropic screening, MarketAnalyzer, AST class/dynamic guard."""
+    import httpx
+    from src.llm import transport as llm_transport_mod
+    from src.market_analyzer import MarketAnalyzer, MarketOverview
+    from src.services.screening.models import Pick
+
+    # 1. P2-2: top_level_only AST guard catches class-body imports and eager import_module/__import__.
+    class_and_dynamic_src = (
+        "import importlib\n"
+        "class Eager:\n"
+        "    import litellm\n"
+        "    x = importlib.import_module('openai')\n"
+        "y = __import__('orjson')\n"
+        "def lazy():\n"
+        "    import litellm\n"
+    )
+    eager_hits = _find_optional_sdk_import_violations(
+        class_and_dynamic_src,
+        "synthetic.py",
+        top_level_only=True,
+    )
+    assert len(eager_hits) == 3, eager_hits
+    assert any("import litellm" in h for h in eager_hits)
+    assert any("import_module('openai')" in h for h in eager_hits)
+    assert any("__import__('orjson')" in h for h in eager_hits)
+
+    # 2. P1-4: Hermes YAML using base_url (non-default port) routes to that port, not :8642; conflict fails closed.
+    hermes_base_cfg = Config(
+        litellm_model="openai/hermes-agent",
+        llm_model_list=[
+            {
+                "model_name": "openai/hermes-agent",
+                "litellm_params": {
+                    "model": "openai/hermes-agent",
+                    "base_url": "http://127.0.0.1:9123/v1",
+                    "api_key": "sk-hermes-port-key",
+                },
+                "model_info": {"dsa_channel": "hermes"},
+            }
+        ],
+    )
+    rec_hermes = _RecordingTransport(response_text="ok")
+    analyzer_h = GeminiAnalyzer.__new__(GeminiAnalyzer)
+    analyzer_h._router = None
+    with use_transport(rec_hermes):
+        analyzer_h._dispatch_litellm_completion(
+            "openai/hermes-agent",
+            {"model": "openai/hermes-agent", "messages": [{"role": "user", "content": "hi"}]},
+            config=hermes_base_cfg,
+            use_channel_router=True,
+            router_model_names={"openai/hermes-agent"},
+        )
+    assert rec_hermes.completion_calls[0]["client"].base_url == "http://127.0.0.1:9123/v1"
+
+    hermes_conflict_cfg = Config(
+        litellm_model="openai/hermes-agent",
+        llm_model_list=[
+            {
+                "model_name": "openai/hermes-agent",
+                "litellm_params": {
+                    "model": "openai/hermes-agent",
+                    "api_base": "http://127.0.0.1:8642/v1",
+                    "base_url": "http://127.0.0.1:9123/v1",
+                    "api_key": "sk-hermes-port-key",
+                },
+                "model_info": {"dsa_channel": "hermes"},
+            }
+        ],
+    )
+    with use_transport(_RecordingTransport(response_text="ok")):
+        with pytest.raises(RuntimeError, match="conflicting api_base and base_url"):
+            analyzer_h._dispatch_litellm_completion(
+                "openai/hermes-agent",
+                {"model": "openai/hermes-agent", "messages": [{"role": "user", "content": "hi"}]},
+                config=hermes_conflict_cfg,
+                use_channel_router=True,
+                router_model_names={"openai/hermes-agent"},
+            )
+
+    # 3. P1-6 & P1-7: Vision never leaks OPENAI_API_KEY to Bedrock/SageMaker/Vertex IAM,
+    # routes bare gemini-*/claude-* to their key pools, and forwards vertex_project/vertex_location/organization.
+    rec_vision = _RecordingTransport(response_text='[{"code":"600519","name":"贵州茅台","confidence":"high"}]')
+    with use_transport(rec_vision):
+        # 3a. Bedrock direct with OPENAI_API_KEY configured -> api_key NOT leaked!
+        cfg_bedrock = Config(
+            vision_model="bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0",
+            openai_api_keys=["sk-openai-must-not-leak"],
+            openai_base_url="https://openai-relay.example/v1",
+            llm_model_list=[],
+        )
+        monkeypatch.setattr(image_stock_extractor, "get_config", lambda: cfg_bedrock)
+        image_stock_extractor._call_litellm_vision("aGVsbG8=", "image/png")
+        assert "api_key" not in rec_vision.completion_calls[-1]
+        assert "api_base" not in rec_vision.completion_calls[-1]
+
+        # 3b. Bare gemini-2.5-flash with ONLY GEMINI_API_KEY succeeds without OPENAI_API_KEY.
+        cfg_bare_gemini = Config(
+            vision_model="gemini-2.5-flash",
+            gemini_api_keys=["sk-gemini-vision-1234"],
+            openai_api_keys=["sk-openai-other-1234"],
+            openai_base_url="https://openai-relay.example/v1",
+            llm_model_list=[],
+        )
+        monkeypatch.setattr(image_stock_extractor, "get_config", lambda: cfg_bare_gemini)
+        image_stock_extractor._call_litellm_vision("aGVsbG8=", "image/png")
+        assert rec_vision.completion_calls[-1]["api_key"] == "sk-gemini-vision-1234"
+        assert "api_base" not in rec_vision.completion_calls[-1]
+
+        # 3c. Bare claude-sonnet-4-6 with ONLY ANTHROPIC_API_KEY succeeds.
+        cfg_bare_claude = Config(
+            vision_model="claude-sonnet-4-6",
+            anthropic_api_keys=["sk-ant-vision-1234"],
+            openai_api_keys=["sk-openai-other-1234"],
+            llm_model_list=[],
+        )
+        monkeypatch.setattr(image_stock_extractor, "get_config", lambda: cfg_bare_claude)
+        image_stock_extractor._call_litellm_vision("aGVsbG8=", "image/png")
+        assert rec_vision.completion_calls[-1]["api_key"] == "sk-ant-vision-1234"
+
+        # 3d. Provider-specific YAML deployment params (vertex_project, vertex_location, organization) forwarded.
+        cfg_vertex_yaml = Config(
+            vision_model="vertex_ai/gemini-2.5-pro",
+            llm_model_list=[
+                {
+                    "model_name": "vertex_ai/gemini-2.5-pro",
+                    "litellm_params": {
+                        "model": "vertex_ai/gemini-2.5-pro",
+                        "vertex_project": "proj-dsa-prod",
+                        "vertex_location": "us-central1",
+                    },
+                }
+            ],
+        )
+        monkeypatch.setattr(image_stock_extractor, "get_config", lambda: cfg_vertex_yaml)
+        image_stock_extractor._call_litellm_vision("aGVsbG8=", "image/png")
+        assert rec_vision.completion_calls[-1]["vertex_project"] == "proj-dsa-prod"
+        assert rec_vision.completion_calls[-1]["vertex_location"] == "us-central1"
+        assert "api_key" not in rec_vision.completion_calls[-1]
+
+        cfg_org_yaml = Config(
+            vision_model="openai/gpt-4o",
+            llm_model_list=[
+                {
+                    "model_name": "openai/gpt-4o",
+                    "litellm_params": {
+                        "model": "openai/gpt-4o",
+                        "api_key": "sk-openai-org-key-1234",
+                        "organization": "org-vision-999",
+                    },
+                }
+            ],
+        )
+        monkeypatch.setattr(image_stock_extractor, "get_config", lambda: cfg_org_yaml)
+        image_stock_extractor._call_litellm_vision("aGVsbG8=", "image/png")
+        assert rec_vision.completion_calls[-1]["organization"] == "org-vision-999"
+
+    # 4. P1-8 & P1-9 with optional litellm/openai blocked:
+    _block_optional_deps(monkeypatch)
+    reset_transport_cache()
+    try:
+        monkeypatch.setenv("LLM_TRANSPORT_MODE", "auto")
+        reset_transport_cache()
+
+        # 4a. Default Anthropic screening (json_mode=True) succeeds natively on core-only install (direct + YAML router)!
+        anthropic_requests: List[Dict[str, Any]] = []
+
+        def _anthropic_mock(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content.decode("utf-8"))
+            anthropic_requests.append(body)
+            return httpx.Response(
+                200,
+                json={
+                    "id": "msg_rank_1",
+                    "type": "message",
+                    "role": "assistant",
+                    "model": "claude-sonnet-4-6",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": '{"ranked":[{"code":"600519","reason":"leader","llm_score":95}]}',
+                        }
+                    ],
+                    "stop_reason": "end_turn",
+                    "usage": {"input_tokens": 10, "output_tokens": 20},
+                },
+            )
+
+        picks = [Pick(rank=1, code="600519", name="贵州茅台", final_score=88.0, screen_score=88.0)]
+        yaml_ant = tmp_path / "anthropic_screening.yaml"
+        yaml_ant.write_text(
+            """
+model_list:
+  - model_name: my-claude-ranker
+    litellm_params:
+      model: anthropic/claude-sonnet-4-6
+      api_key: sk-ant-yaml-1234
+""".strip(),
+            encoding="utf-8",
+        )
+        with use_transport(
+            llm_transport_mod.create_native_transport(
+                http_transport=httpx.MockTransport(_anthropic_mock),
+                fallback_to_litellm=True,
+            )
+        ):
+            direct_res = ranker.rank_candidates_with_metadata(
+                picks,
+                ranking_hints="Prefer quality leaders",
+                llm_api_key="sk-ant-direct-1234",
+                llm_model="anthropic/claude-sonnet-4-6",
+                json_mode=True,
+                max_retries=0,
+                silent=True,
+            )
+            router_res = ranker.rank_candidates_with_metadata(
+                picks,
+                ranking_hints="Prefer quality leaders",
+                llm_api_key="",
+                llm_model="my-claude-ranker",
+                config_path=str(yaml_ant),
+                json_mode=True,
+                max_retries=0,
+                silent=True,
+            )
+        assert direct_res.ranked is True
+        assert router_res.ranked is True
+        assert len(anthropic_requests) == 2
+        assert all("response_format" not in req for req in anthropic_requests)
+
+        # 4b. MarketAnalyzer records OptionalDependencyMissing with remediation preserved inside LLMRun.error_message_sanitized
+        # for BOTH auto-mode Cloud IAM failure AND explicit LLM_TRANSPORT_MODE=litellm analyzer init failure (P2-1)!
+        from src.services.run_diagnostics import (
+            activate_run_diagnostic_context,
+            get_current_diagnostic_context,
+            reset_run_diagnostic_context,
+        )
+
+        review_cfg = Config(
+            litellm_model="bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0",
+            llm_model_list=[
+                {
+                    "model_name": "bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0",
+                    "litellm_params": {"model": "bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0"},
+                }
+            ],
+            generation_backend="litellm",
+            generation_fallback_backend="",
+        )
+        analyzer_mr = GeminiAnalyzer(config=review_cfg)
+        market_analyzer = MarketAnalyzer(analyzer=analyzer_mr)
+        market_analyzer.config = review_cfg
+        overview = MarketOverview(date="2026-11-28")
+        token = activate_run_diagnostic_context(trace_id="trace-mr-auto")
+        diag_ctx = get_current_diagnostic_context()
+        assert diag_ctx is not None
+        try:
+            caplog.clear()
+            with caplog.at_level(logging.WARNING, logger="src.market_analyzer"):
+                template_report = market_analyzer.generate_market_review(overview, news=[])
+        finally:
+            reset_run_diagnostic_context(token)
+        assert template_report
+        assert len(diag_ctx.llm_runs) == 1
+        llm_run = diag_ctx.llm_runs[0]
+        assert llm_run.success is False
+        assert llm_run.error_type == "OptionalDependencyMissing"
+        assert llm_run.error_message_sanitized is not None
+        assert "litellm_optional_dependency_missing" in llm_run.error_message_sanitized
+        assert "pip install -r requirements-litellm.txt" in llm_run.error_message_sanitized
+        assert "reason=litellm_optional_dependency_missing" in caplog.text
+        assert "reason=empty_llm_response" not in caplog.text
+
+        # Explicit LLM_TRANSPORT_MODE=litellm init failure records OptionalDependencyMissing before no_analyzer fallback.
+        monkeypatch.setenv("LLM_TRANSPORT_MODE", "litellm")
+        reset_transport_cache()
+        litellm_mode_cfg = Config(
+            litellm_model="openai/gpt-4o-mini",
+            llm_model_list=[
+                {
+                    "model_name": "openai/gpt-4o-mini",
+                    "litellm_params": {
+                        "model": "openai/gpt-4o-mini",
+                        "api_base": "https://relay.example/v1",
+                        "api_key": "sk-test-litellm-1234",
+                    },
+                }
+            ],
+            generation_backend="litellm",
+            generation_fallback_backend="",
+        )
+        analyzer_init_fail = GeminiAnalyzer(config=litellm_mode_cfg)
+        assert analyzer_init_fail.is_available() is False
+        market_analyzer_init = MarketAnalyzer(analyzer=analyzer_init_fail)
+        market_analyzer_init.config = litellm_mode_cfg
+        token_init = activate_run_diagnostic_context(trace_id="trace-mr-litellm-init")
+        diag_ctx_init = get_current_diagnostic_context()
+        assert diag_ctx_init is not None
+        try:
+            caplog.clear()
+            with caplog.at_level(logging.WARNING, logger="src.market_analyzer"):
+                template_report_init = market_analyzer_init.generate_market_review(overview, news=[])
+        finally:
+            reset_run_diagnostic_context(token_init)
+        assert template_report_init
+        assert len(diag_ctx_init.llm_runs) == 1
+        init_run = diag_ctx_init.llm_runs[0]
+        assert init_run.success is False
+        assert init_run.error_type == "OptionalDependencyMissing"
+        assert init_run.error_message_sanitized is not None
+        assert "pip install -r requirements-litellm.txt" in init_run.error_message_sanitized
+        assert "reason=litellm_optional_dependency_missing" in caplog.text
+        assert "reason=no_analyzer" not in caplog.text
+    finally:
+        monkeypatch.delenv("LLM_TRANSPORT_MODE", raising=False)
+        reset_transport_cache()
+
+
+def test_phase4_round4_vision_alias_fail_closed_extra_body_hermes_env_ranker_resolver_and_config_iam(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Round 4 P1-1..5 & P2-3: Vision alias fail-closed/relay/extra_body, Hermes unset env, ranker resolver parity, Config IAM vision."""
+    import httpx
+    from src.llm import transport as llm_transport_mod
+    from src.services.screening.models import Pick
+
+    # 1. P1-1: Keyless Vertex alias using custom_llm_provider='vertex_ai' uses Vertex deployment (NEVER falls through
+    # to OPENAI_BASE_URL/OPENAI_API_KEY), and an unusable matched alias fails closed instead of falling back to OpenAI!
+    rec_v = _RecordingTransport(response_text='[{"code":"600519","name":"贵州茅台","confidence":"high"}]')
+    with use_transport(rec_v):
+        cfg_vertex_alias = Config(
+            vision_model="vision",
+            openai_api_keys=["sk-openai-must-not-leak"],
+            openai_base_url="https://openai-relay.example/v1",
+            llm_model_list=[
+                {
+                    "model_name": "vision",
+                    "litellm_params": {
+                        "model": "gemini-2.5-pro",
+                        "custom_llm_provider": "vertex_ai",
+                        "vertex_project": "proj-vertex-alias",
+                        "vertex_location": "us-central1",
+                    },
+                }
+            ],
+        )
+        monkeypatch.setattr(image_stock_extractor, "get_config", lambda: cfg_vertex_alias)
+        image_stock_extractor._call_litellm_vision("aGVsbG8=", "image/png")
+        assert rec_v.completion_calls[-1]["model"] == "gemini-2.5-pro"
+        assert rec_v.completion_calls[-1]["custom_llm_provider"] == "vertex_ai"
+        assert rec_v.completion_calls[-1]["vertex_project"] == "proj-vertex-alias"
+        assert "api_key" not in rec_v.completion_calls[-1]
+        assert "api_base" not in rec_v.completion_calls[-1]
+
+        # Matched remote alias without API key MUST fail closed even when OPENAI_API_KEY/OPENAI_BASE_URL are set!
+        cfg_unusable_alias = Config(
+            vision_model="my-remote-vision",
+            openai_api_keys=["sk-openai-must-not-be-used"],
+            openai_base_url="https://openai-relay.example/v1",
+            llm_model_list=[
+                {
+                    "model_name": "my-remote-vision",
+                    "litellm_params": {
+                        "model": "openai/gpt-4o",
+                        "api_base": "https://other-host.example/v1",
+                    },
+                }
+            ],
+        )
+        monkeypatch.setattr(image_stock_extractor, "get_config", lambda: cfg_unusable_alias)
+        calls_before = len(rec_v.completion_calls)
+        with pytest.raises(ValueError, match="No API key found"):
+            image_stock_extractor._call_litellm_vision("aGVsbG8=", "image/png")
+        assert len(rec_v.completion_calls) == calls_before
+
+        # 1b. Keyless IAM alias matched via dsa_channel_protocol='vertex_ai' preserves custom_llm_provider='vertex_ai'.
+        cfg_vertex_chan_proto = Config(
+            vision_model="vision-proto",
+            llm_model_list=[
+                {
+                    "model_name": "vision-proto",
+                    "litellm_params": {
+                        "model": "gemini-2.5-pro",
+                        "vertex_project": "proj-chan-proto",
+                        "generation_config": {"max_output_tokens": 5, "topP": 0.8},
+                        "extra_body": {"generationConfig": {"maxOutputTokens": 5, "topK": 32}},
+                    },
+                    "model_info": {"dsa_channel_protocol": "vertex_ai"},
+                }
+            ],
+        )
+        monkeypatch.setattr(image_stock_extractor, "get_config", lambda: cfg_vertex_chan_proto)
+        image_stock_extractor._call_litellm_vision("aGVsbG8=", "image/png")
+        assert rec_v.completion_calls[-1]["custom_llm_provider"] == "vertex_ai"
+        assert rec_v.completion_calls[-1]["generation_config"] == {"topP": 0.8}
+        assert rec_v.completion_calls[-1]["extra_body"] == {"generationConfig": {"topK": 32}}
+
+        # 2. P1-3: Bare claude-* / gemini-* on explicit OPENAI_BASE_URL relay with ONLY OPENAI_API_KEY succeeds
+        # and forwards custom_llm_provider='openai' for LiteLLM rollback parity; whitespace vision_model does not shadow!
+        cfg_bare_claude_relay = Config(
+            vision_model="   ",
+            openai_vision_model="claude-sonnet-4-6",
+            openai_api_keys=["sk-relay-only-1234"],
+            openai_base_url="https://relay.example/v1",
+            anthropic_api_keys=[],
+            llm_model_list=[],
+        )
+        monkeypatch.setattr(image_stock_extractor, "get_config", lambda: cfg_bare_claude_relay)
+        image_stock_extractor._call_litellm_vision("aGVsbG8=", "image/png")
+        assert rec_v.completion_calls[-1]["model"] == "claude-sonnet-4-6"
+        assert rec_v.completion_calls[-1]["api_key"] == "sk-relay-only-1234"
+        assert rec_v.completion_calls[-1]["api_base"] == "https://relay.example/v1"
+        assert rec_v.completion_calls[-1]["custom_llm_provider"] == "openai"
+
+        # Explicit anthropic/ prefix NEVER falls back to OPENAI_API_KEY/OPENAI_BASE_URL!
+        cfg_explicit_ant_no_key = Config(
+            vision_model="anthropic/claude-sonnet-4-6",
+            openai_api_keys=["sk-relay-only-1234"],
+            openai_base_url="https://relay.example/v1",
+            anthropic_api_keys=[],
+            llm_model_list=[],
+        )
+        monkeypatch.setattr(image_stock_extractor, "get_config", lambda: cfg_explicit_ant_no_key)
+        with pytest.raises(ValueError, match="No API key found"):
+            image_stock_extractor._call_litellm_vision("aGVsbG8=", "image/png")
+
+    # 3. P1-4: Vision YAML extra_body strips extractor-owned keys (verified on real serialized HTTPX JSON body!).
+    captured_vision_bodies: List[Dict[str, Any]] = []
+
+    def _vision_http_mock(request: httpx.Request) -> httpx.Response:
+        captured_vision_bodies.append(json.loads(request.content.decode("utf-8")))
+        return httpx.Response(
+            200,
+            json={
+                "id": "cmpl-vis",
+                "model": "gpt-4o",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": '[{"code":"600519","name":"贵州茅台","confidence":"high"}]',
+                        },
+                        "finish_reason": "stop",
+                    }
+                ],
+            },
+        )
+
+    cfg_extra_body = Config(
+        vision_model="openai/gpt-4o",
+        llm_model_list=[
+            {
+                "model_name": "openai/gpt-4o",
+                "litellm_params": {
+                    "model": "openai/gpt-4o",
+                    "api_base": "https://vision-relay.example/v1",
+                    "api_key": "sk-vision-key-1234",
+                    "extra_body": {
+                        "model": "hijacked-model",
+                        "messages": [{"role": "user", "content": "hijacked"}],
+                        "max_tokens": 1,
+                        "stream": True,
+                        "reasoning_effort": "low",
+                    },
+                },
+            }
+        ],
+    )
+    monkeypatch.setattr(image_stock_extractor, "get_config", lambda: cfg_extra_body)
+    with use_transport(
+        llm_transport_mod.create_native_transport(
+            http_transport=httpx.MockTransport(_vision_http_mock),
+            fallback_to_litellm=True,
+        )
+    ):
+        image_stock_extractor._call_litellm_vision("aGVsbG8=", "image/png")
+    assert len(captured_vision_bodies) == 1
+    body = captured_vision_bodies[0]
+    assert body["model"] == "gpt-4o"
+    assert body["max_tokens"] == 1024
+    assert body["reasoning_effort"] == "low"
+    assert body["messages"][0]["content"][1]["image_url"]["url"] == "data:image/png;base64,aGVsbG8="
+
+    # 4. P1-2: Unset Hermes YAML endpoint env var fails closed through Config._parse_litellm_yaml (never falls back to :8642)!
+    monkeypatch.delenv("UNSET_HERMES_BASE", raising=False)
+    hermes_yaml = tmp_path / "hermes_unset.yaml"
+    hermes_yaml.write_text(
+        """
+model_list:
+  - model_name: openai/hermes-agent
+    litellm_params:
+      model: openai/hermes-agent
+      base_url: os.environ/UNSET_HERMES_BASE
+      api_key: sk-hermes-secret-1234
+    model_info:
+      dsa_channel: hermes
+""".strip(),
+        encoding="utf-8",
+    )
+    parsed_hermes = Config._parse_litellm_yaml(str(hermes_yaml))
+    assert parsed_hermes[0]["model_info"]["_dsa_unresolved_endpoint_env"] == "base_url:UNSET_HERMES_BASE"
+    hermes_unset_cfg = Config(litellm_model="openai/hermes-agent", llm_model_list=parsed_hermes)
+    analyzer_h = GeminiAnalyzer.__new__(GeminiAnalyzer)
+    analyzer_h._router = None
+    rec_blocked_hermes = _RecordingTransport(response_text="ok")
+    with use_transport(rec_blocked_hermes):
+        with pytest.raises(RuntimeError, match="UNSET_HERMES_BASE"):
+            analyzer_h._dispatch_litellm_completion(
+                "openai/hermes-agent",
+                {"model": "openai/hermes-agent", "messages": [{"role": "user", "content": "hi"}]},
+                config=hermes_unset_cfg,
+                use_channel_router=True,
+                router_model_names={"openai/hermes-agent"},
+            )
+    assert rec_blocked_hermes.completion_calls == []
+
+    # 5. P1-5: Ranker protocol detection agrees with resolve_deployment() in BOTH directions under zero-litellm!
+    _block_optional_deps(monkeypatch)
+    reset_transport_cache()
+    try:
+        monkeypatch.setenv("LLM_TRANSPORT_MODE", "auto")
+        reset_transport_cache()
+        picks = [Pick(rank=1, code="600519", name="贵州茅台", final_score=85.0, screen_score=85.0)]
+
+        # 5a. Bare claude-sonnet-4-6 + api_base="https://api.anthropic.com" -> native Anthropic -> omits response_format!
+        ant_bodies: List[Dict[str, Any]] = []
+
+        def _ant_handler(request: httpx.Request) -> httpx.Response:
+            ant_bodies.append(json.loads(request.content.decode("utf-8")))
+            return httpx.Response(
+                200,
+                json={
+                    "id": "msg_bare_ant",
+                    "type": "message",
+                    "role": "assistant",
+                    "model": "claude-sonnet-4-6",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": '{"ranked":[{"code":"600519","reason":"leader","llm_score":91}]}',
+                        }
+                    ],
+                    "stop_reason": "end_turn",
+                    "usage": {"input_tokens": 8, "output_tokens": 12},
+                },
+            )
+
+        with use_transport(
+            llm_transport_mod.create_native_transport(
+                http_transport=httpx.MockTransport(_ant_handler),
+                fallback_to_litellm=True,
+            )
+        ):
+            bare_ant_res = ranker.rank_candidates_with_metadata(
+                picks,
+                ranking_hints="Prefer quality",
+                llm_api_key="sk-ant-bare-1234",
+                llm_model="claude-sonnet-4-6",
+                llm_base_url="https://api.anthropic.com",
+                json_mode=True,
+                max_retries=0,
+                silent=True,
+            )
+        assert bare_ant_res.ranked is True
+        assert len(ant_bodies) == 1
+        assert "response_format" not in ant_bodies[0]
+
+        # 5b. OpenAI relay (dsa_channel_protocol="openai") serving anthropic/claude-sonnet-4-6 -> openai_chat -> KEEPS response_format!
+        relay_bodies: List[Dict[str, Any]] = []
+
+        def _relay_handler(request: httpx.Request) -> httpx.Response:
+            relay_bodies.append(json.loads(request.content.decode("utf-8")))
+            return httpx.Response(
+                200,
+                json={
+                    "id": "cmpl_relay_ant",
+                    "model": "anthropic/claude-sonnet-4-6",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {
+                                "role": "assistant",
+                                "content": '{"ranked":[{"code":"600519","reason":"leader","llm_score":93}]}',
+                            },
+                            "finish_reason": "stop",
+                        }
+                    ],
+                },
+            )
+
+        relay_yaml = tmp_path / "openai_relay_anthropic.yaml"
+        relay_yaml.write_text(
+            """
+model_list:
+  - model_name: relay-claude
+    litellm_params:
+      model: anthropic/claude-sonnet-4-6
+      api_base: https://relay.example/v1
+      api_key: sk-relay-ant-1234
+    model_info:
+      dsa_channel_protocol: openai
+""".strip(),
+            encoding="utf-8",
+        )
+        with use_transport(
+            llm_transport_mod.create_native_transport(
+                http_transport=httpx.MockTransport(_relay_handler),
+                fallback_to_litellm=True,
+            )
+        ):
+            relay_res = ranker.rank_candidates_with_metadata(
+                picks,
+                ranking_hints="Prefer quality",
+                llm_api_key="",
+                llm_model="relay-claude",
+                config_path=str(relay_yaml),
+                json_mode=True,
+                max_retries=0,
+                silent=True,
+            )
+        assert relay_res.ranked is True
+        assert len(relay_bodies) == 1
+        assert relay_bodies[0].get("response_format") == {"type": "json_object"}
+    finally:
+        monkeypatch.delenv("LLM_TRANSPORT_MODE", raising=False)
+        reset_transport_cache()
+
+    # 6. P2-3: Config.validate() exempts Cloud IAM vision prefixes (bedrock/vertex_ai/sagemaker) from missing-key warning.
+    for iam_vision in (
+        "bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0",
+        "vertex_ai/gemini-2.5-pro",
+        "sagemaker/jumpstart-vision",
+    ):
+        iam_cfg = Config(
+            stock_list=["600519"],
+            litellm_model=iam_vision,
+            vision_model=iam_vision,
+            llm_model_list=[{"model_name": iam_vision, "litellm_params": {"model": iam_vision}}],
+            gemini_api_keys=[],
+            anthropic_api_keys=[],
+            openai_api_keys=[],
+            deepseek_api_keys=[],
+        )
+        issues = iam_cfg.validate_structured()
+        assert not any(issue.field == "VISION_MODEL" for issue in issues), (iam_vision, issues)

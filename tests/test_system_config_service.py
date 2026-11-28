@@ -29,6 +29,7 @@ from src.services.system_config_service import ConfigConflictError, ConfigImport
 def _use_litellm_transport(fn):
     @wraps(fn)
     def _wrapped(*args, **kwargs):
+        ensure_litellm_stub()
         with use_transport(LiteLLMTransport()):
             return fn(*args, **kwargs)
     return _wrapped
@@ -36,6 +37,7 @@ def _use_litellm_transport(fn):
 
 class SystemConfigServiceTestCase(unittest.TestCase):
     def setUp(self) -> None:
+        ensure_litellm_stub()
         self.temp_dir = tempfile.TemporaryDirectory()
         self.env_path = Path(self.temp_dir.name) / ".env"
         self.env_path.write_text(

@@ -1,9 +1,11 @@
 # -*- coding: utf-8 -*-
 """Shared test helper to keep litellm imports lightweight in unit tests."""
 
+from contextlib import contextmanager
+from importlib import import_module
 import sys
 import types
-from importlib import import_module
+from typing import Iterator
 
 
 def ensure_litellm_stub() -> None:
@@ -63,3 +65,48 @@ def remove_litellm_stub() -> None:
 
     for module_name in ("litellm.types.utils", "litellm.types", "litellm"):
         sys.modules.pop(module_name, None)
+
+
+def is_real_package_installed(name: str) -> bool:
+    """Check whether a real package is importable without mutating sys.modules or importing it."""
+    for finder in sys.meta_path:
+        find_spec = getattr(finder, "find_spec", None)
+        if not callable(find_spec):
+            continue
+        try:
+            spec = find_spec(name, None)
+        except (ImportError, ValueError, AttributeError):
+            return False
+        if spec is not None:
+            return True
+    return False
+
+
+def _is_fake_or_stub_litellm(mod: object) -> bool:
+    """Return True when a loaded sys.modules['litellm'] entry is a test stub or mock, not the real package."""
+    if mod is None:
+        return False
+    if getattr(mod, "__dsa_test_stub__", False) is True:
+        return True
+    return not isinstance(mod, types.ModuleType) or getattr(mod, "__file__", None) is None
+
+
+@contextmanager
+def without_litellm_stub() -> Iterator[None]:
+    """Temporarily remove any litellm test stub/mock and restore prior sys.modules state on exit."""
+    saved = {
+        module_name: mod
+        for module_name, mod in list(sys.modules.items())
+        if module_name == "litellm" or module_name.startswith("litellm.")
+    }
+    if _is_fake_or_stub_litellm(sys.modules.get("litellm")):
+        for module_name in list(sys.modules.keys()):
+            if module_name == "litellm" or module_name.startswith("litellm."):
+                sys.modules.pop(module_name, None)
+    try:
+        yield
+    finally:
+        for module_name in list(sys.modules.keys()):
+            if module_name == "litellm" or module_name.startswith("litellm."):
+                sys.modules.pop(module_name, None)
+        sys.modules.update(saved)

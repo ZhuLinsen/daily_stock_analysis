@@ -4215,12 +4215,19 @@ class Config:
         # Only warn when user explicitly set VISION_MODEL (or OPENAI_VISION_MODEL alias).
         # Skipped when vision_model is empty (Vision not intentionally configured).
         if self.vision_model:
-            # Maps provider prefix → the corresponding key list tracked by Config.
-            # vertex_ai shares gemini keys; other LiteLLM-native providers are not
-            # in this map (their keys come from env vars, which we cannot inspect here).
+            _VISION_IAM_KEYLESS_PREFIXES = frozenset(
+                {
+                    "bedrock",
+                    "bedrock_mantle",
+                    "vertex_ai",
+                    "vertex_ai_beta",
+                    "sagemaker",
+                    "sagemaker_chat",
+                    "sagemaker_nova",
+                }
+            )
             _VISION_KEY_MAP = {
                 "gemini": self.gemini_api_keys,
-                "vertex_ai": self.gemini_api_keys,
                 "anthropic": self.anthropic_api_keys,
                 "openai": self.openai_api_keys,
                 "deepseek": self.deepseek_api_keys,
@@ -4228,35 +4235,36 @@ class Config:
             # Derive the primary model's provider prefix so that its key is also
             # checked even when the provider is absent from VISION_PROVIDER_PRIORITY.
             _primary_prefix = (
-                self.vision_model.split("/")[0]
+                self.vision_model.split("/")[0].strip().lower()
                 if "/" in self.vision_model
                 else "openai"
             )
-            _priority_providers = [
-                p.strip().lower()
-                for p in self.vision_provider_priority.split(",")
-                if p.strip()
-            ]
-            # Union: fallback providers + primary model's own provider
-            _all_providers = {_primary_prefix} | set(_priority_providers)
+            if _primary_prefix not in _VISION_IAM_KEYLESS_PREFIXES:
+                _priority_providers = [
+                    p.strip().lower()
+                    for p in self.vision_provider_priority.split(",")
+                    if p.strip()
+                ]
+                # Union: fallback providers + primary model's own provider
+                _all_providers = {_primary_prefix} | set(_priority_providers)
 
-            # Align with get_api_keys_for_model: keys must be non-empty and len >= 8
-            _has_any_key = any(
-                any(k and len(k) >= 8 for k in (_VISION_KEY_MAP.get(p) or []))
-                for p in _all_providers
-                if p in _VISION_KEY_MAP
-            )
-            if not _has_any_key:
-                _checked = sorted(_all_providers & _VISION_KEY_MAP.keys())
-                issues.append(ConfigIssue(
-                    severity="warning",
-                    message=(
-                        "VISION_MODEL 已配置，但未找到可用的 Vision API Key "
-                        f"（已检查：{', '.join(_checked)}）。"
-                        "图片股票代码提取功能将不可用，请配置对应的 API Key。"
-                    ),
-                    field="VISION_MODEL",
-                ))
+                # Align with get_api_keys_for_model: keys must be non-empty and len >= 8
+                _has_any_key = any(
+                    any(k and len(k) >= 8 for k in (_VISION_KEY_MAP.get(p) or []))
+                    for p in _all_providers
+                    if p in _VISION_KEY_MAP
+                )
+                if not _has_any_key:
+                    _checked = sorted(_all_providers & _VISION_KEY_MAP.keys())
+                    issues.append(ConfigIssue(
+                        severity="warning",
+                        message=(
+                            "VISION_MODEL 已配置，但未找到可用的 Vision API Key "
+                            f"（已检查：{', '.join(_checked)}）。"
+                            "图片股票代码提取功能将不可用，请配置对应的 API Key。"
+                        ),
+                        field="VISION_MODEL",
+                    ))
 
         return issues
 

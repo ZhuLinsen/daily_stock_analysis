@@ -552,6 +552,80 @@ def _litellm_uses_responses_bridge(payload: Mapping[str, Any], litellm_mod: Any)
     return False
 
 
+def _build_missing_litellm_error(
+    *,
+    explicit_mode: bool = False,
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+) -> NativeConfigError:
+    """Build actionable NativeConfigError when optional LiteLLM dependencies are missing."""
+    if explicit_mode:
+        message = (
+            "LLM_TRANSPORT_MODE=litellm requires optional LiteLLM dependencies. "
+            "Run 'pip install -r requirements-litellm.txt', or unset LLM_TRANSPORT_MODE "
+            "(default 'auto') to use native HTTPX."
+        )
+    else:
+        target_parts: List[str] = []
+        if provider:
+            target_parts.append(f"Provider '{provider}'")
+        if model:
+            target_parts.append(f"model '{model}'")
+        if len(target_parts) == 2:
+            prefix = f"{target_parts[0]} ({target_parts[1]})"
+        elif target_parts:
+            prefix = target_parts[0] if provider else f"Model '{model}'"
+        else:
+            prefix = "This route"
+        message = (
+            f"{prefix} requires optional LiteLLM support, which is not installed. "
+            "Run 'pip install -r requirements-litellm.txt' to enable Cloud IAM / legacy LiteLLM routes, "
+            "or configure a native OpenAI-compatible / Anthropic / Gemini channel."
+        )
+    return NativeConfigError(
+        message,
+        status_code=400,
+        provider=provider or "litellm",
+        error_code="litellm_optional_dependency_missing",
+    )
+
+
+def _adapt_hermes_client_for_litellm(
+    client_obj: Any,
+    *,
+    require_real_sdk: bool = True,
+    litellm_mod: Optional[Any] = None,
+    explicit_mode: bool = True,
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+) -> Any:
+    """Convert native ``_HermesNoProxyClient`` to ``openai.OpenAI`` before LiteLLM SDK calls."""
+    if not getattr(client_obj, "_dsa_hermes_no_proxy", False):
+        return client_obj
+    if require_real_sdk and not _is_real_litellm_sdk(litellm_mod):
+        return client_obj
+    try:
+        import openai
+    except ModuleNotFoundError as exc:
+        raise _build_missing_litellm_error(
+            explicit_mode=explicit_mode,
+            provider=provider,
+            model=model,
+        ) from exc
+    return openai.OpenAI(
+        api_key=str(getattr(client_obj, "api_key", "") or ""),
+        base_url=getattr(client_obj, "base_url", None),
+        http_client=getattr(client_obj, "_client", None),
+    )
+
+
+def _is_litellm_sdk_router(router: Any) -> bool:
+    if router is None:
+        return False
+    mod_name = str(getattr(type(router), "__module__", "") or "")
+    return mod_name == "litellm" or mod_name.startswith("litellm.")
+
+
 def _build_litellm_no_redirect_client(
     payload: Mapping[str, Any],
     litellm_mod: Optional[Any] = None,
@@ -578,7 +652,10 @@ def _build_litellm_no_redirect_client(
     if use_openai_sdk_client:
         try:
             import openai
-
+        except ModuleNotFoundError as exc:
+            http_client.close()
+            raise _build_missing_litellm_error(explicit_mode=True) from exc
+        try:
             client = openai.OpenAI(
                 api_key=str(payload.get("api_key") or "sk-placeholder"),
                 base_url=str(payload.get("api_base") or "").strip() or None,
@@ -593,13 +670,16 @@ def _build_litellm_no_redirect_client(
         from litellm.llms.custom_httpx.http_handler import HTTPHandler
 
         return HTTPHandler(client=http_client), http_client
+    except ModuleNotFoundError as exc:
+        http_client.close()
+        raise _build_missing_litellm_error(explicit_mode=True) from exc
     except Exception:
         http_client.close()
         return None, None
 
 
 class LiteLLMTransport:
-    """Default ``LLMTransport`` backed lazily by ``litellm``."""
+    """Optional ``LLMTransport`` backed lazily by ``litellm``."""
 
     transport_engine: str = "litellm"
 
@@ -607,7 +687,10 @@ class LiteLLMTransport:
     def _load_litellm() -> Any:
         if "litellm" not in sys.modules:
             os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
-        module = importlib.import_module("litellm")
+        try:
+            module = importlib.import_module("litellm")
+        except ModuleNotFoundError as exc:
+            raise _build_missing_litellm_error(explicit_mode=True) from exc
         _apply_disable_streaming_logging(module)
         return module
 
@@ -618,12 +701,16 @@ class LiteLLMTransport:
         if api_surface and "model" in payload:
             payload["model"] = _encode_litellm_responses_wire_model(payload["model"], api_surface)
         litellm_mod = self._load_litellm()
+        if "client" in payload:
+            payload["client"] = _adapt_hermes_client_for_litellm(
+                payload.get("client"),
+                litellm_mod=litellm_mod,
+                explicit_mode=True,
+            )
         owned_http_client = None
         if no_redirects and "client" not in payload and _is_real_litellm_sdk(litellm_mod):
             probe_client, owned_http_client = _build_litellm_no_redirect_client(payload, litellm_mod)
             if probe_client is None:
-                from src.llm.native_types import NativeConfigError
-
                 raise NativeConfigError(
                     "Unable to build follow_redirects=False HTTP client for LiteLLM probe",
                     error_code="no_redirect_client_unavailable",
@@ -656,7 +743,10 @@ class LiteLLMTransport:
         module = self._load_litellm()
         router_cls = getattr(module, "Router", None)
         if router_cls is None:
-            router_cls = importlib.import_module("litellm").Router
+            try:
+                router_cls = importlib.import_module("litellm").Router
+            except ModuleNotFoundError as exc:
+                raise _build_missing_litellm_error(explicit_mode=True) from exc
         sanitized_list: List[Dict[str, Any]] = []
         changed = False
         for entry in model_list:
@@ -707,7 +797,11 @@ class LiteLLMTransport:
         return callable(getattr(module, "register_model", None))
 
     def _register_model_sdk_only(self, model_cost: Mapping[str, Any]) -> None:
-        register = getattr(self._load_litellm(), "register_model", None)
+        try:
+            module = self._load_litellm()
+        except (ModuleNotFoundError, NativeConfigError):
+            return
+        register = getattr(module, "register_model", None)
         if callable(register):
             register(dict(model_cost))
 
@@ -918,6 +1012,7 @@ class NativeUnifiedRouter:
         self._router_kwargs.update(_extra_kwargs)
 
         self._fallback_entries_by_alias: Dict[str, List[Dict[str, Any]]] = {}
+        self._fallback_unsupported_by_alias: Dict[str, Unsupported] = {}
         self._fallback_router: Optional[Any] = None
         self._fallback_router_lock = threading.Lock()
         self._deployment_clients: Dict[str, Any] = {}
@@ -984,6 +1079,7 @@ class NativeUnifiedRouter:
                 if first_unsupported is not None:
                     if self._fallback_transport is not None:
                         self._fallback_entries_by_alias[alias] = [e for _, e in indexed_entries]
+                        self._fallback_unsupported_by_alias[alias] = first_unsupported
                     else:
                         raise NativeConfigError(
                             f"Alias '{alias}' cannot run in native transport: {first_unsupported.detail}",
@@ -1011,7 +1107,7 @@ class NativeUnifiedRouter:
         """Return exact aliases delegated to the fallback transport in ``auto`` mode."""
         return frozenset(self._fallback_entries_by_alias.keys())
 
-    def _get_or_create_fallback_router(self) -> Any:
+    def _get_or_create_fallback_router(self, target_alias: Optional[str] = None) -> Any:
         with self._fallback_router_lock:
             if self._fallback_router is not None:
                 return self._fallback_router
@@ -1024,10 +1120,32 @@ class NativeUnifiedRouter:
             all_fallback_entries: List[Dict[str, Any]] = []
             for entries in self._fallback_entries_by_alias.values():
                 all_fallback_entries.extend(entries)
-            self._fallback_router = self._fallback_transport.create_router(
-                all_fallback_entries,
-                **self._router_kwargs,
+            unsupported_meta = (
+                self._fallback_unsupported_by_alias.get(target_alias)
+                if target_alias
+                else next(iter(self._fallback_unsupported_by_alias.values()), None)
             )
+            fallback_model = target_alias or next(iter(self._fallback_entries_by_alias.keys()), None)
+            fallback_provider = unsupported_meta.provider if unsupported_meta is not None else None
+            try:
+                self._fallback_router = self._fallback_transport.create_router(
+                    all_fallback_entries,
+                    **self._router_kwargs,
+                )
+            except NativeConfigError as exc:
+                if exc.error_code == "litellm_optional_dependency_missing":
+                    raise _build_missing_litellm_error(
+                        explicit_mode=False,
+                        provider=fallback_provider,
+                        model=fallback_model,
+                    ) from exc
+                raise
+            except ModuleNotFoundError as exc:
+                raise _build_missing_litellm_error(
+                    explicit_mode=False,
+                    provider=fallback_provider,
+                    model=fallback_model,
+                ) from exc
             return self._fallback_router
 
     def _prepare_request(
@@ -1074,18 +1192,44 @@ class NativeUnifiedRouter:
                 using_pool = True
             elif target_alias in self._fallback_entries_by_alias:
                 _sync_shared_pricing_to_transport(self._fallback_transport)
-                fallback_router = self._get_or_create_fallback_router()
-                return _tag_response_transport_engine(
-                    dispatch_completion(
-                        router=fallback_router,
+                fallback_router = self._get_or_create_fallback_router(target_alias=target_alias)
+                unsupported_meta = self._fallback_unsupported_by_alias.get(target_alias)
+                fallback_provider = unsupported_meta.provider if unsupported_meta is not None else None
+                try:
+                    fallback_kwargs = dict(req_kwargs)
+                    if "client" in fallback_kwargs and _is_litellm_sdk_router(fallback_router):
+                        fallback_kwargs["client"] = _adapt_hermes_client_for_litellm(
+                            fallback_kwargs.get("client"),
+                            require_real_sdk=False,
+                            explicit_mode=False,
+                            provider=fallback_provider,
+                            model=target_alias,
+                        )
+                    return _tag_response_transport_engine(
+                        dispatch_completion(
+                            router=fallback_router,
+                            model=target_alias,
+                            messages=messages,
+                            stream=stream,
+                            num_retries=effective_retries,
+                            **fallback_kwargs,
+                        ),
+                        "litellm",
+                    )
+                except NativeConfigError as exc:
+                    if exc.error_code == "litellm_optional_dependency_missing":
+                        raise _build_missing_litellm_error(
+                            explicit_mode=False,
+                            provider=fallback_provider,
+                            model=target_alias,
+                        ) from exc
+                    raise
+                except ModuleNotFoundError as exc:
+                    raise _build_missing_litellm_error(
+                        explicit_mode=False,
+                        provider=fallback_provider,
                         model=target_alias,
-                        messages=messages,
-                        stream=stream,
-                        num_retries=effective_retries,
-                        **req_kwargs,
-                    ),
-                    "litellm",
-                )
+                    ) from exc
             else:
                 # R6: Never silently create an ephemeral entry on a populated router miss.
                 raise NativeBadRequestError(
@@ -1107,16 +1251,31 @@ class NativeUnifiedRouter:
                     and resolved.reason not in _HARD_CONFIG_ERROR_REASONS
                 ):
                     _sync_shared_pricing_to_transport(self._fallback_transport)
-                    return _tag_response_transport_engine(
-                        self._fallback_transport.completion(
+                    try:
+                        return _tag_response_transport_engine(
+                            self._fallback_transport.completion(
+                                model=target_alias,
+                                messages=messages,
+                                stream=stream,
+                                num_retries=effective_retries,
+                                **req_kwargs,
+                            ),
+                            "litellm",
+                        )
+                    except NativeConfigError as exc:
+                        if exc.error_code == "litellm_optional_dependency_missing":
+                            raise _build_missing_litellm_error(
+                                explicit_mode=False,
+                                provider=resolved.provider,
+                                model=target_alias,
+                            ) from exc
+                        raise
+                    except ModuleNotFoundError as exc:
+                        raise _build_missing_litellm_error(
+                            explicit_mode=False,
+                            provider=resolved.provider,
                             model=target_alias,
-                            messages=messages,
-                            stream=stream,
-                            num_retries=effective_retries,
-                            **req_kwargs,
-                        ),
-                        "litellm",
-                    )
+                        ) from exc
                 raise NativeConfigError(
                     resolved.detail,
                     status_code=400,
@@ -1205,10 +1364,25 @@ class NativeUnifiedTransport:
                 and resolved.reason not in _HARD_CONFIG_ERROR_REASONS
             ):
                 _sync_shared_pricing_to_transport(self._fallback_transport)
-                return _tag_response_transport_engine(
-                    self._fallback_transport.completion(**kwargs),
-                    "litellm",
-                )
+                try:
+                    return _tag_response_transport_engine(
+                        self._fallback_transport.completion(**kwargs),
+                        "litellm",
+                    )
+                except NativeConfigError as exc:
+                    if exc.error_code == "litellm_optional_dependency_missing":
+                        raise _build_missing_litellm_error(
+                            explicit_mode=False,
+                            provider=resolved.provider,
+                            model=model,
+                        ) from exc
+                    raise
+                except ModuleNotFoundError as exc:
+                    raise _build_missing_litellm_error(
+                        explicit_mode=False,
+                        provider=resolved.provider,
+                        model=model,
+                    ) from exc
             raise NativeConfigError(
                 resolved.detail,
                 status_code=400,
@@ -1534,6 +1708,12 @@ def dispatch_completion(
                 )
             router_kwargs = _strip_internal_litellm_kwargs(kwargs)
             router_kwargs.pop("api_surface", None)
+            if "client" in router_kwargs and _is_litellm_sdk_router(router):
+                router_kwargs["client"] = _adapt_hermes_client_for_litellm(
+                    router_kwargs.get("client"),
+                    require_real_sdk=False,
+                    explicit_mode=True,
+                )
             return router.completion(**router_kwargs)
         return router.completion(**kwargs)
     if transport is not None:

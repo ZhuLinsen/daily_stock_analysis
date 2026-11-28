@@ -12,8 +12,11 @@ class DesktopPackagingAssetsTestCase(unittest.TestCase):
 
     repo_root = Path(__file__).resolve().parent.parent
 
-    def test_orjson_is_declared_bundled_and_probed(self) -> None:
-        requirements = (self.repo_root / "requirements.txt").read_text(encoding="utf-8")
+    def test_optional_litellm_stack_is_excluded_from_core_and_desktop_packaging(self) -> None:
+        requirements_path = self.repo_root / "requirements.txt"
+        optional_req_path = self.repo_root / "requirements-litellm.txt"
+        requirements = requirements_path.read_text(encoding="utf-8")
+        optional_requirements = optional_req_path.read_text(encoding="utf-8")
         main = (self.repo_root / "main.py").read_text(encoding="utf-8")
         macos_script = (self.repo_root / "scripts" / "build-backend-macos.sh").read_text(
             encoding="utf-8"
@@ -22,9 +25,66 @@ class DesktopPackagingAssetsTestCase(unittest.TestCase):
             encoding="utf-8"
         )
 
-        self.assertIn("orjson>=3.10,<4", requirements)
-        self.assertIn('"orjson"', macos_script)
-        self.assertIn("'orjson'", windows_script)
+        # Optional LiteLLM stack lives strictly in ASCII-clean requirements-litellm.txt.
+        optional_req_path.read_bytes().decode("ascii")
+        core_pkg_lines = [
+            line.split("#", 1)[0].strip().lower()
+            for line in requirements.splitlines()
+            if line.split("#", 1)[0].strip()
+        ]
+        for excluded in ("litellm", "orjson", "openai"):
+            self.assertFalse(
+                any(
+                    line == excluded
+                    or line.startswith(f"{excluded}>")
+                    or line.startswith(f"{excluded}<")
+                    or line.startswith(f"{excluded}=")
+                    or line.startswith(f"{excluded}[")
+                    or line.startswith(f"{excluded};")
+                    for line in core_pkg_lines
+                ),
+                f"{excluded} must not be declared in core requirements.txt",
+            )
+        # tiktoken<0.12 remains pinned in requirements.txt for tavily-python runtime (#537).
+        self.assertIn("tiktoken>=0.8.0,<0.12.0", requirements)
+
+        self.assertIn("orjson>=3.10,<4", optional_requirements)
+        self.assertIn("litellm>=1.80.10", optional_requirements)
+        self.assertIn("tiktoken>=0.8.0,<0.12.0", optional_requirements)
+        self.assertIn("openai>=1.0.0", optional_requirements)
+        self.assertIn("boto3>=1.34.0", optional_requirements)
+        self.assertIn("google-auth>=2.0.0", optional_requirements)
+
+        for script_text in (macos_script, windows_script):
+            self.assertNotIn("--collect-data litellm", script_text)
+            self.assertNotIn("'--collect-data', 'litellm'", script_text)
+            self.assertNotIn("import orjson", script_text)
+            self.assertIn("tiktoken", script_text)
+            self.assertIn("tiktoken_ext.openai_public", script_text)
+
+        win_hidden = windows_script[
+            windows_script.index("$hiddenImports = @("):windows_script.index("$hiddenImportArgs")
+        ]
+        mac_hidden = macos_script[
+            macos_script.index("hidden_imports=("):macos_script.index("hidden_import_args=()")
+        ]
+        import re
+
+        for hidden_block in (win_hidden, mac_hidden):
+            hidden_tokens = set(re.findall(r"['\"]([^'\"]+)['\"]", hidden_block))
+            for excluded_mod in ("litellm", "openai", "orjson"):
+                self.assertFalse(
+                    any(
+                        tok == excluded_mod or tok.startswith(f"{excluded_mod}.")
+                        for tok in hidden_tokens
+                    ),
+                    f"{excluded_mod} must not appear in PyInstaller hidden imports",
+                )
+
+        for excluded_mod in ("litellm", "openai", "orjson"):
+            self.assertIn(f'"--exclude-module" "{excluded_mod}"', macos_script)
+            self.assertIn(f"'--exclude-module', '{excluded_mod}'", windows_script)
+
         self.assertIn('DSA_PACKAGED_IMPORT_PROBE="${module}"', macos_script)
         self.assertIn("$env:DSA_PACKAGED_IMPORT_PROBE = $module", windows_script)
         self.assertIn('importlib.import_module(_packaged_import_probe)', main)

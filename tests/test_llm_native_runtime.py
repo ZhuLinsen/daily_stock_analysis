@@ -18,12 +18,10 @@ import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from unittest.mock import patch
 
+from contextlib import nullcontext
 import httpx
-from tests.litellm_stub import remove_litellm_stub
-
-remove_litellm_stub()
-import litellm as real_litellm  # noqa: E402
 import pytest
+from tests.litellm_stub import is_real_package_installed, without_litellm_stub
 
 from src.agent.llm_adapter import LLMToolAdapter
 from src.analyzer import GeminiAnalyzer
@@ -162,6 +160,20 @@ def test_real_config_to_router_e2e_across_all_modes_without_use_transport(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Real Config._load_from_env() -> analyzer, Agent, Vision, screening, Test Channel, Doctor across 3 modes."""
+    if mode == "litellm":
+        if not (is_real_package_installed("litellm") and is_real_package_installed("openai")):
+            pytest.skip("optional litellm/openai extra not installed (requirements-litellm.txt)")
+    with (without_litellm_stub() if mode == "litellm" else nullcontext()):
+        _run_real_config_to_router_e2e_for_mode(mode, monkeypatch)
+
+
+def _run_real_config_to_router_e2e_for_mode(
+    mode: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if mode == "litellm":
+        pytest.importorskip("litellm")
+        pytest.importorskip("openai")
     def _responder(req: Dict[str, Any], handler: BaseHTTPRequestHandler) -> None:
         if req["path"].endswith("/chat/completions"):
             body = req["body"] or {}
@@ -737,6 +749,15 @@ def test_real_tcp_loopback_chunked_sse_timeout_disconnect_and_proxy_bypass(
 
 def test_litellm_vs_native_parity_harness_all_four_protocols() -> None:
     """Point installed LiteLLM and NativeUnifiedTransport at the SAME loopback server and assert wire & response parity."""
+    if not (is_real_package_installed("litellm") and is_real_package_installed("openai")):
+        pytest.skip("optional litellm/openai extra not installed (requirements-litellm.txt)")
+    with without_litellm_stub():
+        _run_litellm_vs_native_parity_harness_all_four_protocols()
+
+
+def _run_litellm_vs_native_parity_harness_all_four_protocols() -> None:
+    real_litellm = pytest.importorskip("litellm")
+    pytest.importorskip("openai")
     def _parity_responder(req: Dict[str, Any], handler: BaseHTTPRequestHandler) -> None:
         path = req["path"]
         if path.endswith("/chat/completions"):
@@ -2349,8 +2370,10 @@ port = srv.server_address[1]
 t = threading.Thread(target=srv.serve_forever, daemon=True)
 t.start()
 try:
+    from src.llm.hermes import open_hermes_no_proxy_client
     from src.llm.transport import dispatch_completion, get_model_providers, estimate_tokens
-    assert "litellm" not in sys.modules
+    for pkg in ("litellm", "tiktoken", "orjson", "openai"):
+        assert pkg not in sys.modules, f"{pkg} eagerly imported"
     assert "openai" in get_model_providers()
     assert estimate_tokens("贵州茅台") >= 6
     base = f"http://127.0.0.1:{port}"
@@ -2358,11 +2381,15 @@ try:
     r2 = dispatch_completion(model="openai/responses/gpt-5", api_base=f"{base}/v1", api_key="sk-1", messages=[{"role":"user","content":"hi"}])
     r3 = dispatch_completion(model="anthropic/claude-sonnet-4-6", api_base=base, api_key="sk-ant-1", messages=[{"role":"user","content":"hi"}])
     r4 = dispatch_completion(model="gemini/gemini-2.5-flash", api_base=f"{base}/v1beta", api_key="AIza1", messages=[{"role":"user","content":"hi"}])
+    with open_hermes_no_proxy_client(api_key="sk-hermes-1", base_url=f"{base}/v1", timeout=10.0) as hclient:
+        r5 = dispatch_completion(model="openai/hermes-agent", client=hclient, messages=[{"role":"user","content":"hi"}])
     assert r1.choices[0].message.content == "ok-chat"
     assert r2.choices[0].message.content == "ok-resp"
     assert r3.choices[0].message.content == "ok-anth"
     assert r4.choices[0].message.content == "ok-gem"
-    assert "litellm" not in sys.modules, f"litellm was imported in native mode: {[k for k in sys.modules if 'litellm' in k]}"
+    assert r5.choices[0].message.content == "ok-chat"
+    for pkg in ("litellm", "tiktoken", "orjson", "openai"):
+        assert pkg not in sys.modules, f"{pkg} was imported in native mode: {[k for k in sys.modules if k == pkg or k.startswith(pkg + '.')]}"
 finally:
     srv.shutdown()
     srv.server_close()
@@ -2412,6 +2439,21 @@ def test_p0_3_test_llm_channel_blocks_cross_origin_redirects_in_both_modes(
     tmp_path: Path,
 ) -> None:
     """P0-3: test_llm_channel never follows 302 redirects or leaks extra_headers in auto OR litellm mode."""
+    if mode == "litellm":
+        if not (is_real_package_installed("litellm") and is_real_package_installed("openai")):
+            pytest.skip("optional litellm/openai extra not installed (requirements-litellm.txt)")
+    with (without_litellm_stub() if mode == "litellm" else nullcontext()):
+        _run_p0_3_redirect_check_for_mode(mode, monkeypatch, tmp_path)
+
+
+def _run_p0_3_redirect_check_for_mode(
+    mode: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    if mode == "litellm":
+        pytest.importorskip("litellm")
+        pytest.importorskip("openai")
     from src.core.config_manager import ConfigManager
     from src.services.system_config_service import SystemConfigService
 
@@ -2461,8 +2503,40 @@ def test_p0_2_litellm_responses_mode_redirect_blocked_and_fail_closed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """P0-2: LiteLLM Responses-mode models block redirects AND fail closed if no-redirect client fails."""
+    from types import ModuleType
     from src.core.config_manager import ConfigManager
     from src.llm.transport import LiteLLMTransport
+    from src.services.system_config_service import SystemConfigService
+
+    # Unconditional check (works without litellm installed): fail closed if no-redirect client returns (None, None).
+    fake_sdk = ModuleType("litellm")
+    fake_sdk.__file__ = "/fake/litellm/__init__.py"
+    fake_sdk.completion = lambda **kw: kw  # type: ignore[attr-defined]
+    with (
+        patch.dict(sys.modules, {"litellm": fake_sdk}, clear=False),
+        patch("src.llm.transport._build_litellm_no_redirect_client", return_value=(None, None)),
+    ):
+        with pytest.raises(NativeConfigError) as exc_info:
+            LiteLLMTransport().completion(
+                model="openai/gpt-4o-mini",
+                messages=[{"role": "user", "content": "hi"}],
+                api_base="http://127.0.0.1:9/v1",
+                api_key="sk-test",
+                _dsa_no_redirects=True,
+            )
+    assert exc_info.value.error_code == "no_redirect_client_unavailable"
+
+    # Real LiteLLM SDK Responses-mode loopback 302 test (runs when optional requirements-litellm.txt is installed).
+    if not (is_real_package_installed("litellm") and is_real_package_installed("openai")):
+        return
+    with without_litellm_stub():
+        _run_p0_2_real_sdk_responses_redirect_test(tmp_path, monkeypatch)
+
+
+def _run_p0_2_real_sdk_responses_redirect_test(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from src.core.config_manager import ConfigManager
     from src.services.system_config_service import SystemConfigService
 
     evil_hits: List[Dict[str, Any]] = []
@@ -2506,18 +2580,6 @@ def test_p0_2_litellm_responses_mode_redirect_blocked_and_fail_closed(
             assert len(relay_srv.requests) == 1, f"Origin A expected 1 request, got {len(relay_srv.requests)}"
             assert evil_hits == [], f"Responses-mode redirect leaked to evil server: {evil_hits}"
 
-    # Fail closed if no-redirect client construction returns (None, None).
-    with patch("src.llm.transport._build_litellm_no_redirect_client", return_value=(None, None)):
-        with pytest.raises(NativeConfigError) as exc_info:
-            LiteLLMTransport().completion(
-                model="openai/gpt-4o-mini",
-                messages=[{"role": "user", "content": "hi"}],
-                api_base="http://127.0.0.1:9/v1",
-                api_key="sk-test",
-                _dsa_no_redirects=True,
-            )
-    assert exc_info.value.error_code == "no_redirect_client_unavailable"
-
 
 def test_p1_3_and_p1_5_native_extra_header_redaction_and_yaml_params(
     caplog: pytest.LogCaptureFixture,
@@ -2555,8 +2617,23 @@ def test_p1_3_and_p1_5_native_extra_header_redaction_and_yaml_params(
     # F4: Third-party chat models ending in -pro (e.g. Doubao-Seed-2.0-pro) are NOT misclassified as Responses API.
     from src.llm.transport import _litellm_uses_responses_bridge
 
-    assert _litellm_uses_responses_bridge({"model": "openai/Doubao-Seed-2.0-pro"}, real_litellm) is False
-    assert _litellm_uses_responses_bridge({"model": "openai/gpt-5-pro"}, real_litellm) is True
+    fake_litellm_mod = SimpleNamespace(
+        route_all_chat_openai_to_responses=False,
+        get_llm_provider=lambda model, custom_llm_provider=None, api_base=None: (
+            model.split("/", 1)[1] if "/" in model else model,
+            "openai",
+            None,
+            None,
+        ),
+    )
+    assert _litellm_uses_responses_bridge({"model": "openai/Doubao-Seed-2.0-pro"}, fake_litellm_mod) is False
+    assert _litellm_uses_responses_bridge({"model": "openai/responses/gpt-5-pro"}, fake_litellm_mod) is True
+    if is_real_package_installed("litellm"):
+        with without_litellm_stub():
+            import litellm as real_litellm_mod
+
+            assert _litellm_uses_responses_bridge({"model": "openai/Doubao-Seed-2.0-pro"}, real_litellm_mod) is False
+            assert _litellm_uses_responses_bridge({"model": "openai/gpt-5-pro"}, real_litellm_mod) is True
 
     # P1-5 & F6: Anthropic json_schema resolves natively & prepares output_config.format;
     # Anthropic json_object delegates in auto; organization/project delegate in auto.

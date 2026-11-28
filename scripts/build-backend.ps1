@@ -61,11 +61,6 @@ if (-not (Test-PythonCode -Python $pythonBin -Code "import futu")) {
   throw 'futu is not importable after installing requirements.'
 }
 
-Write-Host 'Checking orjson availability...'
-if (-not (Test-PythonCode -Python $pythonBin -Code "import orjson")) {
-  throw 'orjson is not importable after installing requirements.'
-}
-
 Write-Host 'Checking fin_primitives availability...'
 if (-not (Test-PythonCode -Python $pythonBin -Code "import fin_primitives")) {
   throw 'fin_primitives is not importable after installing requirements.'
@@ -93,8 +88,8 @@ $hiddenImports = @(
   'multipart',
   'multipart.multipart',
   'json_repair',
-  'orjson',
   'fin_primitives',
+  # Transitive runtime dependency of tavily-python (Issue #537)
   'tiktoken',
   'tiktoken_ext',
   'tiktoken_ext.openai_public',
@@ -147,14 +142,16 @@ $pyInstallerArgs = @(
   '--add-data', 'static;static',
   '--add-data', 'strategies;strategies',
   '--add-data', 'src/assets/share_image;src/assets/share_image',
-  '--collect-data', 'litellm',
   '--collect-data', 'tiktoken',
   '--collect-data', 'akshare',
   '--collect-data', 'fxmacrodata_public',
   '--collect-all', 'py_mini_racer',
   '--collect-all', 'fin_primitives',
   '--collect-all', 'src.services.screening',
-  '--collect-all', 'futu'
+  '--collect-all', 'futu',
+  '--exclude-module', 'litellm',
+  '--exclude-module', 'openai',
+  '--exclude-module', 'orjson'
 )
 $pyInstallerArgs += $hiddenImportArgs
 $pyInstallerArgs += 'main.py'
@@ -178,7 +175,7 @@ if (-not (Test-Path $packagedEntry)) {
 }
 $previousProbe = $env:DSA_PACKAGED_IMPORT_PROBE
 try {
-  foreach ($module in @('src.services.screening.pipeline', 'futu', 'orjson', 'py_mini_racer', 'src.agent.factory', 'fin_primitives')) {
+  foreach ($module in @('src.services.screening.pipeline', 'futu', 'py_mini_racer', 'src.agent.factory', 'fin_primitives')) {
     $env:DSA_PACKAGED_IMPORT_PROBE = $module
     $probeProcess = Start-Process -FilePath $packagedEntry -Wait -PassThru -WindowStyle Hidden
     if ($probeProcess.ExitCode -ne 0) {

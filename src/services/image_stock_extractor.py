@@ -218,7 +218,11 @@ def _resolve_vision_model() -> str:
     """Determine the litellm model to use for vision."""
     cfg = get_config()
     # Prefer explicit vision model, then OPENAI_VISION_MODEL alias, then primary litellm model
-    model = (cfg.vision_model or cfg.openai_vision_model or cfg.litellm_model or "").strip()
+    model = (
+        str(cfg.vision_model or "").strip()
+        or str(cfg.openai_vision_model or "").strip()
+        or str(cfg.litellm_model or "").strip()
+    )
     if not model:
         # Fallback: infer from available keys
         if cfg.gemini_api_keys:
@@ -295,6 +299,78 @@ def _resolve_deployment_api_key(deployment: Dict[str, Any]) -> str:
     return str(resolve_env_reference(raw_params.get("api_key")) or "").strip()
 
 
+_VISION_IAM_KEYLESS_PROVIDERS: frozenset[str] = frozenset(
+    {
+        "bedrock",
+        "bedrock_mantle",
+        "vertex_ai",
+        "vertex_ai_beta",
+        "sagemaker",
+        "sagemaker_chat",
+        "sagemaker_nova",
+    }
+)
+
+_HANDLED_VISION_DEPLOYMENT_KEYS: frozenset[str] = frozenset(
+    {
+        "model",
+        "api_key",
+        "api_base",
+        "base_url",
+        "extra_headers",
+        "api_surface",
+        "wire_protocol",
+        "custom_llm_provider",
+        "dsa_channel_protocol",
+        "messages",
+        "input",
+        "contents",
+        "system",
+        "max_tokens",
+        "max_completion_tokens",
+        "max_output_tokens",
+        "timeout",
+        "stream",
+    }
+)
+
+
+_EXTRACTOR_OWNED_EXTRA_BODY_KEYS: frozenset[str] = frozenset(
+    {
+        "model",
+        "messages",
+        "input",
+        "contents",
+        "system",
+        "stream",
+        "max_tokens",
+        "max_completion_tokens",
+        "max_output_tokens",
+        "timeout",
+    }
+)
+
+
+def _uses_bare_native_pool(model: str, cfg: Config) -> Optional[str]:
+    """Return 'gemini' or 'anthropic' when a bare model should use its native key pool.
+
+    When a bare (unprefixed) ``gemini*`` or ``claude*`` model has no native key
+    configured AND an explicit ``OPENAI_BASE_URL`` relay is set, return ``None``
+    so it routes through the OpenAI-compatible relay instead of failing.
+    """
+    lower = (model or "").strip().lower()
+    if not lower or "/" in lower:
+        return None
+    has_openai_relay = bool(str(getattr(cfg, "openai_base_url", "") or "").strip())
+    if lower.startswith("gemini"):
+        has_native_key = any(k and len(k) >= 8 for k in (cfg.gemini_api_keys or []))
+        return "gemini" if (has_native_key or not has_openai_relay) else None
+    if lower.startswith("claude"):
+        has_native_key = any(k and len(k) >= 8 for k in (cfg.anthropic_api_keys or []))
+        return "anthropic" if (has_native_key or not has_openai_relay) else None
+    return None
+
+
 def _get_api_keys_for_model(model: str, cfg: Config) -> List[str]:
     """Return available API keys for the given litellm model."""
     deployment_keys: List[str] = []
@@ -304,11 +380,39 @@ def _get_api_keys_for_model(model: str, cfg: Config) -> List[str]:
             deployment_keys.append(key)
     if deployment_keys:
         return deployment_keys
-    if model.startswith("gemini/") or model.startswith("vertex_ai/"):
+    lower = (model or "").strip().lower()
+    prefix = lower.split("/", 1)[0].strip() if "/" in lower else ""
+    if prefix in _VISION_IAM_KEYLESS_PROVIDERS:
+        return []
+    bare_native = _uses_bare_native_pool(model, cfg)
+    if prefix == "gemini" or bare_native == "gemini":
         return [k for k in cfg.gemini_api_keys if k and len(k) >= 8]
-    if model.startswith("anthropic/"):
+    if prefix == "anthropic" or bare_native == "anthropic":
         return [k for k in cfg.anthropic_api_keys if k and len(k) >= 8]
     return [k for k in cfg.openai_api_keys if k and len(k) >= 8]
+
+
+def build_direct_vision_litellm_params(model: str, cfg: Config) -> Dict[str, Any]:
+    """Build direct LiteLLM call params for an unmapped vision model (shared with Doctor)."""
+    normalized = str(model or "").strip()
+    params: Dict[str, Any] = {"model": normalized}
+    if not normalized:
+        return params
+    prefix = normalized.split("/", 1)[0].strip().lower() if "/" in normalized else ""
+    is_native_gemini_or_anthropic = prefix in {"gemini", "anthropic"} or (
+        _uses_bare_native_pool(normalized, cfg) is not None
+    )
+    if not is_native_gemini_or_anthropic and prefix not in _VISION_IAM_KEYLESS_PROVIDERS:
+        if cfg.openai_base_url:
+            params["api_base"] = cfg.openai_base_url
+            if "/" not in normalized and normalized.lower().startswith(("claude", "gemini")):
+                params["custom_llm_provider"] = "openai"
+        if cfg.openai_base_url and "aihubmix.com" in cfg.openai_base_url:
+            params["extra_headers"] = {"APP-Code": "GPIJ3886"}
+    keys = _get_api_keys_for_model(normalized, cfg)
+    if keys:
+        params["api_key"] = keys[0]
+    return params
 
 
 def _deployment_allows_empty_api_key(deployment: Dict[str, Any]) -> bool:
@@ -316,8 +420,22 @@ def _deployment_allows_empty_api_key(deployment: Dict[str, Any]) -> bool:
     params = resolve_litellm_params_env(deployment.get("litellm_params") or {})
     if str(params.get("api_key") or "").strip():
         return False
+    raw_info = deployment.get("model_info")
+    info = raw_info if isinstance(raw_info, dict) else {}
+    custom_provider = str(params.get("custom_llm_provider") or "").strip().lower()
+    channel_protocol = str(
+        info.get("dsa_channel_protocol") or params.get("dsa_channel_protocol") or ""
+    ).strip().lower()
+    if custom_provider in _VISION_IAM_KEYLESS_PROVIDERS or channel_protocol in _VISION_IAM_KEYLESS_PROVIDERS:
+        return True
     wire_model = str(params.get("model") or "").strip()
-    protocol = wire_model.split("/", 1)[0] if "/" in wire_model else None
+    protocol = (
+        wire_model.split("/", 1)[0].strip().lower()
+        if "/" in wire_model
+        else (custom_provider or channel_protocol or None)
+    )
+    if protocol in _VISION_IAM_KEYLESS_PROVIDERS:
+        return True
     if "base_url" in params and params.get("base_url") is not None:
         api_base = params.get("base_url")
     else:
@@ -369,7 +487,7 @@ def _call_litellm_vision(image_b64: str, mime_type: str, api_key: Optional[str] 
                 deployment_info = dict(raw_info)
         else:
             # Fail closed instead of falling back to legacy OpenAI routing when
-            # any matching deployment has an unset endpoint env var or URL conflict.
+            # deployments matched this alias but none was usable.
             for item in deployments:
                 unresolved = _find_deployment_unresolved_endpoint_env(item)
                 if unresolved is not None:
@@ -379,7 +497,9 @@ def _call_litellm_vision(image_b64: str, mime_type: str, api_key: Optional[str] 
                     )
                 if _has_deployment_endpoint_conflict(item):
                     raise ValueError("Vision deployment has conflicting api_base and base_url values")
-    if key is None and not deployment_params:
+            raise ValueError(f"No API key found for vision model {model}")
+    model_prefix = model.split("/", 1)[0].strip().lower() if "/" in model else ""
+    if key is None and not deployment_params and model_prefix not in _VISION_IAM_KEYLESS_PROVIDERS:
         raise ValueError(f"No API key found for vision model {model}")
     wire_model = str(deployment_params.get("model") or model).strip()
     raw_api_surface = str(
@@ -439,23 +559,67 @@ def _call_litellm_vision(image_b64: str, mime_type: str, api_key: Optional[str] 
     if raw_wire_protocol:
         call_kwargs["wire_protocol"] = raw_wire_protocol
     raw_custom_provider = str(deployment_params.get("custom_llm_provider") or "").strip()
-    if raw_custom_provider:
-        call_kwargs["custom_llm_provider"] = raw_custom_provider
     raw_channel_protocol = str(
         deployment_info.get("dsa_channel_protocol")
         or deployment_params.get("dsa_channel_protocol")
         or ""
     ).strip()
+    if raw_custom_provider:
+        call_kwargs["custom_llm_provider"] = raw_custom_provider
+    elif raw_channel_protocol.lower() in _VISION_IAM_KEYLESS_PROVIDERS and "/" not in wire_model:
+        call_kwargs["custom_llm_provider"] = raw_channel_protocol.lower()
     if raw_channel_protocol:
         call_kwargs["dsa_channel_protocol"] = raw_channel_protocol
     if deployment_params.get("extra_headers"):
         call_kwargs["extra_headers"] = dict(deployment_params["extra_headers"])
-    # Add api_base and custom headers for OpenAI-compatible providers
-    if not deployment_params and not model.startswith("gemini/") and not model.startswith("anthropic/") and not model.startswith("vertex_ai/"):
-        if cfg.openai_base_url:
-            call_kwargs["api_base"] = cfg.openai_base_url
-        if cfg.openai_base_url and "aihubmix.com" in cfg.openai_base_url:
-            call_kwargs["extra_headers"] = {"APP-Code": "GPIJ3886"}
+
+    def _strip_gemini_max_output_tokens(raw_gc: Any) -> Optional[Dict[str, Any]]:
+        if not isinstance(raw_gc, dict):
+            return None
+        cleaned = {
+            gc_k: gc_v
+            for gc_k, gc_v in raw_gc.items()
+            if str(gc_k).strip().lower() not in {"maxoutputtokens", "max_output_tokens"}
+        }
+        return cleaned or None
+
+    for param_key, param_val in deployment_params.items():
+        key_str = str(param_key)
+        key_lower = key_str.strip().lower()
+        if key_str in _HANDLED_VISION_DEPLOYMENT_KEYS or key_str.startswith("_dsa_"):
+            continue
+        if key_lower in {"generation_config", "generationconfig"}:
+            cleaned_gc = _strip_gemini_max_output_tokens(param_val)
+            if cleaned_gc:
+                call_kwargs.setdefault(key_str, cleaned_gc)
+            continue
+        if key_str == "extra_body":
+            if isinstance(param_val, dict):
+                sanitized_extra: Dict[str, Any] = {}
+                for eb_k, eb_v in param_val.items():
+                    eb_k_lower = str(eb_k).strip().lower()
+                    if eb_k_lower in _EXTRACTOR_OWNED_EXTRA_BODY_KEYS:
+                        continue
+                    if eb_k_lower in {"generationconfig", "generation_config"} and isinstance(eb_v, dict):
+                        cleaned_nested_gc = _strip_gemini_max_output_tokens(eb_v)
+                        if cleaned_nested_gc:
+                            sanitized_extra[eb_k] = cleaned_nested_gc
+                        continue
+                    sanitized_extra[eb_k] = eb_v
+                if sanitized_extra:
+                    call_kwargs["extra_body"] = sanitized_extra
+            continue
+        if param_val is not None:
+            call_kwargs.setdefault(key_str, param_val)
+    # Add api_base and custom headers for unmapped OpenAI-compatible vision models
+    if not deployment_params:
+        direct_params = build_direct_vision_litellm_params(model, cfg)
+        if direct_params.get("api_base"):
+            call_kwargs["api_base"] = direct_params["api_base"]
+        if direct_params.get("extra_headers"):
+            call_kwargs["extra_headers"] = dict(direct_params["extra_headers"])
+        if direct_params.get("custom_llm_provider") and "custom_llm_provider" not in call_kwargs:
+            call_kwargs["custom_llm_provider"] = direct_params["custom_llm_provider"]
 
     response = dispatch_completion(compat_proxy=litellm, config=cfg, **call_kwargs)
     if response and response.choices and response.choices[0].message.content:
@@ -499,6 +663,8 @@ def extract_stock_codes_from_image(
     model = _resolve_vision_model()
     keys = _get_api_keys_for_model(model, get_config())
 
+    from src.llm.native_types import NativeConfigError
+
     last_error: Optional[Exception] = None
     for attempt in range(3):
         try:
@@ -511,6 +677,9 @@ def extract_stock_codes_from_image(
                 f"{[(i[0], i[1]) for i in items[:5]]}{'...' if len(items) > 5 else ''}"
             )
             return items, raw
+        except NativeConfigError as e:
+            logger.error("[ImageExtractor] Non-retryable LLM config error: %s", e)
+            raise ValueError(f"Vision 模型配置错误: {e}") from e
         except Exception as e:
             last_error = e
             if attempt < 2:

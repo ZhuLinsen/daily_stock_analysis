@@ -4,7 +4,7 @@
 
 欢迎！无论你是刚接触 AI 的新手小白，还是精通各种 API 的高玩老手，这份指南都能帮你快速把大模型（LLM）跑起来。
 
-本项目对外提供统一的 AI 模型接入体验，支持主流官方 API、任意第三方中转站（One-API / New-API / 聚合代理）以及本地模型（Ollama / vLLM / LM Studio）。底层默认启用原生 4 协议 HTTPX + SSE 传输（`LLM_TRANSPORT_MODE=auto`，云 IAM 服务商自动委托 [LiteLLM](https://docs.litellm.ai/)，需要时可通过 `LLM_TRANSPORT_MODE=litellm` 一键回滚）。
+本项目对外提供统一的 AI 模型接入体验，支持主流官方 API、任意第三方中转站（One-API / New-API / 聚合代理）以及本地模型（Ollama / vLLM / LM Studio）。底层默认启用原生 4 协议 HTTPX + SSE 传输（`LLM_TRANSPORT_MODE=auto`，默认安装无需 `litellm`/`openai`/`orjson`）；仅当使用 Bedrock / Vertex AI / Azure / SageMaker / Cohere 等云 IAM 服务商、高级 LiteLLM 专有 YAML 参数或需要 `LLM_TRANSPORT_MODE=litellm` 回滚时，才需额外安装可选依赖 `pip install -r requirements-litellm.txt`（含 `google-auth`，详见 [LiteLLM](https://docs.litellm.ai/)）。
 
 如果你正在选择具体服务商、配置 GitHub Actions Secrets / Variables、排查 `details.reason` / `details.hint_code` 错误或准备回滚配置，请优先查看 [LLM 服务商配置指南](./llm-providers.md)。如需了解原生 4 协议 HTTPX + SSE 传输引擎与环境变量开关 `LLM_TRANSPORT_MODE=auto|litellm|native`（默认 `auto`，仅环境变量控制），请参考 [原生 HTTPX 传输说明](./llm-native-transport.md)。
 
@@ -27,7 +27,7 @@ DEEPSEEK_API_KEY=sk-xxx          # 或 GEMINI_API_KEY= / ANTHROPIC_API_KEY= / OP
 - **使用 Web 设置页：** 打开「设置 → AI 模型」，在「快速添加渠道」中选择服务商预设，填写 Base URL（如为中转站/本地模型）、API Key 与模型后点击「测试连接」完成验证。
 
 > 本页的 provider/model/Base URL 说明本次未新增外部兼容语义，仅用于同步现网约定；实际兼容判断仍按当前仓库锁定依赖与运行时实现执行：
-> - 依赖边界：`litellm>=1.80.10,!=1.82.7,!=1.82.8,<1.99.0`（与 `requirements.txt` 一致）。
+> - 依赖边界：核心原生传输仅依赖 `requirements.txt` 中的 `httpx[socks]`；可选 LiteLLM 回退依赖边界为 `litellm>=1.80.10,!=1.82.7,!=1.82.8,<1.99.0`（位于 `requirements-litellm.txt`）。
 > - 兼容验证入口：`tests/test_system_config_service.py`、`tests/test_system_config_api.py` 以及现有前端模型配置页回归用例。
 > - 回退路径：优先使用 `.env` 配置备份 + `POST /api/v1/system/config/import` 恢复；也可在重启前手动回填旧 `LITELLM_MODEL` / `LLM_*` / `AGENT_LITELLM_MODEL` / `VISION_MODEL` / `LLM_TEMPERATURE` / `LLM_USAGE_HMAC_*`。
 

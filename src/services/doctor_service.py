@@ -3,11 +3,18 @@
 
 from __future__ import annotations
 
+import importlib.util
 import os
+import sys
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
-from src.config import Config, get_configured_llm_models
+from src.config import (
+    Config,
+    extra_litellm_params,
+    get_api_keys_for_model,
+    get_configured_llm_models,
+)
 from src.core.config_registry import _is_sensitive_key, get_field_definition
 from src.llm.backend_registry import (
     LOCAL_CLI_GENERATION_BACKEND_IDS,
@@ -18,7 +25,9 @@ from src.llm.local_cli_backend import (
     redact_diagnostic_text,
     resolve_local_cli_preset,
 )
-from src.llm.transport import resolve_llm_transport_mode
+from src.llm.native_resolve import FALLBACK_ONLY_PROVIDERS, resolve_deployment
+from src.llm.native_types import Unsupported
+from src.llm.transport import _HARD_CONFIG_ERROR_REASONS, resolve_llm_transport_mode
 from src.services.notification_diagnostics import (
     CHANNEL_SPECS,
     run_notification_diagnostics,
@@ -244,6 +253,104 @@ def _collect_secret_literals(config: Config) -> List[str]:
     return sorted(set(literals), key=len, reverse=True)
 
 
+def _is_litellm_installed() -> bool:
+    """Return True if optional ``litellm`` package is installed without importing it."""
+    try:
+        return importlib.util.find_spec("litellm") is not None
+    except ValueError:
+        # sys.modules["litellm"] may hold a test stub with __spec__=None; check meta_path directly.
+        for finder in sys.meta_path:
+            find_spec = getattr(finder, "find_spec", None)
+            if not callable(find_spec):
+                continue
+            try:
+                spec = find_spec("litellm", None)
+            except (ImportError, ValueError, AttributeError):
+                return False
+            if spec is not None:
+                return True
+        return False
+    except (ImportError, AttributeError):
+        return False
+
+
+def _find_routes_requiring_litellm(config: Config) -> List[str]:
+    """Return distinct configured routes that require optional LiteLLM fallback in auto mode."""
+    routes: List[str] = []
+    seen: set[str] = set()
+    covered_aliases: set[str] = set()
+
+    def _add(label: str) -> None:
+        cleaned = str(label or "").strip()
+        if cleaned and cleaned not in seen:
+            seen.add(cleaned)
+            routes.append(cleaned)
+
+    model_list = getattr(config, "llm_model_list", None) or []
+    for idx, entry in enumerate(model_list):
+        if not isinstance(entry, dict):
+            continue
+        raw_params = entry.get("litellm_params")
+        params = raw_params if isinstance(raw_params, dict) else {}
+        alias = str(entry.get("model_name") or params.get("model") or "").strip()
+        if alias:
+            covered_aliases.add(alias)
+        resolved = resolve_deployment(entry, deployment_id=f"doctor:{idx}", alias=alias)
+        if isinstance(resolved, Unsupported) and resolved.reason not in _HARD_CONFIG_ERROR_REASONS:
+            _add(alias or str(params.get("model") or resolved.provider or "unknown"))
+
+    direct_candidates: List[tuple[str, bool]] = []
+    for attr in ("litellm_model", "agent_litellm_model"):
+        val = str(getattr(config, attr, "") or "").strip()
+        if val:
+            direct_candidates.append((val, False))
+    effective_vision_model = (
+        str(getattr(config, "vision_model", "") or "").strip()
+        or str(getattr(config, "openai_vision_model", "") or "").strip()
+    )
+    if effective_vision_model:
+        direct_candidates.append((effective_vision_model, True))
+    for val in getattr(config, "litellm_fallback_models", None) or []:
+        cleaned = str(val or "").strip()
+        if cleaned:
+            direct_candidates.append((cleaned, False))
+
+    for candidate, is_vision in direct_candidates:
+        if candidate in covered_aliases:
+            continue
+        prefix = candidate.split("/", 1)[0].strip().lower() if "/" in candidate else ""
+        if prefix in FALLBACK_ONLY_PROVIDERS:
+            _add(candidate)
+            continue
+        if is_vision:
+            from src.services.image_stock_extractor import build_direct_vision_litellm_params
+
+            direct_params = build_direct_vision_litellm_params(candidate, config)
+        else:
+            direct_params = {"model": candidate}
+            try:
+                extra_params = extra_litellm_params(candidate, config)
+                if isinstance(extra_params, dict):
+                    direct_params.update(extra_params)
+            except Exception:
+                pass
+            try:
+                keys = get_api_keys_for_model(candidate, config)
+                if keys and not direct_params.get("api_key"):
+                    direct_params["api_key"] = keys[0]
+            except Exception:
+                pass
+        resolved = resolve_deployment(
+            {"model_name": candidate, "litellm_params": direct_params},
+            deployment_id=f"doctor-direct:{candidate}",
+            alias=candidate,
+        )
+        if isinstance(resolved, Unsupported) and resolved.reason not in _HARD_CONFIG_ERROR_REASONS:
+            _add(candidate)
+
+    return routes
+
+
 def _sanitize_text(text: Any, secret_literals: Iterable[str]) -> str:
     rendered = redact_diagnostic_text(str(text or ""))
     for secret in secret_literals:
@@ -307,7 +414,40 @@ def run_doctor_diagnostics(config: Config) -> Dict[str, Any]:
     )
     configured_models = get_configured_llm_models(getattr(config, "llm_model_list", []) or [])
     llm_transport_mode = resolve_llm_transport_mode(config=config)
+    litellm_installed = _is_litellm_installed()
     llm_ready = not has_llm_config_error
+
+    if not litellm_installed:
+        if llm_transport_mode == "litellm":
+            has_llm_config_error = True
+            config_errors.append({
+                "field": "LLM_TRANSPORT_MODE",
+                "message": (
+                    "LLM_TRANSPORT_MODE=litellm 需要安装可选依赖 LiteLLM；"
+                    "请运行 'pip install -r requirements-litellm.txt'，"
+                    "或取消设置 LLM_TRANSPORT_MODE 以使用默认原生 HTTPX 传输（auto）。"
+                ),
+            })
+            config_status = "error"
+            llm_ready = False
+        elif llm_transport_mode == "auto":
+            litellm_routes = _find_routes_requiring_litellm(config)
+            if litellm_routes:
+                has_llm_config_error = True
+                route_preview = ", ".join(litellm_routes[:5])
+                if len(litellm_routes) > 5:
+                    route_preview += f" (+{len(litellm_routes) - 5} more)"
+                config_errors.append({
+                    "field": "LITELLM_MODEL",
+                    "message": _sanitize_text(
+                        f"已配置需 LiteLLM 回退的路由（{route_preview}），但未安装可选依赖 LiteLLM；"
+                        "请运行 'pip install -r requirements-litellm.txt' 启用 Cloud IAM / 兼容路由，"
+                        "或改用原生支持的 OpenAI 兼容 / Anthropic / Gemini 渠道。",
+                        secrets,
+                    ),
+                })
+                config_status = "error"
+                llm_ready = False
 
     if generation_backend_raw in LOCAL_CLI_GENERATION_BACKEND_IDS:
         try:
@@ -489,6 +629,7 @@ def run_doctor_diagnostics(config: Config) -> Dict[str, Any]:
                 "status": llm_status,
                 "generation_backend": generation_backend,
                 "llm_transport_mode": llm_transport_mode,
+                "litellm_installed": litellm_installed,
                 "configured_models_count": len(configured_models),
                 "ready": llm_ready,
             },
@@ -527,6 +668,7 @@ def format_doctor_report(report: Dict[str, Any]) -> str:
     lines.append(
         f"[llm] status={llm.get('status')} backend={llm.get('generation_backend')} "
         f"transport={llm.get('llm_transport_mode', 'auto')} "
+        f"litellm_installed={llm.get('litellm_installed')} "
         f"models={llm.get('configured_models_count')} ready={llm.get('ready')}"
     )
 

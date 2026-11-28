@@ -48,7 +48,7 @@ jobs:
             docker:
               # Keep runtime inputs covered for Dockerfile build/import smoke, while skipping
               # frontend test-only and Markdown-only changes on PRs.
-              - '{*.py,api/**,bot/**,data_provider/**,src/**,strategies/**,apps/dsa-web/**,docker/**,requirements.txt,.dockerignore,.github/workflows/ci.yml}'
+              - '{*.py,api/**,bot/**,data_provider/**,src/**,strategies/**,apps/dsa-web/**,docker/**,requirements.txt,requirements-litellm.txt,.dockerignore,.github/workflows/ci.yml}'
               - '!**/*.md'
               - '!apps/dsa-web/src/**/__tests__/**'
               - '!apps/dsa-web/**/*.test.ts'
@@ -268,6 +268,7 @@ jobs:
       - name: 🔍 Docker smoke imports
         run: |
           docker run --rm stock-analysis:test python -c "
+          import importlib.util, sys
           from src.config import get_config; print('✅ config')
           from src.storage import DatabaseManager; print('✅ storage')
           from src.notification import NotificationService; print('✅ notification')
@@ -277,7 +278,11 @@ jobs:
           from bot.dispatcher import CommandDispatcher; print('✅ bot')
           from api.app import app; print('✅ api')
           import futu; print('✅ futu')
-          print('✅ All Docker imports OK')
+          for pkg in ('litellm', 'orjson', 'openai'):
+              assert pkg not in sys.modules, f'unexpected optional dependency imported: {pkg}'
+              assert importlib.util.find_spec(pkg) is None, f'optional dependency must not be installed in core image: {pkg}'
+          assert 'tiktoken' not in sys.modules, 'tiktoken should not be eagerly imported at startup'
+          print('✅ All Docker imports OK (zero litellm/orjson/openai installed)')
           "
 
   desktop-tests:

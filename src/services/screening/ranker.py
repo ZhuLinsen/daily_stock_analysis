@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from src.config import apply_litellm_api_surface, normalize_llm_channel_api_surface
 from src.llm.errors import call_litellm_with_param_recovery
 from src.llm.generation_params import apply_litellm_generation_params
+from src.llm.native_resolve import resolve_deployment
+from src.llm.native_types import DeploymentSpec
 from src.llm.transport import (
     NativeConfigError,
     create_router,
@@ -197,8 +199,12 @@ def rank_candidates_with_metadata(
                     max_tokens=max_tokens,
                 )
             except Exception as exc:
-                failure_reason = "timeout" if _is_timeout_error(exc) else "call_failed"
-                model_errors.append(f"{failure_reason}:{exc.__class__.__name__}")
+                if getattr(exc, "error_code", None) == "litellm_optional_dependency_missing":
+                    failure_reason = "litellm_optional_dependency_missing"
+                    model_errors.append(f"{failure_reason}:{exc}")
+                else:
+                    failure_reason = "timeout" if _is_timeout_error(exc) else "call_failed"
+                    model_errors.append(f"{failure_reason}:{exc.__class__.__name__}")
                 break
 
             parsed = _parse_ranking_response_detail(response, candidates)
@@ -620,7 +626,10 @@ def _call_llm(
             kwargs["num_retries"] = 0
             if max_tokens is not None and int(max_tokens) > 0:
                 kwargs["max_tokens"] = int(max_tokens)
-            if json_mode:
+            if json_mode and not _should_omit_json_object_response_format(
+                candidate_model,
+                call_kwargs=kwargs,
+            ):
                 kwargs["response_format"] = {"type": "json_object"}
             kwargs = _apply_screening_litellm_generation_params(
                 kwargs,
@@ -721,6 +730,69 @@ def _coerce_completion_content(value: object) -> str:
     # Join without adding characters to avoid inserting raw newlines inside
     # JSON strings when providers segment content across blocks.
     return "".join(parts)
+
+
+def _probe_deployment_is_native_anthropic(entry: dict[str, object]) -> bool:
+    """Return True iff the shared native resolver routes this deployment to native Anthropic."""
+    params = entry.get("litellm_params")
+    probe_params = dict(params) if isinstance(params, dict) else {}
+    probe_params.pop("response_format", None)
+    probe_params.pop("messages", None)
+    # Missing api_key alone must not obscure the resolved wire protocol during the probe.
+    if not str(probe_params.get("api_key") or "").strip():
+        probe_params["api_key"] = "sk-probe-placeholder"
+    probe_entry: dict[str, object] = {
+        "model_name": entry.get("model_name") or probe_params.get("model") or "",
+        "litellm_params": probe_params,
+    }
+    if isinstance(entry.get("model_info"), dict):
+        probe_entry["model_info"] = dict(entry["model_info"])
+    resolved = resolve_deployment(probe_entry, deployment_id="ranker-json-mode-probe")
+    return isinstance(resolved, DeploymentSpec) and resolved.protocol == "anthropic"
+
+
+def _should_omit_json_object_response_format(
+    model: str,
+    *,
+    call_kwargs: dict[str, object] | None = None,
+    model_list: list[dict[str, object]] | None = None,
+) -> bool:
+    """Omit ranker-generated response_format={"type":"json_object"} on native Anthropic routes.
+
+    Delegates protocol resolution directly to ``resolve_deployment()`` (without
+    ``response_format``) so direct calls, custom Anthropic endpoints, OpenAI-compatible
+    relays serving ``anthropic/...``, and YAML router aliases all share one source of truth.
+    """
+    if model_list:
+        target = str(model or "").strip()
+        exact_alias_matches = [
+            entry
+            for entry in model_list
+            if isinstance(entry, dict)
+            and target
+            and str(entry.get("model_name") or "").strip() == target
+        ]
+        matched_entries = exact_alias_matches or [
+            entry
+            for entry in model_list
+            if isinstance(entry, dict)
+            and (
+                not target
+                or (
+                    isinstance(entry.get("litellm_params"), dict)
+                    and str(entry["litellm_params"].get("model") or "").strip() == target
+                )
+            )
+        ]
+        if matched_entries:
+            return any(_probe_deployment_is_native_anthropic(entry) for entry in matched_entries)
+
+    probe_params: dict[str, object] = dict(call_kwargs or {})
+    if not str(probe_params.get("model") or "").strip():
+        probe_params["model"] = model
+    return _probe_deployment_is_native_anthropic(
+        {"model_name": model, "litellm_params": probe_params}
+    )
 
 
 def _is_json_mode_unsupported(exc: Exception) -> bool:
@@ -1028,7 +1100,11 @@ def _call_litellm_router(
             }
             if max_tokens is not None and int(max_tokens) > 0:
                 kwargs["max_tokens"] = int(max_tokens)
-            if json_mode:
+            if json_mode and not _should_omit_json_object_response_format(
+                model,
+                call_kwargs=kwargs,
+                model_list=model_list,
+            ):
                 kwargs["response_format"] = {"type": "json_object"}
             kwargs = _apply_screening_litellm_generation_params(
                 kwargs,
@@ -1172,6 +1248,7 @@ def _build_litellm_attempts(
             and not inherited_outer_key
             else None
         )
+        raw_channel_protocol = str(channel.get("protocol", "") or "").strip().lower()
         for channel_key in api_keys:
             attempts.append(_completion_kwargs(
                 wire_model,
@@ -1179,6 +1256,7 @@ def _build_litellm_attempts(
                 base_url=effective_base_url,
                 api_surface=effective_surface,
                 extra_headers=extra_headers,
+                channel_protocol=raw_channel_protocol,
             ))
 
     if not matched_channel:
@@ -1193,6 +1271,7 @@ def _completion_kwargs(
     base_url: str,
     api_surface: str = "",
     extra_headers: dict[str, object] | None = None,
+    channel_protocol: str = "",
 ) -> dict[str, object]:
     kwargs: dict[str, object] = {"model": model}
     if api_key:
@@ -1201,6 +1280,8 @@ def _completion_kwargs(
         kwargs["api_base"] = base_url
     if api_surface:
         kwargs["api_surface"] = api_surface
+    if channel_protocol:
+        kwargs["dsa_channel_protocol"] = channel_protocol
     if extra_headers:
         kwargs["extra_headers"] = dict(extra_headers)
     return kwargs
@@ -1220,6 +1301,8 @@ def _normalize_model_name(model: str, protocol: str) -> str:
         return model
     if protocol == "ollama":
         return f"ollama/{model}"
+    if protocol == "anthropic":
+        return f"anthropic/{model}"
     if protocol == "gemini":
         return f"gemini/{model}"
     if protocol == "deepseek":
@@ -1242,6 +1325,7 @@ def _unique_attempts(items: list[dict[str, object]]) -> list[dict[str, object]]:
             item.get("api_key"),
             item.get("api_base"),
             item.get("api_surface"),
+            item.get("dsa_channel_protocol"),
             headers_key,
         )
         if key not in seen:

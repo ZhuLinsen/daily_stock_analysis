@@ -136,6 +136,12 @@ cd /opt/stock-analyzer
 pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 ```
 
+> **可选 LiteLLM 扩展**：OpenAI、Anthropic、Gemini、DeepSeek、Ollama 及任意第三方中转站均通过原生 `httpx` 运行，无需安装 LiteLLM。仅当使用 AWS Bedrock / Google Vertex AI / Azure / SageMaker / Cohere 等云 IAM 服务商、依赖 LiteLLM 专属 YAML 参数（如 `organization`、`project`、`vertex_*`），或显式设置 `LLM_TRANSPORT_MODE=litellm` 回滚时，才需追加安装：
+> ```bash
+> pip install -r requirements-litellm.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+> ```
+> Docker 构建如需内置该可选扩展，可附加 `--build-arg INSTALL_LITELLM=true`。
+
 ### 3. 配置环境变量
 
 ```bash
