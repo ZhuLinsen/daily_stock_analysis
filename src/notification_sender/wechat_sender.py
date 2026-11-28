@@ -11,10 +11,11 @@ import base64
 import hashlib
 import requests
 import time
-from typing import Optional
+from typing import Any, Optional
 
 from src.config import Config
 from src.formatters import chunk_content_by_max_bytes, strip_hidden_markdown_metadata
+from src.services.channel_renderers import render_wechat_digest_chunks
 
 
 logger = logging.getLogger(__name__)
@@ -37,43 +38,59 @@ class WechatSender:
         self._wechat_msg_type = getattr(config, 'wechat_msg_type', 'markdown')
         self._webhook_verify_ssl = getattr(config, 'webhook_verify_ssl', True)
         
-    def send_to_wechat(self, content: str, *, timeout_seconds: Optional[float] = None) -> bool:
+    def send_to_wechat(
+        self,
+        content: str,
+        *,
+        report_payload: Optional[Any] = None,
+        timeout_seconds: Optional[float] = None,
+    ) -> bool:
         """
         推送消息到企业微信机器人
-        
-        企业微信 Webhook 消息格式：
-        支持 markdown 类型以及 text 类型, markdown 类型在微信中无法展示，可以使用 text 类型,
-        markdown 类型会解析 markdown 格式,text 类型会直接发送纯文本。
 
-        markdown 类型示例：
-        {
-            "msgtype": "markdown",
-            "markdown": {
-                "content": "## 标题\n\n内容"
-            }
-        }
-        
-        text 类型示例：
-        {
-            "msgtype": "text",
-            "text": {
-                "content": "内容"
-            }
-        }
-
-        注意：企业微信 Markdown 限制 4096 字节（非字符）, Text 类型限制 2048 字节，超长内容会自动分批发送
-        可通过环境变量 WECHAT_MAX_BYTES 调整限制值
-        
         Args:
             content: Markdown 格式的消息内容
-            
+            report_payload: 可选结构化报告载荷，存在时输出高信噪比原生摘要
+
         Returns:
             是否发送成功
         """
         if not self._wechat_url:
             logger.warning("WeChat Work Webhook not configured, skipping notification")
             return False
-        
+
+        if report_payload is not None:
+            effective_max_bytes = (
+                min(self._wechat_max_bytes, 1950)
+                if self._wechat_msg_type == 'text'
+                else min(self._wechat_max_bytes, 3950)
+            )
+            chunks = []
+            try:
+                chunks = render_wechat_digest_chunks(
+                    report_payload,
+                    msg_type=self._wechat_msg_type,
+                    max_bytes=effective_max_bytes,
+                )
+            except Exception as e:
+                logger.warning("WeChat structured digest rendering failed, falling back to text mode: %s", e)
+
+            if chunks:
+                success_count = 0
+                for i, chunk in enumerate(chunks):
+                    try:
+                        ok = self._send_wechat_message(chunk, timeout_seconds=timeout_seconds)
+                    except Exception as e:
+                        logger.error("WeChat chunk %d/%d send error: %s", i + 1, len(chunks), e)
+                        ok = False
+                    if ok:
+                        success_count += 1
+                    else:
+                        logger.error("WeChat chunk %d/%d send failed", i + 1, len(chunks))
+                    if i < len(chunks) - 1:
+                        time.sleep(1)
+                return success_count == len(chunks)
+
         sanitized_content = strip_hidden_markdown_metadata(content).strip()
         if not sanitized_content:
             logger.warning("WeChat Work message content is empty, skipping notification")
@@ -90,7 +107,7 @@ class WechatSender:
         if content_bytes > max_bytes:
             logger.info(f"Message exceeds limit ({content_bytes} bytes/{len(content)} chars), sending in chunks")
             return self._send_wechat_chunked(sanitized_content, max_bytes)
-        
+
         try:
             return self._send_wechat_message(sanitized_content, timeout_seconds=timeout_seconds)
         except Exception as e:

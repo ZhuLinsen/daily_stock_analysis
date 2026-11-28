@@ -102,6 +102,17 @@ export const historyApi = {
   },
 
   /**
+   * 导出历史报告独立 HTML 文档
+   * @param recordId 分析历史记录主键 ID
+   */
+  exportHtml: async (recordId: number): Promise<Blob> => {
+    const response = await apiClient.get<Blob>(`/api/v1/history/${recordId}/export-html`, {
+      responseType: 'blob',
+    });
+    return response.data;
+  },
+
+  /**
    * 获取历史报告运行诊断摘要
    * @param recordId 分析历史记录主键 ID
    */

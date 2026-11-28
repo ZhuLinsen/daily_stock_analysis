@@ -1,11 +1,13 @@
 import type React from 'react';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { Printer } from 'lucide-react';
 import { historyApi } from '../../api/history';
 import type { ReportLanguage } from '../../types/analysis';
 import { copyTextToClipboard } from '../../utils/clipboard';
 import { markdownToPlainText } from '../../utils/markdown';
 import { getReportText, normalizeReportLanguage } from '../../utils/reportLanguage';
 import { Tooltip } from '../common/Tooltip';
+import { ExportHtmlButton } from './ExportHtmlButton';
 import { ReportMarkdownBody } from './ReportMarkdownBody';
 import { ShareImageButton } from './ShareImageButton';
 
@@ -186,12 +188,29 @@ export const ReportMarkdownPanel: React.FC<ReportMarkdownPanelProps> = ({
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center justify-end gap-2 print:hidden">
+          <ExportHtmlButton
+            recordId={recordId}
+            reportTitle={`${stockName || stockCode}-${stockCode}`}
+            reportLanguage={reportLanguage}
+          />
           <ShareImageButton
             recordId={recordId}
             reportTitle={`${stockName || stockCode}-${stockCode}`}
             reportLanguage={reportLanguage}
           />
+          <Tooltip content={text.printReport}>
+            <span className="inline-flex">
+              <button
+                type="button"
+                onClick={() => window.print()}
+                className="home-surface-button flex h-10 w-10 items-center justify-center rounded-lg text-secondary-text hover:text-foreground"
+                aria-label={text.printReport}
+              >
+                <Printer className="h-5 w-5" aria-hidden="true" />
+              </button>
+            </span>
+          </Tooltip>
           <Tooltip content={markdownButtonLabel}>
             <span className="inline-flex">
               <button

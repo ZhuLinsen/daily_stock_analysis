@@ -6,7 +6,7 @@ Email 发送提醒服务
 1. 通过 SMTP 发送 Email 消息
 """
 import logging
-from typing import Optional, List
+from typing import Any, Optional, List
 from datetime import datetime
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -18,6 +18,7 @@ import smtplib
 from data_provider.base import normalize_stock_code
 from src.config import Config
 from src.formatters import markdown_to_html_document, strip_hidden_markdown_metadata
+from src.services.channel_renderers import render_email_html
 
 
 logger = logging.getLogger(__name__)
@@ -137,6 +138,7 @@ class EmailSender:
         subject: Optional[str] = None,
         receivers: Optional[List[str]] = None,
         *,
+        report_payload: Optional[Any] = None,
         timeout_seconds: Optional[float] = None,
     ) -> bool:
         """
@@ -146,6 +148,7 @@ class EmailSender:
             content: 邮件内容（支持 Markdown，会转换为 HTML）
             subject: 邮件主题（可选，默认自动生成）
             receivers: 收件人列表（可选，默认使用配置的 receivers）
+            report_payload: 可选结构化报告载荷，存在时使用结构化内联 HTML 渲染
             
         Returns:
             是否发送成功
@@ -162,13 +165,26 @@ class EmailSender:
         try:
             # 生成主题
             if subject is None:
-                date_str = datetime.now().strftime('%Y-%m-%d')
-                subject = f"📈 股票智能分析报告 - {date_str}"
+                dynamic_title = getattr(report_payload, 'dynamic_title', None) if report_payload is not None else None
+                if dynamic_title:
+                    subject = str(dynamic_title)
+                else:
+                    date_str = datetime.now().strftime('%Y-%m-%d')
+                    subject = f"📈 股票智能分析报告 - {date_str}"
 
-            sanitized_content = strip_hidden_markdown_metadata(content).strip()
-            
-            # 将 Markdown 转换为简单 HTML
-            html_content = markdown_to_html_document(sanitized_content)
+            sanitized_content = strip_hidden_markdown_metadata(content or '').strip()
+
+            if report_payload is not None:
+                try:
+                    html_content = render_email_html(report_payload)
+                except Exception as e:
+                    logger.warning("Structured email HTML rendering failed, falling back to Markdown-to-HTML: %s", e)
+                    html_content = markdown_to_html_document(sanitized_content)
+                plain_text_body = sanitized_content or str(getattr(report_payload, 'raw_markdown_fallback', '') or subject)
+            else:
+                # 将 Markdown 转换为简单 HTML
+                html_content = markdown_to_html_document(sanitized_content)
+                plain_text_body = sanitized_content
             
             # 构建邮件
             msg = MIMEMultipart('alternative')
@@ -177,7 +193,7 @@ class EmailSender:
             msg['To'] = ', '.join(receivers)
             
             # 添加纯文本和 HTML 两个版本
-            text_part = MIMEText(sanitized_content, 'plain', 'utf-8')
+            text_part = MIMEText(plain_text_body, 'plain', 'utf-8')
             html_part = MIMEText(html_content, 'html', 'utf-8')
             msg.attach(text_part)
             msg.attach(html_part)

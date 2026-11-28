@@ -14,6 +14,7 @@ import { markdownToPlainText } from '../../utils/markdown';
 import { getReportText, normalizeReportLanguage } from '../../utils/reportLanguage';
 import { Card } from '../common';
 import { Tooltip } from '../common/Tooltip';
+import { ExportHtmlButton } from './ExportHtmlButton';
 import { ReportMarkdownBody } from './ReportMarkdownBody';
 import { ShareImageButton } from './ShareImageButton';
 
@@ -699,6 +700,11 @@ export const MarketReviewReportView: React.FC<MarketReviewReportViewProps> = ({
           </div>
 
           <div className="flex shrink-0 items-center gap-2">
+            <ExportHtmlButton
+              recordId={recordId}
+              reportTitle={displayTitle}
+              reportLanguage={reportLanguage}
+            />
             <ShareImageButton
               recordId={recordId}
               reportTitle={displayTitle}

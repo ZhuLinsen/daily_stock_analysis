@@ -1,11 +1,13 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
+import { historyApi } from '../../../api/history';
 import type { AnalysisReport, MarketReviewPayload } from '../../../types/analysis';
 import { MarketReviewReportView } from '../MarketReviewReportView';
 
 vi.mock('../../../api/history', () => ({
   historyApi: {
     getMarkdown: vi.fn(),
+    exportHtml: vi.fn(),
   },
 }));
 
@@ -303,6 +305,49 @@ describe('MarketReviewReportView', () => {
     fireEvent.click(screen.getByRole('button', { name: '查看历史记录 7 运行流' }));
 
     expect(onOpenRunFlow).toHaveBeenCalledWith(7);
+  });
+
+  it('renders Export HTML button when recordId is provided and triggers download on click', async () => {
+    const blob = new Blob(['<html></html>'], { type: 'text/html' });
+    const exportSpy = vi.spyOn(historyApi, 'exportHtml').mockResolvedValue(blob);
+    const createObjectUrlSpy = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:market-html');
+    const revokeObjectUrlSpy = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined);
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
+
+    render(
+      <MarketReviewReportView
+        payload={combinedMarketReviewPayload}
+        content="# 大盘复盘"
+        recordId={42}
+        reportLanguage="zh"
+      />,
+    );
+
+    const exportBtn = screen.getByRole('button', { name: '导出 HTML' });
+    fireEvent.click(exportBtn);
+
+    await waitFor(() => {
+      expect(exportSpy).toHaveBeenCalledWith(42);
+    });
+    expect(createObjectUrlSpy).toHaveBeenCalledWith(blob);
+    expect(clickSpy).toHaveBeenCalledTimes(1);
+
+    exportSpy.mockRestore();
+    createObjectUrlSpy.mockRestore();
+    revokeObjectUrlSpy.mockRestore();
+    clickSpy.mockRestore();
+  });
+
+  it('omits Export HTML button when recordId is absent', () => {
+    render(
+      <MarketReviewReportView
+        report={englishMarketReviewReport}
+        content="# Market Review"
+        reportLanguage="en"
+      />,
+    );
+
+    expect(screen.queryByRole('button', { name: 'Export HTML' })).not.toBeInTheDocument();
   });
 });
 

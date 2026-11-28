@@ -4215,6 +4215,25 @@ class StockAnalysisPipeline:
                 }
                 if _supports_explicit_keyword(self.notifier.send, "structured_payload"):
                     send_kwargs["structured_payload"] = _share_image_payload(result)
+                if _supports_explicit_keyword(self.notifier.send, "report_payload"):
+                    builder = getattr(self.notifier, "build_report_payload", None)
+                    if callable(builder):
+                        try:
+                            builder_kwargs: Dict[str, Any] = {
+                                "single_stock": True,
+                                "raw_markdown_fallback": report_content,
+                            }
+                            if _supports_explicit_keyword(builder, "summary_only"):
+                                builder_kwargs["summary_only"] = bool(
+                                    getattr(self.notifier, "_report_summary_only", False)
+                                    or (report_type == ReportType.BRIEF)
+                                )
+                            send_kwargs["report_payload"] = builder(
+                                [result],
+                                **builder_kwargs,
+                            )
+                        except Exception as exc:
+                            logger.debug("[%s] Failed to build structured single-stock report payload; falling back to text push: %s", stock_code, exc)
                 sent = self.notifier.send(report_content, **send_kwargs)
                 notification_run = self._build_notification_run_snapshot(
                     channel="report",
@@ -4509,6 +4528,27 @@ class StockAnalysisPipeline:
                             _get_md2img_hint(),
                         )
 
+                is_compact_report = bool(
+                    getattr(self.notifier, "_report_summary_only", False)
+                    or (report_type == ReportType.BRIEF)
+                )
+                batch_report_payload = None
+                payload_builder = getattr(self.notifier, "build_report_payload", None)
+                if callable(payload_builder):
+                    try:
+                        batch_builder_kwargs: Dict[str, Any] = {
+                            "single_stock": False,
+                            "raw_markdown_fallback": report,
+                        }
+                        if _supports_explicit_keyword(payload_builder, "summary_only"):
+                            batch_builder_kwargs["summary_only"] = is_compact_report
+                        batch_report_payload = payload_builder(
+                            results,
+                            **batch_builder_kwargs,
+                        )
+                    except Exception as exc:
+                        logger.debug("Failed to build structured batch report payload; falling back to text push: %s", exc)
+
                 # 企业微信：只发精简版（平台限制）
                 wechat_success = False
                 if NotificationChannel.WECHAT in channels:
@@ -4517,8 +4557,16 @@ class StockAnalysisPipeline:
                             dashboard_content = self.notifier.generate_brief_report(results)
                         else:
                             dashboard_content = self.notifier.generate_wechat_dashboard(results)
-                        logger.info(f"WeChat Work dashboard length: {len(dashboard_content)} chars")
-                        logger.debug(f"WeChat Work push content:\n{dashboard_content}")
+                        will_use_structured_wechat = (
+                            batch_report_payload is not None
+                            and NotificationChannel.WECHAT not in channels_needing_image
+                            and _supports_explicit_keyword(self.notifier.send_to_wechat, "report_payload")
+                        )
+                        if will_use_structured_wechat:
+                            logger.debug("WeChat fallback dashboard length: %d chars", len(dashboard_content))
+                        else:
+                            logger.info(f"WeChat Work dashboard length: {len(dashboard_content)} chars")
+                            logger.debug(f"WeChat Work push content:\n{dashboard_content}")
                         wechat_image_bytes = None
                         if NotificationChannel.WECHAT in channels_needing_image:
                             wechat_image_kwargs: Dict[str, Any] = {
@@ -4541,6 +4589,14 @@ class StockAnalysisPipeline:
                         )
                         if use_image:
                             return self.notifier._send_wechat_image(wechat_image_bytes)
+                        if (
+                            batch_report_payload is not None
+                            and _supports_explicit_keyword(self.notifier.send_to_wechat, "report_payload")
+                        ):
+                            return self.notifier.send_to_wechat(
+                                dashboard_content,
+                                report_payload=batch_report_payload,
+                            )
                         return self.notifier.send_to_wechat(dashboard_content)
 
                     wechat_success, wechat_error = _send_channel_safely(
@@ -4568,6 +4624,14 @@ class StockAnalysisPipeline:
                                     filename=f"dashboard_{date_str}.md",
                                 )
                                 return self.notifier.send_feishu_file(filepath)
+                            if (
+                                batch_report_payload is not None
+                                and _supports_explicit_keyword(self.notifier.send_to_feishu, "report_payload")
+                            ):
+                                return self.notifier.send_to_feishu(
+                                    report,
+                                    report_payload=batch_report_payload,
+                                )
                             return self.notifier.send_to_feishu(report)
 
                         channel_success, channel_error = _send_channel_safely(
@@ -4587,6 +4651,14 @@ class StockAnalysisPipeline:
                             )
                             if use_image:
                                 return self.notifier._send_telegram_photo(image_bytes)
+                            if (
+                                batch_report_payload is not None
+                                and _supports_explicit_keyword(self.notifier.send_to_telegram, "report_payload")
+                            ):
+                                return self.notifier.send_to_telegram(
+                                    report,
+                                    report_payload=batch_report_payload,
+                                )
                             return self.notifier.send_to_telegram(report)
 
                         channel_success, channel_error = _send_channel_safely(
@@ -4646,6 +4718,29 @@ class StockAnalysisPipeline:
                                         return self.notifier._send_email_with_inline_image(
                                             grp_image_bytes, receivers=receivers
                                         )
+                                    grp_report_payload = None
+                                    if callable(payload_builder) and _supports_explicit_keyword(
+                                        self.notifier.send_to_email, "report_payload"
+                                    ):
+                                        try:
+                                            grp_builder_kwargs: Dict[str, Any] = {
+                                                "single_stock": (len(group_results) == 1),
+                                                "raw_markdown_fallback": grp_report,
+                                            }
+                                            if _supports_explicit_keyword(payload_builder, "summary_only"):
+                                                grp_builder_kwargs["summary_only"] = is_compact_report
+                                            grp_report_payload = payload_builder(
+                                                group_results,
+                                                **grp_builder_kwargs,
+                                            )
+                                        except Exception:
+                                            grp_report_payload = None
+                                    if grp_report_payload is not None:
+                                        return self.notifier.send_to_email(
+                                            strip_hidden_markdown_metadata(grp_report).strip(),
+                                            receivers=receivers,
+                                            report_payload=grp_report_payload,
+                                        )
                                     return self.notifier.send_to_email(
                                         strip_hidden_markdown_metadata(grp_report).strip(),
                                         receivers=receivers,
@@ -4673,6 +4768,14 @@ class StockAnalysisPipeline:
                                 )
                                 if use_image:
                                     return self.notifier._send_email_with_inline_image(image_bytes)
+                                if (
+                                    batch_report_payload is not None
+                                    and _supports_explicit_keyword(self.notifier.send_to_email, "report_payload")
+                                ):
+                                    return self.notifier.send_to_email(
+                                        strip_hidden_markdown_metadata(report).strip(),
+                                        report_payload=batch_report_payload,
+                                    )
                                 return self.notifier.send_to_email(
                                     strip_hidden_markdown_metadata(report).strip()
                                 )

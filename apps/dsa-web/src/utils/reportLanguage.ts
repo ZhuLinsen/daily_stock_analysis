@@ -76,6 +76,61 @@ const REPORT_TEXT = {
     laggingBoard: '领跌',
     neutralBoard: '中性',
     reanalyze: '重新分析',
+    exportHtml: '导出 HTML',
+    exportingHtml: '导出中...',
+    exportHtmlReady: '已导出',
+    exportHtmlFailed: '重试',
+    printReport: '打印报告',
+    decisionBriefEyebrow: 'DECISION BRIEF',
+    decisionBriefTitle: '决策研报要点',
+    riskAlertsTitle: '风险预警',
+    positionPlaybookTitle: '仓位应对策略',
+    noPositionLabel: '空仓者策略',
+    hasPositionLabel: '持仓者策略',
+    suggestedPositionLabel: '建议仓位',
+    timeSensitivityLabel: '时效性',
+    positiveCatalystsTitle: '利好催化',
+    earningsOutlookLabel: '业绩预期',
+    sentimentSummaryLabel: '舆情情绪',
+    signalAttributionTitle: '多空归因',
+    strongestBullishLabel: '最强看多',
+    strongestBearishLabel: '最强看空',
+    attrTechnical: '技术指标',
+    attrNews: '新闻舆情',
+    attrFundamentals: '基本面',
+    attrMarket: '市场环境',
+    checklistTitle: '执行检查清单',
+    checklistPass: '通过',
+    checklistWarn: '关注',
+    checklistFail: '警示',
+    riskRewardRatio: '盈亏比',
+    rrAtEntry: '按买点',
+    upsideSpace: '潜在空间',
+    downsideRisk: '止损幅度',
+    priceRangeRuler: '价位区间标尺',
+    currentPriceShort: '现价',
+    priceBelowStop: '已破止损',
+    priceAboveTarget: '已达目标',
+    marketSnapshotLabel: '行情与估值快照',
+    openPrice: '开盘',
+    highLowRange: '最高/最低',
+    amplitude: '振幅',
+    volumeRatio: '量比',
+    turnoverRate: '换手率',
+    peRatio: '市盈率',
+    pbRatio: '市净率',
+    copyBrief: '复制要点',
+    briefCopied: '已复制',
+    copyBriefFailed: '复制失败',
+    strategySynthesisTitle: '多策略综合',
+    strategyFinalSignal: '综合信号',
+    strategyConsensus: '共识度',
+    strategyConflict: '冲突',
+    strategyConfidence: '置信度',
+    strategySupporting: '支持策略',
+    strategyOpposing: '反方策略',
+    strategyMinorityPreserved: '已保留高置信度少数派异议，建议重点关注分歧风险',
+    strategyInvalidOpinions: '另有 {count} 个策略未能产出有效信号',
   },
   en: {
     keyInsights: 'KEY INSIGHTS',
@@ -149,6 +204,61 @@ const REPORT_TEXT = {
     laggingBoard: 'Lagging',
     neutralBoard: 'Neutral',
     reanalyze: 'Reanalyze',
+    exportHtml: 'Export HTML',
+    exportingHtml: 'Exporting...',
+    exportHtmlReady: 'Exported',
+    exportHtmlFailed: 'Retry',
+    printReport: 'Print',
+    decisionBriefEyebrow: 'DECISION BRIEF',
+    decisionBriefTitle: 'Decision Brief',
+    riskAlertsTitle: 'Risk Alerts',
+    positionPlaybookTitle: 'Position Playbook',
+    noPositionLabel: 'No Position',
+    hasPositionLabel: 'Holding',
+    suggestedPositionLabel: 'Position Size',
+    timeSensitivityLabel: 'Time Sensitivity',
+    positiveCatalystsTitle: 'Positive Catalysts',
+    earningsOutlookLabel: 'Earnings Outlook',
+    sentimentSummaryLabel: 'Sentiment',
+    signalAttributionTitle: 'Signal Attribution',
+    strongestBullishLabel: 'Strongest Bullish',
+    strongestBearishLabel: 'Strongest Bearish',
+    attrTechnical: 'Technical',
+    attrNews: 'News',
+    attrFundamentals: 'Fundamentals',
+    attrMarket: 'Market',
+    checklistTitle: 'Action Checklist',
+    checklistPass: 'Pass',
+    checklistWarn: 'Watch',
+    checklistFail: 'Alert',
+    riskRewardRatio: 'Risk/Reward',
+    rrAtEntry: 'at entry',
+    upsideSpace: 'Upside',
+    downsideRisk: 'Downside',
+    priceRangeRuler: 'Price Range',
+    currentPriceShort: 'Now',
+    priceBelowStop: 'Below Stop',
+    priceAboveTarget: 'Target Reached',
+    marketSnapshotLabel: 'Market & Valuation',
+    openPrice: 'Open',
+    highLowRange: 'High / Low',
+    amplitude: 'Amp',
+    volumeRatio: 'Vol Ratio',
+    turnoverRate: 'Turnover',
+    peRatio: 'P/E',
+    pbRatio: 'P/B',
+    copyBrief: 'Copy Brief',
+    briefCopied: 'Copied',
+    copyBriefFailed: 'Copy failed',
+    strategySynthesisTitle: 'Strategy Synthesis',
+    strategyFinalSignal: 'Final Signal',
+    strategyConsensus: 'Consensus',
+    strategyConflict: 'Conflict',
+    strategyConfidence: 'Confidence',
+    strategySupporting: 'Supporting Strategies',
+    strategyOpposing: 'Opposing Strategies',
+    strategyMinorityPreserved: 'High-confidence minority dissent preserved; review divergence risks',
+    strategyInvalidOpinions: '{count} additional strategy opinion(s) produced invalid signals',
   },
   ko: {
     keyInsights: '핵심 인사이트',
@@ -222,7 +332,249 @@ const REPORT_TEXT = {
     laggingBoard: '약세',
     neutralBoard: '중립',
     reanalyze: '재분석',
+    exportHtml: 'HTML 내보내기',
+    exportingHtml: '내보내는 중...',
+    exportHtmlReady: '완료',
+    exportHtmlFailed: '다시 시도',
+    printReport: '인쇄',
+    decisionBriefEyebrow: 'DECISION BRIEF',
+    decisionBriefTitle: '핵심 의사결정 요약',
+    riskAlertsTitle: '리스크 경보',
+    positionPlaybookTitle: '포지션 대응 전략',
+    noPositionLabel: '미보유 전략',
+    hasPositionLabel: '보유 중 전략',
+    suggestedPositionLabel: '권장 비중',
+    timeSensitivityLabel: '시의성',
+    positiveCatalystsTitle: '긍정 촉매',
+    earningsOutlookLabel: '실적 전망',
+    sentimentSummaryLabel: '투자 심리',
+    signalAttributionTitle: '신호 귀인 분석',
+    strongestBullishLabel: '최강 상승',
+    strongestBearishLabel: '최강 하락',
+    attrTechnical: '기술 지표',
+    attrNews: '뉴스 심리',
+    attrFundamentals: '펀더멘털',
+    attrMarket: '시장 환경',
+    checklistTitle: '실행 체크리스트',
+    checklistPass: '통과',
+    checklistWarn: '주의',
+    checklistFail: '경고',
+    riskRewardRatio: '손익비',
+    rrAtEntry: '매수가 기준',
+    upsideSpace: '상승 여력',
+    downsideRisk: '손절 폭',
+    priceRangeRuler: '가격대 범위',
+    currentPriceShort: '현재가',
+    priceBelowStop: '손절 이탈',
+    priceAboveTarget: '목표 도달',
+    marketSnapshotLabel: '시세 및 밸류에이션',
+    openPrice: '시가',
+    highLowRange: '고가/저가',
+    amplitude: '진폭',
+    volumeRatio: '거래량비',
+    turnoverRate: '회전율',
+    peRatio: 'PER',
+    pbRatio: 'PBR',
+    copyBrief: '요약 복사',
+    briefCopied: '복사됨',
+    copyBriefFailed: '복사 실패',
+    strategySynthesisTitle: '전략 종합',
+    strategyFinalSignal: '종합 신호',
+    strategyConsensus: '공감도',
+    strategyConflict: '충돌',
+    strategyConfidence: '신뢰도',
+    strategySupporting: '지지 전략',
+    strategyOpposing: '반대 전략',
+    strategyMinorityPreserved: '고신뢰 소수 반대 의견이 보존되었습니다. 이견 리스크를 확인하세요',
+    strategyInvalidOpinions: '추가로 {count}개 전략이 유효한 신호를 생성하지 못했습니다',
   },
 } as const;
 
 export const getReportText = (language?: string | null) => REPORT_TEXT[normalizeReportLanguage(language)];
+
+const STRATEGY_SIGNAL_CANONICAL: Record<string, string> = {
+  'strong buy': 'strong_buy',
+  strong_buy: 'strong_buy',
+  '强烈买入': 'strong_buy',
+  buy: 'buy',
+  '买入': 'buy',
+  hold: 'hold',
+  '持有': 'hold',
+  sell: 'sell',
+  '卖出': 'sell',
+  'strong sell': 'strong_sell',
+  strong_sell: 'strong_sell',
+  '强烈卖出': 'strong_sell',
+};
+
+const STRATEGY_SIGNAL_TRANSLATIONS: Record<string, Record<ReportLanguage, string>> = {
+  strong_buy: { zh: '强烈买入', en: 'Strong Buy', ko: '적극 매수' },
+  buy: { zh: '买入', en: 'Buy', ko: '매수' },
+  hold: { zh: '持有', en: 'Hold', ko: '보유' },
+  sell: { zh: '卖出', en: 'Sell', ko: '매도' },
+  strong_sell: { zh: '强烈卖出', en: 'Strong Sell', ko: '적극 매도' },
+};
+
+const CONSENSUS_LEVEL_CANONICAL: Record<string, string> = {
+  high: 'high',
+  '高': 'high',
+  medium: 'medium',
+  '中': 'medium',
+  low: 'low',
+  '低': 'low',
+  insufficient: 'insufficient',
+  '证据不足': 'insufficient',
+  '증거 부족': 'insufficient',
+};
+
+const CONSENSUS_LEVEL_TRANSLATIONS: Record<string, Record<ReportLanguage, string>> = {
+  high: { zh: '高', en: 'High', ko: '높음' },
+  medium: { zh: '中', en: 'Medium', ko: '보통' },
+  low: { zh: '低', en: 'Low', ko: '낮음' },
+  insufficient: { zh: '证据不足', en: 'Insufficient', ko: '증거 부족' },
+};
+
+const CONFLICT_SEVERITY_CANONICAL: Record<string, string> = {
+  none: 'none',
+  '无': 'none',
+  low: 'low',
+  '低': 'low',
+  medium: 'medium',
+  '中': 'medium',
+  high: 'high',
+  '高': 'high',
+};
+
+const CONFLICT_SEVERITY_TRANSLATIONS: Record<string, Record<ReportLanguage, string>> = {
+  none: { zh: '无', en: 'None', ko: '없음' },
+  low: { zh: '低', en: 'Low', ko: '낮음' },
+  medium: { zh: '中', en: 'Medium', ko: '보통' },
+  high: { zh: '高', en: 'High', ko: '높음' },
+};
+
+const STRATEGY_SKILL_CANONICAL: Record<string, string> = {
+  'bull trend': 'bull_trend',
+  bull_trend: 'bull_trend',
+  '默认多头趋势': 'bull_trend',
+  'hot theme': 'hot_theme',
+  hot_theme: 'hot_theme',
+  '热点题材': 'hot_theme',
+  'volume breakout': 'volume_breakout',
+  volume_breakout: 'volume_breakout',
+  '放量突破': 'volume_breakout',
+  'ma golden cross': 'ma_golden_cross',
+  ma_golden_cross: 'ma_golden_cross',
+  '均线金叉': 'ma_golden_cross',
+  'growth quality': 'growth_quality',
+  growth_quality: 'growth_quality',
+  '成长质量': 'growth_quality',
+  'bottom volume': 'bottom_volume',
+  bottom_volume: 'bottom_volume',
+  '底部放量': 'bottom_volume',
+  'box oscillation': 'box_oscillation',
+  box_oscillation: 'box_oscillation',
+  '箱体震荡': 'box_oscillation',
+  'chan theory': 'chan_theory',
+  chan_theory: 'chan_theory',
+  '缠论结构': 'chan_theory',
+  'dragon head': 'dragon_head',
+  dragon_head: 'dragon_head',
+  '龙头战法': 'dragon_head',
+  'emotion cycle': 'emotion_cycle',
+  emotion_cycle: 'emotion_cycle',
+  '情绪周期': 'emotion_cycle',
+  'event driven': 'event_driven',
+  event_driven: 'event_driven',
+  '事件驱动': 'event_driven',
+  'expectation repricing': 'expectation_repricing',
+  expectation_repricing: 'expectation_repricing',
+  '预期重估': 'expectation_repricing',
+  'one yang three yin': 'one_yang_three_yin',
+  one_yang_three_yin: 'one_yang_three_yin',
+  '一阳三阴': 'one_yang_three_yin',
+  'shrink pullback': 'shrink_pullback',
+  shrink_pullback: 'shrink_pullback',
+  '缩量回踩': 'shrink_pullback',
+  'wave theory': 'wave_theory',
+  wave_theory: 'wave_theory',
+  '波浪理论': 'wave_theory',
+};
+
+const STRATEGY_SKILL_TRANSLATIONS: Record<string, Record<ReportLanguage, string>> = {
+  bull_trend: { zh: '默认多头趋势', en: 'Bull Trend', ko: '기본 상승 추세' },
+  hot_theme: { zh: '热点题材', en: 'Hot Theme', ko: '핫 테마' },
+  volume_breakout: { zh: '放量突破', en: 'Volume Breakout', ko: '거래량 돌파' },
+  ma_golden_cross: { zh: '均线金叉', en: 'MA Golden Cross', ko: '이평선 골든크로스' },
+  growth_quality: { zh: '成长质量', en: 'Growth Quality', ko: '성장 품질' },
+  bottom_volume: { zh: '底部放量', en: 'Bottom Volume', ko: '저점 거래량' },
+  box_oscillation: { zh: '箱体震荡', en: 'Box Oscillation', ko: '박스권 등락' },
+  chan_theory: { zh: '缠论结构', en: 'Chan Theory', ko: '찬 이론 구조' },
+  dragon_head: { zh: '龙头战法', en: 'Dragon Head', ko: '대장주 전략' },
+  emotion_cycle: { zh: '情绪周期', en: 'Emotion Cycle', ko: '심리 사이클' },
+  event_driven: { zh: '事件驱动', en: 'Event Driven', ko: '이벤트 드리븐' },
+  expectation_repricing: { zh: '预期重估', en: 'Expectation Repricing', ko: '기대 재평가' },
+  one_yang_three_yin: { zh: '一阳三阴', en: 'One Yang Three Yin', ko: '일양삼음' },
+  shrink_pullback: { zh: '缩量回踩', en: 'Shrink Pullback', ko: '거래량 축소 눌림' },
+  wave_theory: { zh: '波浪理论', en: 'Wave Theory', ko: '파동 이론' },
+};
+
+const translateStrategyToken = (
+  value: string | undefined,
+  canonicalMap: Record<string, string>,
+  translations: Record<string, Record<ReportLanguage, string>>,
+  language?: string | null,
+): string => {
+  const trimmed = (value ?? '').trim();
+  if (!trimmed) return '';
+  const lang = normalizeReportLanguage(language);
+  const canonical = canonicalMap[trimmed.toLowerCase()];
+  if (!canonical) return trimmed;
+  return translations[canonical]?.[lang] ?? trimmed;
+};
+
+export const localizeStrategySignal = (value: string | undefined, language?: string | null): string =>
+  translateStrategyToken(value, STRATEGY_SIGNAL_CANONICAL, STRATEGY_SIGNAL_TRANSLATIONS, language);
+
+export const localizeConsensusLevel = (value: string | undefined, language?: string | null): string =>
+  translateStrategyToken(value, CONSENSUS_LEVEL_CANONICAL, CONSENSUS_LEVEL_TRANSLATIONS, language);
+
+export const localizeConflictSeverity = (value: string | undefined, language?: string | null): string =>
+  translateStrategyToken(value, CONFLICT_SEVERITY_CANONICAL, CONFLICT_SEVERITY_TRANSLATIONS, language);
+
+export const localizeStrategySkillName = (value: string | undefined, language?: string | null): string =>
+  translateStrategyToken(value, STRATEGY_SKILL_CANONICAL, STRATEGY_SKILL_TRANSLATIONS, language);
+
+export const formatStrategySynthesisSummary = (
+  {
+    opinionCount,
+    finalSignal,
+    consensusLevel,
+    conflictSeverity,
+    conflictCount,
+  }: {
+    opinionCount: number;
+    finalSignal?: string;
+    consensusLevel?: string;
+    conflictSeverity?: string;
+    conflictCount: number;
+  },
+  language?: string | null,
+): string => {
+  const lang = normalizeReportLanguage(language);
+  const sig = localizeStrategySignal(finalSignal || 'N/A', lang);
+  const cons = localizeConsensusLevel(consensusLevel || 'N/A', lang);
+  const sev = localizeConflictSeverity(conflictSeverity || 'none', lang);
+  if (lang === 'en') {
+    return conflictCount > 0
+      ? `Strategy synthesis from ${opinionCount} strategies: final signal is ${sig}, consensus level is ${cons}, conflict severity is ${sev}.`
+      : `Strategy synthesis from ${opinionCount} strategies: final signal is ${sig}, consensus level is ${cons}, with no detected conflicts.`;
+  }
+  if (lang === 'ko') {
+    return conflictCount > 0
+      ? `${opinionCount}개 전략의 종합 판단: 종합 신호는 ${sig}, 공감도는 ${cons}, 충돌 강도는 ${sev}입니다.`
+      : `${opinionCount}개 전략의 종합 판단: 종합 신호는 ${sig}, 공감도는 ${cons}, 감지된 전략 충돌은 없습니다.`;
+  }
+  return conflictCount > 0
+    ? `来自 ${opinionCount} 个策略的综合判断：综合信号为${sig}，共识度为${cons}，冲突强度为${sev}。`
+    : `来自 ${opinionCount} 个策略的综合判断：综合信号为${sig}，共识度为${cons}，未检测到策略冲突。`;
+};
