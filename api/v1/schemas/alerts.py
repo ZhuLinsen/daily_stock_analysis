@@ -99,6 +99,7 @@ class AlertRuleTestResponse(BaseModel):
     triggered_count: int = 0
     degraded_count: int = 0
     skipped_count: int = 0
+    failed_count: int = 0
     target_results: List[AlertRuleTargetResult] = Field(default_factory=list)
 
 

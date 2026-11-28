@@ -882,4 +882,389 @@ describe('AlertsPage', () => {
     expect(screen.getByText(/600519: No daily data for 600519/)).toBeInTheDocument();
     expect(screen.getByText(/AAPL single rule ok/)).toBeInTheDocument();
   });
+
+  it('surfaces truncated batch failure count when an earlier 21-target test completes after a newer test (OR-COR-cfcbe3f4)', async () => {
+    const batchRule = {
+      ...rule,
+      id: 1,
+      name: '自选股批测规则',
+      targetScope: 'watchlist' as const,
+      target: 'default',
+    };
+    const singleRule = { ...rule, id: 2, name: '单股规则二', target: 'AAPL' };
+    const batchDeferred = createDeferred<{
+      ruleId: number;
+      targetScope: string;
+      status: string;
+      triggered: boolean;
+      observedValue: number | null;
+      message: string;
+      evaluatedCount: number;
+      triggeredCount: number;
+      degradedCount: number;
+      skippedCount: number;
+      failedCount: number;
+      targetResults: Array<{
+        target: string;
+        displayTarget: string;
+        status: string;
+        recordStatus: string;
+        triggered: boolean;
+        observedValue: number;
+        message: string;
+      }>;
+    }>();
+    const singleDeferred = createDeferred<{
+      ruleId: number;
+      status: string;
+      triggered: boolean;
+      observedValue: number;
+      message: string;
+    }>();
+
+    listRules
+      .mockReset()
+      .mockResolvedValue({ items: [batchRule, singleRule], total: 2, page: 1, pageSize: 20 });
+    testRule
+      .mockReset()
+      .mockReturnValueOnce(batchDeferred.promise)
+      .mockReturnValueOnce(singleDeferred.promise);
+
+    render(<AlertsPage />);
+
+    await screen.findByText('自选股批测规则');
+    const testButtons = screen.getAllByRole('button', { name: '测试' });
+
+    fireEvent.click(testButtons[0]);
+    fireEvent.click(testButtons[1]);
+
+    await act(async () => {
+      singleDeferred.resolve({
+        ruleId: 2,
+        status: 'not_triggered',
+        triggered: false,
+        observedValue: 195,
+        message: 'AAPL single rule ok',
+      });
+    });
+    expect(await screen.findByText(/AAPL single rule ok/)).toBeInTheDocument();
+
+    const truncatedTriggeredTargets = Array.from({ length: 20 }, (_, idx) => ({
+      target: `600${String(idx + 1).padStart(3, '0')}`,
+      displayTarget: `自选股 - 600${String(idx + 1).padStart(3, '0')}`,
+      status: 'triggered',
+      recordStatus: 'triggered',
+      triggered: true,
+      observedValue: 20 + idx,
+      message: 'triggered',
+    }));
+
+    await act(async () => {
+      batchDeferred.resolve({
+        ruleId: 1,
+        targetScope: 'watchlist',
+        status: 'triggered',
+        triggered: true,
+        observedValue: 20,
+        message: 'Evaluated 21 targets: 20 triggered, 0 degraded, 0 skipped, 1 failed',
+        evaluatedCount: 21,
+        triggeredCount: 20,
+        degradedCount: 0,
+        skippedCount: 0,
+        failedCount: 1,
+        targetResults: truncatedTriggeredTargets,
+      });
+    });
+
+    expect(await screen.findByText('规则「自选股批测规则」部分标的测试失败')).toBeInTheDocument();
+    expect(screen.getByText(/Evaluated 21 targets: 20 triggered, 0 degraded, 0 skipped, 1 failed/)).toBeInTheDocument();
+    expect(screen.getByText(/共 1 个标的评估失败（超出展示上限未逐条列出）/)).toBeInTheDocument();
+    expect(screen.getByText(/AAPL single rule ok/)).toBeInTheDocument();
+  });
+
+  it('falls back to summary failure count when an older truncated batch response omits failedCount (OR-COR-cfcbe3f4)', async () => {
+    const batchRule = {
+      ...rule,
+      id: 1,
+      name: '旧版自选股批测',
+      targetScope: 'watchlist' as const,
+      target: 'default',
+    };
+    const singleRule = { ...rule, id: 2, name: '单股规则二', target: 'AAPL' };
+    const batchDeferred = createDeferred<{
+      ruleId: number;
+      targetScope: string;
+      status: string;
+      triggered: boolean;
+      observedValue: number | null;
+      message: string;
+      evaluatedCount: number;
+      triggeredCount: number;
+      degradedCount: number;
+      skippedCount: number;
+      targetResults: Array<{
+        target: string;
+        displayTarget: string;
+        status: string;
+        recordStatus: string;
+        triggered: boolean;
+        observedValue: number;
+        message: string;
+      }>;
+    }>();
+    const singleDeferred = createDeferred<{
+      ruleId: number;
+      status: string;
+      triggered: boolean;
+      observedValue: number;
+      message: string;
+    }>();
+
+    listRules
+      .mockReset()
+      .mockResolvedValue({ items: [batchRule, singleRule], total: 2, page: 1, pageSize: 20 });
+    testRule
+      .mockReset()
+      .mockReturnValueOnce(batchDeferred.promise)
+      .mockReturnValueOnce(singleDeferred.promise);
+
+    render(<AlertsPage />);
+
+    await screen.findByText('旧版自选股批测');
+    const testButtons = screen.getAllByRole('button', { name: '测试' });
+
+    fireEvent.click(testButtons[0]);
+    fireEvent.click(testButtons[1]);
+
+    await act(async () => {
+      singleDeferred.resolve({
+        ruleId: 2,
+        status: 'not_triggered',
+        triggered: false,
+        observedValue: 195,
+        message: 'AAPL latest ok',
+      });
+    });
+    expect(await screen.findByText(/AAPL latest ok/)).toBeInTheDocument();
+
+    const truncatedTriggeredTargets = Array.from({ length: 20 }, (_, idx) => ({
+      target: `600${String(idx + 1).padStart(3, '0')}`,
+      displayTarget: `自选股 - 600${String(idx + 1).padStart(3, '0')}`,
+      status: 'triggered',
+      recordStatus: 'triggered',
+      triggered: true,
+      observedValue: 20 + idx,
+      message: 'triggered',
+    }));
+
+    await act(async () => {
+      batchDeferred.resolve({
+        ruleId: 1,
+        targetScope: 'watchlist',
+        status: 'triggered',
+        triggered: true,
+        observedValue: 20,
+        message: 'Evaluated 21 targets: 20 triggered, 0 degraded, 0 skipped, 1 failed',
+        evaluatedCount: 21,
+        triggeredCount: 20,
+        degradedCount: 0,
+        skippedCount: 0,
+        targetResults: truncatedTriggeredTargets,
+      });
+    });
+
+    expect(await screen.findByText('规则「旧版自选股批测」部分标的测试失败')).toBeInTheDocument();
+    expect(screen.getByText(/共 1 个标的评估失败（超出展示上限未逐条列出）/)).toBeInTheDocument();
+    expect(screen.getByText(/AAPL latest ok/)).toBeInTheDocument();
+  });
+
+  it('surfaces single-symbol skipped diagnostic when realtime quote is unavailable and settles after a newer test (OR-COR-11085181)', async () => {
+    const rule1 = { ...rule, id: 1, name: '规则一', target: '600519' };
+    const rule2 = { ...rule, id: 2, name: '规则二', target: 'AAPL' };
+    const testDeferred1 = createDeferred<{
+      ruleId: number;
+      targetScope: string;
+      status: string;
+      triggered: boolean;
+      observedValue: number | null;
+      message: string;
+      evaluatedCount: number;
+      triggeredCount: number;
+      degradedCount: number;
+      skippedCount: number;
+      failedCount: number;
+      targetResults: Array<{
+        target: string;
+        displayTarget: string;
+        status: string;
+        recordStatus: string;
+        triggered: boolean;
+        observedValue: number | null;
+        message: string;
+      }>;
+    }>();
+    const testDeferred2 = createDeferred<{
+      ruleId: number;
+      status: string;
+      triggered: boolean;
+      observedValue: number;
+      message: string;
+    }>();
+
+    listRules
+      .mockReset()
+      .mockResolvedValue({ items: [rule1, rule2], total: 2, page: 1, pageSize: 20 });
+    testRule
+      .mockReset()
+      .mockReturnValueOnce(testDeferred1.promise)
+      .mockReturnValueOnce(testDeferred2.promise);
+
+    render(<AlertsPage />);
+
+    await screen.findByText('规则一');
+    const testButtons = screen.getAllByRole('button', { name: '测试' });
+
+    fireEvent.click(testButtons[0]);
+    fireEvent.click(testButtons[1]);
+
+    await act(async () => {
+      testDeferred2.resolve({
+        ruleId: 2,
+        status: 'not_triggered',
+        triggered: false,
+        observedValue: 222,
+        message: 'rule2 completed cleanly',
+      });
+    });
+    expect(await screen.findByText(/rule2 completed cleanly/)).toBeInTheDocument();
+
+    await act(async () => {
+      testDeferred1.resolve({
+        ruleId: 1,
+        targetScope: 'single_symbol',
+        status: 'not_triggered',
+        triggered: false,
+        observedValue: null,
+        message: 'No realtime quote available',
+        evaluatedCount: 1,
+        triggeredCount: 0,
+        degradedCount: 0,
+        skippedCount: 1,
+        failedCount: 0,
+        targetResults: [
+          {
+            target: '600519',
+            displayTarget: '600519',
+            status: 'not_triggered',
+            recordStatus: 'skipped',
+            triggered: false,
+            observedValue: null,
+            message: 'No realtime quote available',
+          },
+        ],
+      });
+    });
+
+    expect(await screen.findByText('规则「规则一」测试未评估')).toBeInTheDocument();
+    expect(screen.getByText('No realtime quote available')).toBeInTheDocument();
+    expect(screen.getByText(/rule2 completed cleanly/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '关闭' }));
+    await waitFor(() => {
+      expect(screen.queryByText('规则「规则一」测试未评估')).not.toBeInTheDocument();
+    });
+    expect(screen.getByText(/rule2 completed cleanly/)).toBeInTheDocument();
+  });
+
+  it('surfaces single-symbol degraded diagnostic when daily data is unavailable and settles after a newer test', async () => {
+    const rule1 = { ...rule, id: 1, name: '放量规则一', target: '600519' };
+    const rule2 = { ...rule, id: 2, name: '规则二', target: 'AAPL' };
+    const testDeferred1 = createDeferred<{
+      ruleId: number;
+      targetScope: string;
+      status: string;
+      triggered: boolean;
+      observedValue: number | null;
+      message: string;
+      evaluatedCount: number;
+      triggeredCount: number;
+      degradedCount: number;
+      skippedCount: number;
+      failedCount: number;
+      targetResults: Array<{
+        target: string;
+        displayTarget: string;
+        status: string;
+        recordStatus: string;
+        triggered: boolean;
+        observedValue: number | null;
+        message: string;
+      }>;
+    }>();
+    const testDeferred2 = createDeferred<{
+      ruleId: number;
+      status: string;
+      triggered: boolean;
+      observedValue: number;
+      message: string;
+    }>();
+
+    listRules
+      .mockReset()
+      .mockResolvedValue({ items: [rule1, rule2], total: 2, page: 1, pageSize: 20 });
+    testRule
+      .mockReset()
+      .mockReturnValueOnce(testDeferred1.promise)
+      .mockReturnValueOnce(testDeferred2.promise);
+
+    render(<AlertsPage />);
+
+    await screen.findByText('放量规则一');
+    const testButtons = screen.getAllByRole('button', { name: '测试' });
+
+    fireEvent.click(testButtons[0]);
+    fireEvent.click(testButtons[1]);
+
+    await act(async () => {
+      testDeferred2.resolve({
+        ruleId: 2,
+        status: 'triggered',
+        triggered: true,
+        observedValue: 222,
+        message: 'rule2 triggered cleanly',
+      });
+    });
+    expect(await screen.findByText(/rule2 triggered cleanly/)).toBeInTheDocument();
+
+    await act(async () => {
+      testDeferred1.resolve({
+        ruleId: 1,
+        targetScope: 'single_symbol',
+        status: 'not_triggered',
+        triggered: false,
+        observedValue: null,
+        message: 'No daily volume data available',
+        evaluatedCount: 1,
+        triggeredCount: 0,
+        degradedCount: 1,
+        skippedCount: 0,
+        failedCount: 0,
+        targetResults: [
+          {
+            target: '600519',
+            displayTarget: '600519',
+            status: 'not_triggered',
+            recordStatus: 'degraded',
+            triggered: false,
+            observedValue: null,
+            message: 'No daily volume data available',
+          },
+        ],
+      });
+    });
+
+    expect(await screen.findByText('规则「放量规则一」测试数据降级')).toBeInTheDocument();
+    expect(screen.getByText('No daily volume data available')).toBeInTheDocument();
+    expect(screen.getByText(/rule2 triggered cleanly/)).toBeInTheDocument();
+  });
 });

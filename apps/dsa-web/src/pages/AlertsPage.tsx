@@ -18,6 +18,7 @@ import type {
   AlertRuleCreateRequest,
   AlertRuleItem,
   AlertRuleListResponse,
+  AlertRuleTargetResult,
   AlertRuleTestResponse,
   AlertTriggerItem,
   AlertType,
@@ -41,33 +42,131 @@ function testVariant(result: AlertRuleTestResponse): 'success' | 'warning' | 'da
   return result.triggered ? 'success' : 'warning';
 }
 
-function buildTestFailureAlert(rule: AlertRuleItem, result: AlertRuleTestResponse): ParsedApiError | null {
-  const failedTargets = (result.targetResults ?? []).filter(
-    (item) => item.status === 'evaluation_error' || item.recordStatus === 'failed',
+type RuleTestFeedback =
+  | { kind: 'error'; error: ParsedApiError }
+  | { kind: 'warning'; title: string; message: string };
+
+function isFailedTarget(item: AlertRuleTargetResult): boolean {
+  return item.status === 'evaluation_error' || item.recordStatus === 'failed';
+}
+
+function isDegradedTarget(item: AlertRuleTargetResult): boolean {
+  return item.recordStatus === 'degraded' || (item.status as string) === 'degraded';
+}
+
+function isSkippedTarget(item: AlertRuleTargetResult): boolean {
+  return item.recordStatus === 'skipped' || (item.status as string) === 'skipped';
+}
+
+function formatTargetDiagnostics(items: AlertRuleTargetResult[]): string {
+  return items
+    .map((item) => `${item.displayTarget ?? item.target}: ${item.message || item.recordStatus || item.status}`)
+    .join('；');
+}
+
+function buildOutOfOrderTestFeedback(
+  rule: AlertRuleItem,
+  result: AlertRuleTestResponse,
+): RuleTestFeedback | null {
+  const targetResults = result.targetResults ?? [];
+  const failedTargets = targetResults.filter(isFailedTarget);
+  const degradedTargets = targetResults.filter(isDegradedTarget);
+  const skippedTargets = targetResults.filter(isSkippedTarget);
+  const isTruncated = result.evaluatedCount != null && result.evaluatedCount > targetResults.length;
+  const legacyFailedMatch =
+    result.failedCount == null && isTruncated
+      ? /\b([1-9]\d*)\s+failed\b/i.exec(result.message ?? '')
+      : null;
+  const failedCount = Math.max(
+    result.failedCount ?? (legacyFailedMatch ? Number(legacyFailedMatch[1]) : 0),
+    failedTargets.length,
   );
-  if (result.status !== 'evaluation_error' && failedTargets.length === 0) {
-    return null;
-  }
+  const degradedCount = Math.max(result.degradedCount ?? 0, degradedTargets.length);
+  const skippedCount = Math.max(result.skippedCount ?? 0, skippedTargets.length);
+  const isMultiTarget = (result.evaluatedCount ?? targetResults.length) > 1;
 
   if (result.status === 'evaluation_error') {
-    return createParsedApiError({
-      title: `规则「${rule.name}」测试失败`,
-      message: result.message || '规则测试评估失败',
-      rawMessage: result.message || undefined,
-      category: 'unknown',
-    });
+    const failedDetails = isMultiTarget ? formatTargetDiagnostics(failedTargets) : '';
+    const hiddenFailedCount = isMultiTarget ? Math.max(0, failedCount - failedTargets.length) : 0;
+    const hiddenNote = hiddenFailedCount > 0
+      ? (failedTargets.length > 0
+        ? `另有 ${hiddenFailedCount} 个标的评估失败（超出展示上限未逐条列出）`
+        : `共 ${failedCount} 个标的评估失败（超出展示上限未逐条列出）`)
+      : '';
+    const combinedMessage = [result.message, failedDetails, hiddenNote].filter(Boolean).join('；');
+    return {
+      kind: 'error',
+      error: createParsedApiError({
+        title: `规则「${rule.name}」测试失败`,
+        message: combinedMessage || '规则测试评估失败',
+        rawMessage: combinedMessage || undefined,
+        category: 'unknown',
+      }),
+    };
   }
 
-  const failedDetails = failedTargets
-    .map((item) => `${item.displayTarget ?? item.target}: ${item.message || item.status}`)
-    .join('；');
-  const combinedMessage = [result.message, failedDetails].filter(Boolean).join('；');
-  return createParsedApiError({
-    title: `规则「${rule.name}」部分标的测试失败`,
-    message: combinedMessage || failedDetails || '部分标的测试评估失败',
-    rawMessage: combinedMessage || undefined,
-    category: 'unknown',
-  });
+  if (failedCount > 0) {
+    const failedDetails = formatTargetDiagnostics(failedTargets);
+    const hiddenFailedCount = isMultiTarget ? Math.max(0, failedCount - failedTargets.length) : 0;
+    const hiddenNote = hiddenFailedCount > 0
+      ? (failedTargets.length > 0
+        ? `另有 ${hiddenFailedCount} 个标的评估失败（超出展示上限未逐条列出）`
+        : `共 ${failedCount} 个标的评估失败（超出展示上限未逐条列出）`)
+      : '';
+    const combinedMessage = [result.message, failedDetails, hiddenNote].filter(Boolean).join('；');
+    return {
+      kind: 'error',
+      error: createParsedApiError({
+        title: isMultiTarget ? `规则「${rule.name}」部分标的测试失败` : `规则「${rule.name}」测试失败`,
+        message: combinedMessage || failedDetails || '部分标的测试评估失败',
+        rawMessage: combinedMessage || undefined,
+        category: 'unknown',
+      }),
+    };
+  }
+
+  const topLevelStatus = result.status as string;
+  if (degradedCount > 0 || skippedCount > 0 || topLevelStatus === 'skipped' || topLevelStatus === 'degraded') {
+    const diagnosticTargets = [...degradedTargets, ...skippedTargets];
+    const totalDiagnosticCount = degradedCount + skippedCount;
+    if (!isMultiTarget) {
+      const baseMessage = result.message?.trim();
+      const singleTargetMessage = diagnosticTargets[0]?.message?.trim();
+      const messageParts: string[] = [];
+      if (baseMessage) {
+        messageParts.push(baseMessage);
+      }
+      if (singleTargetMessage && (!baseMessage || !baseMessage.includes(singleTargetMessage))) {
+        messageParts.push(singleTargetMessage);
+      }
+      const isDegradedOnly =
+        (degradedCount > 0 || topLevelStatus === 'degraded')
+        && skippedCount === 0
+        && topLevelStatus !== 'skipped';
+      const fallbackMessage = isDegradedOnly ? '规则测试数据降级，未完成评估' : '规则测试已跳过，未完成评估';
+      return {
+        kind: 'warning',
+        title: isDegradedOnly ? `规则「${rule.name}」测试数据降级` : `规则「${rule.name}」测试未评估`,
+        message: messageParts.join('；') || fallbackMessage,
+      };
+    }
+
+    const diagnosticDetails = formatTargetDiagnostics(diagnosticTargets);
+    const hiddenDiagnosticCount = Math.max(0, totalDiagnosticCount - diagnosticTargets.length);
+    const hiddenNote = hiddenDiagnosticCount > 0
+      ? (diagnosticTargets.length > 0
+        ? `另有 ${hiddenDiagnosticCount} 个标的降级或跳过（超出展示上限未逐条列出）`
+        : `共 ${totalDiagnosticCount} 个标的降级或跳过（超出展示上限未逐条列出）`)
+      : '';
+    const combinedMessage = [result.message, diagnosticDetails, hiddenNote].filter(Boolean).join('；');
+    return {
+      kind: 'warning',
+      title: `规则「${rule.name}」部分标的未完成评估`,
+      message: combinedMessage || diagnosticDetails || '部分标的未完成评估',
+    };
+  }
+
+  return null;
 }
 
 function renderTestResultMessage(result: AlertRuleTestResponse): React.ReactNode {
@@ -86,6 +185,7 @@ function renderTestResultMessage(result: AlertRuleTestResponse): React.ReactNode
       {result.evaluatedCount != null && result.evaluatedCount > 1 ? (
         <div className="text-xs">
           评估 {result.evaluatedCount} · 触发 {result.triggeredCount ?? 0} · 降级 {result.degradedCount ?? 0} · 跳过 {result.skippedCount ?? 0}
+          {result.failedCount != null ? ` · 失败 ${result.failedCount}` : ''}
         </div>
       ) : null}
       {targetResults.length > 1 ? (
@@ -156,7 +256,7 @@ const AlertsPage: React.FC = () => {
   const [createSuccess, setCreateSuccess] = useState<string | null>(null);
   const [busyRules, setBusyRules] = useState<Record<number, AlertRuleBusyAction>>({});
   const [testResult, setTestResult] = useState<{ ruleId: number; response: AlertRuleTestResponse } | null>(null);
-  const [testErrors, setTestErrors] = useState<Record<number, ParsedApiError>>({});
+  const [testFeedback, setTestFeedback] = useState<Record<number, RuleTestFeedback>>({});
   const mountedRef = useRef(true);
   const rulesRequestIdRef = useRef(0);
   const triggersRequestIdRef = useRef(0);
@@ -340,7 +440,7 @@ const AlertsPage: React.FC = () => {
         activeTestRuleIdRef.current = null;
       }
       setTestResult((current) => (current?.ruleId === rule.id ? null : current));
-      setTestErrors((previous) => {
+      setTestFeedback((previous) => {
         if (!(rule.id in previous)) return previous;
         const next = { ...previous };
         delete next[rule.id];
@@ -364,7 +464,7 @@ const AlertsPage: React.FC = () => {
     activeTestRuleIdRef.current = rule.id;
     setRuleBusy(rule.id, 'test');
     setTestResult(null);
-    setTestErrors((previous) => {
+    setTestFeedback((previous) => {
       if (!(rule.id in previous)) return previous;
       const next = { ...previous };
       delete next[rule.id];
@@ -376,11 +476,11 @@ const AlertsPage: React.FC = () => {
         return;
       }
       if (testRequestIdRef.current !== requestId) {
-        const failureAlert = buildTestFailureAlert(rule, result);
-        if (failureAlert) {
-          setTestErrors((previous) => ({
+        const feedback = buildOutOfOrderTestFeedback(rule, result);
+        if (feedback) {
+          setTestFeedback((previous) => ({
             ...previous,
-            [rule.id]: failureAlert,
+            [rule.id]: feedback,
           }));
         }
         return;
@@ -389,9 +489,9 @@ const AlertsPage: React.FC = () => {
     } catch (error) {
       if (!mountedRef.current || ruleTestEpochRef.current[rule.id] !== ruleEpoch) return;
       const parsedError = getParsedApiError(error);
-      setTestErrors((previous) => ({
+      setTestFeedback((previous) => ({
         ...previous,
-        [rule.id]: parsedError,
+        [rule.id]: { kind: 'error', error: parsedError },
       }));
     } finally {
       if (testRequestIdRef.current === requestId) {
@@ -423,20 +523,36 @@ const AlertsPage: React.FC = () => {
         />
       ) : null}
       {rulesError ? <ApiErrorAlert error={rulesError} onDismiss={() => setRulesError(null)} /> : null}
-      {Object.entries(testErrors).map(([ruleIdStr, error]) => {
+      {Object.entries(testFeedback).map(([ruleIdStr, feedback]) => {
         const targetRuleId = Number(ruleIdStr);
+        const dismissFeedback = () => {
+          setTestFeedback((previous) => {
+            if (!(targetRuleId in previous)) return previous;
+            const next = { ...previous };
+            delete next[targetRuleId];
+            return next;
+          });
+        };
+        if (feedback.kind === 'warning') {
+          return (
+            <InlineAlert
+              key={`test-feedback-${ruleIdStr}`}
+              title={feedback.title}
+              message={feedback.message}
+              variant="warning"
+              action={(
+                <button type="button" className="text-sm underline" onClick={dismissFeedback}>
+                  关闭
+                </button>
+              )}
+            />
+          );
+        }
         return (
           <ApiErrorAlert
-            key={`test-error-${ruleIdStr}`}
-            error={error}
-            onDismiss={() => {
-              setTestErrors((previous) => {
-                if (!(targetRuleId in previous)) return previous;
-                const next = { ...previous };
-                delete next[targetRuleId];
-                return next;
-              });
-            }}
+            key={`test-feedback-${ruleIdStr}`}
+            error={feedback.error}
+            onDismiss={dismissFeedback}
           />
         );
       })}

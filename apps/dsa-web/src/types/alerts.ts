@@ -95,6 +95,7 @@ export interface AlertRuleTestResponse {
   triggeredCount?: number;
   degradedCount?: number;
   skippedCount?: number;
+  failedCount?: number;
   targetResults?: AlertRuleTargetResult[];
 }
 
