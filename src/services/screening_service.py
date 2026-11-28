@@ -24,7 +24,7 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass, is_dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Mapping, Optional, Tuple
 from urllib.parse import urlparse
 
 from fastapi import HTTPException
@@ -3093,16 +3093,43 @@ def _normalize_screening_api_base(value: Any) -> str:
     return raw.rstrip("/").lower()
 
 
-def _resolve_canonical_screening_api_base(params: Dict[str, Any]) -> Tuple[str, bool]:
-    """Resolve one canonical base URL, flagging conflict if ``api_base`` and ``base_url`` disagree."""
-    from src.llm.transport import resolve_env_reference
+def _resolve_canonical_screening_api_base(
+    params: Dict[str, Any],
+    *,
+    model_info: Optional[Mapping[str, Any]] = None,
+) -> Tuple[str, bool]:
+    """Resolve one canonical base URL, flagging conflict or unresolved env refs."""
+    from src.llm.transport import (
+        find_unresolved_env_var,
+        is_resolved_litellm_params,
+        resolve_env_reference,
+    )
 
-    norm_api_base = _normalize_screening_api_base(resolve_env_reference(params.get("api_base")))
-    norm_base_url = _normalize_screening_api_base(resolve_env_reference(params.get("base_url")))
-    if norm_api_base and norm_base_url and norm_api_base != norm_base_url:
+    if isinstance(model_info, Mapping) and str(model_info.get("_dsa_unresolved_endpoint_env") or "").strip():
         return "", True
-    # Match LiteLLM 1.98.1 precedence when single or identical.
-    return norm_base_url or norm_api_base, False
+
+    already_resolved = is_resolved_litellm_params(params)
+    raw_api_base = params.get("api_base")
+    raw_base_url = params.get("base_url")
+    if not already_resolved:
+        if find_unresolved_env_var(raw_base_url) is not None or find_unresolved_env_var(raw_api_base) is not None:
+            return "", True
+
+    resolved_api_base = raw_api_base if already_resolved else resolve_env_reference(raw_api_base)
+    resolved_base_url = raw_base_url if already_resolved else resolve_env_reference(raw_base_url)
+    has_explicit_base_url = "base_url" in params and raw_base_url is not None
+
+    norm_api_base = _normalize_screening_api_base(resolved_api_base)
+    norm_base_url = _normalize_screening_api_base(resolved_base_url) if has_explicit_base_url else ""
+
+    if has_explicit_base_url:
+        # Match LiteLLM 1.98.1 precedence: any non-None base_url overrides
+        # api_base (including explicit base_url=""); decline header injection
+        # whenever api_base and explicit base_url disagree.
+        if norm_api_base and norm_base_url != norm_api_base:
+            return "", True
+        return norm_base_url, False
+    return norm_api_base, False
 
 
 def _merge_screening_headers_case_insensitive(
@@ -3110,15 +3137,16 @@ def _merge_screening_headers_case_insensitive(
     existing_headers: Dict[str, Any],
 ) -> Dict[str, Any]:
     """Merge injected headers with explicit caller headers without case-variant duplicates."""
-    merged: Dict[str, Any] = dict(injected_headers)
-    lower_to_key = {str(key).strip().lower(): key for key in merged}
-    for key, value in existing_headers.items():
-        lowered = str(key).strip().lower()
-        prior_key = lower_to_key.get(lowered)
-        if prior_key is not None and prior_key != key:
-            merged.pop(prior_key, None)
-        merged[key] = value
-        lower_to_key[lowered] = key
+    merged: Dict[str, Any] = {}
+    lower_to_key: Dict[str, Any] = {}
+    for source in (injected_headers, existing_headers):
+        for key, value in source.items():
+            lowered = str(key).strip().lower()
+            prior_key = lower_to_key.get(lowered)
+            if prior_key is not None and prior_key != key:
+                merged.pop(prior_key, None)
+            merged[key] = value
+            lower_to_key[lowered] = key
     return merged
 
 
@@ -3148,21 +3176,21 @@ class _ScreeningHeaderTransportProxy:
         return self._delegate.completion(*args, **kwargs)
 
     def create_router(self, model_list: List[Dict[str, Any]], **kwargs: Any) -> Any:
-        from src.llm.transport import resolve_litellm_params_env
-
         patched_list: List[Dict[str, Any]] = []
         for entry in model_list or []:
             if not isinstance(entry, dict):
                 patched_list.append(entry)
                 continue
             raw_params = entry.get("litellm_params")
+            match_params = raw_params if isinstance(raw_params, dict) else {}
             params = dict(raw_params) if isinstance(raw_params, dict) else {}
-            match_params = resolve_litellm_params_env(params)
+            raw_info = entry.get("model_info")
             headers = _match_screening_litellm_headers(
                 (),
                 match_params,
                 self._header_routes,
                 model_alias=entry.get("model_name"),
+                model_info=raw_info if isinstance(raw_info, Mapping) else None,
             )
             if headers:
                 existing_headers = params.get("extra_headers")
@@ -3234,33 +3262,42 @@ def _build_screening_litellm_header_routes(config: Config) -> List[Dict[str, Any
     channels = _normalize_dsa_llm_channels(config)
     model_list = _build_screening_litellm_model_list(config, channels)
     routes: List[Dict[str, Any]] = []
+    has_any_headers = False
     for entry in model_list:
         if not isinstance(entry, dict):
             continue
         raw_params = entry.get("litellm_params") or {}
         if not isinstance(raw_params, dict):
             continue
-        params = resolve_litellm_params_env(raw_params)
-        headers = params.get("extra_headers")
-        if not isinstance(headers, dict) or not headers:
+        raw_info = entry.get("model_info")
+        model_info = raw_info if isinstance(raw_info, Mapping) else None
+        canonical_base, has_conflict = _resolve_canonical_screening_api_base(
+            raw_params,
+            model_info=model_info,
+        )
+        if has_conflict:
             continue
+        params = resolve_litellm_params_env(raw_params)
+        raw_headers = params.get("extra_headers")
+        headers = dict(raw_headers) if isinstance(raw_headers, dict) and raw_headers else {}
+        if headers:
+            has_any_headers = True
         model_names = _dedupe_strings([
             entry.get("model_name"),
             params.get("model"),
         ])
         if not model_names:
             continue
-        canonical_base, has_conflict = _resolve_canonical_screening_api_base(params)
-        if has_conflict:
-            continue
         routes.append(
             {
                 "models": model_names,
                 "api_key": _env_text(params.get("api_key")),
                 "api_base": canonical_base,
-                "extra_headers": dict(headers),
+                "extra_headers": headers,
             }
         )
+    if not has_any_headers:
+        return []
     return routes
 
 
@@ -3270,8 +3307,9 @@ def _match_screening_litellm_headers(
     routes: List[Dict[str, Any]],
     *,
     model_alias: Any = None,
+    model_info: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
-    from src.llm.transport import resolve_env_reference
+    from src.llm.transport import is_resolved_litellm_params, resolve_env_reference
 
     model = _env_text(kwargs.get("model"))
     if not model and args:
@@ -3281,8 +3319,11 @@ def _match_screening_litellm_headers(
     if not candidate_models:
         return {}
 
-    api_key = _env_text(resolve_env_reference(kwargs.get("api_key")))
-    api_base, has_conflict = _resolve_canonical_screening_api_base(kwargs)
+    raw_api_key = kwargs.get("api_key")
+    api_key = _env_text(
+        raw_api_key if is_resolved_litellm_params(kwargs) else resolve_env_reference(raw_api_key)
+    )
+    api_base, has_conflict = _resolve_canonical_screening_api_base(kwargs, model_info=model_info)
     if has_conflict:
         return {}
 
@@ -3300,9 +3341,16 @@ def _match_screening_litellm_headers(
             continue
         headers = route.get("extra_headers")
         if isinstance(headers, dict) and headers:
-            signature = tuple(sorted((str(k).strip().lower(), str(v)) for k, v in headers.items()))
+            deduped = _merge_screening_headers_case_insensitive(headers, {})
+            signature = tuple(sorted((str(k).strip().lower(), str(v)) for k, v in deduped.items()))
             matched_signatures.add(signature)
-            matched_headers.append(dict(headers))
+            matched_headers.append(deduped)
+        else:
+            # Record headerless siblings so a header-bearing route sharing
+            # (model, api_key, api_base) with a headerless deployment is treated
+            # as ambiguous and declines header injection.
+            matched_signatures.add(())
+            matched_headers.append({})
 
     if len(matched_signatures) != 1:
         # Decline ambiguous injection if multiple routes match with conflicting headers.
@@ -3443,7 +3491,7 @@ def _env_text(value: Any) -> str:
         return ""
     if isinstance(value, float) and not math.isfinite(value):
         return ""
-    text = str(value).strip()
+    text = value.strip() if isinstance(value, str) else str(value).strip()
     if text.lower() in {"nan", "none", "null"}:
         return ""
     return text

@@ -273,7 +273,9 @@ def test_repo_wide_ast_guard_forbids_direct_litellm_imports_and_calls() -> None:
         REPO_ROOT / "src",
         REPO_ROOT / "api",
         REPO_ROOT / "bot",
+        REPO_ROOT / "data_provider",
         REPO_ROOT / "main.py",
+        REPO_ROOT / "server.py",
     ]
     exempt_files = {
         (REPO_ROOT / "src" / "llm" / "transport.py").resolve(),
@@ -698,7 +700,7 @@ def test_deployment_spec_normalization_separation_single_pass_and_redacted_repr(
             "store": False,
             "timeout": "45.5",
             "order": 2,
-            # Router-only & cloud IAM keys MUST NOT leak into request_defaults.
+            # Router-only, cloud IAM, & unlisted credential keys MUST NOT leak into request_defaults.
             "rpm": 100,
             "tpm": 100000,
             "num_retries": 3,
@@ -707,6 +709,9 @@ def test_deployment_spec_normalization_separation_single_pass_and_redacted_repr(
             "aws_region_name": "us-east-1",
             "vertex_project": "proj-1",
             "azure_ad_token": "tok",
+            "token": "secret-token-value",
+            "litellm_credential_name": "cred-name",
+            "max_budget": 10.0,
         },
         "model_info": {
             "dsa_api_surface": "chat_completions",
@@ -744,6 +749,21 @@ def test_deployment_spec_normalization_separation_single_pass_and_redacted_repr(
     rendered = repr(spec)
     assert "sk-resolved-secret" not in rendered
     assert "SHOULD_NOT_REEXPAND" not in rendered
+    assert "secret-token-value" not in rendered
+    assert "cred-name" not in rendered
+
+    # Explicit base_url="" overrides api_base to match LiteLLM 1.98.1 precedence.
+    empty_override_spec = normalize_deployment_spec(
+        {
+            "model_name": "override-empty",
+            "litellm_params": {
+                "model": "openai/gpt-5",
+                "api_base": "https://relay.example.com/v1",
+                "base_url": "",
+            },
+        }
+    )
+    assert empty_override_spec.api_base == ""
 
     # Default priority without explicit order/priority stays 0 across sibling entries.
     plain_entry = {"model_name": "m", "litellm_params": {"model": "openai/m"}}
@@ -1284,3 +1304,335 @@ def test_use_transport_intercepts_all_runtime_entry_points(monkeypatch: pytest.M
 
     assert len(fake.completion_calls) >= 2
     assert len(fake.pricing_calls) >= 1
+
+
+def test_codex_round2_regressions_keyless_yaml_vision_screening_redaction_and_router(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Regression coverage for keyless local channels, YAML unresolved endpoints, single-pass env, screening ambiguity, redaction, and prebuilt routers."""
+    # 1. P0-1: Explicit keyless local/Ollama channel (api_keys=[""]) MUST NOT inherit outer_api_key.
+    keyless_attempts = ranker._build_litellm_attempts(
+        "ollama/qwen3:8b",
+        api_key="sk-outer-secret-key",
+        base_url="",
+        channels=[
+            {
+                "name": "local-ollama",
+                "protocol": "ollama",
+                "api_surface": "",
+                "api_keys": [""],
+                "base_url": "http://127.0.0.1:11434/v1",
+                "models": ["ollama/qwen3:8b"],
+                "extra_headers": {"X-Local-Tag": "ollama"},
+            }
+        ],
+    )
+    assert len(keyless_attempts) == 1
+    assert "api_key" not in keyless_attempts[0]
+    assert keyless_attempts[0]["api_base"] == "http://127.0.0.1:11434/v1"
+    assert keyless_attempts[0]["extra_headers"] == {"X-Local-Tag": "ollama"}
+
+    # 2. P0-2: Config._parse_litellm_yaml preserves unresolved endpoint env error end-to-end into Vision,
+    # even when the deployment is keyless or legacy openai_api_keys is set!
+    monkeypatch.delenv("MISSING_VISION_YAML_URL", raising=False)
+    broken_vision_yaml = tmp_path / "broken_vision.yaml"
+    broken_vision_yaml.write_text(
+        """
+model_list:
+  - model_name: openai/gpt-5
+    litellm_params:
+      model: openai/gpt-5
+      api_base: os.environ/MISSING_VISION_YAML_URL
+""".strip(),
+        encoding="utf-8",
+    )
+    parsed_broken = Config._parse_litellm_yaml(str(broken_vision_yaml))
+    assert parsed_broken[0]["model_info"]["_dsa_unresolved_endpoint_env"] == "api_base:MISSING_VISION_YAML_URL"
+
+    cfg_broken_vision = Config(
+        vision_model="openai/gpt-5",
+        openai_api_keys=["sk-legacy-fallback-1234"],
+        llm_model_list=parsed_broken,
+    )
+    fake_vision = _RecordingTransport(response_text="[]")
+    monkeypatch.setattr(image_stock_extractor, "get_config", lambda: cfg_broken_vision)
+    with use_transport(fake_vision):
+        with pytest.raises(ValueError, match="MISSING_VISION_YAML_URL"):
+            image_stock_extractor._call_litellm_vision("aGVsbG8=", "image/png")
+    assert fake_vision.completion_calls == []
+
+    # 3. P0-3 + P1-3: Vision rejects explicit base_url="" alongside api_base AND case-sensitive path mismatch,
+    # while accepting scheme/host case differences.
+    cfg_empty_base = Config(
+        vision_model="openai/gpt-5",
+        llm_model_list=[
+            {
+                "model_name": "openai/gpt-5",
+                "litellm_params": {
+                    "model": "openai/gpt-5",
+                    "api_key": "sk-vision-key-1234",
+                    "api_base": "https://relay.example/v1",
+                    "base_url": "",
+                },
+            }
+        ],
+    )
+    monkeypatch.setattr(image_stock_extractor, "get_config", lambda: cfg_empty_base)
+    with use_transport(fake_vision):
+        with pytest.raises(ValueError, match="conflicting api_base and base_url"):
+            image_stock_extractor._call_litellm_vision("aGVsbG8=", "image/png")
+
+    cfg_case_path_conflict = Config(
+        vision_model="openai/gpt-5",
+        llm_model_list=[
+            {
+                "model_name": "openai/gpt-5",
+                "litellm_params": {
+                    "model": "openai/gpt-5",
+                    "api_key": "sk-vision-key-1234",
+                    "api_base": "https://relay.example/V1/CaseA",
+                    "base_url": "https://relay.example/v1/casea",
+                },
+            }
+        ],
+    )
+    monkeypatch.setattr(image_stock_extractor, "get_config", lambda: cfg_case_path_conflict)
+    with use_transport(fake_vision):
+        with pytest.raises(ValueError, match="conflicting api_base and base_url"):
+            image_stock_extractor._call_litellm_vision("aGVsbG8=", "image/png")
+
+    cfg_host_case_ok = Config(
+        vision_model="openai/gpt-5",
+        llm_model_list=[
+            {
+                "model_name": "openai/gpt-5",
+                "litellm_params": {
+                    "model": "openai/gpt-5",
+                    "api_key": "sk-vision-key-1234",
+                    "api_base": "HTTPS://RELAY.EXAMPLE/v1/CaseA/",
+                    "base_url": "https://relay.example/v1/CaseA",
+                },
+            }
+        ],
+    )
+    monkeypatch.setattr(image_stock_extractor, "get_config", lambda: cfg_host_case_ok)
+    with use_transport(fake_vision):
+        image_stock_extractor._call_litellm_vision("aGVsbG8=", "image/png")
+    assert fake_vision.completion_calls[0]["api_base"] == "https://relay.example/v1/CaseA"
+
+    # 4. P0-3 + P1-2: Screening proxy rejects explicit base_url="" override, unset os.environ/ endpoint,
+    # headerless sibling ambiguity, and pre-existing case duplicates inside injected headers.
+    monkeypatch.delenv("MISSING_SCREEN_BASE", raising=False)
+    cfg_screen_edge = Config(
+        litellm_model="openai/gpt-4o-mini",
+        llm_model_list=[
+            {
+                "model_name": "openai/gpt-4o-mini",
+                "litellm_params": {
+                    "model": "openai/gpt-4o-mini",
+                    "api_key": "sk-relay-a",
+                    "api_base": "https://relay-a.example/v1",
+                    "extra_headers": {
+                        "Authorization": "Bearer first-dup",
+                        "authorization": "Bearer second-dup",
+                    },
+                },
+            }
+        ],
+    )
+    fake_screen = _RecordingTransport(response_text="ok")
+    with use_transport(fake_screen):
+        with screening_service._screening_litellm_headers(cfg_screen_edge):
+            # Explicit base_url="" overrides api_base -> conflict -> no header injection!
+            dispatch_completion(
+                model="openai/gpt-4o-mini",
+                api_key="sk-relay-a",
+                api_base="https://relay-a.example/v1",
+                base_url="",
+                messages=[],
+            )
+            # Unset os.environ/ endpoint -> no header injection!
+            dispatch_completion(
+                model="openai/gpt-4o-mini",
+                api_key="sk-relay-a",
+                api_base="os.environ/MISSING_SCREEN_BASE",
+                messages=[],
+            )
+            # Valid match deduplicates case-variant route headers cleanly.
+            dispatch_completion(
+                model="openai/gpt-4o-mini",
+                api_key="sk-relay-a",
+                api_base="https://relay-a.example/v1",
+                messages=[],
+            )
+    assert "extra_headers" not in fake_screen.completion_calls[0]
+    assert "extra_headers" not in fake_screen.completion_calls[1]
+    assert fake_screen.completion_calls[2]["extra_headers"] == {"authorization": "Bearer second-dup"}
+
+    # Headerless sibling sharing (model, api_key, api_base) with a header-bearing route is ambiguous -> no injection!
+    cfg_headerless_sibling = Config(
+        litellm_model="openai/gpt-4o-mini",
+        llm_model_list=[
+            {
+                "model_name": "openai/gpt-4o-mini",
+                "litellm_params": {
+                    "model": "openai/gpt-4o-mini",
+                    "api_key": "sk-shared",
+                    "api_base": "https://shared.example/v1",
+                    "extra_headers": {"X-Tenant": "tenant-a"},
+                },
+            },
+            {
+                "model_name": "openai/gpt-4o-mini",
+                "litellm_params": {
+                    "model": "openai/gpt-4o-mini",
+                    "api_key": "sk-shared",
+                    "api_base": "https://shared.example/v1",
+                },
+            },
+        ],
+    )
+    fake_sib = _RecordingTransport(response_text="ok")
+    with use_transport(fake_sib):
+        with screening_service._screening_litellm_headers(cfg_headerless_sibling):
+            dispatch_completion(
+                model="openai/gpt-4o-mini",
+                api_key="sk-shared",
+                api_base="https://shared.example/v1",
+                messages=[],
+            )
+    assert "extra_headers" not in fake_sib.completion_calls[0]
+
+    # 5. P1-6: Single-pass YAML env resolution across Config._parse_litellm_yaml -> Vision & Screening.
+    monkeypatch.setenv("LITERAL_ENV_KEY", "os.environ/SECOND_HOP_SECRET")
+    monkeypatch.setenv("SECOND_HOP_SECRET", "SHOULD_NEVER_EXPAND")
+    single_pass_yaml = tmp_path / "single_pass.yaml"
+    single_pass_yaml.write_text(
+        """
+model_list:
+  - model_name: openai/gpt-5
+    litellm_params:
+      model: openai/gpt-5
+      api_key: os.environ/LITERAL_ENV_KEY
+      api_base: https://single-pass.example/v1
+      extra_headers:
+        X-Route: single-pass
+""".strip(),
+        encoding="utf-8",
+    )
+    parsed_single = Config._parse_litellm_yaml(str(single_pass_yaml))
+    assert parsed_single[0]["litellm_params"]["api_key"] == "os.environ/SECOND_HOP_SECRET"
+    assert normalize_deployment_spec(parsed_single[0]).api_key == "os.environ/SECOND_HOP_SECRET"
+
+    cfg_single = Config(vision_model="openai/gpt-5", litellm_model="openai/gpt-5", llm_model_list=parsed_single)
+    fake_single_vision = _RecordingTransport(response_text="[]")
+    monkeypatch.setattr(image_stock_extractor, "get_config", lambda: cfg_single)
+    with use_transport(fake_single_vision):
+        image_stock_extractor._call_litellm_vision("aGVsbG8=", "image/png")
+    assert fake_single_vision.completion_calls[0]["api_key"] == "os.environ/SECOND_HOP_SECRET"
+
+    fake_single_screen = _RecordingTransport(response_text="ok")
+    with use_transport(fake_single_screen):
+        with screening_service._screening_litellm_headers(cfg_single):
+            create_router(parsed_single)
+            dispatch_completion(
+                model="openai/gpt-5",
+                api_key=parsed_single[0]["litellm_params"]["api_key"],
+                api_base="https://single-pass.example/v1",
+                messages=[],
+            )
+    assert fake_single_screen.router_calls[0]["model_list"][0]["litellm_params"]["extra_headers"] == {
+        "X-Route": "single-pass"
+    }
+    assert fake_single_screen.completion_calls[0]["extra_headers"] == {"X-Route": "single-pass"}
+
+    # 6. P1-4 + Opus P2-1: hyphenated "responses-api", prebuilt Router Responses guard, and non-OpenAI YAML create_router warning.
+    captured_completions: List[Dict[str, Any]] = []
+    captured_routers: List[List[Dict[str, Any]]] = []
+
+    class _DummyRouter:
+        def __init__(self, model_list: List[Dict[str, Any]], **kwargs: Any) -> None:
+            self.model_list = model_list
+            captured_routers.append(model_list)
+
+        def completion(self, **kwargs: Any) -> Any:
+            return {"ok": True, "kwargs": kwargs}
+
+    fake_sdk = ModuleType("litellm")
+    fake_sdk.completion = lambda **kw: captured_completions.append(kw) or {"ok": True}  # type: ignore[attr-defined]
+    fake_sdk.Router = _DummyRouter  # type: ignore[attr-defined]
+    with patch.dict(sys.modules, {"litellm": fake_sdk}, clear=False):
+        transport = LiteLLMTransport()
+        transport.completion(model="openai/gpt-5", api_surface="responses-api", messages=[])
+        assert captured_completions[0]["model"] == "openai/responses/gpt-5"
+        assert "api_surface" not in captured_completions[0]
+
+        # Hand-written YAML with dsa_api_surface=responses on non-openai model logs warning instead of crashing Router init.
+        caplog.clear()
+        with caplog.at_level(logging.WARNING):
+            transport.create_router(
+                [
+                    {
+                        "model_name": "anthropic/claude-sonnet-4-6",
+                        "litellm_params": {"model": "anthropic/claude-sonnet-4-6", "api_key": "sk-ant"},
+                        "model_info": {"dsa_api_surface": "responses"},
+                    }
+                ]
+            )
+        assert captured_routers[0][0]["litellm_params"]["model"] == "anthropic/claude-sonnet-4-6"
+        assert "Skipping Responses wire-model encoding" in caplog.text
+
+    # Prebuilt SDK Router without Responses-encoded deployment raises ValueError on api_surface="responses".
+    prebuilt_chat_router = _DummyRouter(
+        model_list=[{"model_name": "openai/gpt-5", "litellm_params": {"model": "openai/gpt-5"}}]
+    )
+    with pytest.raises(ValueError, match="Responses API surface"):
+        dispatch_completion(
+            router=prebuilt_chat_router,
+            model="openai/gpt-5",
+            api_surface="responses",
+            messages=[],
+        )
+
+    # 7. P1-1: Non-auth generic header values (e.g. X-Format: json) must NOT corrupt capability_results keys,
+    # AND stream-close failure debug logs must redact auth secrets.
+    class _FailingCloseStream:
+        def __iter__(self):
+            yield SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content="OK"))])
+
+        def close(self) -> None:
+            raise RuntimeError("close failed with bare-tok-9999")
+
+    class _StreamCloseTransport(_RecordingTransport):
+        def completion(self, **kwargs: Any) -> Any:
+            if kwargs.get("stream"):
+                return _FailingCloseStream()
+            return super().completion(**kwargs)
+
+    service = SystemConfigService()
+    caplog.clear()
+    with caplog.at_level(logging.DEBUG, logger="src.services.system_config_service"):
+        with use_transport(_StreamCloseTransport(response_text='{"status":"ok"}')):
+            res = service.test_llm_channel(
+                name="relay",
+                protocol="openai",
+                api_surface="chat_completions",
+                base_url="https://relay.example/v1",
+                api_key="sk-test-channel-key",
+                models=["gpt-5"],
+                capability_checks=["json", "stream"],
+                extra_headers={
+                    "X-Format": "json",
+                    "Content-Type": "application/json",
+                    "X-Custom-Tenant": "acme",
+                    "Authorization": "Bearer bare-tok-9999",
+                },
+            )
+    assert res["success"] is True
+    assert "json" in res["capability_results"]
+    assert res["capability_results"]["json"]["status"] == "passed"
+    assert res["capability_results"]["json"]["details"]["capability"] == "json"
+    assert "bare-tok-9999" not in caplog.text
+    assert "[REDACTED]" in caplog.text

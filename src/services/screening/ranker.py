@@ -1097,13 +1097,22 @@ def _build_litellm_attempts(
             continue
         matched_channel = True
         raw_channel_keys = channel.get("api_keys", [])
-        channel_keys = (
-            [str(k or "").strip() for k in raw_channel_keys if str(k or "").strip()]
-            if isinstance(raw_channel_keys, list)
-            else []
-        )
-        inherited_outer_key = (not channel_keys) and bool(outer_api_key)
-        api_keys = channel_keys if channel_keys else ([outer_api_key] if outer_api_key else [""])
+        raw_key_list = raw_channel_keys if isinstance(raw_channel_keys, list) else []
+        channel_keys = [
+            (k.strip() if isinstance(k, str) else str(k or "").strip())
+            for k in raw_key_list
+            if (k.strip() if isinstance(k, str) else str(k or "").strip())
+        ]
+        explicit_keyless_channel = bool(raw_key_list) and not channel_keys
+        if explicit_keyless_channel:
+            # Config represents supported keyless local channels (e.g. Ollama /
+            # localhost) with ``api_keys=[""]``; preserve keyless mode instead
+            # of leaking an unrelated outer API key onto the local endpoint.
+            inherited_outer_key = False
+            api_keys = [""]
+        else:
+            inherited_outer_key = (not channel_keys) and bool(outer_api_key)
+            api_keys = channel_keys if channel_keys else ([outer_api_key] if outer_api_key else [""])
 
         channel_base_url = str(channel.get("base_url", "") or "").strip()
         inherited_outer_base = (not channel_base_url) and bool(outer_base_url)
@@ -1136,7 +1145,7 @@ def _build_litellm_attempts(
         for channel_key in api_keys:
             attempts.append(_completion_kwargs(
                 wire_model,
-                api_key=str(channel_key or ""),
+                api_key=channel_key if isinstance(channel_key, str) else str(channel_key or ""),
                 base_url=effective_base_url,
                 api_surface=effective_surface,
                 extra_headers=extra_headers,

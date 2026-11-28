@@ -17,6 +17,7 @@ import random
 import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 
 from src.config import (
     Config,
@@ -30,6 +31,7 @@ from src.llm.transport import (
     create_litellm_compat_proxy,
     dispatch_completion,
     find_unresolved_env_var,
+    is_resolved_litellm_params,
     resolve_env_reference,
     resolve_litellm_params_env,
 )
@@ -246,12 +248,57 @@ def _matching_vision_deployments(model: str, cfg: Config) -> List[Dict[str, Any]
     ]
 
 
+def _normalize_vision_endpoint_url(url: str) -> str:
+    """Normalize scheme/host case and trailing slash while preserving path/query case."""
+    raw = str(url or "").strip()
+    if not raw:
+        return ""
+    try:
+        parsed = urlparse(raw)
+    except ValueError:
+        return raw.rstrip("/")
+    if parsed.scheme and parsed.netloc:
+        normalized_path = parsed.path.rstrip("/")
+        query = f"?{parsed.query}" if parsed.query else ""
+        return f"{parsed.scheme.lower()}://{parsed.netloc.lower()}{normalized_path}{query}"
+    return raw.rstrip("/")
+
+
+def _find_deployment_unresolved_endpoint_env(
+    deployment: Dict[str, Any],
+) -> Optional[Tuple[str, str]]:
+    """Return ``(endpoint_key, missing_env_var)`` when a vision deployment endpoint env var is unset."""
+    raw_info = deployment.get("model_info")
+    if isinstance(raw_info, dict):
+        marker = str(raw_info.get("_dsa_unresolved_endpoint_env") or "").strip()
+        if marker:
+            if ":" in marker:
+                endpoint_key, missing_var = marker.split(":", 1)
+                return endpoint_key.strip() or "api_base", missing_var.strip() or "<empty>"
+            return "api_base", marker
+    raw_params = deployment.get("litellm_params") or {}
+    if isinstance(raw_params, dict) and not is_resolved_litellm_params(raw_params):
+        for endpoint_key in ("base_url", "api_base"):
+            missing_var = find_unresolved_env_var(raw_params.get(endpoint_key))
+            if missing_var is not None:
+                return endpoint_key, missing_var
+    return None
+
+
+def _resolve_deployment_api_key(deployment: Dict[str, Any]) -> str:
+    raw_params = deployment.get("litellm_params") or {}
+    if not isinstance(raw_params, dict):
+        return ""
+    raw_key = raw_params.get("api_key")
+    resolved_key = raw_key if is_resolved_litellm_params(raw_params) else resolve_env_reference(raw_key)
+    return str(resolved_key or "").strip()
+
+
 def _get_api_keys_for_model(model: str, cfg: Config) -> List[str]:
     """Return available API keys for the given litellm model."""
     deployment_keys: List[str] = []
     for deployment in _matching_vision_deployments(model, cfg):
-        raw_key = (deployment.get("litellm_params") or {}).get("api_key")
-        key = str(resolve_env_reference(raw_key) or "").strip()
+        key = _resolve_deployment_api_key(deployment)
         if key and len(key) >= 8 and key not in deployment_keys:
             deployment_keys.append(key)
     if deployment_keys:
@@ -270,7 +317,10 @@ def _deployment_allows_empty_api_key(deployment: Dict[str, Any]) -> bool:
         return False
     wire_model = str(params.get("model") or "").strip()
     protocol = wire_model.split("/", 1)[0] if "/" in wire_model else None
-    api_base = params.get("api_base") or params.get("base_url")
+    if "base_url" in params and params.get("base_url") is not None:
+        api_base = params.get("base_url")
+    else:
+        api_base = params.get("api_base")
     return channel_allows_empty_api_key(protocol, api_base)
 
 
@@ -294,7 +344,7 @@ def _call_litellm_vision(image_b64: str, mime_type: str, api_key: Optional[str] 
             (
                 item
                 for item in deployments
-                if str(resolve_env_reference((item.get("litellm_params") or {}).get("api_key")) or "").strip() == key
+                if _resolve_deployment_api_key(item) == key
             ),
             None,
         )
@@ -306,17 +356,26 @@ def _call_litellm_vision(image_b64: str, mime_type: str, api_key: Optional[str] 
             if deployment is not None:
                 key = None
         if deployment is not None:
-            raw_deployment_params = deployment.get("litellm_params") or {}
-            for endpoint_key in ("base_url", "api_base"):
-                missing_var = find_unresolved_env_var(raw_deployment_params.get(endpoint_key))
-                if missing_var is not None:
-                    raise ValueError(
-                        f"Vision deployment {endpoint_key} environment variable '{missing_var}' is not set"
-                    )
-            deployment_params = resolve_litellm_params_env(raw_deployment_params)
+            unresolved = _find_deployment_unresolved_endpoint_env(deployment)
+            if unresolved is not None:
+                endpoint_key, missing_var = unresolved
+                raise ValueError(
+                    f"Vision deployment {endpoint_key} environment variable '{missing_var}' is not set"
+                )
+            deployment_params = resolve_litellm_params_env(deployment.get("litellm_params") or {})
             raw_info = deployment.get("model_info")
             if isinstance(raw_info, dict):
                 deployment_info = dict(raw_info)
+        else:
+            # Fail closed instead of falling back to legacy OpenAI routing when
+            # a matching deployment failed endpoint env expansion.
+            for item in deployments:
+                unresolved = _find_deployment_unresolved_endpoint_env(item)
+                if unresolved is not None:
+                    endpoint_key, missing_var = unresolved
+                    raise ValueError(
+                        f"Vision deployment {endpoint_key} environment variable '{missing_var}' is not set"
+                    )
     if key is None and not deployment_params:
         raise ValueError(f"No API key found for vision model {model}")
     wire_model = str(deployment_params.get("model") or model).strip()
@@ -351,15 +410,23 @@ def _call_litellm_vision(image_b64: str, mime_type: str, api_key: Optional[str] 
     effective_api_key = str(deployment_params.get("api_key") or key or "").strip()
     if effective_api_key:
         call_kwargs["api_key"] = effective_api_key
-    raw_resolved_base_url = str(deployment_params.get("base_url") or "").strip()
+    has_explicit_base_url = (
+        "base_url" in deployment_params and deployment_params.get("base_url") is not None
+    )
+    raw_resolved_base_url = (
+        str(deployment_params.get("base_url")).strip() if has_explicit_base_url else ""
+    )
     raw_resolved_api_base = str(deployment_params.get("api_base") or "").strip()
     if (
-        raw_resolved_base_url
+        has_explicit_base_url
         and raw_resolved_api_base
-        and raw_resolved_base_url.rstrip("/").lower() != raw_resolved_api_base.rstrip("/").lower()
+        and _normalize_vision_endpoint_url(raw_resolved_base_url)
+        != _normalize_vision_endpoint_url(raw_resolved_api_base)
     ):
         raise ValueError("Vision deployment has conflicting api_base and base_url values")
-    deployment_api_base = raw_resolved_base_url or raw_resolved_api_base
+    deployment_api_base = (
+        raw_resolved_base_url if has_explicit_base_url else raw_resolved_api_base
+    )
     if deployment_api_base:
         call_kwargs["api_base"] = deployment_api_base
     if resolved_api_surface:

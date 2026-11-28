@@ -2040,7 +2040,10 @@ class SystemConfigService:
                 try:
                     close_stream()
                 except Exception as exc:
-                    logger.debug("Failed to close LLM stream capability probe: %s", exc)
+                    logger.debug(
+                        "Failed to close LLM stream capability probe: %s",
+                        cls._sanitize_llm_error_text(exc, redaction_values=redaction_values),
+                    )
 
     @classmethod
     def _run_vision_capability_check(
@@ -2173,10 +2176,13 @@ class SystemConfigService:
             "stage": f"capability_{capability}",
             "retryable": retryable,
             "latency_ms": latency_ms,
-            "details": cls._sanitize_llm_details(
-                {"capability": capability, **(details or {})},
-                redaction_values=redaction_values,
-            ),
+            "details": {
+                "capability": capability,
+                **cls._sanitize_llm_details(
+                    details,
+                    redaction_values=redaction_values,
+                ),
+            },
         }
 
     @classmethod
@@ -4435,8 +4441,54 @@ class SystemConfigService:
         if models is not None:
             payload["models"] = cls._sanitize_llm_value(models, redaction_values=redaction_values)
         if capability_results is not None:
-            payload["capability_results"] = cls._sanitize_llm_value(capability_results, redaction_values=redaction_values)
+            payload["capability_results"] = cls._sanitize_llm_capability_results(
+                capability_results,
+                redaction_values=redaction_values,
+            )
         return payload
+
+    @classmethod
+    def _sanitize_llm_capability_results(
+        cls,
+        capability_results: Dict[str, Any],
+        *,
+        redaction_values: Optional[Set[str]] = None,
+    ) -> Dict[str, Any]:
+        """Sanitize capability payloads while preserving controlled capability keys and enum fields."""
+        preserved_fields = frozenset({"status", "error_code", "stage", "retryable", "latency_ms"})
+        sanitized_results: Dict[str, Any] = {}
+        for capability_key, entry in capability_results.items():
+            if isinstance(entry, dict):
+                sanitized_entry: Dict[str, Any] = {}
+                for field_name, field_value in entry.items():
+                    if field_name in preserved_fields:
+                        sanitized_entry[field_name] = field_value
+                    elif field_name == "details" and isinstance(field_value, dict):
+                        capability_label = field_value.get("capability")
+                        rest = {k: v for k, v in field_value.items() if k != "capability"}
+                        sanitized_details = cls._sanitize_llm_details(
+                            rest,
+                            redaction_values=redaction_values,
+                        )
+                        if capability_label is not None:
+                            sanitized_entry[field_name] = {
+                                "capability": capability_label,
+                                **sanitized_details,
+                            }
+                        else:
+                            sanitized_entry[field_name] = sanitized_details
+                    else:
+                        sanitized_entry[field_name] = cls._sanitize_llm_value(
+                            field_value,
+                            redaction_values=redaction_values,
+                        )
+                sanitized_results[capability_key] = sanitized_entry
+            else:
+                sanitized_results[capability_key] = cls._sanitize_llm_value(
+                    entry,
+                    redaction_values=redaction_values,
+                )
+        return sanitized_results
 
     @staticmethod
     def _merge_llm_diagnostic_details(
@@ -4467,9 +4519,11 @@ class SystemConfigService:
 
     @classmethod
     def _build_extra_header_redaction_values(cls, headers: Mapping[str, str]) -> Set[str]:
-        """Collect redaction tokens for custom headers including scheme-stripped auth secrets."""
+        """Collect redaction tokens for auth/secret custom headers without over-redacting generic values."""
         redactions: Set[str] = set()
         auth_scheme_pattern = re.compile(r"(?i)^\s*(?:bearer|token|basic|apikey|api-key)\s+(.+?)\s*$")
+        secret_prefix_pattern = re.compile(r"(?i)^(?:sk-|pk-|ghp_|gho_|glpat-|eyj[a-z0-9_-]{8,})")
+        mime_type_pattern = re.compile(r"^[a-z0-9.+-]+/[a-z0-9.+-]+(?:\s*;.*)?$", re.IGNORECASE)
         auth_name_markers = (
             "auth",
             "token",
@@ -4480,6 +4534,31 @@ class SystemConfigService:
             "cred",
             "sig",
             "session",
+            "jwt",
+            "bearer",
+        )
+        non_secret_header_names = frozenset(
+            {
+                "accept",
+                "accept-charset",
+                "accept-encoding",
+                "accept-language",
+                "anthropic-version",
+                "cache-control",
+                "content-encoding",
+                "content-language",
+                "content-length",
+                "content-type",
+                "dnt",
+                "openai-beta",
+                "origin",
+                "pragma",
+                "referer",
+                "user-agent",
+                "x-client-version",
+                "x-format",
+                "x-requested-with",
+            }
         )
         for header_name, raw_value in headers.items():
             value = str(raw_value or "").strip()
@@ -4487,9 +4566,16 @@ class SystemConfigService:
                 continue
             lower_name = str(header_name or "").strip().lower()
             is_auth_header = any(marker in lower_name for marker in auth_name_markers)
-            if is_auth_header or len(value) >= 4:
-                redactions.update(cls._build_redaction_values(value))
             scheme_match = auth_scheme_pattern.match(value)
+            looks_like_secret = bool(secret_prefix_pattern.match(value))
+            is_opaque_custom_secret = (
+                lower_name not in non_secret_header_names
+                and len(value) >= 12
+                and not any(ch.isspace() for ch in value)
+                and not mime_type_pattern.match(value)
+            )
+            if is_auth_header or scheme_match or looks_like_secret or is_opaque_custom_secret:
+                redactions.update(cls._build_redaction_values(value))
             if scheme_match:
                 bare_token = scheme_match.group(1).strip()
                 if bare_token:

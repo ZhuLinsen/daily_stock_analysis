@@ -36,40 +36,51 @@ from typing import (
 
 logger = logging.getLogger(__name__)
 
-_EXCLUDED_REQUEST_DEFAULT_KEYS: frozenset[str] = frozenset(
+_ALLOWED_REQUEST_DEFAULT_KEYS: frozenset[str] = frozenset(
     {
-        # Structural deployment routing fields lifted onto DeploymentSpec
-        "model",
-        "api_key",
-        "api_base",
-        "base_url",
-        "api_surface",
-        "custom_llm_provider",
-        "wire_protocol",
-        "extra_headers",
-        "extra_body",
-        "headers",
-        "default_headers",
-        "timeout",
-        "priority",
-        "order",
-        # Router-only / SDK control fields
-        "rpm",
-        "tpm",
-        "num_retries",
-        "max_retries",
-        "cooldown_time",
-        "drop_params",
-        "client",
-        # Cloud IAM / account-scoped credential fields
-        "api_version",
-        "api_type",
-        "organization",
-        "region_name",
-        "deployment_id",
+        "temperature",
+        "top_p",
+        "top_k",
+        "max_tokens",
+        "max_completion_tokens",
+        "max_output_tokens",
+        "stop",
+        "stop_sequences",
+        "seed",
+        "presence_penalty",
+        "frequency_penalty",
+        "response_format",
+        "reasoning_effort",
+        "thinking",
+        "thinking_config",
+        "generation_config",
+        "store",
+        "parallel_tool_calls",
+        "prompt_cache_key",
+        "prompt_cache_retention",
+        "stream_options",
+        "user",
     }
 )
-_EXCLUDED_REQUEST_DEFAULT_PREFIXES: Tuple[str, ...] = ("aws_", "azure_", "vertex_")
+
+
+class _ResolvedEnvStr(str):
+    """String marker indicating an ``os.environ/`` value was already resolved once."""
+
+    def strip(self, chars: Optional[str] = None) -> str:
+        stripped = super().strip(chars)
+        if stripped.startswith("os.environ/"):
+            return _ResolvedEnvStr(stripped)
+        return stripped
+
+
+class _ResolvedLitellmParams(dict):
+    """Dict marker indicating ``litellm_params`` already underwent env resolution."""
+
+
+def is_resolved_litellm_params(params: Any) -> bool:
+    """Return whether ``params`` was already resolved by ``resolve_litellm_params_env``."""
+    return isinstance(params, _ResolvedLitellmParams)
 
 
 def _apply_disable_streaming_logging(module: Any) -> None:
@@ -84,6 +95,8 @@ def _apply_disable_streaming_logging(module: Any) -> None:
 
 def find_unresolved_env_var(value: Any) -> Optional[str]:
     """Return the missing env var name if ``value`` is an unset ``os.environ/VAR`` ref."""
+    if isinstance(value, _ResolvedEnvStr):
+        return None
     if not isinstance(value, str) or not value.startswith("os.environ/"):
         return None
     env_name = value.split("/", 1)[1].strip()
@@ -96,9 +109,12 @@ def find_unresolved_env_var(value: Any) -> Optional[str]:
 
 def resolve_env_reference(value: Any) -> Any:
     """Resolve ``os.environ/VAR`` syntax used in LiteLLM YAML configs."""
+    if isinstance(value, _ResolvedEnvStr):
+        return value
     if isinstance(value, str) and value.startswith("os.environ/"):
         env_name = value.split("/", 1)[1].strip()
-        return os.getenv(env_name, "") if env_name else ""
+        resolved = os.getenv(env_name, "") if env_name else ""
+        return _ResolvedEnvStr(resolved) if resolved.startswith("os.environ/") else resolved
     return value
 
 
@@ -114,15 +130,17 @@ def resolve_headers_env(headers: Optional[Mapping[str, Any]]) -> Dict[str, str]:
         value = resolve_env_reference(raw_value)
         if value is None:
             continue
-        resolved[header_name] = str(value)
+        resolved[header_name] = value if isinstance(value, str) else str(value)
     return resolved
 
 
 def resolve_litellm_params_env(params: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
-    """Return a non-mutating copy of ``litellm_params`` with ``os.environ/`` resolved."""
+    """Return a non-mutating copy of ``litellm_params`` with ``os.environ/`` resolved once."""
     if not isinstance(params, Mapping):
-        return {}
-    resolved: Dict[str, Any] = {}
+        return _ResolvedLitellmParams()
+    if isinstance(params, _ResolvedLitellmParams):
+        return _ResolvedLitellmParams(copy.deepcopy(params))
+    resolved: Dict[str, Any] = _ResolvedLitellmParams()
     for key, value in params.items():
         if key == "extra_headers" and isinstance(value, Mapping):
             resolved[key] = resolve_headers_env(value)
@@ -160,23 +178,55 @@ def normalize_model_list_entries(
     return normalized
 
 
-def _is_excluded_request_default_key(key: str) -> bool:
-    lowered = str(key).strip().lower()
-    if lowered in _EXCLUDED_REQUEST_DEFAULT_KEYS:
-        return True
-    return any(lowered.startswith(prefix) for prefix in _EXCLUDED_REQUEST_DEFAULT_PREFIXES)
+def _is_allowed_request_default_key(key: str) -> bool:
+    return str(key).strip().lower() in _ALLOWED_REQUEST_DEFAULT_KEYS
+
+
+def _is_responses_api_surface(api_surface: Any) -> bool:
+    raw_surface = str(api_surface or "").strip().lower().replace("-", "_")
+    return raw_surface in {"responses", "response", "responses_api"}
 
 
 def _encode_litellm_responses_wire_model(model: Any, api_surface: Any) -> Any:
     """Apply LiteLLM's ``openai/responses/<model>`` encoding when ``api_surface`` is responses."""
-    raw_surface = str(api_surface or "").strip().lower()
-    if raw_surface not in {"responses", "response", "responses_api"}:
+    if not _is_responses_api_surface(api_surface):
         return model
     if not isinstance(model, str) or not model.strip():
         return model
     from src.config import apply_litellm_api_surface
 
     return apply_litellm_api_surface(model.strip(), "responses")
+
+
+def _validate_prebuilt_router_api_surface(router: Any, model: Any, api_surface: Any) -> None:
+    """Fail closed if a caller requests Responses on a prebuilt router without Responses deployments."""
+    if not _is_responses_api_surface(api_surface):
+        return
+    target = str(model or "").strip()
+    if target.startswith("openai/responses/") or "/responses/" in target:
+        return
+    model_list = getattr(router, "model_list", None)
+    if not isinstance(model_list, list) or not model_list:
+        return
+    matching_entries: List[Mapping[str, Any]] = []
+    for entry in model_list:
+        if not isinstance(entry, Mapping):
+            continue
+        params = entry.get("litellm_params")
+        wire = str(params.get("model") or "").strip() if isinstance(params, Mapping) else ""
+        alias = str(entry.get("model_name") or "").strip()
+        if not target or target in {alias, wire}:
+            matching_entries.append(entry)
+    if not matching_entries:
+        return
+    for entry in matching_entries:
+        params = entry.get("litellm_params")
+        wire = str(params.get("model") or "").strip() if isinstance(params, Mapping) else ""
+        if wire.startswith("openai/responses/") or "/responses/" in wire:
+            return
+    raise ValueError(
+        f"Router deployment for model '{target}' is not configured for the OpenAI Responses API surface"
+    )
 
 
 @dataclass(frozen=True)
@@ -221,8 +271,12 @@ def normalize_deployment_spec(entry: Mapping[str, Any]) -> DeploymentSpec:
         or params.get("api_surface")
         or ""
     ).strip()
-    # Match LiteLLM precedence: explicit base_url takes priority when non-empty.
-    api_base = str(params.get("base_url") or params.get("api_base") or "").strip()
+    # Match LiteLLM 1.98.1 precedence: any non-None base_url overrides api_base,
+    # including an explicit empty string base_url="".
+    if "base_url" in params and params.get("base_url") is not None:
+        api_base = str(params.get("base_url")).strip()
+    else:
+        api_base = str(params.get("api_base") or "").strip()
     api_key = str(params.get("api_key") or "").strip()
     # ``params`` already resolved ``extra_headers`` once; copy without re-resolving.
     raw_resolved_headers = params.get("extra_headers")
@@ -256,7 +310,7 @@ def normalize_deployment_spec(entry: Mapping[str, Any]) -> DeploymentSpec:
     request_defaults = {
         key: copy.deepcopy(value)
         for key, value in params.items()
-        if not _is_excluded_request_default_key(key) and value is not None
+        if _is_allowed_request_default_key(key) and value is not None
     }
 
     return DeploymentSpec(
@@ -427,10 +481,18 @@ class LiteLLMTransport:
                     ) or params.get("api_surface")
                     has_internal_keys = "api_surface" in params or "wire_protocol" in params
                     raw_wire_model = params.get("model") or entry.get("model_name")
-                    encoded_wire_model = _encode_litellm_responses_wire_model(
-                        raw_wire_model,
-                        effective_surface,
-                    )
+                    try:
+                        encoded_wire_model = _encode_litellm_responses_wire_model(
+                            raw_wire_model,
+                            effective_surface,
+                        )
+                    except ValueError as exc:
+                        logger.warning(
+                            "Skipping Responses wire-model encoding for router entry %r: %s",
+                            raw_wire_model,
+                            exc,
+                        )
+                        encoded_wire_model = raw_wire_model
                     if has_internal_keys or encoded_wire_model != params.get("model"):
                         copied_params = dict(params)
                         copied_params.pop("api_surface", None)
@@ -605,6 +667,11 @@ def dispatch_completion(
             ("api_surface" in kwargs or "wire_protocol" in kwargs)
             and not getattr(router, "_dsa_accepts_transport_metadata", False)
         ):
+            _validate_prebuilt_router_api_surface(
+                router,
+                kwargs.get("model"),
+                kwargs.get("api_surface"),
+            )
             router_kwargs = dict(kwargs)
             router_kwargs.pop("api_surface", None)
             router_kwargs.pop("wire_protocol", None)

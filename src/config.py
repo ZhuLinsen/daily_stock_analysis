@@ -2576,7 +2576,7 @@ class Config:
             _logger.warning("LITELLM_CONFIG: model_list must be a list")
             return []
 
-        from src.llm.transport import resolve_litellm_params_env
+        from src.llm.transport import find_unresolved_env_var, resolve_litellm_params_env
 
         valid_model_list: List[Dict[str, Any]] = []
         for entry in model_list:
@@ -2586,9 +2586,21 @@ class Config:
             if params is not None and not isinstance(params, dict):
                 _logger.warning("LITELLM_CONFIG: skipping model entry with non-mapping litellm_params")
                 continue
-            resolved_params = resolve_litellm_params_env(params or {})
+            raw_params = params or {}
+            unresolved_endpoint = None
+            for endpoint_key in ('base_url', 'api_base'):
+                missing_var = find_unresolved_env_var(raw_params.get(endpoint_key))
+                if missing_var is not None:
+                    unresolved_endpoint = f"{endpoint_key}:{missing_var}"
+                    break
+            resolved_params = resolve_litellm_params_env(raw_params)
             entry = dict(entry)
             entry['litellm_params'] = resolved_params
+            if unresolved_endpoint is not None:
+                raw_info = entry.get('model_info')
+                model_info = dict(raw_info) if isinstance(raw_info, dict) else {}
+                model_info['_dsa_unresolved_endpoint_env'] = unresolved_endpoint
+                entry['model_info'] = model_info
             route_name = str(entry.get('model_name') or '').strip()
             wire_model = str(resolved_params.get('model') or '').strip()
             if not route_name and not wire_model:
