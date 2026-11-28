@@ -599,12 +599,14 @@ def channel_requires_explicit_base_url(
     Positive allowlist: blank ``base_url`` is permitted ONLY when the channel has
     a named default base (``modelflare``, ``anspire``), uses a verified non-OpenAI
     protocol (``anthropic``, ``gemini``, ``vertex_ai``, ``deepseek``, ``ollama``),
-    targets official OpenAI (``openai*`` channel name), or every declared model
-    explicitly names a verified non-OpenAI provider prefix (e.g. ``minimax/...``,
-    ``anthropic/...``, ``openrouter/...``). All other channels (``custom*``,
-    ``my_proxy``, ``requesty*``, ``x6ai*``, ``openrouter*`` with bare models,
-    ``local*``, etc.) require an explicit ``base_url`` so credentials are never
-    dispatched to ``api.openai.com`` by accident.
+    targets official OpenAI (``openai*`` channel name, or built-in ``primary``/
+    ``secondary`` slots when every declared model is an explicit direct
+    ``openai/<model>``), or every declared model explicitly names a verified
+    non-OpenAI provider prefix (e.g. ``minimax/...``, ``anthropic/...``,
+    ``openrouter/...``). All other channels (``custom*``, ``my_proxy``,
+    ``requesty*``, ``x6ai*``, ``openrouter*`` with bare models, ``local*``, etc.)
+    require an explicit ``base_url`` so credentials are never dispatched to
+    ``api.openai.com`` by accident.
     """
     lower_name = (channel_name or "").strip().lower()
     if not lower_name:
@@ -625,6 +627,22 @@ def channel_requires_explicit_base_url(
 
     # Official OpenAI channel (openai, openai2, openai_main, etc.) defaults to api.openai.com.
     if base_name == "openai" or lower_name.startswith("openai_"):
+        return False
+
+    # Built-in generic slots (primary/secondary) may omit base_url for official OpenAI
+    # ONLY when protocol is blank or openai AND every declared model explicitly starts
+    # with "openai/" and names a non-empty direct OpenAI model (e.g. openai/gpt-4o-mini).
+    if (
+        base_name in {"primary", "secondary"}
+        and resolved_protocol in {"", "openai"}
+        and model_list
+        and all(
+            get_explicit_llm_channel_model_provider(m) == "openai"
+            and bool(m.split("/", 1)[1].strip())
+            and "/" not in m.split("/", 1)[1]
+            for m in model_list
+        )
+    ):
         return False
 
     # Allow blank base_url when channel name itself is a verified non-OpenAI cloud provider
@@ -3036,7 +3054,7 @@ class Config:
             if not models:
                 _logger.warning(f"LLM channel '{ch_name}': no models configured, skipped")
                 continue
-            if not base_url and channel_requires_explicit_base_url(ch_name, protocol, models=models):
+            if not base_url and channel_requires_explicit_base_url(ch_name, protocol, models=raw_models):
                 issues.append(HermesConfigIssue(
                     f"LLM_{ch_upper}_BASE_URL",
                     "missing_base_url",

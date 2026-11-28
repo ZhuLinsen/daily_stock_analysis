@@ -1986,6 +1986,58 @@ class LLMChannelConfigTestCase(unittest.TestCase):
             "https://dashscope.aliyuncs.com/compatible-mode/v1/models",
         )
 
+    def test_channel_requires_explicit_base_url_generic_slots_vs_relays(self) -> None:
+        from src.config import channel_requires_explicit_base_url
+
+        # Built-in primary/secondary slots with explicit official openai/<model> allow blank base_url.
+        self.assertFalse(channel_requires_explicit_base_url("primary", "", models=["openai/gpt-4o-mini"]))
+        self.assertFalse(channel_requires_explicit_base_url("primary", "openai", models=["openai/gpt-4o-mini"]))
+        self.assertFalse(channel_requires_explicit_base_url("secondary", "", models=["openai/gpt-4o"]))
+
+        # Bare models, empty model suffix, or nested relay models on primary/secondary still require explicit base_url.
+        self.assertTrue(channel_requires_explicit_base_url("primary", "openai", models=["gpt-4o-mini"]))
+        self.assertTrue(channel_requires_explicit_base_url("secondary", "openai", models=["gpt-4o"]))
+        self.assertTrue(channel_requires_explicit_base_url("primary", "openai", models=["openai/"]))
+        self.assertTrue(
+            channel_requires_explicit_base_url("primary", "openai", models=["openai/anthropic/claude-sonnet"])
+        )
+
+        # Custom/relay/local/numbered slots ALWAYS require explicit base_url even with openai/ prefix.
+        for relay_name in ("my_proxy", "openrouter2", "custom", "requesty2", "anspire2", "modelflare2", "local"):
+            self.assertTrue(
+                channel_requires_explicit_base_url(relay_name, "openai", models=["openai/gpt-4o-mini"]),
+                relay_name,
+            )
+
+        # Runtime parsing honors raw_models: bare gpt-4o-mini on primary is skipped, explicit openai/gpt-4o-mini loads.
+        with patch.dict(
+            os.environ,
+            {
+                "LLM_CHANNELS": "primary",
+                "LLM_PRIMARY_PROTOCOL": "openai",
+                "LLM_PRIMARY_API_KEY": "sk-test",
+                "LLM_PRIMARY_MODELS": "gpt-4o-mini",
+            },
+            clear=True,
+        ):
+            parsed_bare, issues_bare, _, _ = Config._parse_llm_channels_with_issues("primary")
+            self.assertEqual(parsed_bare, [])
+            self.assertTrue(any(i.code == "missing_base_url" for i in issues_bare))
+
+        with patch.dict(
+            os.environ,
+            {
+                "LLM_CHANNELS": "primary",
+                "LLM_PRIMARY_API_KEY": "sk-test",
+                "LLM_PRIMARY_MODELS": "openai/gpt-4o-mini",
+            },
+            clear=True,
+        ):
+            parsed_explicit, issues_explicit, _, _ = Config._parse_llm_channels_with_issues("primary")
+            self.assertEqual(len(parsed_explicit), 1)
+            self.assertEqual(parsed_explicit[0]["models"], ["openai/gpt-4o-mini"])
+            self.assertFalse(any(i.code == "missing_base_url" for i in issues_explicit))
+
 
 if __name__ == "__main__":
     unittest.main()
