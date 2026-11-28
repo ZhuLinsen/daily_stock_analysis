@@ -170,3 +170,99 @@ class TestFutuBoundedConnect(unittest.TestCase):
         self.assertEqual(results, [None] * 5)
         self.assertEqual(len(created), 1)
         self.assertEqual(len(logs.records), 1)
+
+
+class TestFutuMultiMarketSymbolMapping(unittest.TestCase):
+    """Futu OpenD covers HK, A-share and US symbols."""
+
+    def test_hk_symbols(self):
+        for code in ("09618.HK", "09618", "HK09618", "700"):
+            self.assertEqual(futu_fetcher._futu_market(code), "hk")
+        self.assertEqual(futu_fetcher._futu_symbol("700"), "HK.00700")
+        self.assertEqual(futu_fetcher._futu_symbol("09618.HK"), "HK.09618")
+
+    def test_cn_symbols(self):
+        self.assertEqual(futu_fetcher._futu_market("600519"), "cn")
+        self.assertEqual(futu_fetcher._futu_symbol("600519"), "SH.600519")
+        self.assertEqual(futu_fetcher._futu_symbol("300750"), "SZ.300750")
+        self.assertEqual(futu_fetcher._futu_symbol("600519.SH"), "SH.600519")
+        self.assertEqual(futu_fetcher._futu_symbol("SZ.000001"), "SZ.000001")
+
+    def test_unsupported_cn_prefix_returns_none(self):
+        self.assertIsNone(futu_fetcher._futu_symbol("830799"))
+
+    def test_us_symbols(self):
+        for code in ("AAPL", "US.AAPL", "aapl.us"):
+            self.assertEqual(futu_fetcher._futu_market(code), "us")
+        self.assertEqual(futu_fetcher._futu_symbol("AAPL"), "US.AAPL")
+        self.assertEqual(futu_fetcher._futu_symbol("US.AAPL"), "US.AAPL")
+        self.assertEqual(futu_fetcher._futu_symbol("aalb.us"), "US.AALB")
+        self.assertEqual(futu_fetcher._futu_symbol("BRK.B"), "US.BRK.B")
+
+    def test_unknown_code_returns_none(self):
+        self.assertIsNone(futu_fetcher._futu_market(""))
+        self.assertIsNone(futu_fetcher._futu_symbol("   "))
+
+    def test_cn_alias_symbols_match_daily_path(self):
+        for code in ("600519", "SH600519", "sh600519", "600519.SH", "600519.SS", "600519.ss"):
+            self.assertEqual(futu_fetcher._futu_market(code), "cn", code)
+            self.assertEqual(futu_fetcher._futu_symbol(code), "SH.600519", code)
+        for code in ("300750", "SZ300750", "300750.SZ"):
+            self.assertEqual(futu_fetcher._futu_market(code), "cn", code)
+            self.assertEqual(futu_fetcher._futu_symbol(code), "SZ.300750", code)
+
+
+class TestFutuDailyAdjustmentType(unittest.TestCase):
+    """US/A daily candles must be front-adjusted; HK stays unadjusted."""
+
+    def _fetch(self, stock_code):
+        captured = {}
+
+        class _Ctx:
+            def request_history_kline(self, symbol, **kwargs):
+                captured["symbol"] = symbol
+                captured["autype"] = kwargs.get("autype")
+                frame = pd.DataFrame({
+                    "time_key": ["2026-11-20"],
+                    "open": [1.0], "high": [1.0], "low": [1.0], "close": [1.0],
+                    "volume": [10], "turnover": [10.0],
+                })
+                return 0, frame, None
+
+        fake_futu = types.SimpleNamespace(
+            RET_OK=0,
+            AuType=types.SimpleNamespace(NONE="none", QFQ="qfq"),
+            KLType=types.SimpleNamespace(K_DAY="k_day"),
+        )
+        fetcher = FutuFetcher.__new__(FutuFetcher)
+        with patch.dict(sys.modules, {"futu": fake_futu}), patch.object(
+            FutuFetcher, "_get_ctx", return_value=_Ctx()
+        ):
+            data = fetcher._fetch_raw_data(stock_code, "2026-09-01", "2026-11-20")
+        return captured, data
+
+    def test_us_daily_uses_front_adjustment(self):
+        captured, data = self._fetch("AAPL")
+        self.assertEqual(captured["symbol"], "US.AAPL")
+        self.assertEqual(captured["autype"], "qfq")
+        self.assertFalse(data.empty)
+
+    def test_cn_alias_daily_uses_front_adjustment(self):
+        captured, _ = self._fetch("SH600519")
+        self.assertEqual(captured["symbol"], "SH.600519")
+        self.assertEqual(captured["autype"], "qfq")
+
+    def test_hk_daily_keeps_unadjusted(self):
+        captured, _ = self._fetch("00700")
+        self.assertEqual(captured["symbol"], "HK.00700")
+        self.assertEqual(captured["autype"], "none")
+
+
+class TestFutuMarketAwareTimestamp(unittest.TestCase):
+    def test_us_quote_uses_new_york_time(self):
+        value = futu_fetcher._provider_timestamp("2026-11-25 09:30:00", "us")
+        self.assertEqual(value, "2026-11-25T09:30:00-05:00")
+
+    def test_us_quote_uses_dst_offset_in_summer(self):
+        value = futu_fetcher._provider_timestamp("2026-08-24 09:30:00", "us")
+        self.assertEqual(value, "2026-08-24T09:30:00-04:00")

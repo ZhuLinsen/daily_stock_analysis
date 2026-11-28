@@ -18,9 +18,15 @@ import time
 from dataclasses import dataclass
 from typing import Optional, Dict, Any, List, Tuple, Callable, Union
 
-import litellm
 from json_repair import repair_json
-from litellm import Router
+
+from src.llm.transport import (
+    NativeConfigError,
+    create_litellm_compat_proxy,
+    create_router,
+    dispatch_completion,
+    get_transport_engine_label,
+)
 
 from src.agent.llm_adapter import (
     apply_thinking_extra_body_to_model_list,
@@ -112,6 +118,8 @@ from src.market_phase_prompt import format_market_phase_prompt_section
 from src.market_structure_prompt import format_market_structure_prompt_section
 
 logger = logging.getLogger(__name__)
+litellm = create_litellm_compat_proxy()
+Router = create_router
 
 
 def _describe_llm_result_model(
@@ -825,6 +833,94 @@ def _infer_trend_direction(trend: Dict[str, Any]) -> str:
 def _filter_conflicting_trend_items(items: List[str], conflict_hints: Tuple[str, ...]) -> List[str]:
     """Drop reasons that directly conflict with the final trend direction."""
     return [item for item in items if not _contains_trend_hint(item, conflict_hints)]
+
+
+def _format_quant_factors_prompt_section(
+    qf: Any,
+    *,
+    english: bool = False,
+    trend: Any = None,
+) -> str:
+    """Format pre-computed quantitative multi-factor indicators and trend complements."""
+    has_qf = isinstance(qf, dict) and bool(qf.get("sufficient_data"))
+    trend_dict = trend if isinstance(trend, dict) else {}
+    has_trend_extras = any(
+        trend_dict.get(k) is not None for k in ("ma60", "volume_ratio_5d", "rsi_6", "rsi_12", "rsi_24")
+    )
+    if not has_qf and not has_trend_extras:
+        return ""
+
+    def _opt_from(mapping: Dict[str, Any], key: str, suffix: str = "", fmt: str = ".2f") -> str:
+        val = mapping.get(key)
+        if val is None or isinstance(val, bool):
+            return "N/A"
+        try:
+            num = float(val)
+        except (TypeError, ValueError):
+            return "N/A"
+        if not math.isfinite(num):
+            return "N/A"
+        return f"{format(num, fmt)}{suffix}"
+
+    title = "#### Quantitative Multi-Factor Indicators" if english else "#### 量化多因子指标（预计算）"
+    lines: List[str] = ["", title]
+
+    if has_qf:
+        trail_bool = bool(qf.get("atr_trailing_stop_breached"))
+        if english:
+            lines.extend(
+                [
+                    f"- bars_analyzed={qf.get('bars_analyzed', 'N/A')} | quant_regime={qf.get('quant_regime', 'N/A')} | quant_composite_score={qf.get('quant_composite_score', 'N/A')}/100",
+                    f"- BOLL(20,2): lower={_opt_from(qf, 'boll_lower')} / mid={_opt_from(qf, 'boll_mid')} / upper={_opt_from(qf, 'boll_upper')} | boll_pct_b={_opt_from(qf, 'boll_pct_b')} | boll_bandwidth_pct={_opt_from(qf, 'boll_bandwidth_pct', '%')} (prev_boll_bandwidth_pct={_opt_from(qf, 'prev_boll_bandwidth_pct', '%')}, boll_squeeze={bool(qf.get('boll_squeeze'))}, boll_squeeze_prior={bool(qf.get('boll_squeeze_prior'))}, boll_squeeze_breakout={bool(qf.get('boll_squeeze_breakout'))})",
+                    f"- Donchian: donchian_high_20={_opt_from(qf, 'donchian_high_20')} / donchian_low_20={_opt_from(qf, 'donchian_low_20')} | donchian_high_10={_opt_from(qf, 'donchian_high_10')} / donchian_low_10={_opt_from(qf, 'donchian_low_10')} | donchian_signal={qf.get('donchian_signal', 'inside')}",
+                    f"- ATR & Vol: atr_14={_opt_from(qf, 'atr_14')} (atr_pct={_opt_from(qf, 'atr_pct', '%')}) | atr_stop_loss_long={_opt_from(qf, 'atr_stop_loss_long')} | atr_trailing_stop_long={_opt_from(qf, 'atr_trailing_stop_long')} (atr_trailing_stop_breached={trail_bool}) | atr_take_profit_2r={_opt_from(qf, 'atr_take_profit_2r')} | hv_20_annualized_pct={_opt_from(qf, 'hv_20_annualized_pct', '%')} | vcp_contraction_ratio={_opt_from(qf, 'vcp_contraction_ratio')}",
+                    f"- KDJ & ADX: kdj_k={_opt_from(qf, 'kdj_k', fmt='.1f')} kdj_d={_opt_from(qf, 'kdj_d', fmt='.1f')} kdj_j={_opt_from(qf, 'kdj_j', fmt='.1f')} (kdj_status={qf.get('kdj_status', 'neutral')}) | adx_14={_opt_from(qf, 'adx_14', fmt='.1f')} (plus_di_14={_opt_from(qf, 'plus_di_14', fmt='.1f')}, minus_di_14={_opt_from(qf, 'minus_di_14', fmt='.1f')}, adx_regime={qf.get('adx_regime', 'unknown')}, adx_direction={qf.get('adx_direction', 'neutral')})",
+                    f"- Flow & Momentum: obv_trend={qf.get('obv_trend', 'flat')} (obv_divergence={qf.get('obv_divergence', 'none')}) | vwap_20={_opt_from(qf, 'vwap_20')} (vwap_bias_pct={_opt_from(qf, 'vwap_bias_pct', '%', '+.2f')}) | mfi_14={_opt_from(qf, 'mfi_14', fmt='.1f')} (mfi_status={qf.get('mfi_status', 'neutral')}) | roc_5_pct={_opt_from(qf, 'roc_5_pct', '%', '+.2f')} roc_20_pct={_opt_from(qf, 'roc_20_pct', '%', '+.2f')} roc_60_pct={_opt_from(qf, 'roc_60_pct', '%', '+.2f')} | max_drawdown_60_pct={_opt_from(qf, 'max_drawdown_60_pct', '%')} | dist_from_high_60_pct={_opt_from(qf, 'dist_from_high_60_pct', '%', '+.2f')} | sharpe_60={_opt_from(qf, 'sharpe_60')}",
+                ]
+            )
+        else:
+            trail_cn = "已跌破" if trail_bool else "未跌破"
+            lines.extend(
+                [
+                    f"- 有效K线(bars_analyzed): {qf.get('bars_analyzed', 'N/A')} | quant_regime={qf.get('quant_regime', 'N/A')} | quant_composite_score={qf.get('quant_composite_score', 'N/A')}/100",
+                    f"- BOLL(20,2): 下轨={_opt_from(qf, 'boll_lower')} / 中轨={_opt_from(qf, 'boll_mid')} / 上轨={_opt_from(qf, 'boll_upper')} | boll_pct_b={_opt_from(qf, 'boll_pct_b')} | boll_bandwidth_pct={_opt_from(qf, 'boll_bandwidth_pct', '%')} (prev_boll_bandwidth_pct={_opt_from(qf, 'prev_boll_bandwidth_pct', '%')}, boll_squeeze={bool(qf.get('boll_squeeze'))}, boll_squeeze_prior={bool(qf.get('boll_squeeze_prior'))}, boll_squeeze_breakout={bool(qf.get('boll_squeeze_breakout'))})",
+                    f"- Donchian通道: donchian_high_20={_opt_from(qf, 'donchian_high_20')} / donchian_low_20={_opt_from(qf, 'donchian_low_20')} | donchian_high_10={_opt_from(qf, 'donchian_high_10')} / donchian_low_10={_opt_from(qf, 'donchian_low_10')} | donchian_signal={qf.get('donchian_signal', 'inside')}",
+                    f"- ATR与波动收敛: atr_14={_opt_from(qf, 'atr_14')} (atr_pct={_opt_from(qf, 'atr_pct', '%')}) | atr_stop_loss_long={_opt_from(qf, 'atr_stop_loss_long')} | atr_trailing_stop_long={_opt_from(qf, 'atr_trailing_stop_long')} ({trail_cn}, atr_trailing_stop_breached={trail_bool}) | 2R目标={_opt_from(qf, 'atr_take_profit_2r')} | hv_20_annualized_pct={_opt_from(qf, 'hv_20_annualized_pct', '%')} | vcp_contraction_ratio={_opt_from(qf, 'vcp_contraction_ratio')}",
+                    f"- KDJ与ADX: kdj_k={_opt_from(qf, 'kdj_k', fmt='.1f')} kdj_d={_opt_from(qf, 'kdj_d', fmt='.1f')} kdj_j={_opt_from(qf, 'kdj_j', fmt='.1f')} (kdj_status={qf.get('kdj_status', 'neutral')}) | adx_14={_opt_from(qf, 'adx_14', fmt='.1f')} (plus_di_14={_opt_from(qf, 'plus_di_14', fmt='.1f')}, minus_di_14={_opt_from(qf, 'minus_di_14', fmt='.1f')}, adx_regime={qf.get('adx_regime', 'unknown')}, adx_direction={qf.get('adx_direction', 'neutral')})",
+                    f"- 量价与风控: obv_trend={qf.get('obv_trend', 'flat')} (obv_divergence={qf.get('obv_divergence', 'none')}) | vwap_20={_opt_from(qf, 'vwap_20')} (vwap_bias_pct={_opt_from(qf, 'vwap_bias_pct', '%', '+.2f')}) | mfi_14={_opt_from(qf, 'mfi_14', fmt='.1f')} (mfi_status={qf.get('mfi_status', 'neutral')}) | roc_5_pct={_opt_from(qf, 'roc_5_pct', '%', '+.2f')} roc_20_pct={_opt_from(qf, 'roc_20_pct', '%', '+.2f')} roc_60_pct={_opt_from(qf, 'roc_60_pct', '%', '+.2f')} | max_drawdown_60_pct={_opt_from(qf, 'max_drawdown_60_pct', '%')} | dist_from_high_60_pct={_opt_from(qf, 'dist_from_high_60_pct', '%', '+.2f')} | sharpe_60={_opt_from(qf, 'sharpe_60')}",
+                ]
+            )
+
+    if has_trend_extras:
+        bars_analyzed = qf.get("bars_analyzed") if isinstance(qf, dict) else None
+        raw_ma60 = trend_dict.get("ma60")
+        if (
+            bars_analyzed is not None
+            and isinstance(bars_analyzed, (int, float))
+            and not isinstance(bars_analyzed, bool)
+            and int(bars_analyzed) < 60
+        ) or not raw_ma60:
+            ma60_str = "N/A"
+        else:
+            ma60_str = _opt_from(trend_dict, "ma60")
+        vr5_str = _opt_from(trend_dict, "volume_ratio_5d")
+        rsi6_str = _opt_from(trend_dict, "rsi_6")
+        rsi12_str = _opt_from(trend_dict, "rsi_12")
+        rsi24_str = _opt_from(trend_dict, "rsi_24")
+        rsi_status = trend_dict.get("rsi_status", "neutral")
+        if english:
+            lines.append(
+                f"- Trend Complements: MA60={ma60_str} | volume_ratio_5d={vr5_str} | "
+                f"RSI(6/12/24)={rsi6_str} / {rsi12_str} / {rsi24_str} (rsi_status={rsi_status})"
+            )
+        else:
+            lines.append(
+                f"- 趋势补充指标: MA60={ma60_str} | 五日量比(volume_ratio_5d)={vr5_str} | "
+                f"RSI(6/12/24)={rsi6_str} / {rsi12_str} / {rsi24_str} (rsi_status={rsi_status})"
+            )
+
+    lines.append("")
+    return "\n".join(lines)
 
 
 def _sanitize_trend_analysis_for_prompt(
@@ -3093,15 +3189,24 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                     return
             prepared_router_model_list = apply_thinking_extra_body_to_model_list(router_model_list)
             try:
-                self._router = Router(
-                    model_list=prepared_router_model_list,
+                self._router = create_router(
+                    prepared_router_model_list,
                     routing_strategy="simple-shuffle",
                     num_retries=2,
+                    router_factory=Router if Router is not create_router else None,
+                    config=config,
                 )
             except TypeError:
                 logger.debug("Analyzer LLM: Router constructor signature not compatible; fallback to direct mode")
                 self._router = None
                 self._router_has_merged_extra_body = False
+            except NativeConfigError as exc:
+                logger.error("Analyzer LLM: native transport rejected channel/YAML router config: %s", exc)
+                self._router = None
+                self._router_has_merged_extra_body = False
+                self._transport_config_error = exc
+                self._litellm_available = False
+                return
             else:
                 self._router_has_merged_extra_body = True
                 unique_models = list(dict.fromkeys(
@@ -3141,15 +3246,24 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
             prepared_legacy_model_list = apply_thinking_extra_body_to_model_list(legacy_model_list)
             self._legacy_router_model_list = prepared_legacy_model_list
             try:
-                self._router = Router(
-                    model_list=prepared_legacy_model_list,
+                self._router = create_router(
+                    prepared_legacy_model_list,
                     routing_strategy="simple-shuffle",
                     num_retries=2,
+                    router_factory=Router if Router is not create_router else None,
+                    config=config,
                 )
             except TypeError:
                 logger.debug("Analyzer LLM: Legacy Router constructor signature not compatible; using legacy model_list fallback")
                 self._router = None
                 self._router_has_merged_extra_body = False
+            except NativeConfigError as exc:
+                logger.error("Analyzer LLM: native transport rejected legacy router config: %s", exc)
+                self._router = None
+                self._router_has_merged_extra_body = False
+                self._transport_config_error = exc
+                self._litellm_available = False
+                return
             else:
                 self._router_has_merged_extra_body = True
                 logger.info(
@@ -3387,21 +3501,23 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                 hermes_kwargs["extra_body"] = merged_hermes_extra
             with open_hermes_no_proxy_client(api_key=api_key, base_url=base_url, timeout=timeout) as client:
                 hermes_kwargs["client"] = client
-                return litellm.completion(**hermes_kwargs)
+                return dispatch_completion(compat_proxy=litellm, config=config, **hermes_kwargs)
 
+        if getattr(self, "_transport_config_error", None) is not None and self._router is None:
+            raise self._transport_config_error
         wire_models = resolve_fallback_litellm_wire_models(model, config.llm_model_list)
         register_fallback_model_pricing(wire_models)
         effective_kwargs = dict(call_kwargs)
         if use_channel_router and self._router and model in router_model_names:
-            return self._router.completion(**effective_kwargs)
+            return dispatch_completion(router=self._router, config=config, **effective_kwargs)
         if self._router and model == config.litellm_model and not use_channel_router:
-            return self._router.completion(**effective_kwargs)
+            return dispatch_completion(router=self._router, config=config, **effective_kwargs)
 
         keys = get_api_keys_for_model(model, config)
         if keys:
             effective_kwargs["api_key"] = keys[0]
         effective_kwargs.update(extra_litellm_params(model, config))
-        return litellm.completion(**effective_kwargs)
+        return dispatch_completion(compat_proxy=litellm, config=config, **effective_kwargs)
 
     def _normalize_usage(
         self,
@@ -3759,6 +3875,13 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                 f"{model} stream interrupted: {exc}",
                 partial_received=chars_received > 0,
             ) from exc
+        finally:
+            close_fn = getattr(stream_response, "close", None)
+            if callable(close_fn):
+                try:
+                    close_fn()
+                except Exception:
+                    pass
 
         response_text = strip_leading_think_wrapper("".join(chunks))
         if not response_text:
@@ -3841,6 +3964,16 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                 ) from fallback_exc
             try:
                 raise_if_stock_cancelled()
+                # P1-7a: When local CLI generation fails and falls back to HTTP, clear the
+                # CLI-seeded transport label so the actual HTTP engine (native/litellm) is recorded.
+                fallback_audit_context = audit_context
+                if (
+                    isinstance(audit_context, dict)
+                    and fallback_backend_id == LITELLM_BACKEND_ID
+                    and str(audit_context.get("transport") or "").strip() in LOCAL_CLI_GENERATION_BACKEND_IDS
+                ):
+                    fallback_audit_context = dict(audit_context)
+                    fallback_audit_context["transport"] = "litellm"
                 result = fallback_backend.generate(
                     prompt,
                     generation_config,
@@ -3848,7 +3981,7 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                     stream=stream,
                     stream_progress_callback=stream_progress_callback,
                     response_validator=response_validator,
-                    audit_context=audit_context,
+                    audit_context=fallback_audit_context,
                 )
             except _AllModelsFailedError:
                 raise
@@ -3977,6 +4110,8 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                 def _attach_usage_audit(
                     usage: Dict[str, Any],
                     messages: List[Dict[str, Any]],
+                    *,
+                    transport_engine: Optional[str] = None,
                 ) -> Dict[str, Any]:
                     if audit_context is None:
                         return filter_prompt_cache_telemetry(
@@ -3987,9 +4122,16 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                     effective_audit_context["provider"] = (
                         usage.get("provider") or usage_provider
                     )
-                    effective_audit_context["transport"] = (
-                        effective_audit_context.get("transport") or "litellm"
-                    )
+                    seeded_transport = str(effective_audit_context.get("transport") or "").strip()
+                    if seeded_transport and seeded_transport not in {"litellm", "native"}:
+                        effective_audit_context["transport"] = seeded_transport
+                    else:
+                        effective_audit_context["transport"] = (
+                            transport_engine
+                            or get_transport_engine_label(config=config)
+                            or seeded_transport
+                            or "litellm"
+                        )
                     return filter_prompt_cache_telemetry(
                         attach_legacy_message_stability_audit(
                             usage,
@@ -4054,6 +4196,7 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
 
                 _stream_text: Optional[str] = None
                 _stream_usage: Dict[str, Any] = {}
+                _stream_transport_engine: Optional[str] = None
 
                 if model_stream:
                     try:
@@ -4070,6 +4213,10 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                             model_list=recovery_model_list,
                             cache_recovery=False,
                             logger=logger,
+                        )
+                        _stream_transport_engine = get_transport_engine_label(
+                            stream_response,
+                            config=config,
                         )
                         _stream_text, _stream_usage = self._consume_litellm_stream(
                             stream_response,
@@ -4109,7 +4256,11 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                         last_provider = _stream_usage["provider"]
                     if usage_provider:
                         _stream_usage.setdefault("provider", usage_provider)
-                    _stream_usage = _attach_usage_audit(_stream_usage, call_kwargs["messages"])
+                    _stream_usage = _attach_usage_audit(
+                        _stream_usage,
+                        call_kwargs["messages"],
+                        transport_engine=_stream_transport_engine,
+                    )
                     if usage_provider:
                         _stream_usage.setdefault("provider", usage_provider)
                     _stream_usage["route_model"] = model
@@ -4155,7 +4306,11 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                     if response_provider or usage_provider:
                         usage["provider"] = response_provider or usage_provider
                     if audit_context is not None:
-                        usage = _attach_usage_audit(usage, call_kwargs["messages"])
+                        usage = _attach_usage_audit(
+                            usage,
+                            call_kwargs["messages"],
+                            transport_engine=get_transport_engine_label(response, config=config),
+                        )
                     if response_model:
                         usage.setdefault("response_model", response_model)
                     if response_provider or usage_provider:
@@ -4414,6 +4569,33 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
 
         # 如果模型不可用，返回默认结果
         if not self.is_available():
+            transport_cfg_err = getattr(self, "_transport_config_error", None)
+            if transport_cfg_err is not None:
+                err_detail = str(transport_cfg_err)
+                return AnalysisResult(
+                    code=code,
+                    name=name,
+                    sentiment_score=50,
+                    trend_prediction=localize_trend_prediction('震荡', report_language),
+                    operation_advice=localize_operation_advice('持有', report_language),
+                    confidence_level=localize_confidence_level('低', report_language),
+                    analysis_summary=_localized_text(
+                        report_language,
+                        en=f'AI analysis is unavailable due to native transport configuration error: {err_detail}',
+                        zh=f'AI 分析不可用（原生传输配置错误：{err_detail}）',
+                        ko=f'네이티브 전송 설정 오류로 AI 분석을 사용할 수 없습니다: {err_detail}',
+                    ),
+                    risk_warning=_localized_text(
+                        report_language,
+                        en='Check LLM_TRANSPORT_MODE, model provider prefix, and channel base URL configuration.',
+                        zh='请检查 LLM_TRANSPORT_MODE、模型提供商前缀及渠道 Base URL 配置。',
+                        ko='LLM_TRANSPORT_MODE, 모델 제공자 접두사 및 채널 Base URL 설정을 확인하세요.',
+                    ),
+                    success=False,
+                    error_message=err_detail,
+                    model_used=None,
+                    report_language=report_language,
+                )
             return AnalysisResult(
                 code=code,
                 name=name,
@@ -5187,6 +5369,13 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
 **一致性约束**：
 {chr(10).join('- ' + note for note in consistency_notes)}
 """
+            quant_section = _format_quant_factors_prompt_section(
+                trend.get('quant_factors'),
+                english=english,
+                trend=trend,
+            )
+            if quant_section:
+                prompt += quant_section
         
         # 添加昨日对比数据
         if 'yesterday' in context:

@@ -12,10 +12,17 @@ DSA is designed to run out of the box with free market data providers (`AkShare`
 | `STOCK_LIST` | Comma-separated symbols across A-share, HK, US, JP, KR, TW | `600519,hk00700,AAPL,NVDA` |
 | **One AI API Key** | Gemini, Anthropic, OpenAI-compatible, DeepSeek, or local Ollama | `GEMINI_API_KEY=...` or `OPENAI_API_KEY=...` |
 
+:::tip[DeepSeek & OpenAI-Compatible Gateways]
+- **Official DeepSeek API**: set `DEEPSEEK_API_KEY=...` (defaults to `deepseek/deepseek-flash`; legacy alias `deepseek/deepseek-v4-flash` remains supported for compatibility), or configure DeepSeek's current model IDs explicitly via channel routing (`deepseek-flash` / `deepseek-v4-pro`) or `LITELLM_MODEL=deepseek/deepseek-flash` / `LITELLM_MODEL=deepseek/deepseek-v4-pro` (the `deepseek/` prefix is required on explicit `LITELLM_MODEL` so DSA attaches `DEEPSEEK_API_KEY` and LiteLLM routes to DeepSeek instead of OpenAI).
+- **OpenAI-Compatible Gateways**: configure `OPENAI_API_KEY`, `OPENAI_BASE_URL` (usually ending with `/v1`), and `LITELLM_MODEL=openai/<model-name>` (or `OPENAI_MODEL`). If the gateway model ID already contains a slash `/` (such as `Qwen/Qwen3-32B` on SiliconFlow or `anthropic/claude-sonnet-4-5` on OpenRouter), you **must** include the `openai/` prefix explicitly (`LITELLM_MODEL=openai/Qwen/Qwen3-32B` or `OPENAI_MODEL=openai/Qwen/Qwen3-32B`), because values with `/` keep their first segment as the LiteLLM provider rather than matching `OPENAI_API_KEY` and `OPENAI_BASE_URL`.
+
+See the [LLM Configuration Guide](/en/docs/configuration/llm-guide/) and [LLM Providers Reference](/en/docs/configuration/llm-providers/) for multi-model routing details.
+:::
+
 ## 2. Recommended Enhancements
 
 - **News Search**: `SERPAPI_API_KEYS`, `TAVILY_API_KEYS`, or `BRAVE_API_KEYS` to enrich earnings and catalyst context.
 - **Market Data Stability**: `TICKPLUS_API_KEY` / `TUSHARE_TOKEN` (A-shares), or `LONGBRIDGE_*` (HK/US).
 - **Notifications**: `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID`, `DISCORD_WEBHOOK_URL`, `FEISHU_WEBHOOK_URL`, `WECHAT_WEBHOOK_URL`, or SMTP `EMAIL_SENDER` + `EMAIL_PASSWORD`.
 
-See the [LLM Configuration Guide](/en/docs/configuration/llm-guide/) for advanced multi-model routing.
+See [Notification Channels & Routing](/en/docs/configuration/notifications/) and the [Complete Configuration Guide](/en/docs/reference/full-guide/) for full variable coverage.

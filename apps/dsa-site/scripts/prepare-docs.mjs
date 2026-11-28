@@ -21,7 +21,9 @@ export const SOURCE_ROUTE_MAP = {
   'docs/INDEX.md': '/docs/',
   'docs/INDEX_EN.md': '/en/docs/',
   'docs/beginner-client-setup.md': '/docs/getting-started/beginner-client/',
+  'docs/beginner-client-setup_EN.md': '/en/docs/getting-started/beginner-client/',
   'docs/market-support.md': '/docs/features/market-support/',
+  'docs/market-support_EN.md': '/en/docs/features/market-support/',
   'docs/decision-signals.md': '/docs/features/decision-signals/',
   'strategies/README.md': '/docs/features/strategies/',
   'docs/alerts.md': '/docs/features/alerts/',
@@ -37,6 +39,7 @@ export const SOURCE_ROUTE_MAP = {
   'docs/tickplus.md': '/docs/configuration/tickplus/',
   'docs/TUSHARE_STOCK_LIST_GUIDE.md': '/docs/configuration/tushare/',
   'docs/notifications.md': '/docs/configuration/notifications/',
+  'docs/notifications_EN.md': '/en/docs/configuration/notifications/',
   'docs/intelligence-sources.md': '/docs/configuration/intelligence-sources/',
   'docs/bot-command.md': '/docs/configuration/bot-commands/',
   'docs/bot-command_EN.md': '/en/docs/configuration/bot-commands/',
@@ -65,15 +68,21 @@ export const SOURCE_ROUTE_MAP = {
 export const SYNC_SPECS = [
   {
     target: 'docs/getting-started/beginner-client.md',
+    enSources: ['docs/beginner-client-setup_EN.md'],
     sources: ['docs/beginner-client-setup.md'],
     title: '小白桌面客户端安装与配置',
+    enTitle: 'Beginner Desktop Setup Guide',
     description: '面向非技术用户的桌面客户端下载、AI Key 与自选股配置指南。',
+    enDescription: 'Download the Windows or macOS desktop app, add one AI API key and watchlist, and run your first analysis.',
   },
   {
     target: 'docs/features/market-support.md',
+    enSources: ['docs/market-support_EN.md'],
     sources: ['docs/market-support.md'],
     title: '6 大市场支持边界',
+    enTitle: 'Multi-Market Support & Boundaries',
     description: 'A股、港股、美股、日股、韩股、台股及 ETF 的支持能力、代码规范与降级边界。',
+    enDescription: 'Coverage, symbol suffix rules, institutional flows, and degradation boundaries for A-share, HK, US, JP, KR, and TW markets.',
   },
   {
     target: 'docs/features/decision-signals.md',
@@ -84,7 +93,7 @@ export const SYNC_SPECS = [
   {
     target: 'docs/features/strategies.md',
     sources: ['strategies/README.md'],
-    title: 'Agent 15 种内置策略与自定义 Skill',
+    title: 'Agent 20 种内置策略与自定义 Skill',
     description: '自然语言 YAML 交易策略编写指南、核心理念与默认策略目录。',
   },
   {
@@ -152,9 +161,12 @@ export const SYNC_SPECS = [
   },
   {
     target: 'docs/configuration/notifications.md',
+    enSources: ['docs/notifications_EN.md'],
     sources: ['docs/notifications.md'],
     title: '通知渠道配置基线',
+    enTitle: 'Notification Channels & Routing Baseline',
     description: '企业微信、飞书、Telegram、Discord、Slack、邮件、Bark 与 ntfy 配置参考。',
+    enDescription: 'Configure WeChat Work, Feishu, DingTalk, Telegram, Discord, Slack, Email, ntfy, Gotify, routing, and noise controls.',
   },
   {
     target: 'docs/configuration/intelligence-sources.md',

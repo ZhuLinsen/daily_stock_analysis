@@ -1,6 +1,7 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { UiLanguageProvider } from '../../../contexts/UiLanguageContext';
+import { UiLanguageProvider, useUiLanguage } from '../../../contexts/UiLanguageContext';
+import { formatDateTime, formatShortDateTime } from '../../../utils/format';
 import { UI_LANGUAGE_STORAGE_KEY } from '../../../utils/uiLanguage';
 import { StockHistoryTrendDrawer } from '../StockHistoryTrendDrawer';
 import type { AnalysisReport, HistoryItem } from '../../../types/analysis';
@@ -178,5 +179,58 @@ describe('StockHistoryTrendDrawer', () => {
 
     expect(screen.getAllByText('Sell').length).toBeGreaterThanOrEqual(2);
     expect(screen.queryByText('买入')).not.toBeInTheDocument();
+  });
+
+  it('keeps month and day intact in EN rows and immediately re-formats latest and row timestamps on language switch', () => {
+    const iso = '2026-05-18T09:30:00Z';
+    const zhLatest = formatDateTime(iso, 'zh');
+    const enLatest = formatDateTime(iso, 'en');
+    const zhShort = formatShortDateTime(iso, 'zh');
+    const enShort = formatShortDateTime(iso, 'en');
+
+    const WrapperDrawer = () => {
+      const { setLanguage } = useUiLanguage();
+      return (
+        <>
+          <button type="button" onClick={() => setLanguage('en')}>
+            switch-en
+          </button>
+          <StockHistoryTrendDrawer
+            report={{
+              ...report,
+              meta: { ...report.meta, createdAt: iso },
+            }}
+            items={[{ ...items[0], createdAt: iso }]}
+            total={1}
+            hasMore={false}
+            isLoading={false}
+            isLoadingMore={false}
+            filters={{ range: 'all', model: 'all', sort: 'desc' }}
+            onClose={vi.fn()}
+            onRangeChange={vi.fn()}
+            onLoadMore={vi.fn()}
+            onSelectRecord={vi.fn()}
+            onRetry={vi.fn()}
+          />
+        </>
+      );
+    };
+
+    window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'zh');
+    render(
+      <UiLanguageProvider>
+        <WrapperDrawer />
+      </UiLanguageProvider>,
+    );
+
+    expect(screen.getByText(`最近一次 ${zhLatest}`)).toBeInTheDocument();
+    expect(screen.getByText(zhShort)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'switch-en' }));
+
+    expect(screen.getByText(`Latest ${enLatest}`)).toBeInTheDocument();
+    expect(screen.getByText(enShort)).toBeInTheDocument();
+    expect(enShort).toMatch(/^05\/18/);
+    expect(screen.queryByText(/^\/2026/)).not.toBeInTheDocument();
   });
 });

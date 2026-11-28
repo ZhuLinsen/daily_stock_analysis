@@ -29,6 +29,7 @@ from src.services.etf_rotation_service import (
     build_report,
     data_quality_warnings,
     load_closes,
+    params_from_config,
     run_etf_rotation,
 )
 
@@ -661,3 +662,30 @@ def test_rebalance_parser_falls_back_to_weekly():
     assert Config._parse_etf_rotation_rebalance("Monthly") == "monthly"
     assert Config._parse_etf_rotation_rebalance("daily") == "weekly"
     assert Config._parse_etf_rotation_rebalance(None) == "weekly"
+
+
+def test_quant_config_parsers_and_env_loading(monkeypatch):
+    assert Config._parse_etf_rotation_scoring_mode(" Trend_R2 ") == "trend_r2"
+    assert Config._parse_etf_rotation_scoring_mode("unknown") == "return"
+    assert Config._parse_etf_rotation_scoring_mode(None) == "return"
+    assert Config._parse_etf_rotation_weighting(" Inverse_Vol ") == "inverse_vol"
+    assert Config._parse_etf_rotation_weighting("equal_weight") == "equal"
+    assert Config._parse_etf_rotation_weighting(None) == "equal"
+
+    monkeypatch.setenv("ETF_ROTATION_SCORING_MODE", " Trend_R2 ")
+    monkeypatch.setenv("ETF_ROTATION_WEIGHTING", " Inverse_Vol ")
+    monkeypatch.setenv("ETF_ROTATION_VOL_LOOKBACK_DAYS", "35")
+    cfg = Config._load_from_env()
+    assert cfg.etf_rotation_scoring_mode == "trend_r2"
+    assert cfg.etf_rotation_weighting == "inverse_vol"
+    assert cfg.etf_rotation_vol_lookback_days == 35
+    params = params_from_config(cfg)
+    assert params.scoring_mode == "trend_r2"
+    assert params.weighting == "inverse_vol"
+    assert params.vol_lookback_days == 35
+
+    monkeypatch.setenv("ETF_ROTATION_SCORING_MODE", "bad_mode")
+    monkeypatch.setenv("ETF_ROTATION_WEIGHTING", "bad_wt")
+    fallback_cfg = Config._load_from_env()
+    assert fallback_cfg.etf_rotation_scoring_mode == "return"
+    assert fallback_cfg.etf_rotation_weighting == "equal"

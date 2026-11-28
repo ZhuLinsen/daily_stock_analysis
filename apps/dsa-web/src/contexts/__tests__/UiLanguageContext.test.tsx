@@ -1,5 +1,5 @@
 import { fireEvent, render, screen } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import {
   UiLanguageProvider,
 } from '../UiLanguageContext';
@@ -34,6 +34,10 @@ function createStorage(value: string | null): Storage {
 }
 
 describe('UiLanguageContext', () => {
+  afterEach(() => {
+    window.localStorage.removeItem(UI_LANGUAGE_STORAGE_KEY);
+    document.documentElement.lang = '';
+  });
   it('resolves explicit storage choice before browser language', () => {
     expect(resolveInitialUiLanguage({
       storage: createStorage('zh'),
@@ -119,5 +123,22 @@ describe('UiLanguageContext', () => {
     expect(localStorage.getItem(UI_LANGUAGE_STORAGE_KEY)).toBe('en');
     expect(screen.getByRole('button', { name: 'Switch UI language' })).toBeInTheDocument();
     expect(screen.getByText('English')).toBeInTheDocument();
+  });
+
+  it('restores documentElement.lang when unmounting UiLanguageProvider', () => {
+    document.documentElement.lang = 'fr';
+    localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'en');
+
+    const { unmount } = render(
+      <UiLanguageProvider>
+        <div />
+      </UiLanguageProvider>
+    );
+
+    expect(document.documentElement.lang).toBe('en');
+
+    unmount();
+
+    expect(document.documentElement.lang).toBe('fr');
   });
 });

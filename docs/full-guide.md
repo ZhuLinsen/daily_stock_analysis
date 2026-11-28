@@ -63,7 +63,7 @@ daily_stock_analysis/
 | `ANTHROPIC_API_KEY` | Anthropic Claude API Key | 可选 |
 | `OPENAI_API_KEY` | OpenAI 兼容 API Key（支持 DeepSeek、通义千问等） | 可选 |
 | `OPENAI_BASE_URL` | OpenAI 兼容 API 地址（如 `https://api.deepseek.com`） | 可选 |
-| `OPENAI_MODEL` | 模型名称（如 `gemini-3.6-flash`、`deepseek-v4-flash`、`gpt-6.1-sol`） | 可选 |
+| `OPENAI_MODEL` | 模型名称（如 `gemini-3.6-flash`、`deepseek-flash`、`gpt-6.1-sol`） | 可选 |
 | `AIHUBMIX_KEY` | [AIHubMix](https://inferera.com/?aff=CfMq) API Key（自动适配 Base URL） | 可选 |
 | `ANSPIRE_API_KEYS` | [Anspire](https://open.anspire.cn/dsa?share_code=QFBC0FYC) API Key（可选，模型与搜索共用；可用性以账号权限为准） | 可选 |
 
@@ -449,6 +449,7 @@ daily_stock_analysis/
 | `TICKFLOW_BATCH_DAILY_ENABLED` | 是否启用 TickFlow 批量日 K 预取；权限不足会短期缓存失败状态，并继续走常规回退。 | `true` | 可选 |
 | `TICKFLOW_BATCH_SIZE` | TickFlow 日 K 与实时行情批量请求的单批最大标的数。 | `100` | 可选 |
 | `FUTU_HK_REALTIME_SOURCE_PRIORITY` | 港股实时行情独立优先级，可选 `futu`、`longbridge`、`akshare`、`yfinance`，按逗号分隔；失败自动回退。 | `futu,longbridge,akshare,yfinance` | 可选 |
+| `FUTU_PRIORITY` | Futu 数据源优先级（数字越小越早尝试，默认 `2`），美股日 K 与美股实时行情共用同一套排序规则：该数值参与各源 `*_PRIORITY` 的数值排序（默认 `2` 与 Finnhub 同档，Futu 排在 Finnhub 之后）；已启用 Longbridge 首选（`LONGBRIDGE_*`）时 Longbridge 仍锚定美股首位，Futu 排其后；把该值调大（如 `99`）即可让 Futu 退到美股日 K 与实时链末位。港股实时由 `FUTU_HK_REALTIME_SOURCE_PRIORITY` 控制，A 股实时由 `REALTIME_SOURCE_PRIORITY` 的字符串顺序控制（均不受本值影响）；配置 OpenD 后覆盖港股、沪深 A 股与美股的取数；未配置 OpenD 时自动跳过、链路与旧版一致。 | `2` | 可选 |
 | `LONGBRIDGE_OAUTH_CLIENT_ID` | Longbridge OAuth client_id；留空且无 Legacy Access Token 时会兼容使用 `LONGBRIDGE_APP_KEY` | - | 可选 |
 | `LONGBRIDGE_OAUTH_TOKEN_CACHE_B64` | OAuth token 缓存文件的 base64 内容，供 GitHub Actions / Docker 等 headless 环境使用 | - | 可选 |
 | `LONGBRIDGE_APP_KEY` | Longbridge Legacy App Key；无 `LONGBRIDGE_ACCESS_TOKEN` 时也可作为 OAuth client_id 兼容别名 | - | 可选 |
@@ -1527,7 +1528,7 @@ GEMINI_MODEL=gemini-3.6-flash
 # OpenAI 兼容（备选）
 OPENAI_API_KEY=xxx
 OPENAI_BASE_URL=https://api.deepseek.com
-OPENAI_MODEL=deepseek-v4-flash
+OPENAI_MODEL=deepseek-flash
 # deepseek-chat / deepseek-reasoner 已被官方公告于 2026/07/24 停用，请迁移
 ```
 
@@ -1763,7 +1764,7 @@ FastAPI 提供 RESTful API 服务，支持配置管理和触发分析。
 - 🗂️ **大盘复盘任务可见性** - 首页触发大盘复盘后会返回 `task_id` 并轮询 `GET /api/v1/analysis/status/{task_id}`，在进行中/完成/失败场景给出可见反馈，失败时直接透出报错内容
 - 🗂️ **市场复盘历史独立入口** - 大盘复盘历史通过专用入口与普通个股历史隔离；建议通过 `stock_code=MARKET` + `report_type=market_review` 直接查询与回放大盘复盘记录
 - **阅读报告表格** - 个股完整报告和大盘复盘中的 Markdown 表格会在单元格内折行显示长文本。列数较多时，可横向滚动查看其余列。
-- **价格点位图** - 在 Web 或桌面端打开已保存的个股报告，点击「狙击点位」卡片右上角的「价格点位图」后才会请求日线行情。图表最多展示最近 60 个交易日的收盘价，叠加 MA5、MA20 和可解析的理想买入、二次买入、止损、止盈点位。若报告保存价与当前行情出现明显价格尺度差异，为避免把复权行情与旧报告点位错误叠加，图表会保留行情走势并隐藏参考线，同时给出提示。行情为空或加载失败时可点击「重新加载」。此功能无需配置。
+- **价格点位图** - 在 Web 或桌面端打开已保存的个股报告，点击「狙击点位」卡片右上角的「价格点位图」后才会按需请求日线行情。默认展示最近 `60D`（支持切换 `20D` / `40D` / `60D` / `全部`，其中`全部`指本次日线响应返回的全部交易日），叠加 MA5、MA20、可选主图叠加层（MA60、BOLL，默认关闭）、默认关闭的附图指标面板（`RSI(14)` / `MACD` / `KDJ`）、定量诊断徽标（盈亏比、RSI、BOLL 带宽/收口、MACD、MA20 乖离、年化波动、最大回撤、ATR%）以及可解析的理想买入、二次买入、止损、止盈点位。若报告保存价与当前行情出现明显价格尺度差异，为避免把复权行情与旧报告点位错误叠加，图表会保留行情走势并隐藏参考线，同时给出提示；若底层数据源仅返回收盘价回填的合成 OHLC（`ohlc_synthesized=true`）或未复权历史（`price_adjustment=unadjusted`），图表会自动隐藏伪造开盘/高低价区间或暂停跨日衍生统计与技术指标曲线并给出状态提示。行情为空或加载失败时可点击「重新加载」。此功能无需配置。
 - 🧾 **市场复盘历史可复用** - 大盘复盘任务会持久化到分析历史，`report_type` 为 `market_review`，可直接通过历史列表/详情打开对应 Markdown 或详情页，不会重新触发分析重算
 - 🧭 **市场位置卡片** - A 股普通分析报告会展示市场题材层和个股位置层，区分大盘主线、主关联题材、题材阶段、个股位置和缺失证据
 - 🧩 **输入数据块可见** - 普通分析报告会在历史详情、同步响应和 completed 任务状态中返回低敏 `AnalysisContextPack` overview，Web 报告页在策略点位和资讯之后默认折叠展示数据块状态、来源、缺失原因和降级摘要

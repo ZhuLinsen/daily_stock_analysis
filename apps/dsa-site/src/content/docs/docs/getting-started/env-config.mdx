@@ -13,7 +13,7 @@ DSA 遵循**“零配置可试跑，按需增量增强”**原则。默认已内
 | **AI 模型 Key（任选其一）** | 支持 Gemini / DeepSeek / Claude / OpenAI 兼容网关 / 本地 Ollama | `GEMINI_API_KEY=...` 或 `DEEPSEEK_API_KEY=...` |
 
 :::tip[DeepSeek 与 OpenAI 兼容接口补充]
-- **DeepSeek 官方接口**：直接配置 `DEEPSEEK_API_KEY=...`（系统默认使用 `deepseek/deepseek-v4-flash`），或配合渠道模式显式指定 `deepseek-v4-flash` / `deepseek-v4-pro`。
+- **DeepSeek 官方接口**：直接配置 `DEEPSEEK_API_KEY=...`（系统默认使用 `deepseek/deepseek-flash`，旧别名 `deepseek/deepseek-v4-flash` 仅保留临时兼容），或配合渠道模式显式指定 `deepseek-flash` / `deepseek-v4-pro`（显式配置 `LITELLM_MODEL` 时需写 `deepseek/deepseek-flash` / `deepseek/deepseek-v4-pro`）。
 - **第三方 OpenAI 兼容网关**：同时设置 `OPENAI_API_KEY`、`OPENAI_BASE_URL`（通常需以 `/v1` 结尾）与 `LITELLM_MODEL=openai/<模型名>`（或 `OPENAI_MODEL`）。
 
 更多渠道与多模型路由写法见 [LLM 大模型配置指南](/docs/configuration/llm-guide/) 与 [LLM 服务商配置参考](/docs/configuration/llm-providers/)。

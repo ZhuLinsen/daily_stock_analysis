@@ -209,6 +209,7 @@ def test_convergence_builtin_asset_contracts_match_actual_factory():
         "get_stock_info": ("stock",), "get_capital_flow": ("stock",),
         "analyze_trend": ("stock", "index"), "calculate_ma": ("stock", "index"),
         "get_volume_analysis": ("stock", "index"), "analyze_pattern": ("stock", "index"),
+        "calculate_quant_factors": ("stock", "index"),
         "search_stock_news": ("stock", "index"), "search_comprehensive_intel": ("stock", "index"),
         "get_stock_backtest_summary": ("stock",),
     }
@@ -430,7 +431,7 @@ def test_convergence_targets_do_not_mix_across_real_tool_threads(chat_stock_inde
                        {"canonical": "sh000001", "type": "index", "code": "sh000001"}]
 
 
-@pytest.mark.parametrize("tool_name", ["get_daily_history", "analyze_trend", "calculate_ma", "get_volume_analysis", "analyze_pattern"])
+@pytest.mark.parametrize("tool_name", ["get_daily_history", "analyze_trend", "calculate_ma", "get_volume_analysis", "analyze_pattern", "calculate_quant_factors"])
 def test_convergence_analysis_family_reads_only_bound_index_cache(db, chat_stock_index, monkeypatch, tool_name):
     from datetime import date, timedelta
     import pandas as pd

@@ -2,7 +2,9 @@ import type React from 'react';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { createMemoryRouter, RouterProvider, Outlet } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { resolveWebBuildInfo } from '../../utils/constants';
+import { formatWebBuildTime, resolveWebBuildInfo } from '../../utils/constants';
+import { UiLanguageProvider } from '../../contexts/UiLanguageContext';
+import { UI_LANGUAGE_STORAGE_KEY } from '../../utils/uiLanguage';
 import { resetSharedDesktopUpdateState } from '../../desktop/updateStore';
 import type { SetupStatusResponse } from '../../types/systemConfig';
 import { createParsedApiError, type ParsedApiError } from '../../api/error';
@@ -707,6 +709,8 @@ describe('SettingsPage', () => {
   });
 
   afterEach(() => {
+    window.localStorage.removeItem(UI_LANGUAGE_STORAGE_KEY);
+    document.documentElement.lang = '';
     resetSharedDesktopUpdateState();
   });
 
@@ -3467,5 +3471,34 @@ describe('SettingsPage', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: 'merge stock list conflict' }));
     await waitFor(() => expect(refreshAfterExternalSave).toHaveBeenCalledWith([]));
+  });
+
+  it('formats and renders build time fallback in English when active language is en', async () => {
+    expect(formatWebBuildTime('未提供', 'en')).toBe('Not provided');
+    expect(formatWebBuildTime('未提供', 'zh')).toBe('未提供');
+    expect(formatWebBuildTime('2026-03-29T02:15:30.000Z', 'en')).toBe('2026-03-29T02:15:30.000Z');
+
+    window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'en');
+    Object.assign(webBuildInfoMock, {
+      buildTime: '未提供',
+    });
+
+    const router = createMemoryRouter(
+      [
+        {
+          path: '/settings',
+          element: (
+            <UiLanguageProvider>
+              <SettingsPage />
+            </UiLanguageProvider>
+          ),
+        },
+      ],
+      { initialEntries: ['/settings'] },
+    );
+    render(<RouterProvider router={router} />);
+
+    expect(await screen.findByText('Not provided')).toBeInTheDocument();
+    expect(screen.queryByText('未提供')).not.toBeInTheDocument();
   });
 });

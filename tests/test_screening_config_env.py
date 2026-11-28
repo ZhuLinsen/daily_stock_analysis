@@ -49,6 +49,25 @@ class ScreeningConfigIntEnvTestCase(unittest.TestCase):
 
         self.assertEqual(config.post_analysis_max_picks, 5)
 
+    def test_deepseek_api_keys_infers_deepseek_flash_and_first_key_priority(self) -> None:
+        multi_only = self._from_env({"DEEPSEEK_API_KEYS": "sk-ds-1, sk-ds-2"})
+        self.assertEqual(multi_only.llm_model, "deepseek/deepseek-flash")
+        self.assertEqual(multi_only.llm_api_key, "sk-ds-1")
+
+        both = self._from_env({"DEEPSEEK_API_KEYS": "sk-ds-multi", "DEEPSEEK_API_KEY": "sk-ds-single"})
+        self.assertEqual(both.llm_model, "deepseek/deepseek-flash")
+        self.assertEqual(both.llm_api_key, "sk-ds-multi")
+
+        legacy_alias = self._from_env(
+            {"DEEPSEEK_API_KEYS": "sk-ds-multi", "LITELLM_MODEL": "deepseek/deepseek-v4-flash"}
+        )
+        self.assertEqual(legacy_alias.llm_model, "deepseek/deepseek-v4-flash")
+        self.assertEqual(legacy_alias.llm_api_key, "sk-ds-multi")
+
+        single_only = self._from_env({"DEEPSEEK_API_KEY": "  sk-ds-single  "})
+        self.assertEqual(single_only.llm_model, "deepseek/deepseek-flash")
+        self.assertEqual(single_only.llm_api_key, "sk-ds-single")
+
 
 if __name__ == "__main__":
     unittest.main()

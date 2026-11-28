@@ -11,7 +11,11 @@ export function useHomeDashboardState() {
     useShallow((state) => ({
       query: state.query,
       inputError: state.inputError,
+      inputErrorResolver: state.inputErrorResolver,
+      inputErrorResolvedValue: state.inputErrorResolvedValue,
       duplicateError: state.duplicateError,
+      duplicateErrorResolver: state.duplicateErrorResolver,
+      duplicateErrorResolvedValue: state.duplicateErrorResolvedValue,
       error: state.error,
       isAnalyzing: state.isAnalyzing,
       historyItems: state.historyItems,

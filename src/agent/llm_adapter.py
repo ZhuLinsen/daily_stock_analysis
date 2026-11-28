@@ -15,8 +15,16 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
-import litellm
-from litellm import Router
+from src.llm.transport import (
+    NativeConfigError,
+    can_register_model,
+    create_litellm_compat_proxy,
+    create_router,
+    dispatch_completion,
+    get_model_cost,
+    register_model,
+    resolve_exception_types,
+)
 
 from src.config import (
     extra_litellm_params,
@@ -60,20 +68,13 @@ logger = logging.getLogger(__name__)
 # streaming chunk 向全局线程池提交一次 asyncio.run() 日志任务；Windows 上每次都会新建
 # Proactor 事件循环和回环 socketpair，长报告产生数千次，既耗 CPU，又会让线程池卡在
 # socketpair 的 accept() 上，导致 CLI 打印「程序执行完成」后进程无法退出。
-litellm.disable_streaming_logging = True
+litellm = create_litellm_compat_proxy(disable_streaming_logging=True)
+Router = create_router
 
 
-def _resolve_litellm_exception(name: str) -> type[BaseException]:
-    """Return a catchable LiteLLM exception class even in stubbed test environments."""
-    exc = getattr(litellm, name, None)
-    if isinstance(exc, type) and issubclass(exc, BaseException):
-        return exc
-
-    class _FallbackLiteLLMError(Exception):
-        pass
-
-    _FallbackLiteLLMError.__name__ = f"Fallback{name}"
-    return _FallbackLiteLLMError
+def _resolve_litellm_exception(name: str) -> Tuple[type[BaseException], ...]:
+    """Return catchable exception classes across active and compatibility transports."""
+    return resolve_exception_types(name, compat_proxy=litellm)
 
 
 # ============================================================
@@ -224,7 +225,23 @@ def _object_to_dict(value: Any) -> Dict[str, Any]:
         except Exception:
             pass
     result: Dict[str, Any] = {}
-    for key in ("type", "text", "content", "thinking", "signature", "data"):
+    for key in (
+        "type",
+        "text",
+        "content",
+        "thinking",
+        "signature",
+        "data",
+        "thought",
+        "thoughtSignature",
+        "thought_signature",
+        "functionCall",
+        "encrypted_content",
+        "summary",
+        "id",
+        "name",
+        "input",
+    ):
         if hasattr(value, key):
             result[key] = getattr(value, key)
     return result
@@ -246,7 +263,11 @@ def _extract_provider_blocks(choice: Any) -> Tuple[List[Dict[str, Any]], Optiona
     for owner in (message, choice):
         if owner is None:
             continue
+        has_provider_blocks = isinstance(getattr(owner, "provider_blocks", None), list)
         for attr in ("content", "content_blocks", "provider_blocks", "thinking_blocks"):
+            if attr == "thinking_blocks" and has_provider_blocks:
+                # Avoid duplicating thinking blocks already preserved in ordered provider_blocks.
+                continue
             value = getattr(owner, attr, None)
             if isinstance(value, list):
                 block_sources.append(value)
@@ -457,11 +478,7 @@ class LLMToolAdapter:
         """
         for model_name, pricing in _CUSTOM_MODEL_PRICING.items():
             try:
-                litellm.register_model(
-                    {
-                        model_name: pricing
-                    }
-                )
+                register_model({model_name: pricing}, compat_proxy=litellm)
                 logger.debug(f"Registered custom pricing for {model_name}")
             except Exception as e:
                 logger.debug(f"Model {model_name} may already be registered or pricing error: {e}")
@@ -573,11 +590,30 @@ class LLMToolAdapter:
                 logger.warning("Agent LLM: no Agent-safe channel deployments after Hermes filtering")
                 return
             prepared_model_list = apply_thinking_extra_body_to_model_list(model_list)
-            self._router = Router(
-                model_list=prepared_model_list,
-                routing_strategy="simple-shuffle",
-                num_retries=2,
-            )
+            try:
+                self._router = create_router(
+                    prepared_model_list,
+                    routing_strategy="simple-shuffle",
+                    num_retries=2,
+                    router_factory=Router if Router is not create_router else None,
+                    config=config,
+                )
+            except NativeConfigError as exc:
+                self._backend_error = GenerationError(
+                    error_code=GenerationErrorCode.CAPABILITY_UNSUPPORTED,
+                    stage="generation",
+                    retryable=False,
+                    fallbackable=False,
+                    backend=LITELLM_BACKEND_ID,
+                    provider=exc.llm_provider or "native",
+                    details={
+                        "reason": exc.error_code or "native_transport_unsupported",
+                        "message": str(exc),
+                        "primary_model": litellm_model,
+                    },
+                )
+                logger.error("Agent LLM: native transport rejected channel/YAML router config: %s", exc)
+                return
             self._router_has_merged_extra_body = True
             unique_models = list(dict.fromkeys(
                 e['litellm_params']['model'] for e in model_list
@@ -612,11 +648,30 @@ class LLMToolAdapter:
                 for k in keys
             ])
             self._legacy_router_model_list = legacy_model_list
-            self._router = Router(
-                model_list=legacy_model_list,
-                routing_strategy="simple-shuffle",
-                num_retries=2,
-            )
+            try:
+                self._router = create_router(
+                    legacy_model_list,
+                    routing_strategy="simple-shuffle",
+                    num_retries=2,
+                    router_factory=Router if Router is not create_router else None,
+                    config=config,
+                )
+            except NativeConfigError as exc:
+                self._backend_error = GenerationError(
+                    error_code=GenerationErrorCode.CAPABILITY_UNSUPPORTED,
+                    stage="generation",
+                    retryable=False,
+                    fallbackable=False,
+                    backend=LITELLM_BACKEND_ID,
+                    provider=exc.llm_provider or "native",
+                    details={
+                        "reason": exc.error_code or "native_transport_unsupported",
+                        "message": str(exc),
+                        "primary_model": litellm_model,
+                    },
+                )
+                logger.error("Agent LLM: native transport rejected legacy router config: %s", exc)
+                return
             self._router_has_merged_extra_body = True
             logger.info(
                 f"Agent LLM: Legacy Router initialized with {len(keys)} keys "
@@ -860,7 +915,7 @@ class LLMToolAdapter:
         if use_channel_router and self._router and model in _router_model_names:
             # Channel / YAML path: Router manages all models in its model_list
             response = call_litellm_with_param_recovery(
-                lambda kwargs: self._router.completion(**kwargs),
+                lambda kwargs: dispatch_completion(router=self._router, config=self._config, **kwargs),
                 model=model,
                 call_kwargs=call_kwargs,
                 model_list=recovery_model_list,
@@ -869,7 +924,7 @@ class LLMToolAdapter:
         elif self._router and model == agent_primary_model and not use_channel_router:
             # Legacy path: Router for primary model multi-key
             response = call_litellm_with_param_recovery(
-                lambda kwargs: self._router.completion(**kwargs),
+                lambda kwargs: dispatch_completion(router=self._router, config=self._config, **kwargs),
                 model=model,
                 call_kwargs=call_kwargs,
                 model_list=recovery_model_list,
@@ -880,7 +935,7 @@ class LLMToolAdapter:
             # providers like groq/ or bedrock/ that are not in the Router
             # model_list even when channel mode is active)
             response = call_litellm_with_param_recovery(
-                lambda kwargs: litellm.completion(**kwargs),
+                lambda kwargs: dispatch_completion(compat_proxy=litellm, config=self._config, **kwargs),
                 model=model,
                 call_kwargs=call_kwargs,
                 model_list=recovery_model_list,
@@ -981,10 +1036,17 @@ class LLMToolAdapter:
                     openai_msg["reasoning_content"] = msg["reasoning_content"]
                 openai_messages.append(openai_msg)
             else:
-                openai_messages.append({
+                converted_msg: Dict[str, Any] = {
                     "role": msg["role"],
-                    "content": msg["content"],
-                })
+                    "content": (
+                        msg.get("provider_blocks")
+                        if msg["role"] == "assistant" and msg.get("provider_blocks")
+                        else msg["content"]
+                    ),
+                }
+                if msg["role"] == "assistant" and msg.get("reasoning_content") is not None:
+                    converted_msg["reasoning_content"] = msg["reasoning_content"]
+                openai_messages.append(converted_msg)
         return openai_messages
 
     def _trace_provider_for_target(self, target_model: Optional[str]) -> str:
@@ -1087,12 +1149,9 @@ def register_fallback_model_pricing(models: Iterable[str]) -> None:
     """Register zero-cost pricing for unknown OpenAI-compatible models."""
     if not models:
         return
-    register = getattr(litellm, "register_model", None)
-    if not callable(register):
+    if not can_register_model(compat_proxy=litellm):
         return
-    cost_map = getattr(litellm, "model_cost", {})
-    if not isinstance(cost_map, dict):
-        cost_map = {}
+    cost_map = get_model_cost(compat_proxy=litellm)
     for model in models:
         provider, wire_model = _split_provider_model(str(model))
         if provider != "openai":
@@ -1104,7 +1163,7 @@ def register_fallback_model_pricing(models: Iterable[str]) -> None:
             if wire_model in cost_map:
                 continue
             try:
-                register({wire_model: dict(custom_pricing)})
+                register_model({wire_model: dict(custom_pricing)}, compat_proxy=litellm)
                 logger.debug("Registered custom pricing for %s", wire_model)
             except Exception as exc:
                 logger.debug(
@@ -1117,7 +1176,7 @@ def register_fallback_model_pricing(models: Iterable[str]) -> None:
         if wire_model in cost_map or wire_model in _FALLBACK_MODEL_PRICING_REGISTERED:
             continue
         try:
-            register({wire_model: dict(_FALLBACK_MODEL_PRICING)})
+            register_model({wire_model: dict(_FALLBACK_MODEL_PRICING)}, compat_proxy=litellm)
             _FALLBACK_MODEL_PRICING_REGISTERED.add(wire_model)
             logger.debug("Registered fallback pricing for %s", wire_model)
         except Exception as exc:

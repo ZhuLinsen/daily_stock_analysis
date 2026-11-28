@@ -1,8 +1,10 @@
 import type { AnalysisReport } from '../types/analysis';
 import { historyApi } from '../api/history';
 import { looksLikeStockCode, validateStockCode } from './validation';
+import { resolveActiveUiLanguage } from './format';
 import { normalizeStockCode, resolveRegisteredIndexCanonical } from './stockCode';
 import type { RegisteredIndexIdentity } from './stockCode';
+import type { UiLanguage } from '../i18n/uiText';
 
 export interface ChatFollowUpContext {
   stock_code: string;
@@ -105,9 +107,15 @@ export function parseFollowUpRecordId(recordId: string | null): number | undefin
   return parsed;
 }
 
-export function buildFollowUpPrompt(stockCode: string, stockName: string | null): string {
+export function buildFollowUpPrompt(
+  stockCode: string,
+  stockName: string | null,
+  language?: UiLanguage,
+): string {
   const displayName = stockName ? `${stockName}(${stockCode})` : stockCode;
-  return `请深入分析 ${displayName}`;
+  return resolveActiveUiLanguage(language) === 'en'
+    ? `Please analyze ${displayName} in depth`
+    : `请深入分析 ${displayName}`;
 }
 
 function reportIdentityKey(code: string, index: ReadonlyArray<RegisteredIndexIdentity>, type?: 'stock' | 'index'): string | null {

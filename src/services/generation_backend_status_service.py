@@ -823,7 +823,7 @@ class GenerationBackendStatusService:
             or ""
         )
         if deepseek_keys:
-            return "deepseek/deepseek-v4-flash"
+            return "deepseek/deepseek-flash"
 
         if cls._openai_keys_from_map(effective_map):
             model = (effective_map.get("OPENAI_MODEL") or "gpt-6.1-sol").strip()

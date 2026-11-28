@@ -19,14 +19,20 @@ import pandas as pd
 from src.core.etf_rotation import (
     CASH,
     DAYS_PER_YEAR,
+    DEFAULT_VOL_LOOKBACK_DAYS,
+    MAX_FORWARD_FILL_DAYS,
+    SCORING_MODES,
+    STRATEGY_PRESETS,
+    WEIGHTING_MODES,
     BacktestResult,
     RotationParams,
-    MAX_FORWARD_FILL_DAYS,
     annual_returns,
-    compute_metrics,
+    compare_strategies,
+    compute_extended_metrics,
+    factor_snapshot,
     holdings_to_weights,
     is_rebalance_day,
-    latest_ranking,
+    is_rebalance_needed,
     parameter_sweep,
     run_backtest,
     select_holdings,
@@ -44,6 +50,25 @@ MAX_LISTED_JUMPS = 3
 # Shorter backtests make annualised figures meaningless; only the signal is shown.
 MIN_BACKTEST_YEARS = 1.0
 CALENDAR_MARKET = "cn"
+
+SCORING_MODE_LABELS = {
+    "return": "区间收益率动量",
+    "vol_adjusted": "波动率调整动量 (Return/Vol)",
+    "composite": "多周期复合动量 (短/中/长加权)",
+    "trend_r2": "趋势质量动量 (Slope×R²)",
+}
+
+WEIGHTING_MODE_LABELS = {
+    "equal": "等权配比",
+    "inverse_vol": "反波动率风险平价",
+}
+
+PRESET_LABELS = {
+    "return_equal": "区间收益 + 等权 (基线)",
+    "vol_adjusted_equal": "波动率调整 + 等权",
+    "composite_equal": "多周期复合 + 等权",
+    "trend_r2_inv_vol": "趋势质量 R² + 反波动平价",
+}
 
 NextSessionFn = Callable[[date], Optional[date]]
 
@@ -66,12 +91,46 @@ class RotationReport:
 
 
 def params_from_config(config) -> RotationParams:
+    raw_mode = getattr(config, "etf_rotation_scoring_mode", "return")
+    norm_mode = raw_mode.strip().lower() if isinstance(raw_mode, str) else ""
+    if norm_mode in SCORING_MODES:
+        scoring_mode = norm_mode
+    else:
+        if raw_mode is not None and str(raw_mode).strip():
+            logger.warning("[ETFRotation] Invalid scoring_mode=%r; falling back to return", raw_mode)
+        scoring_mode = "return"
+
+    raw_weighting = getattr(config, "etf_rotation_weighting", "equal")
+    norm_weighting = raw_weighting.strip().lower() if isinstance(raw_weighting, str) else ""
+    if norm_weighting in WEIGHTING_MODES:
+        weighting = norm_weighting
+    else:
+        if raw_weighting is not None and str(raw_weighting).strip():
+            logger.warning("[ETFRotation] Invalid weighting=%r; falling back to equal", raw_weighting)
+        weighting = "equal"
+
+    raw_vol = getattr(config, "etf_rotation_vol_lookback_days", DEFAULT_VOL_LOOKBACK_DAYS)
+    if isinstance(raw_vol, bool) or raw_vol is None:
+        vol_lookback = DEFAULT_VOL_LOOKBACK_DAYS
+    else:
+        try:
+            vol_lookback = int(raw_vol)
+        except (TypeError, ValueError):
+            logger.warning("[ETFRotation] Invalid vol_lookback_days=%r; falling back to %d", raw_vol, DEFAULT_VOL_LOOKBACK_DAYS)
+            vol_lookback = DEFAULT_VOL_LOOKBACK_DAYS
+    if vol_lookback < 2:
+        logger.warning("[ETFRotation] Out-of-range vol_lookback_days=%r; falling back to %d", vol_lookback, DEFAULT_VOL_LOOKBACK_DAYS)
+        vol_lookback = DEFAULT_VOL_LOOKBACK_DAYS
+
     return RotationParams(
         lookback_days=config.etf_rotation_lookback_days,
         rebalance=config.etf_rotation_rebalance,
         top_n=config.etf_rotation_top_n,
         switch_buffer_pct=config.etf_rotation_switch_buffer_pct,
         cost_bps=config.etf_rotation_cost_bps,
+        scoring_mode=scoring_mode,
+        weighting=weighting,
+        vol_lookback_days=vol_lookback,
     )
 
 
@@ -230,6 +289,18 @@ def _num(value: float) -> str:
     return f"{value:.2f}"
 
 
+def _days(value: float) -> str:
+    if value is None or (isinstance(value, float) and math.isnan(value)):
+        return "-"
+    return f"{int(round(value))} 天"
+
+
+def _score_text(value: float, scoring_mode: str) -> str:
+    if scoring_mode in ("vol_adjusted", "trend_r2"):
+        return _num(value)
+    return _pct(value)
+
+
 def _label(code: str, names: Dict[str, str]) -> str:
     name = names.get(code, code)
     return name if name == code else f"{name}({code})"
@@ -253,39 +324,54 @@ def _signal_conclusion(changed: bool, rebalance_day: Optional[bool], rebalance: 
 
 def _render_signal(
     as_of: pd.Timestamp,
-    ranking: pd.Series,
+    snapshot: pd.DataFrame,
     current: Dict[str, float],
     target: Dict[str, float],
     conclusion: str,
     names: Dict[str, str],
+    params: RotationParams,
 ) -> List[str]:
+    mode_label = SCORING_MODE_LABELS.get(params.scoring_mode, params.scoring_mode)
+    weight_label = WEIGHTING_MODE_LABELS.get(params.weighting, params.weighting)
     lines = [
         f"## 最新信号（基于 {as_of:%Y-%m-%d} 收盘）",
         "",
+        f"- 因子与配权：{mode_label} / {weight_label}",
         f"- 当前规则持仓：{_weights_text(current, names)}",
         f"- 最新收盘目标：{_weights_text(target, names)}",
         f"- 结论：{conclusion}",
         "",
-        "| 排名 | 标的 | 动量 | 是否合格 |",
-        "| --- | --- | --- | --- |",
+        "| 排名 | 标的 | 动量得分 | 20日收益 | 年化波动 | 趋势R² | 是否合格 |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
     ]
-    for rank, (code, score) in enumerate(ranking.items(), start=1):
-        eligible = "是" if pd.notna(score) and score > 0 else "否"
-        lines.append(f"| {rank} | {_label(code, names)} | {_pct(score)} | {eligible} |")
+    for rank, (code, row) in enumerate(snapshot.iterrows(), start=1):
+        eligible = "是" if bool(row["eligible"]) else "否"
+        lines.append(
+            f"| {rank} | {_label(code, names)} | "
+            f"{_score_text(row['score'], params.scoring_mode)} | "
+            f"{_pct(row['ret_20d'])} | {_pct(row['ann_vol'])} | "
+            f"{_num(row['trend_r2'])} | {eligible} |"
+        )
     return lines
 
 
 def _render_metrics(result: BacktestResult) -> List[str]:
-    strat = compute_metrics(result.equity)
-    bench = compute_metrics(result.benchmark_equity)
+    strat = compute_extended_metrics(result.equity, result.benchmark_equity, result.trades)
+    bench = compute_extended_metrics(result.benchmark_equity)
     start, end = result.equity.index[0], result.equity.index[-1]
     rows = [
         ("累计收益", "total_return", _pct),
         ("年化收益", "cagr", _pct),
+        ("超额年化", "excess_cagr", _pct),
         ("年化波动", "ann_vol", _pct),
         ("夏普比率", "sharpe", _num),
+        ("Sortino 比率", "sortino", _num),
         ("最大回撤", "max_drawdown", _pct),
+        ("最长回撤天数", "max_drawdown_days", _days),
         ("Calmar", "calmar", _num),
+        ("月度胜率", "monthly_win_rate", _pct),
+        ("信息比率 (IR)", "information_ratio", _num),
+        ("年均换手率", "annual_turnover", _pct),
     ]
     lines = [
         f"## 回测表现（{start:%Y-%m-%d} ~ {end:%Y-%m-%d}，已扣交易成本）",
@@ -324,6 +410,36 @@ def _render_sweep(rows, current_lookback: int) -> List[str]:
     return lines
 
 
+def _render_strategy_comparison(
+    rows: List[tuple],
+    params: RotationParams,
+) -> List[str]:
+    if not rows:
+        return []
+    preset_modes = {key: (mode, wt) for key, mode, wt in STRATEGY_PRESETS}
+    lines = [
+        "## 量化因子与配权横向对比（统一评估区间）",
+        "",
+        "| 策略组合 | 年化收益 | 最大回撤 | 夏普 | Sortino | 年均换手 |",
+        "| --- | --- | --- | --- | --- | --- |",
+    ]
+    for key, m in rows:
+        if key == "current":
+            label = (
+                f"{SCORING_MODE_LABELS.get(params.scoring_mode, params.scoring_mode)} + "
+                f"{WEIGHTING_MODE_LABELS.get(params.weighting, params.weighting)}"
+            )
+            mark = " ⬅ 当前"
+        else:
+            label = PRESET_LABELS.get(key, key)
+            mark = " ⬅ 当前" if preset_modes.get(key) == (params.scoring_mode, params.weighting) else ""
+        lines.append(
+            f"| {label}{mark} | {_pct(m['cagr'])} | {_pct(m['max_drawdown'])} | "
+            f"{_num(m['sharpe'])} | {_num(m['sortino'])} | {_pct(m['annual_turnover'])} |"
+        )
+    return lines
+
+
 def _render_trades(result: BacktestResult, names: Dict[str, str]) -> List[str]:
     if not result.trades:
         return []
@@ -339,11 +455,22 @@ def _render_trades(result: BacktestResult, names: Dict[str, str]) -> List[str]:
 def _render_rules(params: RotationParams, safe_asset: Optional[str], names: Dict[str, str]) -> List[str]:
     period = "每周最后一个交易日" if params.rebalance == "weekly" else "每月最后一个交易日"
     defensive = _label(safe_asset, names) if safe_asset else CASH_LABEL
+    mode_label = SCORING_MODE_LABELS.get(params.scoring_mode, params.scoring_mode)
+    window_detail = (
+        f"基准窗口 {params.lookback_days} 日，波动率窗口 {params.vol_lookback_days} 日"
+        if params.scoring_mode == "vol_adjusted"
+        else f"基准窗口 {params.lookback_days} 日"
+    )
+    weight_desc = (
+        f"按 {params.vol_lookback_days} 日波动率倒数分配风险预算，空缺仓位切到 {defensive}"
+        if params.weighting == "inverse_vol"
+        else f"每只等权占 {100 / params.top_n:.0f}%；空出的仓位切到 {defensive}"
+    )
     return [
         "## 规则说明",
         "",
-        f"- {period}收盘计算 {params.lookback_days} 日动量，下一交易日收盘执行",
-        f"- 持有动量最强且为正的前 {params.top_n} 只，每只 {100 / params.top_n:.0f}%；空出的仓位切到 {defensive}",
+        f"- {period}收盘按「{mode_label}」（{window_detail}）打分，下一交易日收盘执行",
+        f"- 持有得分为正的前 {params.top_n} 只，{weight_desc}",
         f"- 已持有标的在合格且落后幅度不超过 {params.switch_buffer_pct:g}% 时继续持有",
         f"- 交易成本按单边 {params.cost_bps:g} bp 乘以换手率扣除",
         "- 对比基准为风险池等权持有（日再平衡、不扣成本），与策略同从首次建仓日起算",
@@ -364,13 +491,27 @@ def build_report(
     """Render the report; ``next_session`` resolves the trading day after a date."""
     risk = [c for c in risk_assets if c in closes.columns]
     result = run_backtest(closes, risk, safe_asset, params)
-    as_of, ranking = latest_ranking(closes, risk, params)
+    as_of, snapshot = factor_snapshot(closes, risk, params)
+    ranking = snapshot["score"]
+    latest_vols = snapshot["ann_vol"]
     safe_close = closes.loc[as_of, safe_asset] if safe_asset and safe_asset in closes.columns else math.nan
     usable_safe = safe_asset if pd.notna(safe_close) and math.isfinite(safe_close) and safe_close > 0 else None
     target_holdings = select_holdings(ranking, result.final_holdings, params)
-    target = holdings_to_weights(target_holdings, params.top_n, usable_safe)
-    # Compare holdings, not weights: live weights drift away from the exact 1/top_n split.
-    changed = set(target) != set(result.final_weights)
+    target = holdings_to_weights(
+        target_holdings,
+        params.top_n,
+        usable_safe,
+        weighting=params.weighting,
+        vols=latest_vols,
+    )
+    changed = is_rebalance_needed(
+        result.final_weights,
+        target,
+        result.final_holdings,
+        target_holdings,
+        weighting=params.weighting,
+        reference_weights=result.final_target_weights or None,
+    )
     following = next_session(as_of.date()) if next_session else None
     rebalance_day = is_rebalance_day(as_of, pd.Timestamp(following), params.rebalance) if following else None
 
@@ -381,8 +522,12 @@ def build_report(
     has_backtest = (end - start).days / DAYS_PER_YEAR >= MIN_BACKTEST_YEARS
     if has_backtest:
         sweep = parameter_sweep(closes, risk, safe_asset, params, min_years=MIN_BACKTEST_YEARS)
+        strategy_cmp = compare_strategies(
+            closes, risk, safe_asset, params, min_years=MIN_BACKTEST_YEARS, precomputed=result
+        )
     else:
         sweep = []
+        strategy_cmp = []
         notes.append(
             f"可回测区间仅 {start:%Y-%m-%d} ~ {end:%Y-%m-%d}，不足 {MIN_BACKTEST_YEARS:g} 年，"
             "已省略回测表现、分年度收益、参数平原检验和调仓记录，只给出最新信号"
@@ -393,12 +538,18 @@ def build_report(
         lines += ["## ⚠️ 数据告警", ""] + [f"- {note}" for note in notes] + [""]
     conclusion = _signal_conclusion(changed, rebalance_day, params.rebalance)
     backtest_blocks = (
-        (_render_metrics(result), _render_annual(result), _render_sweep(sweep, params.lookback_days),
-         _render_trades(result, names))
-        if has_backtest else ()
+        (
+            _render_metrics(result),
+            _render_annual(result),
+            _render_sweep(sweep, params.lookback_days),
+            _render_strategy_comparison(strategy_cmp, params),
+            _render_trades(result, names),
+        )
+        if has_backtest
+        else ()
     )
     for block in (
-        _render_signal(as_of, ranking, result.final_weights, target, conclusion, names),
+        _render_signal(as_of, snapshot, result.final_weights, target, conclusion, names, params),
         *backtest_blocks,
         _render_rules(params, usable_safe, names),
     ):

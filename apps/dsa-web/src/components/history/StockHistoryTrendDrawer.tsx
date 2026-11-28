@@ -8,11 +8,11 @@ import {
   getDecisionActionTone,
   type DecisionActionLabelMap,
 } from '../../utils/decisionAction';
-import { formatDateTime } from '../../utils/format';
+import { formatDateTime, formatShortDateTime } from '../../utils/format';
 import { Badge, Button, Card } from '../common';
 import { DashboardStateBlock } from '../dashboard';
 import { useUiLanguage } from '../../contexts/UiLanguageContext';
-import type { UiTextKey } from '../../i18n/uiText';
+import type { UiLanguage, UiTextKey } from '../../i18n/uiText';
 
 interface StockHistoryTrendDrawerProps {
   report: AnalysisReport;
@@ -50,10 +50,8 @@ const formatChangePct = (value?: number): string => {
   return `${sign}${value.toFixed(2)}%`;
 };
 
-const formatHistoryTime = (value?: string | null): string => {
-  const formatted = formatDateTime(value);
-  return formatted.length > 11 ? formatted.slice(5) : formatted;
-};
+const formatHistoryTime = (value?: string | null, language?: UiLanguage): string =>
+  formatShortDateTime(value, language);
 
 const getPriceChangeStyle = (value?: number): React.CSSProperties | undefined => {
   if (typeof value !== 'number' || !Number.isFinite(value) || value === 0) {
@@ -92,6 +90,7 @@ const summarizeView = (
   report: AnalysisReport,
   t: (key: UiTextKey, params?: Record<string, string | number>) => string,
   actionLabels: DecisionActionLabelMap,
+  language: UiLanguage,
   currentId?: number,
 ) => {
   const scores = items
@@ -121,7 +120,7 @@ const summarizeView = (
           trendPrediction: report.summary.trendPrediction,
         }, actionLabels),
     averageScore,
-    latestTime: formatDateTime(items[0]?.createdAt || report.meta.createdAt),
+    latestTime: formatDateTime(items[0]?.createdAt || report.meta.createdAt, language),
     modelSummary: modelEntries
       .map(([model, count]) => `${model} ${t('stockTrend.modelCountSuffix', { count })}`)
       .join(' / ') || t('stockTrend.neverRecorded'),
@@ -186,13 +185,13 @@ export const StockHistoryTrendDrawer: React.FC<StockHistoryTrendDrawerProps> = (
   onSelectRecord,
   onRetry,
 }) => {
-  const { t } = useUiLanguage();
+  const { language, t } = useUiLanguage();
   const currentRecordId = report.meta.id;
   const [selectedRecordId, setSelectedRecordId] = useState(currentRecordId);
   const actionLabels = useMemo(() => buildDecisionActionLabelMap(t), [t]);
   const summary = useMemo(
-    () => summarizeView(items, report, t, actionLabels, currentRecordId),
-    [actionLabels, currentRecordId, items, report, t],
+    () => summarizeView(items, report, t, actionLabels, language, currentRecordId),
+    [actionLabels, currentRecordId, items, language, report, t],
   );
 
   useEffect(() => {
@@ -333,7 +332,7 @@ export const StockHistoryTrendDrawer: React.FC<StockHistoryTrendDrawerProps> = (
                         onClick={() => setSelectedRecordId(item.id)}
                       >
                         <td className="whitespace-nowrap px-3 py-3 font-mono text-sm text-secondary-text">
-                          {formatHistoryTime(item.createdAt)}
+                          {formatHistoryTime(item.createdAt, language)}
                         </td>
                         <td className="whitespace-nowrap px-3 py-3">
                           <Badge

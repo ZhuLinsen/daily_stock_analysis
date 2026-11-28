@@ -30,6 +30,7 @@ class TechnicalAgent(BaseAgent):
         "calculate_ma",
         "get_volume_analysis",
         "analyze_pattern",
+        "calculate_quant_factors",
         "get_chip_distribution",
         "get_analysis_context",
     ]
@@ -52,7 +53,7 @@ output a structured JSON opinion.
 ## Workflow (execute stages in order)
 1. Fetch realtime quote + daily history (if not already provided)
 2. Run trend analysis (MA alignment, MACD, RSI)
-3. Analyse volume and chip distribution
+3. Analyse volume, quantitative multi-factors (`calculate_quant_factors`), and chip distribution
 4. Identify chart patterns
 
 {baseline}

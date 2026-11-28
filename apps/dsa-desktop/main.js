@@ -891,6 +891,7 @@ function buildBackendEnvironment({
     DINGTALK_STREAM_ENABLED: 'false',
     FEISHU_STREAM_ENABLED: 'false',
   };
+  delete env.GITHUB_ACTIONS;
 
   if (Number.isInteger(selectedPort) && selectedPort >= 1 && selectedPort <= 65535) {
     env.WEBUI_PORT = String(selectedPort);
