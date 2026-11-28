@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -9,26 +9,40 @@
         color-scheme: dark light;
         --bg: #f4f7fb;
         --bg-secondary: #e8edf5;
-        --panel: rgba(255, 255, 255, 0.88);
+        --panel: rgba(255, 255, 255, 0.92);
+        --panel-border: rgba(14, 165, 198, 0.24);
         --text: #172033;
         --muted: #5e6a7e;
         --accent: #0ea5c6;
+        --accent-soft: rgba(14, 165, 198, 0.12);
+        --success: #059669;
         --danger-bg: rgba(225, 29, 72, 0.08);
         --danger-border: rgba(225, 29, 72, 0.32);
         --danger-text: #b91c3c;
+        --btn-bg: rgba(15, 23, 42, 0.05);
+        --btn-border: rgba(15, 23, 42, 0.14);
+        --btn-hover: rgba(15, 23, 42, 0.1);
+        --step-bg: rgba(15, 23, 42, 0.03);
       }
 
       @media (prefers-color-scheme: dark) {
         :root {
           --bg: #08080c;
           --bg-secondary: #131722;
-          --panel: rgba(16, 18, 28, 0.9);
+          --panel: rgba(16, 18, 28, 0.92);
+          --panel-border: rgba(56, 189, 248, 0.24);
           --text: #e2e8f0;
           --muted: #94a3b8;
           --accent: #38bdf8;
-          --danger-bg: rgba(239, 68, 68, 0.08);
+          --accent-soft: rgba(56, 189, 248, 0.14);
+          --success: #34d399;
+          --danger-bg: rgba(239, 68, 68, 0.1);
           --danger-border: rgba(239, 68, 68, 0.4);
           --danger-text: #fecaca;
+          --btn-bg: rgba(148, 163, 184, 0.1);
+          --btn-border: rgba(148, 163, 184, 0.24);
+          --btn-hover: rgba(148, 163, 184, 0.2);
+          --step-bg: rgba(148, 163, 184, 0.06);
         }
       }
 
@@ -38,70 +52,222 @@
 
       body {
         margin: 0;
-        font-family: "Fira Sans", "IBM Plex Sans", "Segoe UI", sans-serif;
-        background: radial-gradient(circle at top left, var(--bg-secondary), var(--bg) 55%);
+        font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+        background: radial-gradient(circle at top left, var(--bg-secondary), var(--bg) 58%);
         color: var(--text);
-        height: 100vh;
+        min-height: 100vh;
         display: flex;
         align-items: center;
         justify-content: center;
+        padding: 24px;
       }
 
       .panel {
-        width: min(640px, 90vw);
+        width: min(620px, 94vw);
         background: var(--panel);
-        border: 1px solid color-mix(in srgb, var(--accent) 26%, transparent);
+        border: 1px solid var(--panel-border);
         border-radius: 16px;
-        padding: 32px 36px;
+        padding: 30px 34px;
         box-shadow: 0 30px 80px rgba(15, 23, 42, 0.18);
         backdrop-filter: blur(18px);
       }
 
-      .title {
-        font-size: 24px;
-        margin: 0 0 8px;
-        letter-spacing: 0.4px;
-      }
-
-      .subtitle {
-        margin: 0 0 24px;
-        color: var(--muted);
-        font-size: 14px;
-      }
-
-      .status {
+      .header {
         display: flex;
-        align-items: center;
+        align-items: baseline;
+        justify-content: space-between;
         gap: 12px;
-        font-size: 14px;
-        color: var(--muted);
+        margin-bottom: 6px;
       }
 
-      .error {
-        margin-top: 16px;
-        padding: 12px 14px;
-        border-radius: 10px;
-        background: var(--danger-bg);
-        border: 1px solid var(--danger-border);
-        color: var(--danger-text);
+      .title {
+        font-size: 22px;
+        font-weight: 600;
+        margin: 0;
+        letter-spacing: 0.2px;
+      }
+
+      .version {
         font-size: 12px;
-        line-height: 1.5;
+        color: var(--muted);
+        background: var(--accent-soft);
+        padding: 2px 8px;
+        border-radius: 999px;
+        white-space: nowrap;
         display: none;
       }
 
-      .dot {
+      .subtitle {
+        margin: 0 0 22px;
+        color: var(--muted);
+        font-size: 13.5px;
+      }
+
+      .steps {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+
+      .step {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 10px 14px;
+        border-radius: 10px;
+        background: var(--step-bg);
+        font-size: 13.5px;
+        color: var(--muted);
+        transition: color 0.18s ease, background 0.18s ease;
+      }
+
+      .step.active {
+        color: var(--text);
+        background: var(--accent-soft);
+      }
+
+      .step.done {
+        color: var(--text);
+      }
+
+      .step.failed {
+        color: var(--danger-text);
+        background: var(--danger-bg);
+      }
+
+      .indicator {
         width: 10px;
         height: 10px;
         border-radius: 50%;
+        flex-shrink: 0;
+        background: var(--muted);
+        opacity: 0.4;
+      }
+
+      .step.active .indicator {
         background: var(--accent);
-        box-shadow: 0 0 12px rgba(56, 189, 248, 0.8);
-        animation: pulse 1.5s ease-in-out infinite;
+        opacity: 1;
+        box-shadow: 0 0 10px var(--accent);
+        animation: pulse 1.4s ease-in-out infinite;
+      }
+
+      .step.done .indicator {
+        background: var(--success);
+        opacity: 1;
+      }
+
+      .step.failed .indicator {
+        background: var(--danger-text);
+        opacity: 1;
+      }
+
+      .step-detail {
+        margin-left: auto;
+        font-size: 12px;
+        color: var(--muted);
+        font-variant-numeric: tabular-nums;
       }
 
       .tips {
-        margin-top: 20px;
+        margin: 18px 0 0;
+        font-size: 12.5px;
+        line-height: 1.5;
+        color: var(--muted);
+      }
+
+      .error-panel {
+        margin-top: 18px;
+        padding: 14px 16px;
+        border-radius: 12px;
+        background: var(--danger-bg);
+        border: 1px solid var(--danger-border);
+        display: none;
+      }
+
+      .error-title {
+        margin: 0 0 6px;
+        font-size: 13.5px;
+        font-weight: 600;
+        color: var(--danger-text);
+      }
+
+      .error-detail {
+        margin: 0;
+        font-size: 12.5px;
+        line-height: 1.5;
+        color: var(--danger-text);
+        word-break: break-word;
+      }
+
+      .error-hint {
+        margin: 8px 0 0;
         font-size: 12px;
-        color: rgba(148, 163, 184, 0.8);
+        line-height: 1.5;
+        color: var(--muted);
+      }
+
+      .log-path {
+        margin: 8px 0 0;
+        font-size: 11.5px;
+        color: var(--muted);
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        word-break: break-all;
+        display: none;
+      }
+
+      .actions {
+        margin-top: 14px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+
+      .btn {
+        appearance: none;
+        border: 1px solid var(--btn-border);
+        background: var(--btn-bg);
+        color: var(--text);
+        border-radius: 8px;
+        padding: 7px 14px;
+        font-size: 12.5px;
+        font-weight: 500;
+        cursor: pointer;
+        transition: background 0.15s ease, opacity 0.15s ease;
+      }
+
+      .btn:hover:not(:disabled) {
+        background: var(--btn-hover);
+      }
+
+      .btn:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+      }
+
+      .btn:disabled {
+        opacity: 0.55;
+        cursor: default;
+      }
+
+      .btn-primary {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: #ffffff;
+      }
+
+      .btn-primary:hover:not(:disabled) {
+        background: var(--accent);
+        opacity: 0.9;
+      }
+
+      .action-feedback {
+        margin-top: 8px;
+        font-size: 12px;
+        color: var(--success);
+        min-height: 18px;
       }
 
       @keyframes pulse {
@@ -110,32 +276,291 @@
           opacity: 1;
         }
         50% {
-          transform: scale(1.4);
-          opacity: 0.6;
+          transform: scale(1.35);
+          opacity: 0.55;
         }
       }
     </style>
   </head>
   <body>
     <div class="panel">
-      <h1 class="title">Daily Stock Analysis</h1>
-      <p class="subtitle">Launching local analysis service</p>
-      <div class="status">
-        <span class="dot"></span>
-        <span>Preparing backend and loading UI...</span>
+      <div class="header">
+        <h1 class="title">Daily Stock Analysis</h1>
+        <span class="version" id="versionBadge"></span>
       </div>
-      <p class="tips">If this takes long, check your API keys and network connectivity.</p>
-      <div class="error" id="errorBox"></div>
+      <p class="subtitle" id="subtitle"></p>
+
+      <ul class="steps" id="stepList">
+        <li class="step active" data-step="initializing">
+          <span class="indicator"></span>
+          <span class="step-label" id="stepInitLabel"></span>
+          <span class="step-detail" id="stepInitDetail"></span>
+        </li>
+        <li class="step" data-step="starting_backend">
+          <span class="indicator"></span>
+          <span class="step-label" id="stepBackendLabel"></span>
+          <span class="step-detail" id="stepBackendDetail"></span>
+        </li>
+        <li class="step" data-step="waiting_health">
+          <span class="indicator"></span>
+          <span class="step-label" id="stepHealthLabel"></span>
+          <span class="step-detail" id="stepHealthDetail"></span>
+        </li>
+      </ul>
+
+      <p class="tips" id="tips"></p>
+
+      <div class="error-panel" id="errorPanel" role="alert">
+        <p class="error-title" id="errorTitle"></p>
+        <p class="error-detail" id="errorDetail"></p>
+        <p class="error-hint" id="errorHint"></p>
+        <p class="log-path" id="logPath"></p>
+        <div class="actions">
+          <button type="button" class="btn btn-primary" id="retryBtn"></button>
+          <button type="button" class="btn" id="openLogsBtn"></button>
+          <button type="button" class="btn" id="copyDiagBtn"></button>
+        </div>
+        <div class="action-feedback" id="actionFeedback" aria-live="polite"></div>
+      </div>
     </div>
+
     <script>
       (function () {
-        const params = new URLSearchParams(window.location.search);
-        const error = params.get('error');
-        if (!error) return;
-        const box = document.getElementById('errorBox');
-        if (!box) return;
-        box.textContent = `Error: ${decodeURIComponent(error)}`;
-        box.style.display = 'block';
+        const isZh = String(navigator.language || '').toLowerCase().startsWith('zh');
+        document.documentElement.lang = isZh ? 'zh-CN' : 'en';
+
+        const TEXT = isZh
+          ? {
+              subtitle: '正在启动本地股票分析服务',
+              stepInit: '准备本地运行环境与可用端口',
+              stepBackend: '拉起内置分析后端进程',
+              stepHealth: '等待本地服务就绪并加载界面',
+              tips: '首次启动可能需要 10–30 秒初始化本地分析引擎，无需配置 API Key 即可进入主界面。',
+              errorTitle: '本地服务启动失败',
+              errorHint: '可点击下方「重试启动」；若仍失败，请打开日志目录或复制诊断信息用于排查（敏感密钥已自动脱敏）。',
+              retry: '重试启动',
+              retrying: '正在重试...',
+              openLogs: '打开日志目录',
+              copyDiag: '复制诊断信息',
+              copied: '诊断信息已复制到剪贴板，可直接粘贴到 GitHub Issue。',
+              copyFailed: '复制失败，请点击「打开日志目录」手动查看 desktop.log。',
+              openLogsFailed: '无法自动打开日志目录，请按上方路径手动前往。',
+              logPrefix: '日志文件：',
+              portPrefix: '端口 ',
+              waitingDetail: (sec) => `已等待 ${sec}s`,
+              loadingUi: '正在加载界面...',
+            }
+          : {
+              subtitle: 'Launching local stock analysis service',
+              stepInit: 'Preparing local runtime and port',
+              stepBackend: 'Starting bundled analysis backend',
+              stepHealth: 'Waiting for service health and loading UI',
+              tips: 'First launch may take 10–30 seconds to initialize the local backend. You can enter the app before configuring API keys.',
+              errorTitle: 'Failed to start local service',
+              errorHint: 'Try Retry Launch below. If it persists, open the logs folder or copy the redacted diagnostic summary when reporting an issue.',
+              retry: 'Retry Launch',
+              retrying: 'Retrying...',
+              openLogs: 'Open Logs Folder',
+              copyDiag: 'Copy Diagnostics',
+              copied: 'Diagnostic summary copied to clipboard.',
+              copyFailed: 'Copy failed. Open the logs folder to inspect desktop.log directly.',
+              openLogsFailed: 'Could not open logs folder automatically. Check the log path above.',
+              logPrefix: 'Log file: ',
+              portPrefix: 'Port ',
+              waitingDetail: (sec) => `${sec}s elapsed`,
+              loadingUi: 'Loading UI...',
+            };
+
+        const els = {
+          versionBadge: document.getElementById('versionBadge'),
+          subtitle: document.getElementById('subtitle'),
+          stepInitLabel: document.getElementById('stepInitLabel'),
+          stepBackendLabel: document.getElementById('stepBackendLabel'),
+          stepHealthLabel: document.getElementById('stepHealthLabel'),
+          stepInitDetail: document.getElementById('stepInitDetail'),
+          stepBackendDetail: document.getElementById('stepBackendDetail'),
+          stepHealthDetail: document.getElementById('stepHealthDetail'),
+          tips: document.getElementById('tips'),
+          errorPanel: document.getElementById('errorPanel'),
+          errorTitle: document.getElementById('errorTitle'),
+          errorDetail: document.getElementById('errorDetail'),
+          errorHint: document.getElementById('errorHint'),
+          logPath: document.getElementById('logPath'),
+          retryBtn: document.getElementById('retryBtn'),
+          openLogsBtn: document.getElementById('openLogsBtn'),
+          copyDiagBtn: document.getElementById('copyDiagBtn'),
+          actionFeedback: document.getElementById('actionFeedback'),
+        };
+
+        els.subtitle.textContent = TEXT.subtitle;
+        els.stepInitLabel.textContent = TEXT.stepInit;
+        els.stepBackendLabel.textContent = TEXT.stepBackend;
+        els.stepHealthLabel.textContent = TEXT.stepHealth;
+        els.tips.textContent = TEXT.tips;
+        els.errorTitle.textContent = TEXT.errorTitle;
+        els.errorHint.textContent = TEXT.errorHint;
+        els.retryBtn.textContent = TEXT.retry;
+        els.openLogsBtn.textContent = TEXT.openLogs;
+        els.copyDiagBtn.textContent = TEXT.copyDiag;
+
+        const STEP_ORDER = ['initializing', 'starting_backend', 'waiting_health'];
+        const stepNodes = {
+          initializing: document.querySelector('[data-step="initializing"]'),
+          starting_backend: document.querySelector('[data-step="starting_backend"]'),
+          waiting_health: document.querySelector('[data-step="waiting_health"]'),
+        };
+
+        let feedbackTimer = null;
+        function showFeedback(message, isError) {
+          if (feedbackTimer) {
+            clearTimeout(feedbackTimer);
+            feedbackTimer = null;
+          }
+          els.actionFeedback.textContent = message || '';
+          els.actionFeedback.style.color = isError ? 'var(--danger-text)' : 'var(--success)';
+          if (message) {
+            feedbackTimer = setTimeout(() => {
+              els.actionFeedback.textContent = '';
+            }, 5000);
+          }
+        }
+
+        function resolveStepIndex(stage) {
+          if (stage === 'loading_ui' || stage === 'ready') {
+            return STEP_ORDER.length;
+          }
+          const idx = STEP_ORDER.indexOf(stage);
+          return idx >= 0 ? idx : 0;
+        }
+
+        function renderState(state) {
+          if (!state || typeof state !== 'object') {
+            return;
+          }
+
+          if (state.version) {
+            els.versionBadge.textContent = `v${String(state.version).replace(/^v/i, '')}`;
+            els.versionBadge.style.display = 'inline-block';
+          }
+
+          const isError = state.stage === 'error';
+          const effectiveStage = isError ? (state.failedStage || 'waiting_health') : state.stage;
+          const activeIndex = resolveStepIndex(effectiveStage);
+
+          STEP_ORDER.forEach((stepKey, idx) => {
+            const node = stepNodes[stepKey];
+            if (!node) return;
+            node.classList.remove('active', 'done', 'failed');
+            if (isError && idx === activeIndex) {
+              node.classList.add('failed');
+            } else if (idx < activeIndex) {
+              node.classList.add('done');
+            } else if (!isError && idx === activeIndex) {
+              node.classList.add('active');
+            }
+          });
+
+          els.stepInitDetail.textContent = state.port ? `${TEXT.portPrefix}${state.port}` : '';
+          els.stepBackendDetail.textContent = '';
+          if (state.stage === 'loading_ui') {
+            els.stepHealthDetail.textContent = TEXT.loadingUi;
+          } else if (state.stage === 'waiting_health' && typeof state.elapsedMs === 'number' && state.elapsedMs >= 1000) {
+            els.stepHealthDetail.textContent = TEXT.waitingDetail(Math.floor(state.elapsedMs / 1000));
+          } else {
+            els.stepHealthDetail.textContent = '';
+          }
+
+          if (isError) {
+            els.errorDetail.textContent = state.error || 'Unknown error';
+            if (state.logFilePath) {
+              els.logPath.textContent = `${TEXT.logPrefix}${state.logFilePath}`;
+              els.logPath.style.display = 'block';
+            }
+            els.errorPanel.style.display = 'block';
+            els.retryBtn.disabled = false;
+            els.retryBtn.textContent = TEXT.retry;
+          } else {
+            els.errorPanel.style.display = 'none';
+            showFeedback('', false);
+          }
+        }
+
+        const desktopBridge = window.dsaDesktop;
+        if (desktopBridge && desktopBridge.version) {
+          els.versionBadge.textContent = `v${String(desktopBridge.version).replace(/^v/i, '')}`;
+          els.versionBadge.style.display = 'inline-block';
+        }
+
+        const queryError = new URLSearchParams(window.location.search).get('error');
+        if (queryError) {
+          renderState({
+            stage: 'error',
+            failedStage: 'waiting_health',
+            error: queryError,
+          });
+        }
+
+        if (desktopBridge) {
+          if (typeof desktopBridge.onStartupStateChange === 'function') {
+            desktopBridge.onStartupStateChange(renderState);
+          }
+          if (typeof desktopBridge.getStartupState === 'function') {
+            desktopBridge.getStartupState().then(renderState).catch(() => {});
+          }
+        } else {
+          els.retryBtn.style.display = 'none';
+          els.openLogsBtn.style.display = 'none';
+          els.copyDiagBtn.style.display = 'none';
+        }
+
+        els.retryBtn.addEventListener('click', async () => {
+          if (!desktopBridge || typeof desktopBridge.retryStartup !== 'function') {
+            return;
+          }
+          els.retryBtn.disabled = true;
+          els.retryBtn.textContent = TEXT.retrying;
+          showFeedback('', false);
+          try {
+            const nextState = await desktopBridge.retryStartup();
+            renderState(nextState);
+          } catch (error) {
+            renderState({
+              stage: 'error',
+              failedStage: 'waiting_health',
+              error: error && error.message ? error.message : String(error),
+            });
+          }
+        });
+
+        els.openLogsBtn.addEventListener('click', async () => {
+          if (!desktopBridge || typeof desktopBridge.openLogsDir !== 'function') {
+            return;
+          }
+          try {
+            const result = await desktopBridge.openLogsDir();
+            if (!result || !result.ok) {
+              showFeedback(TEXT.openLogsFailed, true);
+            }
+          } catch (_error) {
+            showFeedback(TEXT.openLogsFailed, true);
+          }
+        });
+
+        els.copyDiagBtn.addEventListener('click', async () => {
+          if (!desktopBridge || typeof desktopBridge.copyStartupDiagnostics !== 'function') {
+            return;
+          }
+          try {
+            const result = await desktopBridge.copyStartupDiagnostics();
+            if (result && result.ok) {
+              showFeedback(TEXT.copied, false);
+            } else {
+              showFeedback(TEXT.copyFailed, true);
+            }
+          } catch (_error) {
+            showFeedback(TEXT.copyFailed, true);
+          }
+        });
       })();
     </script>
   </body>

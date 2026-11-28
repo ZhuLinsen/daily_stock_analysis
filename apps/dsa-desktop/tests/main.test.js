@@ -27,6 +27,12 @@ function loadMainModule(t, options = {}) {
   };
   const fakeShell = {
     openExternal: async () => true,
+    openPath: async () => '',
+    ...(options.shell || {}),
+  };
+  const fakeClipboard = {
+    writeText: () => undefined,
+    ...(options.clipboard || {}),
   };
   const fakeIpcMain = {
     handle: (channel, handler) => {
@@ -61,6 +67,7 @@ function loadMainModule(t, options = {}) {
       return {
         app: fakeApp,
         BrowserWindow: fakeBrowserWindow,
+        clipboard: fakeClipboard,
         dialog: fakeDialog,
         ipcMain: fakeIpcMain,
         shell: fakeShell,
@@ -1677,4 +1684,241 @@ test('stopBackend uses taskkill on Windows and clears after backend exit', async
     },
   ]);
   assert.equal(mainModule.__getBackendProcessForTest(), null);
+});
+
+test('redactDiagnosticText masks API keys, bearer tokens, and proxy credentials', (t) => {
+  const mainModule = loadMainModule(t);
+  const raw = [
+    'OPENAI_API_KEY=sk-proj-secretvalue123456',
+    'Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.payload',
+    'HTTP_PROXY=http://alice:superpass@proxy.example.com:8080',
+    'GEMINI_API_KEY=AIzaSyDummyKeyValue1234567890',
+    'Normal log line: Backend ready in 420ms',
+  ].join('\n');
+
+  const redacted = mainModule.redactDiagnosticText(raw);
+  assert.equal(redacted.includes('secretvalue123456'), false);
+  assert.equal(redacted.includes('eyJhbGciOiJIUzI1NiJ9'), false);
+  assert.equal(redacted.includes('superpass'), false);
+  assert.equal(redacted.includes('AIzaSyDummyKeyValue1234567890'), false);
+  assert.equal(redacted.includes('Normal log line: Backend ready in 420ms'), true);
+});
+
+test('startup diagnostic IPC handlers open logs dir, copy redacted report, and enforce window sender', async (t) => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'dsa-desktop-diag-'));
+  const userDataDir = path.join(tempRoot, 'userData');
+  const logsDir = path.join(userDataDir, 'logs');
+  const desktopLog = path.join(logsDir, 'desktop.log');
+  fs.mkdirSync(logsDir, { recursive: true });
+  fs.writeFileSync(
+    desktopLog,
+    [
+      '[2026-11-28T00:00:00.000Z] Desktop app starting',
+      '[2026-11-28T00:00:01.000Z] DEEPSEEK_API_KEY=sk-live-verysecret999',
+      '[2026-11-28T00:00:02.000Z] Startup failed while waiting for health: timeout',
+    ].join('\n'),
+    'utf-8'
+  );
+
+  const openedPaths = [];
+  const copiedTexts = [];
+  const mainModule = loadMainModule(t, {
+    platform: 'darwin',
+    app: {
+      isPackaged: true,
+      getVersion: () => '3.36.0',
+      getPath: () => userDataDir,
+    },
+    shell: {
+      openPath: async (targetPath) => {
+        openedPaths.push(targetPath);
+        return '';
+      },
+    },
+    clipboard: {
+      writeText: (text) => {
+        copiedTexts.push(text);
+      },
+    },
+  });
+
+  t.after(() => {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  });
+
+  const fakeMainWebContents = { id: 1, send: () => undefined };
+  mainModule.__setMainWindowForTest({
+    isDestroyed: () => false,
+    webContents: fakeMainWebContents,
+  });
+  mainModule.__setDesktopStartupStateForTest({
+    stage: mainModule.STARTUP_STAGE.ERROR,
+    failedStage: mainModule.STARTUP_STAGE.WAITING_HEALTH,
+    error: 'Health check timeout after 60000ms',
+    logDir: logsDir,
+    logFilePath: desktopLog,
+  });
+
+  const openHandler = mainModule.__getIpcMainHandler('desktop:open-logs-dir');
+  const copyHandler = mainModule.__getIpcMainHandler('desktop:copy-startup-diagnostics');
+
+  const openResult = await openHandler({ sender: fakeMainWebContents });
+  assert.equal(openResult.ok, true);
+  assert.deepEqual(openedPaths, [logsDir]);
+
+  const copyResult = await copyHandler({ sender: fakeMainWebContents });
+  assert.equal(copyResult.ok, true);
+  assert.equal(copiedTexts.length, 1);
+  assert.equal(copiedTexts[0].includes('Version: 3.36.0'), true);
+  assert.equal(copiedTexts[0].includes('Health check timeout after 60000ms'), true);
+  assert.equal(copiedTexts[0].includes('sk-live-verysecret999'), false);
+
+  await assert.rejects(
+    () => openHandler({ sender: { id: 999 } }),
+    /did not originate from the desktop window/
+  );
+});
+
+test('startup failure enters error stage and retry-startup recovers to ready', async (t) => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'dsa-desktop-retry-'));
+  const userDataDir = path.join(tempRoot, 'userData');
+  fs.mkdirSync(userDataDir, { recursive: true });
+
+  const sentEvents = [];
+  const loadedUrls = [];
+  let spawnCalls = 0;
+
+  const fakeNet = {
+    createServer: () => {
+      const server = new EventEmitter();
+      server.listen = () => {
+        process.nextTick(() => server.emit('listening'));
+      };
+      server.close = (cb) => {
+        if (typeof cb === 'function') cb();
+      };
+      return server;
+    },
+  };
+
+  const fakeHttp = {
+    get: (_url, callback) => {
+      const req = new EventEmitter();
+      req.destroyed = false;
+      req.setTimeout = () => undefined;
+      req.destroy = () => {
+        req.destroyed = true;
+      };
+      process.nextTick(() => {
+        const res = new EventEmitter();
+        res.statusCode = 200;
+        res.resume = () => undefined;
+        callback(res);
+      });
+      return req;
+    },
+  };
+
+  function fakeBrowserWindow() {
+    return {
+      isDestroyed: () => false,
+      setBackgroundColor: () => undefined,
+      once: () => undefined,
+      webContents: {
+        id: 7,
+        on: () => undefined,
+        getURL: () => 'file:///loading.html',
+        send: (channel, payload) => {
+          sentEvents.push({ channel, payload });
+        },
+        setWindowOpenHandler: () => undefined,
+      },
+      loadFile: async () => undefined,
+      loadURL: async (url) => {
+        loadedUrls.push(url);
+      },
+    };
+  }
+  fakeBrowserWindow.getAllWindows = () => [];
+
+  let readyCallback = null;
+  const mainModule = loadMainModule(t, {
+    platform: 'darwin',
+    browserWindow: fakeBrowserWindow,
+    http: fakeHttp,
+    net: fakeNet,
+    childProcess: {
+      spawn: () => {
+        spawnCalls += 1;
+        if (spawnCalls === 1) {
+          throw new Error('simulated backend launch failure');
+        }
+        const proc = new EventEmitter();
+        proc.pid = 7777;
+        proc.exitCode = null;
+        proc.signalCode = null;
+        proc.stdout = new EventEmitter();
+        proc.stderr = new EventEmitter();
+        proc.kill = () => {
+          proc.exitCode = 0;
+          proc.emit('exit', 0, null);
+        };
+        return proc;
+      },
+    },
+    app: {
+      isPackaged: false,
+      getVersion: () => '3.36.0',
+      getPath: () => userDataDir,
+      whenReady: () => ({
+        then: (cb) => {
+          readyCallback = cb;
+        },
+      }),
+    },
+    electronUpdater: {
+      autoDownload: false,
+      autoInstallOnAppQuit: false,
+      on: () => undefined,
+      checkForUpdates: async () => undefined,
+    },
+  });
+
+  mainModule.__setDesktopUpdateCheckerForTest(async ({ currentVersion }) => ({
+    status: mainModule.UPDATE_STATUS.UP_TO_DATE,
+    currentVersion,
+  }));
+
+  t.after(() => {
+    mainModule.__setDesktopUpdateCheckerForTest(null);
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  });
+
+  await readyCallback();
+
+  const getState = mainModule.__getIpcMainHandler('desktop:get-startup-state');
+  const retryHandler = mainModule.__getIpcMainHandler('desktop:retry-startup');
+
+  const failedState = await getState();
+  assert.equal(failedState.stage, mainModule.STARTUP_STAGE.ERROR);
+  assert.equal(failedState.failedStage, mainModule.STARTUP_STAGE.STARTING_BACKEND);
+  assert.match(failedState.error, /simulated backend launch failure/);
+  assert.equal(loadedUrls.length, 0);
+
+  const recoveredState = await retryHandler();
+  assert.equal(recoveredState.stage, mainModule.STARTUP_STAGE.READY);
+  assert.equal(loadedUrls.length, 1);
+  assert.match(loadedUrls[0], /^http:\/\/127\.0\.0\.1:\d+\/\?desktop_version=3\.36\.0&cache_bust=\d+$/);
+
+  const ignoredRetry = await retryHandler();
+  assert.equal(ignoredRetry.stage, mainModule.STARTUP_STAGE.READY);
+  assert.equal(spawnCalls, 2);
+  assert.equal(
+    sentEvents.some((item) => item.channel === 'desktop:startup-state' && item.payload.stage === 'error'),
+    true
+  );
+  assert.equal(
+    sentEvents.some((item) => item.channel === 'desktop:startup-state' && item.payload.stage === 'ready'),
+    true
+  );
 });

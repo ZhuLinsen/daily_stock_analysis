@@ -11,6 +11,22 @@
 - Desktop backend 默认随 `requirements.txt` 安装并冻结 `futu-api==10.8.6808`；Windows/macOS 构建脚本会在源码环境和 PyInstaller 产物中分别执行 `import futu`，防止发布包只安装但未携带 SDK。
 - 筹码分布依赖的 `py_mini_racer` 按构建环境实际安装版本完整收集 Python 模块、原生库和运行数据；不跨版本手工拼接 DLL、ICU 或 snapshot 文件。Windows/macOS 明确要求 `mini-racer>=0.13.2`，避免旧版冻结加载器从 bundle 根目录寻找原生库、与包目录收集布局不一致；Linux 继续沿用 AkShare 原有依赖。Windows/macOS 构建脚本会在源码环境和冻结后的后端中执行 `MiniRacer().eval('1 + 1')`，原生库缺失或版本不匹配会阻断打包。仅成功 `import py_mini_racer` 不足以验收；这一离线检查不代表在线东财接口一定可用。
 - 报告“分享”按钮使用 Electron 自带的隐藏 Chromium 窗口渲染本地后端输出的受限 HTML，并保存为 PNG；桌面安装包无需额外携带 `wkhtmltoimage`、`markdown-to-file` 或 Playwright 浏览器。
+- 启动加载页（`apps/dsa-desktop/renderer/loading.html`）按系统语言展示中英双语启动进度；若本地后端启动超时或失败，页面直接提供**重试启动**、**打开日志目录**与**复制脱敏诊断信息**按钮，方便排查和提交 Issue。
+
+## macOS 一键安装（推荐）
+
+由于当前 macOS DMG 尚未接入 Apple Developer 公证，通过浏览器直接下载 DMG 会被 macOS 写入 `com.apple.quarantine` 隔离属性并弹出拦截提示。在“终端”执行官方安装脚本通过 `curl` 直接下载官方 GitHub Release，可**自动识别 Apple 芯片（`arm64`，含 Rosetta 2 终端识别）或 Intel（`x64`）**、**强制校验 `SHA256SUMS.txt`** 并安装到 `/Applications`（不触发浏览器下载隔离）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ZhuLinsen/daily_stock_analysis/main/scripts/install-macos.sh | bash
+```
+
+常用参数（通过 `bash -s --` 传入）：
+
+- 指定版本：`curl -fsSL https://raw.githubusercontent.com/ZhuLinsen/daily_stock_analysis/main/scripts/install-macos.sh | bash -s -- --version v3.36.0`
+- 安装到当前用户目录（无 `/Applications` 写权限时）：`... | bash -s -- --dir "$HOME/Applications"`
+- 仅查看解析后的架构、版本与下载地址（不下载不写入）：`... | bash -s -- --dry-run`
+- 安装后不自动启动：`... | bash -s -- --no-open`
 
 ## 本地开发
 

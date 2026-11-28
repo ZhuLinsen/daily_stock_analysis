@@ -1,6 +1,7 @@
-const { app, BrowserWindow, dialog, ipcMain, shell, nativeTheme } = require('electron');
+const { app, BrowserWindow, clipboard, dialog, ipcMain, shell, nativeTheme } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 const { spawn } = require('child_process');
 const net = require('net');
 const http = require('http');
@@ -12,6 +13,11 @@ let backendProcess = null;
 let logFilePath = null;
 let backendStartError = null;
 let desktopUpdateState = null;
+let desktopStartupState = null;
+let startupLaunchInFlight = false;
+let lastStartupRestoreFailed = false;
+const MAX_RECENT_STARTUP_LOGS = 40;
+let recentStartupLogs = [];
 let lastNotifiedUpdateVersion = '';
 let lastPromptedInstallVersion = '';
 let electronAutoUpdater = undefined;
@@ -19,6 +25,15 @@ let electronAutoUpdaterConfigured = false;
 let electronUpdateCheckInFlight = false;
 let desktopUpdateCheckInFlight = false;
 let desktopBackendOrigin = '';
+
+const STARTUP_STAGE = {
+  INITIALIZING: 'initializing',
+  STARTING_BACKEND: 'starting_backend',
+  WAITING_HEALTH: 'waiting_health',
+  LOADING_UI: 'loading_ui',
+  READY: 'ready',
+  ERROR: 'error',
+};
 
 function resolveWindowBackgroundColor() {
   return nativeTheme.shouldUseDarkColors ? '#08080c' : '#f4f7fb';
@@ -929,7 +944,12 @@ function initLogging() {
 
 function logLine(message) {
   const timestamp = new Date().toISOString();
-  const line = `[${timestamp}] ${message}\n`;
+  const formatted = `[${timestamp}] ${message}`;
+  const line = `${formatted}\n`;
+  recentStartupLogs.push(formatted.slice(0, 1000));
+  if (recentStartupLogs.length > MAX_RECENT_STARTUP_LOGS) {
+    recentStartupLogs = recentStartupLogs.slice(-MAX_RECENT_STARTUP_LOGS);
+  }
   try {
     if (logFilePath) {
       fs.appendFileSync(logFilePath, line, 'utf-8');
@@ -937,7 +957,7 @@ function logLine(message) {
   } catch (error) {
     console.error(error);
   }
-  console.log(line.trim());
+  console.log(formatted);
 }
 
 function decodeBackendOutput(data, decoder) {
@@ -1861,6 +1881,379 @@ async function performDesktopUpdateCheck({ manual = false, notify = false } = {}
   }
 }
 
+function resolveLogsDirPath() {
+  if (logFilePath) {
+    return path.dirname(logFilePath);
+  }
+  return path.join(resolveAppDir(), 'logs');
+}
+
+function buildStartupState(overrides = {}) {
+  const resolvedLogDir = resolveLogsDirPath();
+  const resolvedLogFile = logFilePath || path.join(resolvedLogDir, 'desktop.log');
+  return {
+    stage: STARTUP_STAGE.INITIALIZING,
+    failedStage: null,
+    error: null,
+    elapsedMs: 0,
+    attempts: 0,
+    port: null,
+    host: null,
+    platform: process.platform,
+    arch: process.arch,
+    version: resolveDesktopVersion(),
+    ...(desktopStartupState || {}),
+    logDir: overrides.logDir || resolvedLogDir,
+    logFilePath: overrides.logFilePath || resolvedLogFile,
+    ...overrides,
+  };
+}
+
+function broadcastDesktopStartupState(state) {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+  try {
+    mainWindow.webContents.send('desktop:startup-state', state);
+  } catch (error) {
+    console.error(error);
+  }
+}
+
+function setDesktopStartupState(overrides = {}) {
+  desktopStartupState = buildStartupState(overrides);
+  broadcastDesktopStartupState(desktopStartupState);
+  return desktopStartupState;
+}
+
+function redactDiagnosticText(text) {
+  if (typeof text !== 'string' || !text) {
+    return '';
+  }
+  return text
+    .replace(/\b(Bearer\s+)[^\s,'";]+/gi, '$1***')
+    .replace(/(https?:\/\/)[^@\s/]+:[^@\s/]+@/gi, '$1***:***@')
+    .replace(
+      /\b([A-Z0-9_]*(?:API_KEY|API_KEYS|SECRET|TOKEN|PASSWORD|PASSWD|WEBHOOK_URL|AUTH_HEADER)[A-Z0-9_]*\s*[:=]\s*)([^\s,'";]+)/gi,
+      '$1***'
+    )
+    .replace(/\b(?:sk-[A-Za-z0-9_-]{8,}|ghp_[A-Za-z0-9]{12,}|AIza[A-Za-z0-9_-]{12,})\b/g, '***');
+}
+
+function readRecentLogLines(filePath, maxLines = 30) {
+  if (filePath && fs.existsSync(filePath)) {
+    try {
+      const content = fs.readFileSync(filePath, 'utf-8');
+      const lines = content
+        .split(/\r?\n/)
+        .map((line) => line.trimEnd())
+        .filter(Boolean);
+      if (lines.length > 0) {
+        return lines.slice(-maxLines);
+      }
+    } catch (_error) {
+    }
+  }
+  return recentStartupLogs.slice(-maxLines);
+}
+
+function buildStartupDiagnosticReport({
+  startupState = desktopStartupState || buildStartupState(),
+  logLines = null,
+  maxLines = 30,
+} = {}) {
+  const effectiveState = buildStartupState(startupState);
+  const rawLines = Array.isArray(logLines)
+    ? logLines.slice(-maxLines)
+    : readRecentLogLines(effectiveState.logFilePath, maxLines);
+  const sanitizedLines = rawLines.map((line) => redactDiagnosticText(String(line)));
+
+  const headerLines = [
+    'Daily Stock Analysis Desktop Startup Diagnostics',
+    `Version: ${effectiveState.version || 'unknown'}`,
+    `Platform: ${effectiveState.platform} (${effectiveState.arch})`,
+    `OS Release: ${os.release()}`,
+    `Packaged: ${Boolean(app.isPackaged)}`,
+    `Stage: ${effectiveState.stage}${effectiveState.failedStage ? ` (failed at: ${effectiveState.failedStage})` : ''}`,
+    `Elapsed: ${effectiveState.elapsedMs}ms (health probes: ${effectiveState.attempts})`,
+    `Backend Target: ${effectiveState.host || 'n/a'}:${effectiveState.port || 'n/a'}`,
+    `Error: ${redactDiagnosticText(effectiveState.error || 'none')}`,
+    `Log File: ${effectiveState.logFilePath}`,
+    `--- Recent Logs (last ${sanitizedLines.length} lines) ---`,
+  ];
+
+  return [...headerLines, ...(sanitizedLines.length ? sanitizedLines : ['(no log entries captured)'])].join('\n');
+}
+
+function assertMainWindowSender(event, actionName) {
+  if (event && event.sender && mainWindow && !mainWindow.isDestroyed() && event.sender !== mainWindow.webContents) {
+    throw new Error(`${actionName} request did not originate from the desktop window`);
+  }
+}
+
+async function openDesktopLogsDir() {
+  const logDir = resolveLogsDirPath();
+  ensureDirectory(logDir);
+  if (shell && typeof shell.openPath === 'function') {
+    const openError = await shell.openPath(logDir);
+    if (openError) {
+      return { ok: false, path: logDir, error: String(openError) };
+    }
+    return { ok: true, path: logDir, error: '' };
+  }
+  return { ok: false, path: logDir, error: 'shell.openPath is unavailable' };
+}
+
+function copyDesktopStartupDiagnostics() {
+  const report = buildStartupDiagnosticReport();
+  if (clipboard && typeof clipboard.writeText === 'function') {
+    clipboard.writeText(report);
+    return { ok: true, text: report, error: '' };
+  }
+  return { ok: false, text: report, error: 'clipboard.writeText is unavailable' };
+}
+
+function formatStartupError(error) {
+  if (error instanceof Error) {
+    return error.message || String(error);
+  }
+  return String(error || 'Unknown startup error');
+}
+
+function isWindowOnLoadingPage() {
+  if (!mainWindow || mainWindow.isDestroyed() || !mainWindow.webContents) {
+    return false;
+  }
+  if (typeof mainWindow.webContents.getURL !== 'function') {
+    return true;
+  }
+  const currentUrl = String(mainWindow.webContents.getURL() || '');
+  return !currentUrl || currentUrl.includes('loading.html');
+}
+
+async function runDesktopStartupSequence({ restoreFailed = lastStartupRestoreFailed, isRetry = false } = {}) {
+  if (startupLaunchInFlight) {
+    return desktopStartupState || buildStartupState();
+  }
+  startupLaunchInFlight = true;
+  lastStartupRestoreFailed = Boolean(restoreFailed);
+
+  const loadingPath = path.join(__dirname, 'renderer', 'loading.html');
+  const startupStartedAt = Date.now();
+  const logStartup = (message) => {
+    logLine(`[startup +${Date.now() - startupStartedAt}ms] ${message}`);
+  };
+
+  let currentPhase = STARTUP_STAGE.INITIALIZING;
+
+  try {
+    if (isRetry) {
+      logStartup('Retrying desktop startup sequence');
+      await stopBackend();
+      backendStartError = null;
+      if (mainWindow && !mainWindow.isDestroyed() && !isWindowOnLoadingPage()) {
+        await mainWindow.loadFile(loadingPath);
+      }
+    }
+
+    setDesktopStartupState({
+      stage: STARTUP_STAGE.INITIALIZING,
+      failedStage: null,
+      error: null,
+      elapsedMs: 0,
+      attempts: 0,
+      port: null,
+      host: null,
+    });
+
+    const appDir = resolveAppDir();
+    const envPath = path.join(appDir, '.env');
+    ensureEnvFile(envPath);
+    logStartup(`Env file ready: ${envPath}`);
+
+    const backendBindHost = resolveBackendBindHost({ envFile: envPath });
+    const backendConnectHost = resolveDesktopConnectHost(backendBindHost);
+    logStartup(`Backend bind host=${backendBindHost}; desktop connect host=${backendConnectHost}`);
+
+    const portFindStartedAt = Date.now();
+    const port = await findAvailablePort(8000, 8100, backendBindHost);
+    logStartup(`Using port ${port} (selected in ${Date.now() - portFindStartedAt}ms)`);
+    desktopBackendOrigin = new URL(buildBackendUrl(backendConnectHost, port)).origin;
+    logStartup(`App directory=${appDir}`);
+
+    const dbPath = path.join(appDir, 'data', 'stock_analysis.db');
+    const logDir = path.join(appDir, 'logs');
+
+    currentPhase = STARTUP_STAGE.STARTING_BACKEND;
+    setDesktopStartupState({
+      stage: STARTUP_STAGE.STARTING_BACKEND,
+      failedStage: null,
+      error: null,
+      port,
+      host: backendConnectHost,
+      logDir,
+      logFilePath: logFilePath || path.join(logDir, 'desktop.log'),
+    });
+
+    try {
+      const launchInfo = startBackend({ port, envFile: envPath, dbPath, logDir, host: backendBindHost });
+      logStartup(`Backend launch mode=${launchInfo.mode}`);
+      logStartup(`Backend launch command=${launchInfo.command}`);
+      logStartup(`Backend launch cwd=${launchInfo.cwd}`);
+      logStartup('Waiting for backend health check');
+    } catch (error) {
+      logStartup(`Backend launch failed: ${String(error)}`);
+      setDesktopStartupState({
+        stage: STARTUP_STAGE.ERROR,
+        failedStage: STARTUP_STAGE.STARTING_BACKEND,
+        error: formatStartupError(error),
+        elapsedMs: Date.now() - startupStartedAt,
+      });
+      if (mainWindow && !mainWindow.isDestroyed() && !isWindowOnLoadingPage()) {
+        await mainWindow.loadFile(loadingPath);
+      }
+      return desktopStartupState;
+    }
+
+    currentPhase = STARTUP_STAGE.WAITING_HEALTH;
+    setDesktopStartupState({
+      stage: STARTUP_STAGE.WAITING_HEALTH,
+      failedStage: null,
+      error: null,
+      elapsedMs: Date.now() - startupStartedAt,
+      attempts: 0,
+    });
+
+    const healthUrl = buildBackendUrl(backendConnectHost, port, '/api/health');
+    let lastHealthProgressLogAt = 0;
+    const healthProgressLogIntervalMs = 2000;
+
+    const onHealthProgress = (event) => {
+      if (!event || event.type === 'probe_start') {
+        return;
+      }
+
+      if (event.type === 'ready') {
+        logStartup(`Health ready in ${event.elapsedMs}ms (attempts=${event.attempts})`);
+        setDesktopStartupState({
+          stage: STARTUP_STAGE.WAITING_HEALTH,
+          elapsedMs: event.elapsedMs,
+          attempts: event.attempts,
+        });
+        return;
+      }
+
+      if (event.type === 'aborted' || event.type === 'total_timeout' || event.type === 'final_error') {
+        const details = event.reason || event.message || '';
+        logStartup(`Health ${event.type} after ${event.elapsedMs}ms (attempts=${event.attempts}) ${details}`.trim());
+        setDesktopStartupState({
+          elapsedMs: event.elapsedMs,
+          attempts: event.attempts,
+        });
+        return;
+      }
+
+      const now = Date.now();
+      if (now - lastHealthProgressLogAt < healthProgressLogIntervalMs) {
+        return;
+      }
+
+      lastHealthProgressLogAt = now;
+      let detail = '';
+      if (event.type === 'probe_status') {
+        detail = `status=${event.statusCode}`;
+      } else if (event.type === 'probe_timeout') {
+        detail = `probeTimeout=${event.requestTimeoutMs}ms`;
+      } else if (event.type === 'probe_error') {
+        detail = `error=${event.errorCode}:${event.errorMessage}`;
+      }
+
+      logStartup(
+        `Waiting for backend health... elapsed=${event.elapsedMs}ms attempts=${event.attempts}${detail ? ` ${detail}` : ''}`
+      );
+      setDesktopStartupState({
+        stage: STARTUP_STAGE.WAITING_HEALTH,
+        elapsedMs: event.elapsedMs,
+        attempts: event.attempts,
+      });
+    };
+
+    const healthInfo = await waitForHealth(
+      healthUrl,
+      60000,
+      250,
+      1500,
+      () => {
+        if (backendStartError) {
+          return `backend start error: ${backendStartError.message}`;
+        }
+        if (!backendProcess) {
+          return 'backend process is unavailable';
+        }
+        if (backendProcess.exitCode !== null) {
+          return `backend exited with code ${backendProcess.exitCode}`;
+        }
+        if (backendProcess.signalCode) {
+          return `backend exited by signal ${backendProcess.signalCode}`;
+        }
+        return null;
+      },
+      onHealthProgress
+    );
+    logStartup(`Backend ready in ${healthInfo.elapsedMs}ms (${healthInfo.attempts} probes)`);
+
+    currentPhase = STARTUP_STAGE.LOADING_UI;
+    setDesktopStartupState({
+      stage: STARTUP_STAGE.LOADING_UI,
+      failedStage: null,
+      error: null,
+      elapsedMs: healthInfo.elapsedMs,
+      attempts: healthInfo.attempts,
+    });
+
+    const mainPageStartedAt = Date.now();
+    const mainPageUrl = buildMainPageUrl(port, Date.now(), backendConnectHost);
+    await mainWindow.loadURL(mainPageUrl);
+    logStartup(`Main page loadURL resolved in ${Date.now() - mainPageStartedAt}ms url=${mainPageUrl}`);
+    logStartup(`Main UI loaded in ${Date.now() - startupStartedAt}ms`);
+    setDesktopStartupState({
+      stage: STARTUP_STAGE.READY,
+      failedStage: null,
+      error: null,
+      elapsedMs: Date.now() - startupStartedAt,
+      attempts: healthInfo.attempts,
+    });
+    if (!restoreFailed) {
+      void performDesktopUpdateCheck({ notify: true });
+    }
+    return desktopStartupState;
+  } catch (error) {
+    logStartup(`Startup failed while waiting for health: ${String(error)}`);
+    setDesktopStartupState({
+      stage: STARTUP_STAGE.ERROR,
+      failedStage: currentPhase,
+      error: formatStartupError(error),
+      elapsedMs: Date.now() - startupStartedAt,
+    });
+    if (mainWindow && !mainWindow.isDestroyed() && !isWindowOnLoadingPage()) {
+      await mainWindow.loadFile(loadingPath);
+    }
+    return desktopStartupState;
+  } finally {
+    startupLaunchInFlight = false;
+  }
+}
+
+async function retryDesktopStartup() {
+  if (startupLaunchInFlight) {
+    return desktopStartupState || buildStartupState();
+  }
+  if (!desktopStartupState || desktopStartupState.stage !== STARTUP_STAGE.ERROR) {
+    return desktopStartupState || buildStartupState();
+  }
+  return runDesktopStartupSequence({ restoreFailed: lastStartupRestoreFailed, isRetry: true });
+}
+
 ipcMain.handle('desktop:get-update-state', () => desktopUpdateState);
 ipcMain.handle('desktop:check-for-updates', () => performDesktopUpdateCheck({ manual: true }));
 ipcMain.handle('desktop:install-downloaded-update', () => installDownloadedUpdate());
@@ -1879,6 +2272,19 @@ ipcMain.handle('desktop:render-share-image', async (event, recordId) => {
     logLine(`[share-image] desktop render failed for record=${recordId}: ${message}`);
     throw error;
   }
+});
+ipcMain.handle('desktop:get-startup-state', () => desktopStartupState || buildStartupState());
+ipcMain.handle('desktop:retry-startup', async (event) => {
+  assertMainWindowSender(event, 'Startup retry');
+  return retryDesktopStartup();
+});
+ipcMain.handle('desktop:open-logs-dir', async (event) => {
+  assertMainWindowSender(event, 'Open logs directory');
+  return openDesktopLogsDir();
+});
+ipcMain.handle('desktop:copy-startup-diagnostics', (event) => {
+  assertMainWindowSender(event, 'Copy startup diagnostics');
+  return copyDesktopStartupDiagnostics();
 });
 
 async function createWindow() {
@@ -1970,114 +2376,7 @@ async function createWindow() {
     return { action: 'deny' };
   });
 
-  const appDir = resolveAppDir();
-  const envPath = path.join(appDir, '.env');
-  ensureEnvFile(envPath);
-  logStartup(`Env file ready: ${envPath}`);
-
-  const backendBindHost = resolveBackendBindHost({ envFile: envPath });
-  const backendConnectHost = resolveDesktopConnectHost(backendBindHost);
-  logStartup(`Backend bind host=${backendBindHost}; desktop connect host=${backendConnectHost}`);
-
-  const portFindStartedAt = Date.now();
-  const port = await findAvailablePort(8000, 8100, backendBindHost);
-  logStartup(`Using port ${port} (selected in ${Date.now() - portFindStartedAt}ms)`);
-  desktopBackendOrigin = new URL(buildBackendUrl(backendConnectHost, port)).origin;
-  logStartup(`App directory=${appDir}`);
-
-  const dbPath = path.join(appDir, 'data', 'stock_analysis.db');
-  const logDir = path.join(appDir, 'logs');
-
-  try {
-    const launchInfo = startBackend({ port, envFile: envPath, dbPath, logDir, host: backendBindHost });
-    logStartup(`Backend launch mode=${launchInfo.mode}`);
-    logStartup(`Backend launch command=${launchInfo.command}`);
-    logStartup(`Backend launch cwd=${launchInfo.cwd}`);
-    logStartup('Waiting for backend health check');
-  } catch (error) {
-    logStartup(`Backend launch failed: ${String(error)}`);
-    const errorUrl = `file://${loadingPath}?error=${encodeURIComponent(String(error))}`;
-    await mainWindow.loadURL(errorUrl);
-    return;
-  }
-
-  const healthUrl = buildBackendUrl(backendConnectHost, port, '/api/health');
-  let lastHealthProgressLogAt = 0;
-  const healthProgressLogIntervalMs = 2000;
-
-  const onHealthProgress = (event) => {
-    if (!event || event.type === 'probe_start') {
-      return;
-    }
-
-    if (event.type === 'ready') {
-      logStartup(`Health ready in ${event.elapsedMs}ms (attempts=${event.attempts})`);
-      return;
-    }
-
-    if (event.type === 'aborted' || event.type === 'total_timeout' || event.type === 'final_error') {
-      const details = event.reason || event.message || '';
-      logStartup(`Health ${event.type} after ${event.elapsedMs}ms (attempts=${event.attempts}) ${details}`.trim());
-      return;
-    }
-
-    const now = Date.now();
-    if (now - lastHealthProgressLogAt < healthProgressLogIntervalMs) {
-      return;
-    }
-
-    lastHealthProgressLogAt = now;
-    let detail = '';
-    if (event.type === 'probe_status') {
-      detail = `status=${event.statusCode}`;
-    } else if (event.type === 'probe_timeout') {
-      detail = `probeTimeout=${event.requestTimeoutMs}ms`;
-    } else if (event.type === 'probe_error') {
-      detail = `error=${event.errorCode}:${event.errorMessage}`;
-    }
-
-    logStartup(
-      `Waiting for backend health... elapsed=${event.elapsedMs}ms attempts=${event.attempts}${detail ? ` ${detail}` : ''}`
-    );
-  };
-
-  try {
-    const healthInfo = await waitForHealth(
-      healthUrl,
-      60000,
-      250,
-      1500,
-      () => {
-        if (backendStartError) {
-          return `backend start error: ${backendStartError.message}`;
-        }
-        if (!backendProcess) {
-          return 'backend process is unavailable';
-        }
-        if (backendProcess.exitCode !== null) {
-          return `backend exited with code ${backendProcess.exitCode}`;
-        }
-        if (backendProcess.signalCode) {
-          return `backend exited by signal ${backendProcess.signalCode}`;
-        }
-        return null;
-      },
-      onHealthProgress
-    );
-    logStartup(`Backend ready in ${healthInfo.elapsedMs}ms (${healthInfo.attempts} probes)`);
-    const mainPageStartedAt = Date.now();
-    const mainPageUrl = buildMainPageUrl(port, Date.now(), backendConnectHost);
-    await mainWindow.loadURL(mainPageUrl);
-    logStartup(`Main page loadURL resolved in ${Date.now() - mainPageStartedAt}ms url=${mainPageUrl}`);
-    logStartup(`Main UI loaded in ${Date.now() - startupStartedAt}ms`);
-    if (!restoreFailed) {
-      void performDesktopUpdateCheck({ notify: true });
-    }
-  } catch (error) {
-    logStartup(`Startup failed while waiting for health: ${String(error)}`);
-    const errorUrl = `file://${loadingPath}?error=${encodeURIComponent(String(error))}`;
-    await mainWindow.loadURL(errorUrl);
-  }
+  await runDesktopStartupSequence({ restoreFailed, isRetry: false });
 }
 
 app.whenReady().then(createWindow);
@@ -2106,13 +2405,17 @@ module.exports = {
   LATEST_RELEASE_API_URL,
   RELEASES_PAGE_URL,
   DESKTOP_UPDATE_RUNTIME_RELATIVE_FILES,
+  STARTUP_STAGE,
   UPDATE_MODE,
   UPDATE_STATUS,
+  buildStartupDiagnosticReport,
+  buildStartupState,
   buildUpdateState,
   backupPackagedRuntimeState,
   buildBackendArgs,
   checkForDesktopUpdates,
   compareVersions,
+  copyDesktopStartupDiagnostics,
   evaluateReleaseUpdate,
   buildBackendUrl,
   buildBackendEnvironment,
@@ -2124,13 +2427,16 @@ module.exports = {
   buildDesktopShareImageUrl,
   migrateMacPackagedRuntimeState,
   normalizeVersionString,
+  openDesktopLogsDir,
   parseSemver,
   readEnvFileValue,
+  redactDiagnosticText,
   resolveAppDir,
   resolveBackendBindHost,
   resolveDesktopConnectHost,
   renderDesktopShareImage,
   restorePackagedRuntimeStateFromBackup,
+  retryDesktopStartup,
   sanitizeReleaseUrl,
   startBackend,
   stopBackend,
@@ -2143,6 +2449,9 @@ module.exports = {
   },
   __setDesktopUpdateCheckerForTest(checker) {
     desktopUpdateChecker = typeof checker === 'function' ? checker : checkForDesktopUpdates;
+  },
+  __setDesktopStartupStateForTest(state = null) {
+    desktopStartupState = state ? buildStartupState(state) : null;
   },
   waitForBackendExit,
 };
