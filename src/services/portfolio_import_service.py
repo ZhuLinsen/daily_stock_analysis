@@ -448,15 +448,15 @@ class PortfolioImportService:
             text = str(row.get(column, "")).strip()
             if not text or text.lower() == "nan":
                 continue
-            # A compact HHMMSS in the execution time column can look like a six-digit date.
-            if column == "成交时间" and re.fullmatch(r"(?:[01][0-9]|2[0-3])[0-5][0-9][0-5][0-9]", text):
-                continue
             try:
                 return _TRADE_DATE_PARSER.parse(text).date()
             except _StandaloneTradeTime:
                 if column != "成交时间":
                     return None
             except (ValueError, OverflowError):
+                # Preserve legacy six-digit dates first so reimports use the same dedup hash.
+                if column == "成交时间" and re.fullmatch(r"(?:[01][0-9]|2[0-3])[0-5][0-9][0-5][0-9]", text):
+                    continue
                 return None
         return None
 
