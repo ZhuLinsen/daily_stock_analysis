@@ -202,6 +202,18 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertEqual(items["LLM_HERMES_EXTRA_HEADERS"]["value"], payload["mask_token"])
         self.assertTrue(items["LLM_HERMES_EXTRA_HEADERS"]["is_masked"])
 
+    def test_get_config_masks_ibkr_flex_token(self) -> None:
+        self._rewrite_env(
+            "STOCK_LIST=600519,000001",
+            "IBKR_FLEX_TOKEN=flex-secret-token",
+            "IBKR_FLEX_QUERY_ID=1712897",
+        )
+        payload = self.service.get_config(include_schema=False)
+        items = {item["key"]: item for item in payload["items"]}
+        self.assertIn("IBKR_FLEX_TOKEN", items)
+        self.assertEqual(items["IBKR_FLEX_TOKEN"]["value"], payload["mask_token"])
+        self.assertTrue(items["IBKR_FLEX_TOKEN"]["is_masked"])
+
     def test_hermes_saved_secret_changed_port_does_not_send_request(self) -> None:
         self._rewrite_env(
             "STOCK_LIST=600519,000001",

@@ -146,6 +146,112 @@ class PortfolioServiceTestCase(unittest.TestCase):
         self.assertEqual(self.service.list_cash_ledger_events(account_id=aid)["total"], 1)
         self.assertEqual(self.service.list_corporate_action_events(account_id=aid)["total"], 2)
 
+    def test_cash_ledger_source_uid_is_deduped_per_account(self) -> None:
+        aid = self.service.create_account(
+            name="ibkr", broker="IBKR", market="us", base_currency="EUR"
+        )["id"]
+        first = self.service.record_cash_ledger(
+            account_id=aid,
+            event_date=date(2026, 1, 5),
+            direction="in",
+            amount=2000,
+            currency="EUR",
+            source_uid="5186967799",
+        )
+        self.assertIsInstance(first["id"], int)
+
+        events = self.service.list_cash_ledger_events(account_id=aid)
+        self.assertEqual(events["total"], 1)
+        self.assertEqual(events["items"][0]["currency"], "EUR")
+
+        with self.assertRaises(PortfolioConflictError):
+            self.service.record_cash_ledger(
+                account_id=aid,
+                event_date=date(2026, 1, 5),
+                direction="in",
+                amount=2000,
+                currency="EUR",
+                source_uid="5186967799",
+            )
+
+        # A different source_uid (or none) is not a duplicate.
+        self.service.record_cash_ledger(
+            account_id=aid,
+            event_date=date(2026, 1, 6),
+            direction="out",
+            amount=100,
+            currency="EUR",
+            source_uid="5186967800",
+        )
+        self.service.record_cash_ledger(
+            account_id=aid,
+            event_date=date(2026, 1, 7),
+            direction="in",
+            amount=50,
+            currency="EUR",
+        )
+        self.assertEqual(self.service.list_cash_ledger_events(account_id=aid)["total"], 3)
+
+    def test_cash_source_uid_has_atomic_unique_index(self) -> None:
+        # The pre-insert check is not enough under concurrency; a partial UNIQUE
+        # index must reject a duplicate (account_id, source_uid) at the DB level.
+        from sqlalchemy.exc import IntegrityError
+
+        kid = self.service.create_account(
+            name="ibkr-atomic", broker="IBKR", market="us", base_currency="EUR"
+        )["id"]
+        self.service.record_cash_ledger(
+            account_id=kid,
+            event_date=date(2026, 1, 5),
+            direction="in",
+            amount=10,
+            currency="EUR",
+            source_uid="dup-uid-1",
+        )
+        # Bypass the service check and insert directly: the unique index must fire.
+        from src.repositories.portfolio_repo import PortfolioRepository
+
+        repo = PortfolioRepository()
+        with self.assertRaises(IntegrityError):
+            repo.add_cash_ledger(
+                account_id=kid,
+                event_date=date(2026, 1, 5),
+                direction="in",
+                amount=10,
+                currency="EUR",
+                source_uid="dup-uid-1",
+            )
+        # Multiple NULL source_uid rows are still allowed (partial index).
+        repo.add_cash_ledger(
+            account_id=kid, event_date=date(2026, 1, 6), direction="in",
+            amount=1, currency="EUR", source_uid=None,
+        )
+        repo.add_cash_ledger(
+            account_id=kid, event_date=date(2026, 1, 7), direction="in",
+            amount=1, currency="EUR", source_uid=None,
+        )
+
+    def test_non_unique_integrity_error_is_not_mislabeled_as_duplicate(self) -> None:
+        from unittest.mock import patch as _patch
+        from sqlalchemy.exc import IntegrityError
+
+        kid = self.service.create_account(
+            name="ibkr-fk", broker="IBKR", market="us", base_currency="EUR"
+        )["id"]
+        original = IntegrityError("INSERT", {}, Exception("FOREIGN KEY constraint failed"))
+        with _patch.object(self.service.repo, "add_cash_ledger_in_session", side_effect=original):
+            with self.assertRaises(IntegrityError) as ctx:
+                self.service.record_cash_ledger(
+                    account_id=kid,
+                    event_date=date(2026, 1, 5),
+                    direction="in",
+                    amount=10,
+                    currency="EUR",
+                    source_uid="uid-fk",
+                )
+        # An unrelated integrity failure must surface unchanged, not as a conflict.
+        self.assertIs(ctx.exception, original)
+
     def test_current_snapshot_uses_realtime_price_when_close_missing(self) -> None:
         today = date.today()
         account = self.service.create_account(name="Main", broker="Demo", market="cn", base_currency="CNY")

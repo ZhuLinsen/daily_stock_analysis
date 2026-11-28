@@ -598,10 +598,18 @@ class PortfolioCashLedger(Base):
     amount = Column(Float, nullable=False)
     currency = Column(String(8), nullable=False, default='CNY')
     note = Column(String(255))
+    source_uid = Column(String(128))
     created_at = Column(DateTime, default=datetime.now, index=True)
 
     __table_args__ = (
         Index('ix_portfolio_cash_account_date', 'account_id', 'event_date'),
+        Index(
+            'ix_portfolio_cash_source_uid',
+            'account_id',
+            'source_uid',
+            unique=True,
+            sqlite_where=text('source_uid IS NOT NULL'),
+        ),
     )
 
 
@@ -1469,6 +1477,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             self._ensure_llm_usage_telemetry_columns()
             self._ensure_decision_signal_profile_schema()
             self._ensure_stock_daily_canonical_id()
+            self._ensure_portfolio_cash_source_uid()
             self._ensure_intelligence_item_scope_values()
             self._ensure_schema_migration_record()
             self._ensure_intelligence_items_unique_index()
@@ -1797,6 +1806,74 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             stats["invalid_profile_count"],
             stats["skipped_existing_profile_count"],
         )
+
+    def _ensure_portfolio_cash_source_uid(self) -> None:
+        """Self-healing migration: add ``source_uid`` to portfolio_cash_ledger.
+
+        Enables idempotent broker-sync imports (e.g. IBKR Flex deposits) by
+        carrying the broker's stable transaction id on cash events, mirroring
+        the existing ``trade_uid`` dedup on trades. A partial UNIQUE index on
+        ``(account_id, source_uid)`` makes the dedup atomic, so concurrent syncs
+        cannot double-record the same deposit.
+        """
+        if not self._is_sqlite_engine:
+            return
+        try:
+            existing = {
+                column["name"]
+                for column in inspect(self._engine).get_columns(
+                    PortfolioCashLedger.__tablename__
+                )
+            }
+        except Exception as exc:
+            logger.error(
+                "[PortfolioCashLedger] failed to inspect source_uid column; "
+                "migration cannot continue safely: %s",
+                exc,
+            )
+            raise
+        if "source_uid" not in existing:
+            try:
+                with self._engine.begin() as connection:
+                    connection.exec_driver_sql(
+                        f"ALTER TABLE {PortfolioCashLedger.__tablename__} "
+                        "ADD COLUMN source_uid VARCHAR(128)"
+                    )
+            except OperationalError as exc:
+                if not self._is_sqlite_duplicate_column_error(exc, "source_uid"):
+                    raise
+
+        # Replace the plain index with a partial UNIQUE index, so a concurrent
+        # insert cannot pass the pre-insert existence check. Skip all DDL when
+        # the correct unique index is already in place (the common case on every
+        # later startup), and only rebuild an older non-unique index once.
+        try:
+            indexes = {
+                index["name"]: index
+                for index in inspect(self._engine).get_indexes(
+                    PortfolioCashLedger.__tablename__
+                )
+            }
+        except Exception as exc:
+            logger.error(
+                "[PortfolioCashLedger] failed to inspect source_uid index; "
+                "migration cannot continue safely: %s",
+                exc,
+            )
+            raise
+        existing_index = indexes.get("ix_portfolio_cash_source_uid")
+        if existing_index is not None and existing_index.get("unique"):
+            return
+
+        with self._engine.begin() as connection:
+            connection.exec_driver_sql(
+                "DROP INDEX IF EXISTS ix_portfolio_cash_source_uid"
+            )
+            connection.exec_driver_sql(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ix_portfolio_cash_source_uid "
+                f"ON {PortfolioCashLedger.__tablename__} (account_id, source_uid) "
+                "WHERE source_uid IS NOT NULL"
+            )
 
     def _ensure_stock_daily_canonical_id(self) -> None:
         """Self-healing migration: add + backfill the ``canonical_id`` column.

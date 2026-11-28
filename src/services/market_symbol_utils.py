@@ -14,15 +14,22 @@ from typing import Optional
 
 @dataclass(frozen=True)
 class SuffixMarketSpec:
-    """A suffix-only Yahoo Finance market rule."""
+    """A suffix-only Yahoo Finance market rule.
+
+    ``digit_lengths`` accepts pure-numeric bases; ``alnum_lengths`` additionally
+    accepts alphanumeric bases that contain at least one digit (e.g. Tokyo code
+    ``130A``). Pure-letter bases are never accepted, so US class shares such as
+    ``ABCD.T`` are not captured here.
+    """
 
     market: str
     suffixes: tuple[str, ...]
     digit_lengths: tuple[int, ...]
+    alnum_lengths: tuple[int, ...] = ()
 
 
 _SUFFIX_MARKET_SPECS: tuple[SuffixMarketSpec, ...] = (
-    SuffixMarketSpec("jp", ("T",), (4, 5)),
+    SuffixMarketSpec("jp", ("T",), (4, 5), (4, 5)),
     SuffixMarketSpec("kr", ("KS", "KQ"), (6,)),
     # Taiwan support mirrors the same suffix-only pattern; keep it here so the
     # shared helpers stay complete for all yfinance-only offshore markets.
@@ -49,6 +56,22 @@ def split_suffix_symbol(stock_code: str) -> tuple[str, str] | None:
     return base, suffix
 
 
+def base_matches_suffix_spec(base: str, spec: SuffixMarketSpec) -> bool:
+    """Return whether a symbol base matches one suffix-market spec.
+
+    Pure-numeric bases are governed by ``digit_lengths``. Alphanumeric bases
+    (e.g. Tokyo ``130A``) are accepted only when they contain at least one digit
+    and their length is listed in ``alnum_lengths`` — this deliberately excludes
+    pure-letter bases so US class shares such as ``ABCD.T`` stay out of the JP
+    rule.
+    """
+    if base.isdigit():
+        return len(base) in spec.digit_lengths
+    if not spec.alnum_lengths or len(base) not in spec.alnum_lengths:
+        return False
+    return base.isalnum() and any(ch.isdigit() for ch in base)
+
+
 def get_suffix_market(stock_code: str) -> Optional[str]:
     """Return jp/kr/tw for supported suffix-only Yahoo symbols, else None."""
 
@@ -59,7 +82,7 @@ def get_suffix_market(stock_code: str) -> Optional[str]:
     spec = _SUFFIX_TO_SPEC.get(suffix)
     if spec is None:
         return None
-    if not (base.isdigit() and len(base) in spec.digit_lengths):
+    if not base_matches_suffix_spec(base, spec):
         return None
     return spec.market
 

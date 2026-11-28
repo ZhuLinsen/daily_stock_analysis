@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
+from sqlalchemy.exc import IntegrityError
+
 from data_provider.base import canonical_stock_code, normalize_stock_code
 from src.config import get_config
 from src.repositories.portfolio_repo import (
@@ -266,6 +268,7 @@ class PortfolioService:
         amount: float,
         currency: Optional[str] = None,
         note: Optional[str] = None,
+        source_uid: Optional[str] = None,
     ) -> Dict[str, Any]:
         direction_norm = (direction or "").strip().lower()
         if direction_norm not in VALID_CASH_DIRECTIONS:
@@ -274,19 +277,42 @@ class PortfolioService:
             raise ValueError("amount must be finite")
         if amount <= 0:
             raise ValueError("amount must be > 0")
-        with self.repo.portfolio_write_session() as session:
-            account = self._require_active_account_in_session(session=session, account_id=account_id)
-            currency_norm = self._normalize_currency(currency or account.base_currency)
-            row = self.repo.add_cash_ledger_in_session(
-                session=session,
-                account_id=account_id,
-                event_date=event_date,
-                direction=direction_norm,
-                amount=float(amount),
-                currency=currency_norm,
-                note=(note or "").strip() or None,
-            )
-            return {"id": int(row.id)}
+        source_uid_norm = (source_uid or "").strip() or None
+        try:
+            with self.repo.portfolio_write_session() as session:
+                account = self._require_active_account_in_session(session=session, account_id=account_id)
+                if source_uid_norm and self.repo.has_cash_source_uid_in_session(
+                    session=session, account_id=account_id, source_uid=source_uid_norm
+                ):
+                    raise PortfolioConflictError(
+                        f"Duplicate cash source_uid for account_id={account_id}: {source_uid_norm}"
+                    )
+                currency_norm = self._normalize_currency(currency or account.base_currency)
+                row = self.repo.add_cash_ledger_in_session(
+                    session=session,
+                    account_id=account_id,
+                    event_date=event_date,
+                    direction=direction_norm,
+                    amount=float(amount),
+                    currency=currency_norm,
+                    note=(note or "").strip() or None,
+                    source_uid=source_uid_norm,
+                )
+                return {"id": int(row.id)}
+        except IntegrityError as exc:
+            # The partial UNIQUE index on (account_id, source_uid) is the
+            # authoritative guard: a concurrent sync can pass the pre-insert
+            # check and then collide at flush/commit time. Only that collision may
+            # be reported as a duplicate — unrelated integrity failures (FK/NOT
+            # NULL/CHECK from the same block) must surface unchanged.
+            err_text = str(getattr(exc, "orig", exc)).lower()
+            if source_uid_norm and (
+                "ix_portfolio_cash_source_uid" in err_text or "unique" in err_text
+            ):
+                raise PortfolioConflictError(
+                    f"Duplicate cash source_uid for account_id={account_id}: {source_uid_norm}"
+                ) from exc
+            raise
 
     def record_corporate_action(
         self,
@@ -1645,6 +1671,42 @@ class PortfolioService:
         if session is None:
             return self.repo.has_trade_uid(account_id, trade_uid)
         return self.repo.has_trade_uid_in_session(session=session, account_id=account_id, trade_uid=trade_uid)
+
+    def has_trade_uid(self, *, account_id: int, trade_uid: str) -> bool:
+        """Public idempotency probe used by broker imports before writing."""
+        if not trade_uid:
+            return False
+        return self._has_trade_uid(account_id=account_id, trade_uid=trade_uid)
+
+    def find_same_day_trade_conflicts(
+        self,
+        *,
+        account_id: int,
+        wanted: Iterable[Tuple[str, date]],
+    ) -> List[Tuple[str, date]]:
+        """Return ``(symbol, date)`` pairs that already hold ledger trades.
+
+        The ledger replays by ``(trade_date, id)``, so a symbol's same-day rows
+        that already exist cannot be interleaved with new ones in execution-time
+        order — the stored ids decide. Broker imports use this to refuse the
+        ambiguous case instead of silently producing a wrong FIFO order.
+        """
+        pairs = {
+            (str(symbol or "").strip().upper(), day)
+            for symbol, day in wanted
+            if symbol and day
+        }
+        if not pairs:
+            return []
+        dates = {day for _, day in pairs}
+        rows = self.repo.list_trades(account_id, max(dates))
+        conflicts = {
+            (str(row.symbol or "").strip().upper(), row.trade_date)
+            for row in rows
+            if row.trade_date in dates
+            and (str(row.symbol or "").strip().upper(), row.trade_date) in pairs
+        }
+        return sorted(conflicts)
 
     def _has_trade_dedup_hash(
         self,
