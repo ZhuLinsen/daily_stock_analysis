@@ -47,7 +47,12 @@ test('preload exposes desktop version from BrowserWindow additionalArguments', (
   assert.equal(typeof exposeInMainWorldCalls[0][1].installDownloadedUpdate, 'function');
   assert.equal(typeof exposeInMainWorldCalls[0][1].openReleasePage, 'function');
   assert.equal(typeof exposeInMainWorldCalls[0][1].renderShareImage, 'function');
+  assert.equal(typeof exposeInMainWorldCalls[0][1].getStartupState, 'function');
+  assert.equal(typeof exposeInMainWorldCalls[0][1].retryStartup, 'function');
+  assert.equal(typeof exposeInMainWorldCalls[0][1].openLogsDir, 'function');
+  assert.equal(typeof exposeInMainWorldCalls[0][1].copyStartupDiagnostics, 'function');
   assert.equal(typeof exposeInMainWorldCalls[0][1].onUpdateStateChange, 'function');
+  assert.equal(typeof exposeInMainWorldCalls[0][1].onStartupStateChange, 'function');
   assert.equal(
     preloadModule.readDesktopVersion([`--dsa-desktop-version=${expectedVersion}`]),
     expectedVersion
@@ -157,6 +162,22 @@ test('createDesktopBridge delegates update actions to ipcRenderer', async (t) =>
     channel: preloadModule.DESKTOP_RENDER_SHARE_IMAGE_CHANNEL,
     payload: 17,
   });
+  assert.deepEqual(await desktopBridge.getStartupState(), {
+    channel: preloadModule.DESKTOP_GET_STARTUP_STATE_CHANNEL,
+    payload: undefined,
+  });
+  assert.deepEqual(await desktopBridge.retryStartup(), {
+    channel: preloadModule.DESKTOP_RETRY_STARTUP_CHANNEL,
+    payload: undefined,
+  });
+  assert.deepEqual(await desktopBridge.openLogsDir(), {
+    channel: preloadModule.DESKTOP_OPEN_LOGS_DIR_CHANNEL,
+    payload: undefined,
+  });
+  assert.deepEqual(await desktopBridge.copyStartupDiagnostics(), {
+    channel: preloadModule.DESKTOP_COPY_STARTUP_DIAGNOSTICS_CHANNEL,
+    payload: undefined,
+  });
 
   const receivedPayloads = [];
   const unsubscribe = desktopBridge.onUpdateStateChange((payload) => {
@@ -167,4 +188,14 @@ test('createDesktopBridge delegates update actions to ipcRenderer', async (t) =>
 
   assert.deepEqual(receivedPayloads, [{ status: 'update-available' }]);
   assert.equal(listeners.has(preloadModule.DESKTOP_UPDATE_STATE_EVENT), false);
+
+  const startupPayloads = [];
+  const unsubscribeStartup = desktopBridge.onStartupStateChange((payload) => {
+    startupPayloads.push(payload);
+  });
+  listeners.get(preloadModule.DESKTOP_STARTUP_STATE_EVENT)(null, { stage: 'waiting_health' });
+  unsubscribeStartup();
+
+  assert.deepEqual(startupPayloads, [{ stage: 'waiting_health' }]);
+  assert.equal(listeners.has(preloadModule.DESKTOP_STARTUP_STATE_EVENT), false);
 });
