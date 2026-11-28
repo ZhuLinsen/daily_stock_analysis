@@ -6,6 +6,7 @@ import { UiLanguageToggle } from '../../components/i18n/UiLanguageToggle';
 import StockScreeningPage from '../StockScreeningPage';
 
 const {
+  defaultGetScreenTask,
   enableScreening,
   getHistory,
   getRun,
@@ -33,7 +34,7 @@ const {
       maxResults: 3,
     };
   });
-  const getScreenTask = vi.fn(async (taskId: string) => {
+  const defaultGetScreenTask = async (taskId: string) => {
     void taskId;
     return {
       taskId: 'screen-task-1',
@@ -43,8 +44,10 @@ const {
       message: '任务执行完成',
       result: lastScreenResult,
     };
-  });
+  };
+  const getScreenTask = vi.fn(defaultGetScreenTask);
   return {
+    defaultGetScreenTask,
     enableScreening: vi.fn(),
     getHistory: vi.fn(),
     getRun: vi.fn(),
@@ -121,7 +124,8 @@ describe('StockScreeningPage', () => {
     getHotspotDetail.mockReset();
     getHotspots.mockReset();
     getStrategies.mockReset();
-    getScreenTask.mockClear();
+    getScreenTask.mockReset();
+    getScreenTask.mockImplementation(defaultGetScreenTask);
     navigate.mockReset();
     resetLastScreenResult();
     screenStocks.mockReset();
@@ -1292,6 +1296,8 @@ describe('StockScreeningPage', () => {
     fireEvent.click(screen.getByRole('button', { name: /运行选股/ }));
 
     expect(await screen.findByText('选股运行中')).toBeInTheDocument();
+    await waitFor(() => expect(getScreenTask).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText(/35%/)).toBeInTheDocument();
     expect(window.sessionStorage.getItem('dsa.screening.activeScreenTask.v1')).toContain('screen-task-1');
 
     firstRender.unmount();

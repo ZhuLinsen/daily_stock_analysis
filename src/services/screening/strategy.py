@@ -5,8 +5,10 @@
 
 import hashlib
 import logging
+import math
 from dataclasses import asdict, fields
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -208,12 +210,17 @@ def load_strategy(filepath: Path) -> Strategy:
 
     hard_filters = HardFilterConfig(**hf_data)
 
+    factor_weights = _validated_factor_weights(screening_data, filepath)
     screening = ScreeningConfig(
         enabled=screening_data.get("enabled", False),
         market_scope=screening_data.get("market_scope", ["cn"]),
         hard_filters=hard_filters,
-        tech_weight=screening_data.get("tech_weight", 0.35),
-        factor_weights=screening_data.get("factor_weights", {}),
+        tech_weight=_validated_tech_weight(
+            screening_data,
+            filepath,
+            has_factor_weights=bool(factor_weights),
+        ),
+        factor_weights=factor_weights,
         scoring_profile=_optional_mapping(
             screening_data, "scoring_profile", filepath, allowed_keys=_SCORING_PROFILE_KEYS
         ),
@@ -232,6 +239,10 @@ def load_strategy(filepath: Path) -> Strategy:
         ranking_hints=screening_data.get("ranking_hints", ""),
         max_output=screening_data.get("max_output", 5),
     )
+
+    from src.services.screening.scorer import normalized_factor_weights
+
+    normalized_factor_weights(screening)
 
     return Strategy(
         name=data.get("name", filepath.stem),
@@ -288,6 +299,7 @@ def list_strategies(strategies_dir: Path | None = None) -> list[StrategyInfo]:
     """List available screening strategies."""
     from src.services.screening.config import Config
     from src.services.screening.filter import requires_daily_features
+    from src.services.screening.scorer import normalized_factor_weights
 
     if strategies_dir is None:
         strategies_dir = Config.from_env().strategies_dir
@@ -295,25 +307,29 @@ def list_strategies(strategies_dir: Path | None = None) -> list[StrategyInfo]:
     strategies = load_all_strategies(strategies_dir)
     infos: list[StrategyInfo] = []
     for s in strategies.values():
-        daily_required = requires_daily_features(s.screening.hard_filters)
-        infos.append(StrategyInfo(
-            name=s.name,
-            display_name=s.display_name,
-            description=s.description,
-            version=s.version,
-            category=s.category,
-            tags=s.tags,
-            analysis_skills=s.analysis_skills,
-            market_scope=s.screening.market_scope,
-            requires_daily_features=daily_required,
-            data_requirements=_strategy_data_requirements(s, daily_required=daily_required),
-            required_snapshot_fields=_required_snapshot_fields(s.screening.hard_filters),
-            required_daily_fields=_required_daily_fields(s.screening.hard_filters),
-            active_filters=_active_hard_filters(s.screening.hard_filters),
-            factor_weights={key: float(value) for key, value in s.screening.factor_weights.items()},
-            profile_keys=_strategy_profile_keys(s.screening),
-            style=_style_to_dict(s.style),
-        ))
+        try:
+            daily_required = requires_daily_features(s.screening.hard_filters)
+            infos.append(StrategyInfo(
+                name=s.name,
+                display_name=s.display_name,
+                description=s.description,
+                version=s.version,
+                category=s.category,
+                tags=s.tags,
+                analysis_skills=s.analysis_skills,
+                market_scope=s.screening.market_scope,
+                requires_daily_features=daily_required,
+                data_requirements=_strategy_data_requirements(s, daily_required=daily_required),
+                required_snapshot_fields=_required_snapshot_fields(s.screening.hard_filters),
+                required_daily_fields=_required_daily_fields(s.screening.hard_filters),
+                active_filters=_active_hard_filters(s.screening.hard_filters),
+                factor_weights=normalized_factor_weights(s.screening),
+                profile_keys=_strategy_profile_keys(s.screening),
+                style=_style_to_dict(s.style),
+            ))
+        except Exception as exc:
+            logger.warning("Skipping invalid strategy metadata for %s: %s", s.name, exc)
+            continue
     return infos
 
 
@@ -783,6 +799,8 @@ def _active_hard_filters(filters_config: HardFilterConfig) -> list[str]:
             if bool(value):
                 active.append(name)
             continue
+        if isinstance(value, (list, tuple, set, dict)) and len(value) == 0:
+            continue
         if value != default and value is not None and value is not False:
             active.append(name)
     return active
@@ -1013,6 +1031,56 @@ def _raise_unknown_keys(data: dict, allowed_keys: set[str], context: str) -> Non
         raise ValueError(
             f"Unknown keys in {context}: {', '.join(unknown_keys)}"
         )
+
+
+def _coerce_finite_float(raw: object, context: str) -> float:
+    if not isinstance(raw, (int, float, str)):
+        raise ValueError(f"Invalid {context}: expected finite number")
+    try:
+        value = float(raw.strip() if isinstance(raw, str) else raw)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"Invalid {context}: expected finite number") from exc
+    if not math.isfinite(value):
+        raise ValueError(f"Invalid {context}: expected finite number")
+    return value
+
+
+def _validated_tech_weight(
+    screening_data: dict,
+    filepath: Path,
+    *,
+    has_factor_weights: bool = False,
+) -> float:
+    raw = screening_data.get("tech_weight", 0.35)
+    if raw is None:
+        return 0.35
+    if has_factor_weights:
+        try:
+            return _coerce_finite_float(raw, f"tech_weight in strategy file {filepath.name}")
+        except (TypeError, ValueError, OverflowError):
+            return 0.35
+    return _coerce_finite_float(raw, f"tech_weight in strategy file {filepath.name}")
+
+
+def _validated_factor_weights(screening_data: dict, filepath: Path) -> dict[Any, Any]:
+    raw = screening_data.get("factor_weights", {})
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ValueError(f"Invalid factor_weights section in strategy file: {filepath}")
+
+    from src.services.screening.scorer import factor_score_columns
+
+    known_factors = factor_score_columns()
+    validated: dict[Any, Any] = {}
+    for key, weight in raw.items():
+        if isinstance(key, str) and key in known_factors:
+            validated[key] = _coerce_finite_float(
+                weight, f"factor weight '{key}' in strategy file {filepath.name}"
+            )
+        else:
+            validated[key] = weight
+    return validated
 
 
 def _optional_mapping(
