@@ -22,6 +22,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from src.llm.native_types import (
     DeploymentSpec,
+    NativeBadRequestError,
     Unsupported,
     extract_client_overrides,
     has_header_case_insensitive,
@@ -401,21 +402,39 @@ def resolve_headers_env(headers: Optional[Mapping[str, Any]]) -> Dict[str, str]:
 
 
 def normalize_endpoint_url(url: Any) -> str:
-    """Normalize scheme/host case and trailing slash via ``urlsplit``, preserving semicolon params & query."""
+    """Normalize scheme/host case, implicit default port, and trailing slash via ``urlsplit``."""
     raw = str(url or "").strip()
     if not raw:
         return ""
     try:
         split = urlsplit(raw)
-        _ = split.port
+        port = split.port
     except ValueError:
         return raw.rstrip("/")
     if split.scheme and split.netloc:
+        scheme = split.scheme.lower()
+        host = (split.hostname or "").lower()
+        if ":" in host and not host.startswith("["):
+            host = f"[{host}]"
+        default_port = 443 if scheme == "https" else (80 if scheme == "http" else None)
+        userinfo = ""
+        if split.username is not None:
+            userinfo = split.username
+            if split.password is not None:
+                userinfo = f"{userinfo}:{split.password}"
+            userinfo = f"{userinfo}@"
+        if host:
+            if port is not None and port != default_port:
+                normalized_netloc = f"{userinfo}{host}:{port}"
+            else:
+                normalized_netloc = f"{userinfo}{host}"
+        else:
+            normalized_netloc = split.netloc.lower()
         normalized_path = split.path.rstrip("/")
         return urlunsplit(
             (
-                split.scheme.lower(),
-                split.netloc.lower(),
+                scheme,
+                normalized_netloc,
                 normalized_path,
                 split.query,
                 "",
@@ -926,15 +945,28 @@ def resolve_deployment(
         except ValueError:
             explicit_base_path = ""
 
-    # Enforce provider/prefix identity independently of api_surface so unknown
-    # non-OpenAI providers (e.g. replicate/internal-model + api_surface=chat_completions
-    # without api_base) NEVER route to api.openai.com (P0-1).
+    # Enforce provider/prefix/channel identity independently of api_surface/wire_protocol so
+    # unknown non-OpenAI providers (e.g. replicate/internal-model + api_surface, or bare model
+    # + dsa_channel_protocol="replicate" + wire_protocol="openai_chat" without api_base) NEVER
+    # fall through to api.openai.com (P0-1).
     if eff_custom_provider and eff_custom_provider not in (all_native_wire_providers | {"ark"}):
         if not raw_wire_protocol:
             return Unsupported(
                 reason="unsupported_custom_provider",
                 provider=eff_custom_provider,
                 detail=f"Unsupported custom_llm_provider '{eff_custom_provider}'",
+                model=raw_model,
+            )
+
+    if eff_channel_protocol and eff_channel_protocol not in (all_native_wire_providers | {"ark"}):
+        if not explicit_api_base:
+            return Unsupported(
+                reason="unsupported_channel_protocol",
+                provider=eff_channel_protocol,
+                detail=(
+                    f"Channel protocol '{eff_channel_protocol}' is unrecognized and requires "
+                    "an explicit api_base"
+                ),
                 model=raw_model,
             )
 
@@ -1103,18 +1135,27 @@ def resolve_deployment(
             model=raw_model,
         )
 
-    # Guard against mismatched default official host for an explicit surface override
-    # (e.g. model=anthropic/claude-sonnet-4 + api_surface=chat_completions without api_base).
-    if base_source == "default" and protocol in {"openai_chat", "openai_responses"} and effective_provider in {"anthropic", "gemini"}:
-        return Unsupported(
-            reason="endpoint_surface_mismatch",
-            provider=effective_provider,
-            detail=(
-                f"Official '{effective_provider}' default endpoint does not serve '{protocol}' "
-                "without an explicit OpenAI-compatible api_base"
-            ),
-            model=raw_model,
+    # P0-1: Guard against mismatched official default host in ALL protocol directions
+    # (anthropic->anthropic, gemini->gemini, OpenAI/compat->openai_chat/openai_responses).
+    if base_source == "default":
+        default_compatible = (
+            (effective_provider == "anthropic" and protocol == "anthropic")
+            or (effective_provider == "gemini" and protocol == "gemini")
+            or (
+                effective_provider not in {"anthropic", "gemini"}
+                and protocol in {"openai_chat", "openai_responses"}
+            )
         )
+        if not default_compatible:
+            return Unsupported(
+                reason="endpoint_surface_mismatch",
+                provider=effective_provider,
+                detail=(
+                    f"Official '{effective_provider}' default endpoint does not serve '{protocol}' "
+                    "without an explicit api_base"
+                ),
+                model=raw_model,
+            )
 
     # ------------------------------------------------------------
     # R4 Opaque Wire Model
@@ -1166,11 +1207,16 @@ def resolve_deployment(
     target_origin = url_origin(resolved_base)
     client_origin = url_origin(client_base_url) if client_base_url else None
 
+    has_caller_explicit_base = has_explicit_base_url or bool(resolved_api_base_val)
     effective_api_key = ""
     if resolved_explicit_key:
         effective_api_key = resolved_explicit_key
-    elif client_api_key and (client_origin is None or (target_origin is not None and client_origin == target_origin)):
-        # P0-2a: client_api_key is strictly bound to client.base_url's origin.
+    elif client_api_key and (
+        (client_origin is not None and target_origin is not None and client_origin == target_origin)
+        or (client_origin is None and not has_caller_explicit_base)
+    ):
+        # P0-2a / P0-3c: client_api_key is strictly bound to client.base_url's origin, and an
+        # originless client never binds its key to an unrelated explicit api_base.
         effective_api_key = client_api_key
     elif not explicit_empty_key and raw_api_key_unresolved is None:
         # P0-2b: Origin-bound env key fallback. When env_base is configured, the provider
@@ -1208,11 +1254,20 @@ def resolve_deployment(
         if k_lower in ALLOWED_REQUEST_DEFAULT_KEYS and v is not None:
             resolved_v = resolve_env_reference(v) if isinstance(v, str) else copy.deepcopy(v)
             if k_lower in {"store", "parallel_tool_calls"}:
-                resolved_v = parse_strict_bool(
-                    resolved_v,
-                    field_name=str(k),
-                    provider=effective_provider,
-                )
+                try:
+                    resolved_v = parse_strict_bool(
+                        resolved_v,
+                        field_name=str(k),
+                        provider=effective_provider,
+                    )
+                except NativeBadRequestError as exc:
+                    # P1-5: Invalid deployment boolean fails closed as typed config error.
+                    return Unsupported(
+                        reason="invalid_deployment_param",
+                        provider=effective_provider,
+                        detail=str(exc),
+                        model=raw_model,
+                    )
             request_defaults[k] = resolved_v
 
     # P2: Default priority is 0 unless model_info.priority / order explicitly specified.

@@ -1103,6 +1103,8 @@ def _call_screening_litellm_completion(
         # duplicate expensive work while the first request is still running.
         retry_kwargs = dict(call_kwargs)
         retry_kwargs.pop("response_format", None)
+        # P1-10: Also suppress any inherited deployment YAML request_defaults["response_format"].
+        retry_kwargs["_dsa_disable_response_format"] = True
         return call_litellm_with_param_recovery(
             call,
             model=model,

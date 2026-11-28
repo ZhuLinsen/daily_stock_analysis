@@ -114,6 +114,15 @@ def _uses_max_completion_tokens(wire_model: str) -> bool:
     return False
 
 
+def _extract_caller_kwargs(kwargs: Mapping[str, Any]) -> Dict[str, Any]:
+    """Return caller request kwargs without filtered transport metadata keys."""
+    return {
+        k: v
+        for k, v in kwargs.items()
+        if k not in _FILTERED_REQUEST_KWARGS
+    }
+
+
 def _merge_request_defaults(
     entry: DeploymentSpec,
     kwargs: Mapping[str, Any],
@@ -127,8 +136,13 @@ def _merge_request_defaults(
     for k, v in kwargs.items():
         if k in _FILTERED_REQUEST_KWARGS:
             continue
+        if v is None and k == "response_format":
+            merged.pop("response_format", None)
+            continue
         if v is not None:
             merged[k] = v
+    if kwargs.get("_dsa_disable_response_format"):
+        merged.pop("response_format", None)
     return merged
 
 
@@ -279,12 +293,16 @@ def build_chat_completions_payload(
     messages: List[Dict[str, Any]],
     stream: bool = False,
     deployment_extra_body: Optional[Mapping[str, Any]] = None,
+    deployment_request_defaults: Optional[Mapping[str, Any]] = None,
     endpoint_url: str = "",
     **kwargs: Any,
 ) -> Dict[str, Any]:
     """Assemble an OpenAI Chat Completions JSON request body."""
     force_max_tokens = bool(kwargs.get("_dsa_force_max_tokens"))
     disable_stream_options = bool(kwargs.get("_dsa_disable_stream_options"))
+    disable_response_format = bool(kwargs.get("_dsa_disable_response_format")) or (
+        "response_format" in kwargs and kwargs.get("response_format") is None
+    )
 
     body: Dict[str, Any] = {
         "model": wire_model,
@@ -292,12 +310,34 @@ def build_chat_completions_payload(
         "stream": bool(stream),
     }
 
-    # Apply deployment extra_body first so explicit caller kwargs (such as store=False)
-    # remain authoritative over deployment defaults (P0-3).
+    # 1. Apply deployment extra_body (filtering reserved _dsa_* keys, P1-6a).
     if isinstance(deployment_extra_body, Mapping):
         for key, value in deployment_extra_body.items():
-            if value is not None:
+            if value is not None and not str(key).startswith("_dsa_"):
                 body[key] = copy.deepcopy(value)
+
+    # 2. Apply deployment request_defaults on top of deployment_extra_body (P0-3/P0-4).
+    if isinstance(deployment_request_defaults, Mapping):
+        for key in _CHAT_COMPLETIONS_OPTIONAL_KEYS:
+            if key in deployment_request_defaults and deployment_request_defaults[key] is not None:
+                body[key] = copy.deepcopy(deployment_request_defaults[key])
+        if (
+            stream
+            and not disable_stream_options
+            and isinstance(deployment_request_defaults.get("stream_options"), Mapping)
+        ):
+            body["stream_options"] = dict(deployment_request_defaults["stream_options"])
+
+    # 3. Apply explicit caller kwargs on top so caller choices win over deployment defaults.
+    caller_extra = kwargs.get("extra_body") if isinstance(kwargs.get("extra_body"), Mapping) else {}
+    caller_has_max_tokens = (
+        ("max_tokens" in kwargs and kwargs.get("max_tokens") is not None)
+        or ("max_tokens" in caller_extra and caller_extra.get("max_tokens") is not None)
+    )
+    caller_has_max_completion = (
+        ("max_completion_tokens" in kwargs and kwargs.get("max_completion_tokens") is not None)
+        or ("max_completion_tokens" in caller_extra and caller_extra.get("max_completion_tokens") is not None)
+    )
 
     if stream and not disable_stream_options:
         caller_stream_opts = kwargs.get("stream_options")
@@ -314,20 +354,32 @@ def build_chat_completions_payload(
         if key in kwargs and kwargs[key] is not None:
             body[key] = kwargs[key]
 
-    # Apply caller extra_body on top, while preserving an explicit top-level caller store=False
-    # unless caller's own extra_body explicitly overrides it.
-    if isinstance(kwargs.get("extra_body"), Mapping):
-        for key, value in kwargs["extra_body"].items():
-            if value is not None:
+    if caller_extra:
+        for key, value in caller_extra.items():
+            if value is not None and not str(key).startswith("_dsa_"):
                 body[key] = copy.deepcopy(value)
+
+    # Keep explicit top-level caller store/parallel_tool_calls authoritative over extra_body.
+    for auth_key in ("store", "parallel_tool_calls"):
+        if kwargs.get(auth_key) is not None:
+            body[auth_key] = kwargs[auth_key]
 
     if disable_stream_options:
         body.pop("stream_options", None)
+    if disable_response_format:
+        body.pop("response_format", None)
 
     for bool_key in ("store", "parallel_tool_calls"):
         if bool_key in body and body[bool_key] is not None:
             raw_b = resolve_env_reference(body[bool_key]) if isinstance(body[bool_key], str) else body[bool_key]
             body[bool_key] = parse_strict_bool(raw_b, field_name=bool_key, provider="openai")
+
+    # P1-8: Normalize max_tokens vs max_completion_tokens AFTER all merges so BOTH are never sent.
+    if "max_tokens" in body and "max_completion_tokens" in body:
+        if caller_has_max_tokens and not caller_has_max_completion:
+            body.pop("max_completion_tokens", None)
+        else:
+            body.pop("max_tokens", None)
 
     # Map max_tokens -> max_completion_tokens for o1/o3/o4/gpt-5+ families unless
     # one-shot 400 recovery forced max_tokens (P1-10).
@@ -665,6 +717,7 @@ def build_responses_api_payload(
     messages: List[Dict[str, Any]],
     stream: bool = False,
     deployment_extra_body: Optional[Mapping[str, Any]] = None,
+    deployment_request_defaults: Optional[Mapping[str, Any]] = None,
     **kwargs: Any,
 ) -> Dict[str, Any]:
     """Translate Chat Completions-style inputs into an OpenAI Responses API JSON body."""
@@ -702,25 +755,94 @@ def build_responses_api_payload(
             continue
 
         if role == "assistant":
-            # Replay stateless encrypted reasoning items ahead of assistant message/calls.
-            for reasoning_item in _extract_responses_reasoning_items(msg):
-                input_items.append(reasoning_item)
-
+            # P1-9: Preserve interleaved [reasoning_1, function_call_1, reasoning_2, function_call_2]
+            # ordering when provider_blocks/content carries ordered Responses items.
+            raw_pblocks = msg.get("provider_blocks")
             raw_content = msg.get("content")
-            converted_content = (
-                _convert_content_parts_for_responses(raw_content, role="assistant")
-                if raw_content
-                else None
+            ordered_source = (
+                raw_pblocks
+                if isinstance(raw_pblocks, list) and raw_pblocks
+                else (raw_content if isinstance(raw_content, list) else None)
             )
-            if converted_content:
-                input_items.append(
-                    {
-                        "role": "assistant",
-                        "content": converted_content,
-                    }
+            has_interleaved_ordered = isinstance(ordered_source, list) and any(
+                isinstance(b, Mapping) and b.get("type") in {"reasoning", "function_call"}
+                for b in ordered_source
+            )
+            emitted_call_ids: set[str] = set()
+            emitted_text_from_blocks = False
+
+            if has_interleaved_ordered and ordered_source is not None:
+                pending_text_parts: List[Dict[str, Any]] = []
+
+                def _flush_pending_text() -> None:
+                    nonlocal pending_text_parts
+                    if pending_text_parts:
+                        input_items.append({"role": "assistant", "content": pending_text_parts})
+                        pending_text_parts = []
+
+                for blk in ordered_source:
+                    if not isinstance(blk, Mapping):
+                        continue
+                    btype = str(blk.get("type") or "")
+                    if btype == "reasoning":
+                        _flush_pending_text()
+                        r_item: Dict[str, Any] = {"type": "reasoning"}
+                        if blk.get("id"):
+                            r_item["id"] = blk["id"]
+                        if blk.get("summary") is not None:
+                            r_item["summary"] = copy.deepcopy(blk["summary"])
+                        else:
+                            r_item["summary"] = []
+                        if blk.get("encrypted_content") is not None:
+                            r_item["encrypted_content"] = blk["encrypted_content"]
+                        input_items.append(r_item)
+                    elif btype == "function_call":
+                        _flush_pending_text()
+                        cid = str(blk.get("call_id") or blk.get("id") or f"call_{uuid.uuid4().hex[:8]}")
+                        args = blk.get("arguments")
+                        if not isinstance(args, str):
+                            args = json.dumps(args or {}, ensure_ascii=False)
+                        input_items.append(
+                            {
+                                "type": "function_call",
+                                "call_id": cid,
+                                "name": str(blk.get("name") or ""),
+                                "arguments": args,
+                            }
+                        )
+                        emitted_call_ids.add(cid)
+                    elif btype in {"text", "output_text"} and blk.get("text"):
+                        emitted_text_from_blocks = True
+                        pending_text_parts.append({"type": "output_text", "text": str(blk["text"])})
+                _flush_pending_text()
+                if not emitted_text_from_blocks and isinstance(raw_content, str) and raw_content:
+                    input_items.append(
+                        {
+                            "role": "assistant",
+                            "content": _convert_content_parts_for_responses(raw_content, role="assistant"),
+                        }
+                    )
+            else:
+                for reasoning_item in _extract_responses_reasoning_items(msg):
+                    input_items.append(reasoning_item)
+                converted_content = (
+                    _convert_content_parts_for_responses(raw_content, role="assistant")
+                    if raw_content
+                    else None
                 )
+                if converted_content:
+                    input_items.append(
+                        {
+                            "role": "assistant",
+                            "content": converted_content,
+                        }
+                    )
+
             for tc in msg.get("tool_calls") or []:
                 if not isinstance(tc, Mapping):
+                    continue
+                cid = str(tc.get("id") or f"call_{uuid.uuid4().hex[:8]}")
+                if cid in emitted_call_ids:
                     continue
                 fn = tc.get("function") or {}
                 args = fn.get("arguments") if isinstance(fn, Mapping) else ""
@@ -729,11 +851,12 @@ def build_responses_api_payload(
                 input_items.append(
                     {
                         "type": "function_call",
-                        "call_id": str(tc.get("id") or f"call_{uuid.uuid4().hex[:8]}"),
+                        "call_id": cid,
                         "name": str(fn.get("name") or "") if isinstance(fn, Mapping) else "",
                         "arguments": args,
                     }
                 )
+                emitted_call_ids.add(cid)
             continue
 
         input_items.append(
@@ -743,27 +866,50 @@ def build_responses_api_payload(
             }
         )
 
+    dep_defaults = deployment_request_defaults if isinstance(deployment_request_defaults, Mapping) else {}
+    dep_extra = deployment_extra_body if isinstance(deployment_extra_body, Mapping) else {}
     caller_extra = kwargs.get("extra_body") if isinstance(kwargs.get("extra_body"), Mapping) else {}
     merged_extra: Dict[str, Any] = {}
-    if isinstance(deployment_extra_body, Mapping):
-        merged_extra.update(deployment_extra_body)
-    if caller_extra:
-        merged_extra.update(caller_extra)
+    for k, v in dep_extra.items():
+        if v is not None and not str(k).startswith("_dsa_"):
+            merged_extra[k] = copy.deepcopy(v)
+    for k, v in caller_extra.items():
+        if v is not None and not str(k).startswith("_dsa_"):
+            merged_extra[k] = copy.deepcopy(v)
 
-    # Responses invariant (P0-3): default store=False; parse bool strings strictly so
-    # "false" NEVER coerces to True, and keep explicit caller store authoritative over
-    # deployment_extra_body.
+    def _pick_param(name: str, default: Any = None) -> Any:
+        if kwargs.get(name) is not None:
+            return kwargs[name]
+        if dep_defaults.get(name) is not None:
+            return dep_defaults[name]
+        return default
+
+    # P0-4: Resolve store while caller vs deployment sources remain distinct:
+    # caller top-level > caller extra_body > deployment request_defaults > deployment extra_body > False.
     if kwargs.get("store") is not None:
         raw_store = kwargs["store"]
     elif "store" in caller_extra and caller_extra["store"] is not None:
         raw_store = caller_extra["store"]
-    elif isinstance(deployment_extra_body, Mapping) and deployment_extra_body.get("store") is not None:
-        raw_store = deployment_extra_body["store"]
+    elif dep_defaults.get("store") is not None:
+        raw_store = dep_defaults["store"]
+    elif dep_extra.get("store") is not None:
+        raw_store = dep_extra["store"]
     else:
         raw_store = False
     if isinstance(raw_store, str):
         raw_store = resolve_env_reference(raw_store)
     store_value = parse_strict_bool(raw_store, field_name="store", provider="openai")
+
+    # P2: Resolve parallel_tool_calls with the same caller-authoritative precedence.
+    raw_ptc: Any = None
+    if kwargs.get("parallel_tool_calls") is not None:
+        raw_ptc = kwargs["parallel_tool_calls"]
+    elif "parallel_tool_calls" in caller_extra and caller_extra["parallel_tool_calls"] is not None:
+        raw_ptc = caller_extra["parallel_tool_calls"]
+    elif dep_defaults.get("parallel_tool_calls") is not None:
+        raw_ptc = dep_defaults["parallel_tool_calls"]
+    elif dep_extra.get("parallel_tool_calls") is not None:
+        raw_ptc = dep_extra["parallel_tool_calls"]
 
     body: Dict[str, Any] = {
         "model": wire_model,
@@ -774,47 +920,53 @@ def build_responses_api_payload(
     if instructions_parts:
         body["instructions"] = "\n\n".join(instructions_parts)
 
-    responses_tools = _convert_tools_for_responses(kwargs.get("tools"))
+    responses_tools = _convert_tools_for_responses(_pick_param("tools"))
     if responses_tools:
         body["tools"] = responses_tools
-    if kwargs.get("tool_choice") is not None:
-        body["tool_choice"] = _convert_tool_choice_for_responses(kwargs["tool_choice"])
-    if kwargs.get("parallel_tool_calls") is not None:
-        raw_ptc = kwargs["parallel_tool_calls"]
+    if _pick_param("tool_choice") is not None:
+        body["tool_choice"] = _convert_tool_choice_for_responses(_pick_param("tool_choice"))
+    if raw_ptc is not None:
         if isinstance(raw_ptc, str):
             raw_ptc = resolve_env_reference(raw_ptc)
         body["parallel_tool_calls"] = parse_strict_bool(
             raw_ptc, field_name="parallel_tool_calls", provider="openai"
         )
-    if kwargs.get("temperature") is not None:
-        body["temperature"] = kwargs["temperature"]
-    if kwargs.get("top_p") is not None:
-        body["top_p"] = kwargs["top_p"]
+    if _pick_param("temperature") is not None:
+        body["temperature"] = _pick_param("temperature")
+    if _pick_param("top_p") is not None:
+        body["top_p"] = _pick_param("top_p")
 
-    max_out = kwargs.get("max_output_tokens")
-    if max_out is None:
-        max_out = kwargs.get("max_completion_tokens")
-    if max_out is None:
-        max_out = kwargs.get("max_tokens")
+    max_out = (
+        kwargs.get("max_output_tokens")
+        or kwargs.get("max_completion_tokens")
+        or kwargs.get("max_tokens")
+        or dep_defaults.get("max_output_tokens")
+        or dep_defaults.get("max_completion_tokens")
+        or dep_defaults.get("max_tokens")
+    )
     if max_out is not None:
         body["max_output_tokens"] = max_out
 
-    if kwargs.get("reasoning_effort") is not None:
-        body["reasoning"] = {"effort": kwargs["reasoning_effort"]}
+    if _pick_param("reasoning_effort") is not None:
+        body["reasoning"] = {"effort": _pick_param("reasoning_effort")}
 
+    disable_resp_fmt = bool(kwargs.get("_dsa_disable_response_format")) or (
+        "response_format" in kwargs and kwargs.get("response_format") is None
+    )
     if isinstance(kwargs.get("text"), Mapping):
         body["text"] = dict(kwargs["text"])
-    elif "text" not in merged_extra and kwargs.get("response_format") is not None:
-        converted_text = _convert_response_format_for_responses(kwargs["response_format"])
+    elif not disable_resp_fmt and "text" not in merged_extra and _pick_param("response_format") is not None:
+        converted_text = _convert_response_format_for_responses(_pick_param("response_format"))
         if converted_text is not None:
             body["text"] = converted_text
 
     for cache_key_field in ("prompt_cache_key", "prompt_cache_retention"):
-        if kwargs.get(cache_key_field) is not None:
-            body[cache_key_field] = kwargs[cache_key_field]
+        val = _pick_param(cache_key_field)
+        if val is not None:
+            body[cache_key_field] = val
 
     for key, value in merged_extra.items():
-        if value is not None and key != "store":
+        if value is not None and key not in {"store", "parallel_tool_calls"} and not str(key).startswith("_dsa_"):
             body[key] = value
 
     # When store=False, request encrypted reasoning content for stateless replay.
@@ -872,14 +1024,24 @@ def parse_responses_api_response(
                     provider_blocks.append({"type": "text", "text": refusal_val})
         elif itype == "function_call":
             idx = len(tool_calls)
+            call_id = str(item.get("call_id") or item.get("id") or f"call_{idx}")
+            fn_name = str(item.get("name") or "")
             args = item.get("arguments")
             args_str = args if isinstance(args, str) else json.dumps(args or {}, ensure_ascii=False)
+            provider_blocks.append(
+                {
+                    "type": "function_call",
+                    "call_id": call_id,
+                    "name": fn_name,
+                    "arguments": args_str,
+                }
+            )
             tool_calls.append(
                 NativeToolCall(
-                    id=str(item.get("call_id") or item.get("id") or f"call_{idx}"),
+                    id=call_id,
                     index=idx,
                     function=NativeFunctionCall(
-                        name=str(item.get("name") or ""),
+                        name=fn_name,
                         arguments=args_str,
                     ),
                 )
@@ -939,7 +1101,7 @@ def _iter_responses_stream_chunks(
 ) -> Iterator[NativeStreamChunk]:
     """Stream Responses API SSE frames as Chat Completions-compatible :class:`NativeStreamChunk`."""
     tool_index_by_key: Dict[str, int] = {}
-    emitted_reasoning_keys: set[str] = set()
+    emitted_reasoning_has_cipher: Dict[str, bool] = {}
     saw_tool_calls = False
     saw_terminal = False
     response_id = f"resp-{uuid.uuid4().hex[:12]}"
@@ -963,9 +1125,14 @@ def _iter_responses_stream_chunks(
             if not isinstance(out_item, Mapping) or out_item.get("type") != "reasoning":
                 continue
             rkey = str(out_item.get("id") or f"idx:{out_idx}")
-            if rkey in emitted_reasoning_keys:
+            has_cipher = out_item.get("encrypted_content") is not None
+            # P1-9: Never discard encrypted_content from response.completed if an earlier
+            # output_item.done claimed the same ID without ciphertext!
+            if rkey in emitted_reasoning_has_cipher and (
+                emitted_reasoning_has_cipher[rkey] or not has_cipher
+            ):
                 continue
-            emitted_reasoning_keys.add(rkey)
+            emitted_reasoning_has_cipher[rkey] = has_cipher
             missing.append(_build_reasoning_block(out_item))
         return missing
 
@@ -1050,12 +1217,15 @@ def _iter_responses_stream_chunks(
                     ],
                 )
         elif etype == "response.output_item.done":
-            # P1-15: Preserve encrypted reasoning items in order for stateless turn-2 replay.
+            # P1-15 & P1-9: Preserve encrypted reasoning items in order; allow completion upgrade if ciphertext arrives later.
             item = data.get("item")
             if isinstance(item, Mapping) and item.get("type") == "reasoning":
-                rkey = str(item.get("id") or f"idx:{data.get('output_index', len(emitted_reasoning_keys))}")
-                if rkey not in emitted_reasoning_keys:
-                    emitted_reasoning_keys.add(rkey)
+                rkey = str(item.get("id") or f"idx:{data.get('output_index', len(emitted_reasoning_has_cipher))}")
+                has_cipher = item.get("encrypted_content") is not None
+                if rkey not in emitted_reasoning_has_cipher or (
+                    has_cipher and not emitted_reasoning_has_cipher[rkey]
+                ):
+                    emitted_reasoning_has_cipher[rkey] = has_cipher
                     rblock = _build_reasoning_block(item)
                     yield NativeStreamChunk(
                         id=response_id,
@@ -1156,27 +1326,28 @@ def prepare_openai_request(
         provider=entry.provider or "openai",
     )
     headers: Dict[str, str] = {"Content-Type": "application/json"}
-    skip_sensitive = bool(kwargs.get("_dsa_skip_sensitive_caller_headers"))
+    restrict_cross_origin = bool(kwargs.get("_dsa_skip_sensitive_caller_headers"))
     merge_header_overrides(headers, {"extra_headers": entry.extra_headers})
     merge_header_overrides(
         headers,
         kwargs,
         resolve_env_fn=resolve_env_reference,
-        skip_sensitive=skip_sensitive,
+        safe_allowlist_only=restrict_cross_origin,
     )
 
-    api_key = entry.api_key or (None if skip_sensitive else kwargs.get("api_key"))
+    api_key = entry.api_key or (None if restrict_cross_origin else kwargs.get("api_key"))
     if api_key and not has_header_case_insensitive(headers, "authorization"):
         headers["Authorization"] = f"Bearer {api_key}"
 
-    effective_kwargs = _merge_request_defaults(entry, kwargs)
+    caller_kwargs = _extract_caller_kwargs(kwargs)
     if entry.protocol == "openai_responses":
         payload = build_responses_api_payload(
             wire_model=entry.wire_model,
             messages=messages,
             stream=stream,
             deployment_extra_body=entry.extra_body,
-            **effective_kwargs,
+            deployment_request_defaults=entry.request_defaults,
+            **caller_kwargs,
         )
     else:
         payload = build_chat_completions_payload(
@@ -1184,8 +1355,9 @@ def prepare_openai_request(
             messages=messages,
             stream=stream,
             deployment_extra_body=entry.extra_body,
+            deployment_request_defaults=entry.request_defaults,
             endpoint_url=url,
-            **effective_kwargs,
+            **caller_kwargs,
         )
 
     req_timeout = kwargs.get("timeout")

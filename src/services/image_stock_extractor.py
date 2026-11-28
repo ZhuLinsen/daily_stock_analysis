@@ -441,7 +441,11 @@ def _call_litellm_vision(image_b64: str, mime_type: str, api_key: Optional[str] 
     raw_custom_provider = str(deployment_params.get("custom_llm_provider") or "").strip()
     if raw_custom_provider:
         call_kwargs["custom_llm_provider"] = raw_custom_provider
-    raw_channel_protocol = str(deployment_info.get("dsa_channel_protocol") or "").strip()
+    raw_channel_protocol = str(
+        deployment_info.get("dsa_channel_protocol")
+        or deployment_params.get("dsa_channel_protocol")
+        or ""
+    ).strip()
     if raw_channel_protocol:
         call_kwargs["dsa_channel_protocol"] = raw_channel_protocol
     if deployment_params.get("extra_headers"):

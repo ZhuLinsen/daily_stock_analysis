@@ -1114,3 +1114,247 @@ def test_p2_sse_empty_data_preserved_and_buffer_caps_enforced() -> None:
     with pytest.raises(NativeAPIError) as exc_ev:
         list(iter_sse_events([b"data: " + b"a" * 700 + b"\ndata: " + b"b" * 700 + b"\n\n"], max_event_chars=1024))
     assert exc_ev.value.error_code == "sse_frame_too_large"
+
+
+def test_round2_p0_4_p1_6a_p1_8_p1_9_p2_openai_precedence_filtering_and_interleaved_replay() -> None:
+    """Round 2 P0-4, P1-6a, P1-8, P1-9, P2: Responses store precedence, _dsa_* filtering, mutual max_tokens, interleaved replay & stream ciphertext upgrade."""
+    # P0-4: Deployment request_defaults store=True vs caller extra_body={"store": False} -> store=False + encrypted_content!
+    resp_spec = DeploymentSpec(
+        alias="openai/responses/gpt-5",
+        wire_model="gpt-5",
+        protocol="openai_responses",
+        provider="openai",
+        api_base="https://relay.example/v1",
+        api_key="sk-1234",
+        endpoint_url="https://relay.example/v1/responses",
+        request_defaults={"store": True, "response_format": {"type": "json_object"}},
+        extra_body={"parallel_tool_calls": True, "_dsa_leaked_dep": "nope"},
+    )
+    _u, _h, resp_body, _t = prepare_openai_request(
+        resp_spec,
+        [{"role": "user", "content": "hi"}],
+        False,
+        {
+            "extra_body": {"store": False, "_dsa_leaked_caller": "nope"},
+            "parallel_tool_calls": False,
+            "_dsa_disable_response_format": True,
+        },
+    )
+    assert resp_body["store"] is False
+    assert "reasoning.encrypted_content" in resp_body.get("include", [])
+    assert resp_body["parallel_tool_calls"] is False
+    assert "text" not in resp_body
+    assert not any(k.startswith("_dsa_") for k in resp_body)
+
+    # Top-level caller store=False also beats caller extra_body={"store": True} in Chat Completions
+    chat_top = build_chat_completions_payload(
+        wire_model="gpt-4o",
+        messages=[{"role": "user", "content": "hi"}],
+        deployment_extra_body={"max_completion_tokens": 500, "_dsa_dep_flag": 1},
+        deployment_request_defaults={"response_format": {"type": "json_object"}},
+        extra_body={"store": True, "_dsa_caller_flag": 2},
+        store=False,
+        max_tokens=100,
+        _dsa_disable_response_format=True,
+    )
+    assert chat_top["store"] is False
+    assert chat_top["max_tokens"] == 100
+    assert "max_completion_tokens" not in chat_top
+    assert "response_format" not in chat_top
+    assert not any(k.startswith("_dsa_") for k in chat_top)
+
+    # P1-8: gpt-5 with deployment extra_body.max_completion_tokens + caller max_tokens sends ONLY max_completion_tokens
+    chat_gpt5 = build_chat_completions_payload(
+        wire_model="gpt-5",
+        messages=[{"role": "user", "content": "hi"}],
+        deployment_extra_body={"max_completion_tokens": 500},
+        max_tokens=100,
+    )
+    assert chat_gpt5["max_completion_tokens"] == 100
+    assert "max_tokens" not in chat_gpt5
+
+    # P1-9 Responses: interleaved [reasoning_1, function_call_1, reasoning_2, function_call_2] round-trips in exact order
+    raw_interleaved = {
+        "id": "resp_interleaved",
+        "model": "gpt-5",
+        "status": "completed",
+        "output": [
+            {"type": "reasoning", "id": "rs_1", "summary": [{"type": "summary_text", "text": "r1"}], "encrypted_content": "ENC_1"},
+            {"type": "function_call", "call_id": "call_1", "name": "f1", "arguments": '{"a":1}'},
+            {"type": "reasoning", "id": "rs_2", "summary": [{"type": "summary_text", "text": "r2"}], "encrypted_content": "ENC_2"},
+            {"type": "function_call", "call_id": "call_2", "name": "f2", "arguments": '{"b":2}'},
+        ],
+    }
+    parsed = parse_responses_api_response(raw_interleaved)
+    replayed = build_responses_api_payload(
+        wire_model="gpt-5",
+        messages=[
+            {"role": "user", "content": "go"},
+            {
+                "role": "assistant",
+                "content": parsed.choices[0].message.content or "",
+                "provider_blocks": parsed.choices[0].message.provider_blocks,
+                "tool_calls": [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {"name": tc.function.name, "arguments": tc.function.arguments},
+                    }
+                    for tc in (parsed.choices[0].message.tool_calls or [])
+                ],
+            },
+        ],
+    )
+    # input[0] is user message; input[1..4] must preserve exact interleaved order!
+    wire_items = replayed["input"][1:]
+    assert [(it.get("type"), it.get("id") or it.get("call_id")) for it in wire_items] == [
+        ("reasoning", "rs_1"),
+        ("function_call", "call_1"),
+        ("reasoning", "rs_2"),
+        ("function_call", "call_2"),
+    ]
+    assert wire_items[0]["encrypted_content"] == "ENC_1"
+    assert wire_items[2]["encrypted_content"] == "ENC_2"
+
+    # P1-9 Responses SSE: output_item.done without ciphertext upgraded by response.completed ciphertext for same ID!
+    sse_upgrade = (
+        b'data: {"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"rs_up","summary":[{"type":"summary_text","text":"s1"}]}}\n\n'
+        b'data: {"type":"response.output_text.delta","delta":"ok"}\n\n'
+        b'data: {"type":"response.completed","response":{"id":"r_up","model":"gpt-5","status":"completed","output":[{"type":"reasoning","id":"rs_up","summary":[{"type":"summary_text","text":"s1"}],"encrypted_content":"ENC_UPGRADED"}]}}\n\n'
+    )
+    up_chunks = list(iter_openai_stream_chunks(resp_spec, [sse_upgrade]))
+    up_blocks = [b for ch in up_chunks for b in (ch.choices[0].delta.provider_blocks or [])]
+    assert any(b.get("id") == "rs_up" and b.get("encrypted_content") == "ENC_UPGRADED" for b in up_blocks)
+
+
+def test_round2_p1_9_p1_10_p2_anthropic_sse_block_order_output_config_merge_and_guards() -> None:
+    """Round 2 P1-9, P1-10, P2: Anthropic SSE block order, output_config deep merge, _dsa_disable_response_format, top_p & parallel_tool_calls guards."""
+    # P1-9 Anthropic SSE: [thinking, tool_use, text] emit completed provider_blocks in wire order
+    sse_anth = (
+        b'data: {"type":"message_start","message":{"id":"m_ord","model":"claude-sonnet-4-6","usage":{"input_tokens":5}}}\n\n'
+        b'data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}\n\n'
+        b'data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"plan"}}\n\n'
+        b'data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"sig_1"}}\n\n'
+        b'data: {"type":"content_block_stop","index":0}\n\n'
+        b'data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_1","name":"quote","input":{}}}\n\n'
+        b'data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\\"code\\":\\"600519\\"}"}}\n\n'
+        b'data: {"type":"content_block_stop","index":1}\n\n'
+        b'data: {"type":"content_block_start","index":2,"content_block":{"type":"text","text":""}}\n\n'
+        b'data: {"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":"done"}}\n\n'
+        b'data: {"type":"content_block_stop","index":2}\n\n'
+        b'data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":4}}\n\n'
+        b'data: {"type":"message_stop"}\n\n'
+    )
+    anth_chunks = list(iter_anthropic_stream_chunks([sse_anth]))
+    emitted_blocks = [b for ch in anth_chunks for b in (ch.choices[0].delta.provider_blocks or [])]
+    assert [b["type"] for b in emitted_blocks] == ["thinking", "tool_use", "text"]
+    assert emitted_blocks[0]["signature"] == "sig_1"
+    assert emitted_blocks[1]["input"] == {"code": "600519"}
+    assert emitted_blocks[2]["text"] == "done"
+
+    # P1-10: output_config deep merge preserves existing {"effort": "low"} alongside json_schema format
+    merged_oc_body = build_anthropic_payload(
+        wire_model="claude-sonnet-4-6",
+        messages=[{"role": "user", "content": "hi"}],
+        extra_body={"output_config": {"effort": "low"}, "tool_choice": {"type": "auto"}},
+        response_format={
+            "type": "json_schema",
+            "json_schema": {"name": "s", "schema": {"type": "object", "properties": {"x": {"type": "integer"}}}},
+        },
+        tools=[{"type": "function", "function": {"name": "f", "description": "d", "parameters": {"type": "object"}}}],
+        parallel_tool_calls=False,
+    )
+    assert merged_oc_body["output_config"]["effort"] == "low"
+    assert merged_oc_body["output_config"]["format"]["type"] == "json_schema"
+    # P2: caller parallel_tool_calls=False survives extra_body.tool_choice override
+    assert merged_oc_body["tool_choice"] == {"type": "auto", "disable_parallel_tool_use": True}
+
+    # P1-10: _dsa_disable_response_format suppresses response_format
+    suppressed_anth = build_anthropic_payload(
+        wire_model="claude-sonnet-4-6",
+        messages=[{"role": "user", "content": "hi"}],
+        response_format={"type": "json_object"},
+        _dsa_disable_response_format=True,
+    )
+    assert "output_config" not in suppressed_anth
+
+    # P2: post-merge top_p outside [0.95, 1.0] under extended thinking raises NativeBadRequestError
+    with pytest.raises(NativeBadRequestError, match="top_p"):
+        build_anthropic_payload(
+            wire_model="claude-sonnet-4-6",
+            messages=[{"role": "user", "content": "hi"}],
+            reasoning_effort="low",
+            extra_body={"top_p": 0.5},
+        )
+
+
+def test_round2_p1_9_p1_11_p2_gemini_sse_order_quoted_jsonpath_sparse_array_and_finish_reason() -> None:
+    """Round 2 P1-9, P1-11a/b, P2: Gemini SSE ordered parts, quoted/sparse/malformed JSONPath, leaf willContinue, FINISH_REASON_UNSPECIFIED, tightened fileUri."""
+    # P1-9 Gemini SSE: unsigned functionCall precedes signed text -> ordered provider_blocks emitted for BOTH!
+    sse_order = (
+        b'data: {"candidates":[{"index":0,"content":{"parts":[{"functionCall":{"id":"fc_u","name":"lookup","args":{"c":"1"}}}]}}]}\n\n'
+        b'data: {"candidates":[{"index":0,"content":{"parts":[{"text":"tail","thoughtSignature":"SIG_T"}]},"finishReason":"STOP"}]}\n\n'
+    )
+    ord_chunks = list(iter_gemini_stream_chunks([sse_order]))
+    ord_blocks = [b for ch in ord_chunks for b in (ch.choices[0].delta.provider_blocks or [])]
+    assert len(ord_blocks) == 2
+    assert ord_blocks[0]["functionCall"]["id"] == "fc_u"
+    assert ord_blocks[1] == {"text": "tail", "thoughtSignature": "SIG_T"}
+
+    # P1-11a: Quoted bracket key $['target.symbol'] + sparse array out-of-order $.rows[1].code then $.rows[0].code
+    sse_jsonpath = (
+        b'data: {"candidates":[{"index":0,"content":{"parts":[{"functionCall":{"id":"fc_jp","name":"scan","partialArgs":[{"jsonPath":"$[\'target.symbol\']","stringValue":"600519"},{"jsonPath":"$.rows[1].code","stringValue":"000002"}],"willContinue":true}}]}}]}\n\n'
+        b'data: {"candidates":[{"index":0,"content":{"parts":[{"functionCall":{"partialArgs":[{"jsonPath":"$.rows[0].code","stringValue":"000001"}],"willContinue":false}}]},"finishReason":"STOP"}]}\n\n'
+    )
+    jp_chunks = list(iter_gemini_stream_chunks([sse_jsonpath]))
+    jp_tcs = [tc for ch in jp_chunks for tc in (ch.choices[0].delta.tool_calls or [])]
+    assert len(jp_tcs) == 1
+    assert json.loads(jp_tcs[0].function.arguments) == {
+        "target.symbol": "600519",
+        "rows": [{"code": "000001"}, {"code": "000002"}],
+    }
+
+    # P1-11a: Malformed JSONPath & huge array index (>1024) raise NativeBadRequestError
+    for bad_path in ("$..wild", "$.rows[abc]", "$.rows[2048].code", "no_dollar"):
+        bad_sse = (
+            f'data: {{"candidates":[{{"index":0,"content":{{"parts":[{{"functionCall":{{"id":"fc_b","name":"f","partialArgs":[{{"jsonPath":"{bad_path}","stringValue":"x"}}],"willContinue":false}}}}]}},"finishReason":"STOP"}}]}}\n\n'
+        ).encode("utf-8")
+        with pytest.raises(NativeBadRequestError):
+            list(iter_gemini_stream_chunks([bad_sse]))
+
+    # P1-11a: Unfinished leaf-level willContinue: true at EOF raises NativeIncompleteStreamError
+    unfinished_leaf_sse = (
+        b'data: {"candidates":[{"index":0,"content":{"parts":[{"functionCall":{"id":"fc_lf","name":"f","partialArgs":[{"jsonPath":"$.code","stringValue":"600","willContinue":true}],"willContinue":false}}]},"finishReason":"STOP"}]}\n\n'
+    )
+    with pytest.raises(NativeIncompleteStreamError):
+        list(iter_gemini_stream_chunks([unfinished_leaf_sse]))
+
+    # P1-11b: FINISH_REASON_UNSPECIFIED and whitespace finishReason are non-terminal -> raise NativeIncompleteStreamError on EOF
+    for non_term in ("FINISH_REASON_UNSPECIFIED", "   ", ""):
+        non_term_sse = (
+            f'data: {{"candidates":[{{"index":0,"content":{{"parts":[{{"text":"hi"}}]}},"finishReason":"{non_term}"}}]}}\n\n'
+        ).encode("utf-8")
+        with pytest.raises(NativeIncompleteStreamError):
+            list(iter_gemini_stream_chunks([non_term_sse]))
+
+    # P2: Tightened _is_gemini_file_uri validation
+    for bad_uri in (
+        "http://generativelanguage.googleapis.com/v1beta/files/abc",
+        "https://generativelanguage.googleapis.com/other/abc",
+        "gs://bucket-only",
+        "gs://bucket-only/",
+    ):
+        with pytest.raises(NativeBadRequestError):
+            build_gemini_payload(
+                wire_model="gemini-2.5-flash",
+                messages=[{"role": "user", "content": [{"fileData": {"fileUri": bad_uri}}]}],
+            )
+    for good_uri in (
+        "https://generativelanguage.googleapis.com/v1beta/files/abc123",
+        "gs://my-bucket/folder/image.png",
+    ):
+        ok_payload = build_gemini_payload(
+            wire_model="gemini-2.5-flash",
+            messages=[{"role": "user", "content": [{"fileData": {"fileUri": good_uri}}]}],
+        )
+        assert ok_payload["contents"][0]["parts"][0]["fileData"]["fileUri"] == good_uri

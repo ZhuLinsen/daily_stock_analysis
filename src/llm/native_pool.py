@@ -110,6 +110,14 @@ class DeploymentPool:
         with self._lock:
             return any(d.alias == target for d in self._deployments)
 
+    def get_alias_deployments(self, model_name: Optional[str] = None) -> List[DeploymentSpec]:
+        """Return ALL registered deployments for ``model_name`` regardless of cooldown (P0-2)."""
+        target = str(model_name or "").strip()
+        with self._lock:
+            if not target:
+                return list(self._deployments)
+            return [d for d in self._deployments if d.alias == target]
+
     def peek_candidates(
         self,
         model_name: Optional[str] = None,

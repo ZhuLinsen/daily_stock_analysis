@@ -3964,6 +3964,16 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                 ) from fallback_exc
             try:
                 raise_if_stock_cancelled()
+                # P1-7a: When local CLI generation fails and falls back to HTTP, clear the
+                # CLI-seeded transport label so the actual HTTP engine (native/litellm) is recorded.
+                fallback_audit_context = audit_context
+                if (
+                    isinstance(audit_context, dict)
+                    and fallback_backend_id == LITELLM_BACKEND_ID
+                    and str(audit_context.get("transport") or "").strip() in LOCAL_CLI_GENERATION_BACKEND_IDS
+                ):
+                    fallback_audit_context = dict(audit_context)
+                    fallback_audit_context["transport"] = "litellm"
                 result = fallback_backend.generate(
                     prompt,
                     generation_config,
@@ -3971,7 +3981,7 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                     stream=stream,
                     stream_progress_callback=stream_progress_callback,
                     response_validator=response_validator,
-                    audit_context=audit_context,
+                    audit_context=fallback_audit_context,
                 )
             except _AllModelsFailedError:
                 raise

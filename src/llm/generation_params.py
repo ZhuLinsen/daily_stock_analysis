@@ -367,12 +367,10 @@ def apply_litellm_param_recovery(
         updated.pop(param, None)
     for param, value in recovery.set_params.items():
         updated[param] = value
-    # P1-10: Ensure recovery mutates adapter-injected OpenAI wire params too
-    # (e.g. gpt-5 auto-mapping max_tokens->max_completion_tokens or official
-    # OpenAI auto-injecting stream_options={"include_usage": True}).
+    # P1-10 / P1-8: Ensure recovery mutates adapter-injected OpenAI wire params too
+    # (including when max_tokens/max_completion_tokens came from deployment YAML defaults).
     if recovery.reason == "max_completion_tokens_use_max_tokens":
-        if "max_tokens" in updated or "max_completion_tokens" in call_kwargs:
-            updated["_dsa_force_max_tokens"] = True
+        updated["_dsa_force_max_tokens"] = True
     elif recovery.reason == "stream_options_unsupported":
         if updated.get("stream") or "stream_options" in call_kwargs:
             updated["_dsa_disable_stream_options"] = True

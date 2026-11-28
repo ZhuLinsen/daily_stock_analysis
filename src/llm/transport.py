@@ -172,8 +172,6 @@ def _validate_prebuilt_router_api_surface(router: Any, model: Any, api_surface: 
     if not _is_responses_api_surface(api_surface):
         return
     target = str(model or "").strip()
-    if target.startswith("openai/responses/") or "/responses/" in target:
-        return
     model_list = getattr(router, "model_list", None)
     if not isinstance(model_list, list) or not model_list:
         return
@@ -183,9 +181,8 @@ def _validate_prebuilt_router_api_surface(router: Any, model: Any, api_surface: 
             continue
         params = entry.get("litellm_params")
         wire = str(params.get("model") or "").strip() if isinstance(params, Mapping) else ""
-        # P1-2: Match reachable deployments by exact alias (model_name, falling back to wire
-        # only when model_name is empty) so an unrelated Chat alias sharing the wire name
-        # does not reject a valid Responses alias.
+        # P1-2 & P1-6b: Match reachable deployments by exact alias (model_name, falling back to wire
+        # only when model_name is empty) even if the alias string itself contains "/responses/".
         alias = str(entry.get("model_name") or "").strip() or wire
         if not target or target == alias:
             matching_entries.append(entry)
@@ -378,6 +375,7 @@ def _build_synthetic_exception(name: str) -> type[BaseException]:
 
 
 _MATERIALIZED_FALLBACK_TRANSPORTS: "weakref.WeakSet[Any]" = weakref.WeakSet()
+_PRICING_SYNC_LOCK = threading.Lock()
 
 
 def _tag_response_transport_engine(response: Any, engine: str) -> Any:
@@ -430,17 +428,19 @@ def _sync_shared_pricing_to_transport(
     if not snapshot:
         return
     try:
-        if not transport.can_register_model():
-            return
-        existing_costs = transport.get_model_cost()
-        filtered: Dict[str, Any] = {}
-        for model_name, spec in snapshot.items():
-            # P1-14: Never overwrite an existing built-in LiteLLM cost with synthetic 0.0 fallback defaults.
-            if model_name in existing_costs and _is_synthetic_zero_cost_spec(spec):
-                continue
-            filtered[model_name] = spec
-        if filtered:
-            transport.register_model(filtered)
+        # P1-6c: Serialize check-then-write against fallback cost map without holding _SHARED_MODEL_COSTS_LOCK.
+        with _PRICING_SYNC_LOCK:
+            if not transport.can_register_model():
+                return
+            existing_costs = transport.get_model_cost()
+            filtered: Dict[str, Any] = {}
+            for model_name, spec in snapshot.items():
+                # P1-14: Never overwrite an existing built-in LiteLLM cost with synthetic 0.0 fallback defaults.
+                if model_name in existing_costs and _is_synthetic_zero_cost_spec(spec):
+                    continue
+                filtered[model_name] = spec
+            if filtered:
+                transport.register_model(filtered)
     except Exception as exc:
         logger.debug("Skipping shared model cost sync to fallback transport: %s", exc)
 
@@ -485,7 +485,10 @@ class LiteLLMTransport:
                         if isinstance(model_info, Mapping)
                         else None
                     ) or params.get("api_surface")
-                    has_internal_keys = "api_surface" in params or "wire_protocol" in params
+                    has_internal_keys = any(
+                        k in {"api_surface", "wire_protocol", "dsa_channel_protocol"} or str(k).startswith("_dsa_")
+                        for k in params
+                    )
                     raw_wire_model = params.get("model") or entry.get("model_name")
                     try:
                         encoded_wire_model = _encode_litellm_responses_wire_model(
@@ -500,9 +503,8 @@ class LiteLLMTransport:
                         )
                         encoded_wire_model = raw_wire_model
                     if has_internal_keys or encoded_wire_model != params.get("model"):
-                        copied_params = dict(params)
+                        copied_params = _strip_internal_litellm_kwargs(params)
                         copied_params.pop("api_surface", None)
-                        copied_params.pop("wire_protocol", None)
                         if encoded_wire_model:
                             copied_params["model"] = encoded_wire_model
                         copied_entry = dict(entry)
@@ -769,16 +771,24 @@ class NativeUnifiedRouter:
                     resolved_group.append(res)
                     raw_params = entry_dict.get("litellm_params")
                     if isinstance(raw_params, Mapping):
-                        _, _, dep_http = extract_client_overrides(raw_params)
+                        _, dep_client_base, dep_http = extract_client_overrides(raw_params)
                         if dep_http is not None:
-                            self._deployment_clients[res.deployment_id] = dep_http
+                            # P0-3b: Only bind deployment client when its base origin matches res.api_base.
+                            dep_origin = url_origin(dep_client_base) if dep_client_base else None
+                            res_origin = url_origin(res.api_base)
+                            if dep_origin is None or (res_origin is not None and dep_origin == res_origin):
+                                self._deployment_clients[res.deployment_id] = dep_http
 
                 if unsupported_item is not None:
-                    if self._fallback_transport is not None:
+                    # P1-5: Invalid deployment config syntax (e.g. store="maybe") fails closed in BOTH modes.
+                    if (
+                        self._fallback_transport is not None
+                        and unsupported_item.reason != "invalid_deployment_param"
+                    ):
                         self._fallback_entries_by_alias[alias] = [e for _, e in indexed_entries]
                     else:
                         raise NativeConfigError(
-                            f"Alias '{alias}' cannot run in strict native mode: {unsupported_item.detail}",
+                            f"Alias '{alias}' cannot run in native transport: {unsupported_item.detail}",
                             status_code=400,
                             provider=unsupported_item.provider,
                             error_code=unsupported_item.reason,
@@ -988,7 +998,7 @@ class NativeUnifiedTransport:
         resolved = resolve_deployment(model, deployment_id=f"direct:{model}", alias=model, params=kwargs)
 
         if isinstance(resolved, Unsupported):
-            if self._fallback_transport is not None:
+            if self._fallback_transport is not None and resolved.reason != "invalid_deployment_param":
                 _sync_shared_pricing_to_transport(self._fallback_transport)
                 return _tag_response_transport_engine(
                     self._fallback_transport.completion(**kwargs),

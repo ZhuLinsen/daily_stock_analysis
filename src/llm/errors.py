@@ -167,6 +167,45 @@ def classify_litellm_generation_param_error(
     return None
 
 
+def _extract_recovery_timeout_seconds(raw_timeout: Any) -> Optional[float]:
+    """Extract a positive finite timeout in seconds from float, tuple/list, or httpx.Timeout (P1-8)."""
+    if raw_timeout is None or raw_timeout == "":
+        return None
+    if isinstance(raw_timeout, (int, float)) and not isinstance(raw_timeout, bool):
+        val = float(raw_timeout)
+        return val if math.isfinite(val) and val > 0 else None
+    if isinstance(raw_timeout, (tuple, list)):
+        nums = [
+            float(v)
+            for v in raw_timeout
+            if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(float(v)) and float(v) > 0
+        ]
+        return max(nums) if nums else None
+    read_v = getattr(raw_timeout, "read", None)
+    connect_v = getattr(raw_timeout, "connect", None)
+    write_v = getattr(raw_timeout, "write", None)
+    pool_v = getattr(raw_timeout, "pool", None)
+    nums = [
+        float(v)
+        for v in (read_v, connect_v, write_v, pool_v)
+        if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(float(v)) and float(v) > 0
+    ]
+    return max(nums) if nums else None
+
+
+def _without_native_internal_keys(kwargs: Dict[str, Any]) -> Dict[str, Any]:
+    return {k: v for k, v in kwargs.items() if not str(k).startswith("_dsa_")}
+
+
+def _is_native_transport_error(exc: BaseException) -> bool:
+    try:
+        from src.llm.native_types import NativeAPIError
+
+        return isinstance(exc, NativeAPIError)
+    except Exception:
+        return False
+
+
 def call_litellm_with_param_recovery(
     call: Callable[[Dict[str, Any]], Any],
     *,
@@ -180,13 +219,13 @@ def call_litellm_with_param_recovery(
     """Call LiteLLM once, then retry once for explicit generation-parameter errors.
 
     Enforces a single monotonic deadline across the initial attempt and any
-    one-shot parameter-recovery retry (P1-6), even when no stock cancellation
-    token is active.
+    one-shot parameter-recovery retry (P1-6, P1-8), including tuple/httpx.Timeout
+    values and calls without an active stock cancellation token.
     """
-    raw_timeout = call_kwargs.get("timeout")
-    call_deadline: Optional[float] = None
-    if isinstance(raw_timeout, (int, float)) and math.isfinite(float(raw_timeout)) and float(raw_timeout) > 0:
-        call_deadline = time.monotonic() + float(raw_timeout)
+    timeout_seconds = _extract_recovery_timeout_seconds(call_kwargs.get("timeout"))
+    call_deadline: Optional[float] = (
+        time.monotonic() + timeout_seconds if timeout_seconds is not None else None
+    )
 
     def invoke(kwargs: Dict[str, Any], *, is_retry: bool = False) -> Any:
         raise_if_stock_cancelled()
@@ -209,9 +248,9 @@ def call_litellm_with_param_recovery(
         if effective_remaining is None:
             return call(kwargs)
 
-        timeout = kwargs.get("timeout")
-        if isinstance(timeout, (int, float)) and math.isfinite(float(timeout)) and float(timeout) > 0:
-            effective_remaining = min(effective_remaining, float(timeout))
+        kw_timeout = _extract_recovery_timeout_seconds(kwargs.get("timeout"))
+        if kw_timeout is not None:
+            effective_remaining = min(effective_remaining, kw_timeout)
         # Keep the Router's same-model deployment retries. The stock executor
         # enforces the batch deadline even if the SDK is still retrying.
         response = call({**kwargs, "timeout": effective_remaining})
@@ -227,6 +266,13 @@ def call_litellm_with_param_recovery(
             raise
         retry_kwargs = apply_litellm_param_recovery(effective_kwargs, recovery)
         if retry_kwargs == effective_kwargs:
+            raise
+        # P1-6a: On non-native (LiteLLM) errors, native-only _dsa_* directives are stripped,
+        # so do not waste a duplicate identical retry if only _dsa_* keys changed.
+        if (
+            not _is_native_transport_error(exc)
+            and _without_native_internal_keys(retry_kwargs) == _without_native_internal_keys(effective_kwargs)
+        ):
             raise
         if logger is not None:
             logger.warning(

@@ -14,7 +14,7 @@ import json
 import re
 import time
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Tuple
-from urllib.parse import parse_qsl, urlsplit
+from urllib.parse import parse_qsl, unquote_plus, urlsplit
 
 import httpx
 
@@ -167,12 +167,30 @@ _SENSITIVE_QUERY_PARAM_NAMES = frozenset(
 )
 
 
+_CROSS_ORIGIN_SAFE_HEADERS: frozenset[str] = frozenset(
+    {
+        "content-type",
+        "accept",
+        "user-agent",
+        "x-request-id",
+        "x-correlation-id",
+        "traceparent",
+        "tracestate",
+    }
+)
+
+
 def is_sensitive_header_name(name: str) -> bool:
     """Return True when ``name`` looks like a credential/auth/private session header."""
     lower_name = str(name or "").strip().lower()
     if not lower_name:
         return False
     return any(tok in lower_name for tok in _SENSITIVE_HEADER_NAME_TOKENS)
+
+
+def is_cross_origin_safe_header(name: str) -> bool:
+    """Return True ONLY for explicitly allowlisted telemetry/content headers safe across origins (P0-2)."""
+    return str(name or "").strip().lower() in _CROSS_ORIGIN_SAFE_HEADERS
 
 
 def collect_secret_values(
@@ -220,27 +238,34 @@ def collect_secret_values(
                     tok in qk_l for tok in ("key", "token", "secret", "auth", "pass")
                 ):
                     _add(qv)
-            # Also collect raw un-decoded query tokens in case percent-encoded forms appear in messages.
+            # P1-7c: Decode percent-encoded key names too so raw & decoded secret values are both collected.
             for part in raw_query.split("&"):
                 if "=" not in part:
                     continue
                 raw_k, raw_v = part.split("=", 1)
-                rk_l = raw_k.strip().lower()
+                rk_l = unquote_plus(raw_k).strip().lower()
                 if rk_l in _SENSITIVE_QUERY_PARAM_NAMES or any(
                     tok in rk_l for tok in ("key", "token", "secret", "auth", "pass")
                 ):
                     _add(raw_v)
+                    _add(unquote_plus(raw_v))
 
     return sorted(collected, key=len, reverse=True)
 
 
-def looks_like_html(text: str, content_type: Optional[str] = None) -> bool:
+def looks_like_html(
+    text: str,
+    content_type: Optional[str] = None,
+    *,
+    ignore_content_type: bool = False,
+) -> bool:
     """Return True when ``content_type`` declares HTML or non-JSON ``text`` starts with HTML markup."""
-    ct = str(content_type or "").lower()
-    if "text/html" in ct or "application/xhtml" in ct:
-        return True
-    if "application/json" in ct or "text/json" in ct or "+json" in ct:
-        return False
+    if not ignore_content_type:
+        ct = str(content_type or "").lower()
+        if "text/html" in ct or "application/xhtml" in ct:
+            return True
+        if "application/json" in ct or "text/json" in ct or "+json" in ct:
+            return False
     sample = str(text or "").lstrip("\ufeff").lstrip()[:512].lower()
     if not sample:
         return False
@@ -449,7 +474,8 @@ def is_waf_or_html_block(
         return False
     lower_headers = {str(k).lower(): str(v) for k, v in (headers or {}).items()}
     ct = lower_headers.get("content-type", "")
-    if looks_like_html(body_text, content_type=ct):
+    # P1-3b: Sniff document-start HTML even if proxy mislabeled Content-Type as application/json.
+    if looks_like_html(body_text, content_type=ct) or looks_like_html(body_text, ignore_content_type=True):
         return True
     if "cf-mitigated" in lower_headers:
         return True
@@ -722,9 +748,10 @@ def check_http_200_html_response(
     *,
     provider: str = "openai",
     secrets: Iterable[str] = (),
+    ignore_content_type: bool = False,
 ) -> None:
     """Fail fast when an endpoint returns HTTP 200 HTML instead of JSON/SSE."""
-    if not looks_like_html(body_text, content_type=content_type):
+    if not looks_like_html(body_text, content_type=content_type, ignore_content_type=ignore_content_type):
         return
     snippet = truncate_html_body(sanitize_error_message(body_text, secrets))
     raise NativeBadRequestError(
@@ -734,7 +761,7 @@ def check_http_200_html_response(
         body=body_text,
         secrets=secrets,
         error_code="non_json_html",
-        content_type=content_type or "text/html",
+        content_type="text/html",
     )
 
 
@@ -981,13 +1008,15 @@ def merge_header_overrides(
     *,
     resolve_env_fn: Optional[Callable[[Any], Any]] = None,
     skip_sensitive: bool = False,
+    safe_allowlist_only: bool = False,
 ) -> None:
     """Merge ``extra_headers``/``headers``/``default_headers`` case-insensitively.
 
     When ``resolve_env_fn`` is provided, ``os.environ/VAR`` header values are
-    expanded before merging. When ``skip_sensitive=True``, credential/auth
-    headers are omitted to prevent cross-origin credential leakage.
+    expanded before merging. When ``safe_allowlist_only=True`` (or ``skip_sensitive=True``),
+    only explicitly safe telemetry/content headers are forwarded across distinct origins (P0-2).
     """
+    restrict_cross_origin = bool(safe_allowlist_only or skip_sensitive)
     for hdr_key in ("extra_headers", "headers", "default_headers"):
         raw = source.get(hdr_key)
         if isinstance(raw, Mapping):
@@ -995,7 +1024,7 @@ def merge_header_overrides(
                 key_text = str(k).strip()
                 if not key_text or v is None:
                     continue
-                if skip_sensitive and is_sensitive_header_name(key_text):
+                if restrict_cross_origin and not is_cross_origin_safe_header(key_text):
                     continue
                 resolved_val = resolve_env_fn(v) if resolve_env_fn is not None else v
                 if resolved_val is not None:

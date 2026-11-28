@@ -86,6 +86,7 @@ _FILTERED_KWARGS = frozenset(
         "_dsa_skip_sensitive_caller_headers",
         "_dsa_force_max_tokens",
         "_dsa_disable_stream_options",
+        "_dsa_disable_response_format",
     }
 )
 
@@ -102,8 +103,13 @@ def _merge_request_defaults(
     for k, v in kwargs.items():
         if k in _FILTERED_KWARGS:
             continue
+        if v is None and k == "response_format":
+            merged.pop("response_format", None)
+            continue
         if v is not None:
             merged[k] = v
+    if kwargs.get("_dsa_disable_response_format"):
+        merged.pop("response_format", None)
     return merged
 
 
@@ -511,6 +517,7 @@ def build_anthropic_payload(
         body["stop_sequences"] = [str(s) for s in stop_val]
 
     anthropic_tools = _convert_anthropic_tools(kwargs.get("tools"))
+    caller_disable_parallel = False
     if anthropic_tools:
         body["tools"] = anthropic_tools
         converted_choice = _convert_anthropic_tool_choice(kwargs.get("tool_choice"))
@@ -526,14 +533,30 @@ def build_anthropic_payload(
                 provider="anthropic",
             )
             if allow_parallel is False:
-                if "tool_choice" not in body:
-                    body["tool_choice"] = {"type": "auto", "disable_parallel_tool_use": True}
-                elif isinstance(body["tool_choice"], dict) and body["tool_choice"].get("type") != "none":
-                    body["tool_choice"]["disable_parallel_tool_use"] = True
+                caller_disable_parallel = True
 
-    # P1-17: Translate supported structured-output format or fail explicitly instead of
-    # silently dropping response_format and returning unconstrained prose.
-    resp_fmt = kwargs.get("response_format")
+    if isinstance(thinking_cfg, Mapping):
+        body["thinking"] = dict(thinking_cfg)
+
+    for key, value in merged_extra.items():
+        if value is not None and key not in {"thinking", "reasoning_effort"} and not str(key).startswith("_dsa_"):
+            body[key] = copy.deepcopy(value)
+
+    # P2: Keep caller parallel_tool_calls=False authoritative AFTER extra_body merge.
+    if anthropic_tools and caller_disable_parallel:
+        existing_tc = body.get("tool_choice")
+        if existing_tc is None:
+            body["tool_choice"] = {"type": "auto", "disable_parallel_tool_use": True}
+        elif isinstance(existing_tc, Mapping) and str(existing_tc.get("type") or "").lower() != "none":
+            updated_tc = dict(existing_tc)
+            updated_tc["disable_parallel_tool_use"] = True
+            body["tool_choice"] = updated_tc
+
+    # P1-17 & P1-10: Translate supported structured-output format (deep-merging into any
+    # existing output_config such as {"effort": "low"}) or fail explicitly instead of
+    # silently dropping response_format.
+    disable_resp_fmt = bool(kwargs.get("_dsa_disable_response_format"))
+    resp_fmt = None if disable_resp_fmt else kwargs.get("response_format")
     if isinstance(resp_fmt, Mapping):
         rtype = str(resp_fmt.get("type") or "").strip().lower()
         if rtype == "json_schema":
@@ -546,7 +569,16 @@ def build_anthropic_payload(
                     provider="anthropic",
                     error_code="invalid_response_format",
                 )
-            if "output_config" not in merged_extra:
+            existing_oc = body.get("output_config")
+            if isinstance(existing_oc, Mapping):
+                merged_oc = copy.deepcopy(dict(existing_oc))
+                if "format" not in merged_oc:
+                    merged_oc["format"] = {
+                        "type": "json_schema",
+                        "schema": copy.deepcopy(dict(schema_obj)),
+                    }
+                body["output_config"] = merged_oc
+            else:
                 body["output_config"] = {
                     "format": {
                         "type": "json_schema",
@@ -562,15 +594,8 @@ def build_anthropic_payload(
                 error_code="unsupported_response_format",
             )
 
-    if isinstance(thinking_cfg, Mapping):
-        body["thinking"] = dict(thinking_cfg)
-
-    for key, value in merged_extra.items():
-        if value is not None and key not in {"thinking", "reasoning_effort"}:
-            body[key] = copy.deepcopy(value)
-
     # P2: Post-merge validation for Anthropic extended-thinking constraints
-    # (temperature != 1.0 or forced tool_choice 'any'/'tool' from extra_body or kwargs).
+    # (temperature != 1.0, top_p outside [0.95, 1.0], or forced tool_choice 'any'/'tool').
     if thinking_enabled:
         if "temperature" in body and body["temperature"] is not None:
             try:
@@ -585,6 +610,23 @@ def build_anthropic_payload(
             if merged_temp != 1.0:
                 raise NativeBadRequestError(
                     "Anthropic extended thinking requires temperature=1.0 (or omitted)",
+                    status_code=400,
+                    provider="anthropic",
+                    error_code="invalid_thinking_params",
+                )
+        if "top_p" in body and body["top_p"] is not None:
+            try:
+                merged_top_p = float(body["top_p"])
+            except (TypeError, ValueError) as exc:
+                raise NativeBadRequestError(
+                    f"Invalid top_p for Anthropic extended thinking: {body['top_p']!r}",
+                    status_code=400,
+                    provider="anthropic",
+                    error_code="invalid_thinking_params",
+                ) from exc
+            if not (0.95 <= merged_top_p <= 1.0):
+                raise NativeBadRequestError(
+                    "Anthropic extended thinking requires top_p in [0.95, 1.0] (or omitted)",
                     status_code=400,
                     provider="anthropic",
                     error_code="invalid_thinking_params",
@@ -708,7 +750,7 @@ def iter_anthropic_stream_chunks(
     msg_id = f"msg_{uuid.uuid4().hex[:12]}"
     model_name = default_model
     block_idx_to_tool_idx: Dict[int, int] = {}
-    thinking_accum: Dict[int, Dict[str, Any]] = {}
+    block_accum: Dict[int, Dict[str, Any]] = {}
     saw_tool_calls = False
     emitted_finish = False
     saw_message_stop = False
@@ -752,8 +794,18 @@ def iter_anthropic_stream_chunks(
                 saw_tool_calls = True
                 tc_idx = len(block_idx_to_tool_idx)
                 block_idx_to_tool_idx[block_idx] = tc_idx
+                tc_id = str(block.get("id") or f"toolu_{tc_idx}")
+                fn_name = str(block.get("name") or "")
                 raw_input = block.get("input")
                 initial_args = json.dumps(raw_input, ensure_ascii=False) if raw_input else ""
+                # P1-9: Accumulate tool_use block alongside thinking/text by index to preserve wire order.
+                block_accum[block_idx] = {
+                    "type": "tool_use",
+                    "id": tc_id,
+                    "name": fn_name,
+                    "_initial_input": copy.deepcopy(raw_input) if isinstance(raw_input, Mapping) else {},
+                    "_json_chunks": [],
+                }
                 yield NativeStreamChunk(
                     id=msg_id,
                     model=model_name,
@@ -763,10 +815,10 @@ def iter_anthropic_stream_chunks(
                             delta=NativeMessage(
                                 tool_calls=[
                                     NativeToolCall(
-                                        id=str(block.get("id") or f"toolu_{tc_idx}"),
+                                        id=tc_id,
                                         index=tc_idx,
                                         function=NativeFunctionCall(
-                                            name=str(block.get("name") or ""),
+                                            name=fn_name,
                                             arguments=initial_args,
                                         ),
                                     )
@@ -775,14 +827,19 @@ def iter_anthropic_stream_chunks(
                         )
                     ],
                 )
+            elif btype == "text":
+                block_accum[block_idx] = {
+                    "type": "text",
+                    "text": str(block.get("text") or ""),
+                }
             elif btype == "thinking":
-                thinking_accum[block_idx] = {
+                block_accum[block_idx] = {
                     "type": "thinking",
                     "thinking": str(block.get("thinking") or ""),
                     "signature": str(block.get("signature") or ""),
                 }
             elif btype == "redacted_thinking":
-                thinking_accum[block_idx] = copy.deepcopy(dict(block))
+                block_accum[block_idx] = copy.deepcopy(dict(block))
             continue
 
         if etype == "content_block_delta":
@@ -794,6 +851,9 @@ def iter_anthropic_stream_chunks(
             if dtype == "text_delta":
                 text_delta = delta.get("text")
                 if text_delta:
+                    acc = block_accum.setdefault(block_idx, {"type": "text", "text": ""})
+                    if acc.get("type") == "text":
+                        acc["text"] += str(text_delta)
                     yield NativeStreamChunk(
                         id=msg_id,
                         model=model_name,
@@ -802,8 +862,8 @@ def iter_anthropic_stream_chunks(
             elif dtype == "thinking_delta":
                 t_delta = delta.get("thinking")
                 if t_delta:
-                    if block_idx in thinking_accum:
-                        thinking_accum[block_idx]["thinking"] += str(t_delta)
+                    if block_idx in block_accum and block_accum[block_idx].get("type") == "thinking":
+                        block_accum[block_idx]["thinking"] += str(t_delta)
                     yield NativeStreamChunk(
                         id=msg_id,
                         model=model_name,
@@ -811,13 +871,15 @@ def iter_anthropic_stream_chunks(
                     )
             elif dtype == "signature_delta":
                 sig = delta.get("signature")
-                if sig and block_idx in thinking_accum:
-                    thinking_accum[block_idx]["signature"] += str(sig)
+                if sig and block_idx in block_accum and block_accum[block_idx].get("type") == "thinking":
+                    block_accum[block_idx]["signature"] += str(sig)
             elif dtype == "input_json_delta":
                 partial_json = str(delta.get("partial_json") or "")
                 if partial_json:
                     tc_idx = block_idx_to_tool_idx.setdefault(block_idx, len(block_idx_to_tool_idx))
                     saw_tool_calls = True
+                    if block_idx in block_accum and block_accum[block_idx].get("type") == "tool_use":
+                        block_accum[block_idx]["_json_chunks"].append(partial_json)
                     yield NativeStreamChunk(
                         id=msg_id,
                         model=model_name,
@@ -839,20 +901,41 @@ def iter_anthropic_stream_chunks(
 
         if etype == "content_block_stop":
             block_idx = int(data.get("index", 0))
-            final_block = thinking_accum.pop(block_idx, None)
-            if final_block is not None:
-                yield NativeStreamChunk(
-                    id=msg_id,
-                    model=model_name,
-                    choices=[
-                        NativeChoice(
-                            index=0,
-                            delta=NativeMessage(
-                                provider_blocks=[dict(final_block)],
-                            ),
-                        )
-                    ],
-                )
+            raw_acc = block_accum.pop(block_idx, None)
+            if raw_acc is not None:
+                acc_type = raw_acc.get("type")
+                final_block: Optional[Dict[str, Any]] = None
+                if acc_type == "tool_use":
+                    joined_json = "".join(raw_acc.get("_json_chunks") or [])
+                    input_obj = (
+                        extract_tool_arguments_dict(joined_json)
+                        if joined_json
+                        else dict(raw_acc.get("_initial_input") or {})
+                    )
+                    final_block = {
+                        "type": "tool_use",
+                        "id": raw_acc["id"],
+                        "name": raw_acc["name"],
+                        "input": input_obj,
+                    }
+                elif acc_type == "text":
+                    if raw_acc.get("text"):
+                        final_block = {"type": "text", "text": raw_acc["text"]}
+                else:
+                    final_block = dict(raw_acc)
+                if final_block is not None:
+                    yield NativeStreamChunk(
+                        id=msg_id,
+                        model=model_name,
+                        choices=[
+                            NativeChoice(
+                                index=0,
+                                delta=NativeMessage(
+                                    provider_blocks=[final_block],
+                                ),
+                            )
+                        ],
+                    )
             continue
 
         if etype == "message_delta":
@@ -919,7 +1002,7 @@ def prepare_anthropic_request(
         headers,
         kwargs,
         resolve_env_fn=resolve_env_reference,
-        skip_sensitive=skip_sensitive,
+        safe_allowlist_only=skip_sensitive,
     )
 
     api_key = entry.api_key or (None if skip_sensitive else kwargs.get("api_key"))

@@ -752,9 +752,7 @@ def test_p0_2_origin_bound_client_key_and_env_key_isolation(
 def test_p0_3_strict_bool_store_env_expansion_and_invalid_rejection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """P0-3: store: os.environ/STORE='false' parses to False; invalid bool strings fail closed."""
-    from src.llm.native_types import NativeBadRequestError
-
+    """P0-3 + P1-5: store: os.environ/STORE='false' parses to False; invalid bool returns Unsupported and raises NativeConfigError in both native and auto modes."""
     monkeypatch.setenv("DSA_STORE_FLAG_TEST", "false")
     res_false = resolve_deployment(
         {
@@ -771,17 +769,36 @@ def test_p0_3_strict_bool_store_env_expansion_and_invalid_rejection(
     assert res_false.request_defaults["store"] is False
 
     monkeypatch.setenv("DSA_STORE_FLAG_TEST", "maybe-store")
-    with pytest.raises(NativeBadRequestError):
-        resolve_deployment(
-            {
-                "model_name": "openai/responses/gpt-5",
-                "litellm_params": {
-                    "model": "openai/responses/gpt-5",
-                    "api_base": "https://relay.example/v1",
-                    "api_key": "sk-1234",
-                    "store": "os.environ/DSA_STORE_FLAG_TEST",
-                },
-            }
+    bad_dep = {
+        "model_name": "openai/responses/gpt-5",
+        "litellm_params": {
+            "model": "openai/responses/gpt-5",
+            "api_base": "https://relay.example/v1",
+            "api_key": "sk-1234",
+            "store": "os.environ/DSA_STORE_FLAG_TEST",
+        },
+    }
+    res_bad = resolve_deployment(bad_dep)
+    assert isinstance(res_bad, Unsupported)
+    assert res_bad.reason == "invalid_deployment_param"
+
+    # P1-5: Both strict native AND auto routers raise NativeConfigError (never NativeBadRequestError).
+    with pytest.raises(NativeConfigError):
+        NativeUnifiedRouter(
+            model_list=[bad_dep],
+            fallback_transport=None,
+            http_transport=_fail_if_called_transport(),
+        )
+
+    class _NeverUsedFallback:
+        def create_router(self, *_a: Any, **_kw: Any) -> Any:
+            raise AssertionError("invalid_deployment_param must fail fast with NativeConfigError, not fallback")
+
+    with pytest.raises(NativeConfigError):
+        NativeUnifiedRouter(
+            model_list=[bad_dep],
+            fallback_transport=_NeverUsedFallback(),
+            http_transport=_fail_if_called_transport(),
         )
 
 
@@ -969,3 +986,85 @@ def test_p1_12_vision_metadata_and_p2_gemini_alt_override_generic_env_base_and_p
     assert captured["wire_protocol"] == "openai_chat"
     assert captured["custom_llm_provider"] == "openai"
     assert captured["dsa_channel_protocol"] == "openai"
+
+
+def test_round2_p0_1_p0_3c_p1_6b_p1_7b_p2_resolver_and_vision_guards(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Round 2 P0-1, P0-3c, P1-6b, P1-7b, P2: channel protocol fail-closed, bidirectional default mismatch, originless client, alias /responses/ validation, Vision params, default ports."""
+    from types import SimpleNamespace
+    from src.llm.transport import _validate_prebuilt_router_api_surface, use_transport
+
+    # P0-1a: Bare model + unrecognized dsa_channel_protocol + wire_protocol without api_base -> fail closed!
+    res_rep = resolve_deployment(
+        "bare-model",
+        params={"dsa_channel_protocol": "replicate", "wire_protocol": "openai_chat"},
+    )
+    assert isinstance(res_rep, Unsupported)
+    assert res_rep.reason == "unsupported_channel_protocol"
+
+    # P0-1b: Bidirectional default-host protocol mismatch without api_base
+    for model, wp in (
+        ("anthropic/claude-sonnet-4-6", "gemini"),
+        ("openai/gpt-4o", "anthropic"),
+        ("openai/gpt-4o", "gemini"),
+        ("gemini/gemini-2.5-flash", "anthropic"),
+        ("gemini/gemini-2.5-flash", "openai_chat"),
+    ):
+        res_mis = resolve_deployment(model, wire_protocol=wp)
+        assert isinstance(res_mis, Unsupported), f"Expected Unsupported for {model} + {wp}, got {res_mis}"
+        assert res_mis.reason == "endpoint_surface_mismatch"
+
+    # P0-3c: Originless client (base_url=None) must NOT bind its api_key to an explicit api_base
+    originless_client = SimpleNamespace(api_key="sk-originless-secret-9999", base_url=None, _client=None)
+    res_originless = resolve_deployment(
+        "openai/gpt-4o",
+        api_base="https://explicit-relay.example/v1",
+        client=originless_client,
+    )
+    assert isinstance(res_originless, DeploymentSpec)
+    assert res_originless.api_key == ""
+
+    # P1-6b: Alias literally containing "/responses/" must still validate underlying deployment wire model!
+    prebuilt_bad = SimpleNamespace(
+        model_list=[
+            {"model_name": "corp/responses/chat-alias", "litellm_params": {"model": "openai/gpt-4o"}},
+        ]
+    )
+    with pytest.raises(ValueError, match="responses"):
+        _validate_prebuilt_router_api_surface(prebuilt_bad, "corp/responses/chat-alias", "responses")
+
+    # P1-7b: Vision reads dsa_channel_protocol from litellm_params as well as model_info
+    captured: Dict[str, Any] = {}
+
+    class _CaptureTransport:
+        def completion(self, **kw: Any) -> Any:
+            captured.update(kw)
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content='[{"code":"000001"}]'))]
+            )
+
+    cfg = Config(
+        vision_model="openai/relay-vision-params",
+        llm_model_list=[
+            {
+                "model_name": "openai/relay-vision-params",
+                "litellm_params": {
+                    "model": "openai/relay-vision-params",
+                    "api_base": "https://relay.example/v1",
+                    "api_key": "sk-vis-5678",
+                    "dsa_channel_protocol": "deepseek",
+                },
+            }
+        ],
+    )
+    monkeypatch.setattr(image_stock_extractor, "get_config", lambda: cfg)
+    with use_transport(_CaptureTransport()):
+        out = image_stock_extractor._call_litellm_vision("aGVsbG8=", "image/png")
+    assert "000001" in out
+    assert captured["dsa_channel_protocol"] == "deepseek"
+
+    # P2: normalize_endpoint_url equates implicit and explicit default ports (:443 / :80)
+    assert normalize_endpoint_url("https://api.openai.com:443/v1/") == normalize_endpoint_url("https://api.openai.com/v1")
+    assert normalize_endpoint_url("http://127.0.0.1:80/v1/") == normalize_endpoint_url("http://127.0.0.1/v1")
+    assert normalize_endpoint_url("https://api.openai.com:8443/v1/") != normalize_endpoint_url("https://api.openai.com/v1")

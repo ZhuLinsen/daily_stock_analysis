@@ -127,6 +127,7 @@ _FILTERED_KWARGS = frozenset(
         "_dsa_skip_sensitive_caller_headers",
         "_dsa_force_max_tokens",
         "_dsa_disable_stream_options",
+        "_dsa_disable_response_format",
     }
 )
 
@@ -143,8 +144,13 @@ def _merge_request_defaults(
     for k, v in kwargs.items():
         if k in _FILTERED_KWARGS:
             continue
+        if v is None and k == "response_format":
+            merged.pop("response_format", None)
+            continue
         if v is not None:
             merged[k] = v
+    if kwargs.get("_dsa_disable_response_format"):
+        merged.pop("response_format", None)
     return merged
 
 
@@ -250,15 +256,25 @@ def _clean_gemini_schema(
     return cleaned
 
 
+def _normalize_gemini_finish_reason_raw(finish_reason: Optional[str]) -> Optional[str]:
+    """Normalize provider finishReason; treat blank or FINISH_REASON_UNSPECIFIED as non-terminal (P1-11b)."""
+    if finish_reason is None:
+        return None
+    key = str(finish_reason).strip().upper()
+    if not key or key == "FINISH_REASON_UNSPECIFIED":
+        return None
+    return key
+
+
 def _map_gemini_finish_reason(
     finish_reason: Optional[str],
     *,
     has_tool_calls: bool = False,
 ) -> Optional[str]:
-    # P1-20: Emit finish_reason ONLY when the provider actually supplied a terminal finishReason.
-    if finish_reason is None or not str(finish_reason).strip():
+    # P1-20 & P1-11b: Emit finish_reason ONLY when the provider supplied a real terminal finishReason.
+    key = _normalize_gemini_finish_reason_raw(finish_reason)
+    if key is None:
         return None
-    key = str(finish_reason).strip().upper()
     if key == "STOP" and has_tool_calls:
         return "tool_calls"
     mapped = _FINISH_REASON_MAP.get(key)
@@ -339,13 +355,26 @@ def parse_gemini_usage(raw_usage: Any) -> Optional[NativeUsage]:
     )
 
 
+_GEMINI_FILES_API_PATH_RE = re.compile(r"^/(?:v1|v1beta|v1alpha)/files/[^/\s]+$", re.IGNORECASE)
+
+
 def _is_gemini_file_uri(url: str) -> bool:
-    lowered = url.lower()
-    if lowered.startswith("gs://"):
-        return True
-    split = urlsplit(url)
+    """Validate Gemini Files API or Cloud Storage URI strictly (P2)."""
+    raw = str(url or "").strip()
+    if not raw:
+        return False
+    split = urlsplit(raw)
+    scheme = (split.scheme or "").lower()
+    if scheme == "gs":
+        bucket = (split.netloc or "").strip()
+        obj_path = (split.path or "").lstrip("/").strip()
+        return bool(bucket and obj_path)
     host = (split.hostname or "").lower()
-    return host == "generativelanguage.googleapis.com" and "/files/" in (split.path or "").lower()
+    return (
+        scheme == "https"
+        and host == "generativelanguage.googleapis.com"
+        and bool(_GEMINI_FILES_API_PATH_RE.match(split.path or ""))
+    )
 
 
 def _convert_part_to_gemini(part: Any) -> Optional[Dict[str, Any]]:
@@ -681,7 +710,7 @@ def build_gemini_payload(
     elif isinstance(stop_val, list) and stop_val:
         gen_cfg["stopSequences"] = [str(s) for s in stop_val]
 
-    resp_fmt = kwargs.get("response_format")
+    resp_fmt = None if kwargs.get("_dsa_disable_response_format") else kwargs.get("response_format")
     if isinstance(resp_fmt, Mapping):
         rtype = str(resp_fmt.get("type") or "").lower()
         if rtype == "json_object":
@@ -744,36 +773,139 @@ def _deterministic_gemini_call_id(cand_idx: int, tc_idx: int, fn_name: str, args
     return f"call_{safe_name}_{tc_idx}_{digest}"
 
 
-_JSON_PATH_TOKEN_RE = re.compile(r"\.([^.\[\]]+)|\[(\d+)\]")
+_MAX_GEMINI_JSONPATH_INDEX = 1024
+_JSON_PATH_IDENT_RE = re.compile(r"^[A-Za-z_$][A-Za-z0-9_$-]*")
 
 
 def _parse_json_path_tokens(path: str) -> List[Any]:
+    """Strictly parse a singular Gemini JSONPath (e.g. ``$.rows[0]['target.symbol']``) (P1-11a)."""
     raw = str(path or "").strip()
-    if raw.startswith("$"):
-        raw = raw[1:]
-    if not raw:
-        return []
+    if not raw or not raw.startswith("$"):
+        raise NativeBadRequestError(
+            f"Malformed Gemini partialArgs jsonPath: {path!r}",
+            status_code=400,
+            provider="gemini",
+            error_code="invalid_partial_args_path",
+        )
+    idx = 1
+    n = len(raw)
     tokens: List[Any] = []
-    for match in _JSON_PATH_TOKEN_RE.finditer(raw):
-        key_tok, idx_tok = match.group(1), match.group(2)
-        if key_tok is not None:
-            tokens.append(key_tok)
-        elif idx_tok is not None:
-            tokens.append(int(idx_tok))
-    if not tokens and raw.lstrip("."):
-        tokens.append(raw.lstrip("."))
+    while idx < n:
+        ch = raw[idx]
+        if ch == ".":
+            idx += 1
+            if idx >= n:
+                raise NativeBadRequestError(
+                    f"Malformed Gemini partialArgs jsonPath (trailing dot): {path!r}",
+                    status_code=400,
+                    provider="gemini",
+                    error_code="invalid_partial_args_path",
+                )
+            match = _JSON_PATH_IDENT_RE.match(raw[idx:])
+            if not match:
+                raise NativeBadRequestError(
+                    f"Malformed Gemini partialArgs jsonPath segment at {idx}: {path!r}",
+                    status_code=400,
+                    provider="gemini",
+                    error_code="invalid_partial_args_path",
+                )
+            tokens.append(match.group(0))
+            idx += match.end()
+        elif ch == "[":
+            idx += 1
+            if idx >= n:
+                raise NativeBadRequestError(
+                    f"Unterminated bracket in Gemini partialArgs jsonPath: {path!r}",
+                    status_code=400,
+                    provider="gemini",
+                    error_code="invalid_partial_args_path",
+                )
+            quote_ch = raw[idx]
+            if quote_ch in ("'", '"'):
+                idx += 1
+                chars: List[str] = []
+                closed = False
+                while idx < n:
+                    cur_ch = raw[idx]
+                    if cur_ch == "\\" and idx + 1 < n:
+                        chars.append(raw[idx + 1])
+                        idx += 2
+                        continue
+                    if cur_ch == quote_ch:
+                        idx += 1
+                        closed = True
+                        break
+                    chars.append(cur_ch)
+                    idx += 1
+                if not closed or idx >= n or raw[idx] != "]":
+                    raise NativeBadRequestError(
+                        f"Malformed quoted bracket key in Gemini partialArgs jsonPath: {path!r}",
+                        status_code=400,
+                        provider="gemini",
+                        error_code="invalid_partial_args_path",
+                    )
+                tokens.append("".join(chars))
+                idx += 1
+            else:
+                close_pos = raw.find("]", idx)
+                if close_pos == -1:
+                    raise NativeBadRequestError(
+                        f"Unterminated index in Gemini partialArgs jsonPath: {path!r}",
+                        status_code=400,
+                        provider="gemini",
+                        error_code="invalid_partial_args_path",
+                    )
+                index_text = raw[idx:close_pos]
+                if not index_text.isdigit():
+                    raise NativeBadRequestError(
+                        f"Unsupported non-integer array index in Gemini partialArgs jsonPath: {path!r}",
+                        status_code=400,
+                        provider="gemini",
+                        error_code="invalid_partial_args_path",
+                    )
+                arr_idx = int(index_text)
+                if arr_idx > _MAX_GEMINI_JSONPATH_INDEX:
+                    raise NativeBadRequestError(
+                        f"Gemini partialArgs jsonPath array index {arr_idx} exceeds limit {_MAX_GEMINI_JSONPATH_INDEX}",
+                        status_code=400,
+                        provider="gemini",
+                        error_code="invalid_partial_args_path",
+                    )
+                tokens.append(arr_idx)
+                idx = close_pos + 1
+        else:
+            raise NativeBadRequestError(
+                f"Malformed Gemini partialArgs jsonPath character {ch!r} at {idx}: {path!r}",
+                status_code=400,
+                provider="gemini",
+                error_code="invalid_partial_args_path",
+            )
+    if not tokens:
+        raise NativeBadRequestError(
+            f"Empty Gemini partialArgs jsonPath: {path!r}",
+            status_code=400,
+            provider="gemini",
+            error_code="invalid_partial_args_path",
+        )
     return tokens
 
 
-def _apply_gemini_partial_args(target_args: Dict[str, Any], partial_args: Iterable[Any]) -> None:
-    """Apply Gemini streaming ``partialArgs`` updates onto ``target_args`` in place (P1-21)."""
+def _apply_gemini_partial_args(
+    target_args: Dict[str, Any],
+    partial_args: Iterable[Any],
+    pending_leaf_paths: Set[Tuple[Any, ...]],
+) -> None:
+    """Apply Gemini streaming ``partialArgs`` updates onto ``target_args`` with sparse-array & leaf tracking (P1-11a)."""
     for item in partial_args:
         if not isinstance(item, Mapping):
             continue
-        tokens = _parse_json_path_tokens(str(item.get("jsonPath") or ""))
-        if not tokens:
+        raw_path = item.get("jsonPath")
+        if raw_path is None:
             continue
+        tokens = _parse_json_path_tokens(str(raw_path))
+        path_key = tuple(tokens)
 
+        has_value = True
         if "stringValue" in item:
             val: Any = str(item["stringValue"])
             is_string = True
@@ -788,18 +920,45 @@ def _apply_gemini_partial_args(target_args: Dict[str, Any], partial_args: Iterab
             val = None
             is_string = False
         else:
+            has_value = False
+            val = None
+            is_string = False
+
+        if item.get("willContinue") is True:
+            pending_leaf_paths.add(path_key)
+        else:
+            pending_leaf_paths.discard(path_key)
+
+        if not has_value:
             continue
 
         cur: Any = target_args
         for idx, tok in enumerate(tokens[:-1]):
             nxt = tokens[idx + 1]
+            expected_container: Any = [] if isinstance(nxt, int) else {}
             if isinstance(tok, str):
-                if tok not in cur or not isinstance(cur[tok], (dict, list)):
-                    cur[tok] = [] if isinstance(nxt, int) else {}
+                if not isinstance(cur, dict):
+                    raise NativeBadRequestError(
+                        f"Gemini partialArgs path conflict at {tok!r} in {raw_path!r}",
+                        status_code=400,
+                        provider="gemini",
+                        error_code="invalid_partial_args_path",
+                    )
+                if tok not in cur or not isinstance(cur[tok], type(expected_container)):
+                    cur[tok] = expected_container
                 cur = cur[tok]
-            elif isinstance(tok, int) and isinstance(cur, list):
+            elif isinstance(tok, int):
+                if not isinstance(cur, list):
+                    raise NativeBadRequestError(
+                        f"Gemini partialArgs path conflict at [{tok}] in {raw_path!r}",
+                        status_code=400,
+                        provider="gemini",
+                        error_code="invalid_partial_args_path",
+                    )
                 while len(cur) <= tok:
-                    cur.append([] if isinstance(nxt, int) else {})
+                    cur.append(None)
+                if cur[tok] is None or not isinstance(cur[tok], type(expected_container)):
+                    cur[tok] = expected_container
                 cur = cur[tok]
 
         last = tokens[-1]
@@ -824,7 +983,7 @@ def _extract_gemini_parts(
     tool_index_start: int = 0,
     active_partial_fc: Optional[Dict[int, Dict[str, Any]]] = None,
 ) -> Tuple[List[str], List[str], List[NativeToolCall], List[Dict[str, Any]], bool]:
-    """Extract text, reasoning, tool calls, and ordered original model parts for replay (P1-18, P1-21)."""
+    """Extract text, reasoning, tool calls, and ordered original model parts for replay (P1-18, P1-21, P1-11a)."""
     text_parts: List[str] = []
     reasoning_parts: List[str] = []
     tool_calls: List[NativeToolCall] = []
@@ -901,7 +1060,7 @@ def _extract_gemini_parts(
             if is_partial_frame and active_partial_fc is not None:
                 state = active_partial_fc.setdefault(
                     cand_idx,
-                    {"name": "", "id": "", "args": {}, "sig": None},
+                    {"name": "", "id": "", "args": {}, "sig": None, "pending_leaf_paths": set()},
                 )
                 if fc.get("name"):
                     state["name"] = str(fc["name"])
@@ -912,8 +1071,12 @@ def _extract_gemini_parts(
                 if isinstance(fc.get("args"), Mapping):
                     state["args"].update(copy.deepcopy(dict(fc["args"])))
                 if isinstance(fc.get("partialArgs"), list):
-                    _apply_gemini_partial_args(state["args"], fc["partialArgs"])
-                if fc.get("willContinue"):
+                    _apply_gemini_partial_args(
+                        state["args"],
+                        fc["partialArgs"],
+                        state["pending_leaf_paths"],
+                    )
+                if fc.get("willContinue") or state["pending_leaf_paths"]:
                     continue
                 completed = active_partial_fc.pop(cand_idx)
                 _emit_function_call(
@@ -1051,21 +1214,28 @@ def iter_gemini_stream_chunks(
                 tool_count_by_cand[cand_idx] = start_idx + len(tool_calls)
                 saw_tools_by_cand[cand_idx] = True
 
-            raw_finish = cand.get("finishReason")
-            if raw_finish:
+            # P1-11b: Normalize finishReason BEFORE adding to finished_candidates so blank
+            # or FINISH_REASON_UNSPECIFIED never marks a candidate terminal.
+            norm_finish = _normalize_gemini_finish_reason_raw(cand.get("finishReason"))
+            if norm_finish is not None:
                 finished_candidates.add(cand_idx)
             finish_reason = _map_gemini_finish_reason(
-                raw_finish,
+                norm_finish,
                 has_tool_calls=saw_tools_by_cand.get(cand_idx, False),
             )
-            if not (text_parts or reasoning_parts or tool_calls or (preserve_parts and ordered_parts) or finish_reason):
+            # P1-9: Preserve ordered provider_blocks per candidate in SSE even when an
+            # unsigned functionCall frame precedes a signed text frame.
+            emit_ordered_parts = bool(ordered_parts) and (
+                preserve_parts or bool(tool_calls) or saw_tools_by_cand.get(cand_idx, False)
+            )
+            if not (text_parts or reasoning_parts or tool_calls or emit_ordered_parts or finish_reason):
                 continue
             delta = NativeMessage(
                 role="assistant",
                 content="".join(text_parts) if text_parts else None,
                 tool_calls=tool_calls or None,
                 reasoning_content="\n".join(reasoning_parts) if reasoning_parts else None,
-                provider_blocks=ordered_parts if preserve_parts else None,
+                provider_blocks=ordered_parts if emit_ordered_parts else None,
             )
             choices.append(
                 NativeChoice(
@@ -1120,7 +1290,7 @@ def prepare_gemini_request(
         headers,
         kwargs,
         resolve_env_fn=resolve_env_reference,
-        skip_sensitive=skip_sensitive,
+        safe_allowlist_only=skip_sensitive,
     )
 
     query_keys = {k.lower() for k, _ in parse_qsl(urlsplit(url).query, keep_blank_values=True)}

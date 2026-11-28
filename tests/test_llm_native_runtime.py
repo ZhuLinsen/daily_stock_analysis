@@ -880,8 +880,15 @@ def test_litellm_vs_native_parity_harness_all_four_protocols() -> None:
             assert len(srv.requests) == 1, f"{name}: native made {len(srv.requests)} calls"
             nt_req = srv.requests[0]
 
-            # 1. Path & query parity
-            assert nt_req["path"].split("?")[0] == lt_req["path"].split("?")[0], f"{name}: path mismatch"
+            # 1. Path & non-auth query parity
+            from urllib.parse import parse_qsl, urlsplit
+
+            lt_split = urlsplit(lt_req["path"])
+            nt_split = urlsplit(nt_req["path"])
+            assert nt_split.path == lt_split.path, f"{name}: path mismatch"
+            lt_non_auth_q = [(k, v) for k, v in parse_qsl(lt_split.query) if k.lower() != "key"]
+            nt_non_auth_q = [(k, v) for k, v in parse_qsl(nt_split.query) if k.lower() != "key"]
+            assert nt_non_auth_q == lt_non_auth_q, f"{name}: query mismatch"
             # 2. Auth header value parity
             assert expected_auth_hdr in nt_req["headers"], f"{name}: native missing {expected_auth_hdr}"
             if expected_auth_hdr in lt_req["headers"]:
@@ -946,6 +953,13 @@ def test_litellm_vs_native_parity_harness_all_four_protocols() -> None:
         nt_tool_req = srv.requests[0]
         assert nt_tool_req["body"]["tools"] == lt_tool_req["body"]["tools"]
         assert nt_tool_resp.choices[0].message.content == lt_tool_resp.choices[0].message.content
+        assert nt_tool_resp.choices[0].finish_reason == lt_tool_resp.choices[0].finish_reason == "tool_calls"
+        nt_tcs = nt_tool_resp.choices[0].message.tool_calls
+        lt_tcs = lt_tool_resp.choices[0].message.tool_calls
+        assert len(nt_tcs) == len(lt_tcs) == 1
+        assert nt_tcs[0].id == lt_tcs[0].id == "call_p1"
+        assert nt_tcs[0].function.name == lt_tcs[0].function.name == "get_quote"
+        assert json.loads(nt_tcs[0].function.arguments) == json.loads(lt_tcs[0].function.arguments) == {"code": "600519"}
 
         # Streaming SSE parity
         srv.requests.clear()
@@ -1066,17 +1080,20 @@ def test_p0_2c_and_p1_4_origin_bound_caller_headers_and_per_deployment_clients_o
             api_base="https://origin-a.example/v1",
             extra_headers={
                 "Authorization": "Bearer sk-caller-origin-a-private",
-                "X-Trace-Id": "trace-123",
+                "X-Signature": "sig-origin-a-private",
+                "X-Request-Id": "req-safe-123",
             },
         )
         assert resp.choices[0].message.content == "from-b"
         assert [tag for tag, _ in seen] == ["client_a", "client_b"]
-        # Origin A got caller's origin-A private Authorization header
+        # Origin A got caller's origin-A private Authorization & X-Signature headers + safe X-Request-Id
         assert seen[0][1]["authorization"] == "Bearer sk-caller-origin-a-private"
-        assert seen[0][1]["x-trace-id"] == "trace-123"
-        # Origin B MUST NOT receive origin A's private Authorization header; uses its own sk-origin-b-key!
+        assert seen[0][1]["x-signature"] == "sig-origin-a-private"
+        assert seen[0][1]["x-request-id"] == "req-safe-123"
+        # Origin B MUST NOT receive origin A's private Authorization or X-Signature; only allowlisted headers cross!
         assert seen[1][1]["authorization"] == "Bearer sk-origin-b-key"
-        assert seen[1][1]["x-trace-id"] == "trace-123"
+        assert "x-signature" not in seen[1][1]
+        assert seen[1][1]["x-request-id"] == "req-safe-123"
     finally:
         client_a.close()
         client_b.close()
@@ -1420,6 +1437,616 @@ def test_p1_13_and_p1_14_audit_transport_label_and_pricing_sync(
                 audit_context={"transport": "claude_code", "analysis_mode": "stock_analysis"},
             )
             assert usage_cli["transport"] == "claude_code"
+    finally:
+        Config.reset_instance()
+
+
+def test_round2_p0_2_cooldown_origin_failover_and_p0_3_client_redirect_guards() -> None:
+    """Round 2 P0-2 & P0-3: Cooling origin B wakes up without leaking caller secrets/headers; follow_redirects=False enforced; mismatched dep_client & originless caller_http guarded."""
+    # 1. P0-2: Origin B is cooling at peek time, wakes up during failover after A returns 503.
+    # Caller's Authorization, X-Signature, and fallback api_key MUST NOT reach origin B!
+    now_box = [100.0]
+    seen_reqs: List[Tuple[str, Dict[str, str]]] = []
+
+    def _cooldown_handler(request: httpx.Request) -> httpx.Response:
+        seen_reqs.append((str(request.url), dict(request.headers)))
+        if "origin-a.example" in str(request.url):
+            now_box[0] += 5.0  # Advance past origin B's cooldown before attempt 2!
+            return httpx.Response(503, json={"error": {"message": "origin A down"}})
+        return httpx.Response(
+            200,
+            json={
+                "id": "c-b",
+                "model": "gpt-4o",
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": "origin-b-ok"}, "finish_reason": "stop"}],
+            },
+        )
+
+    router = NativeUnifiedRouter(
+        model_list=[
+            {
+                "model_name": "openai/gpt-4o",
+                "litellm_params": {"model": "openai/gpt-4o", "api_base": "https://origin-a.example/v1", "api_key": "sk-a"},
+                "model_info": {"priority": 0},
+            },
+            {
+                "model_name": "openai/gpt-4o",
+                "litellm_params": {"model": "openai/gpt-4o", "api_base": "https://origin-b.example/v1"},
+                "model_info": {"priority": 1},
+            },
+        ],
+        http_transport=httpx.MockTransport(_cooldown_handler),
+        num_retries=1,
+        clock=lambda: now_box[0],
+        sleep_fn=lambda _s: None,
+    )
+    dep_b = [d for d in router._pool.get_alias_deployments("openai/gpt-4o") if "origin-b" in d.api_base][0]
+    router._pool.mark_failure(dep_b.deployment_id, status_code=429, retry_after=2.0)
+
+    resp = router.completion(
+        model="openai/gpt-4o",
+        messages=[{"role": "user", "content": "hi"}],
+        api_key="sk-caller-secret-must-not-leak",
+        extra_headers={
+            "Authorization": "Bearer sk-caller-hdr-secret",
+            "X-Signature": "private-hmac-sig",
+            "X-Request-Id": "safe-req-id-99",
+        },
+    )
+    assert resp.choices[0].message.content == "origin-b-ok"
+    assert len(seen_reqs) == 2
+    assert "origin-b.example" in seen_reqs[1][0]
+    assert "authorization" not in seen_reqs[1][1]
+    assert "x-signature" not in seen_reqs[1][1]
+    assert seen_reqs[1][1]["x-request-id"] == "safe-req-id-99"
+
+    # 2. P0-3a: Injected client with follow_redirects=True MUST NOT follow 302 cross-origin redirect!
+    redirect_hosts: List[str] = []
+
+    def _redir_handler(request: httpx.Request) -> httpx.Response:
+        redirect_hosts.append(request.url.host)
+        if request.url.host == "relay.example":
+            return httpx.Response(302, headers={"Location": "https://evil.example/steal"})
+        raise AssertionError("Must NEVER follow 302 redirect to evil.example")
+
+    redir_client = httpx.Client(transport=httpx.MockTransport(_redir_handler), follow_redirects=True)
+    try:
+        tr = NativeUnifiedTransport()
+        for is_stream in (False, True):
+            redirect_hosts.clear()
+            with pytest.raises(NativeAPIError):
+                tr.completion(
+                    model="openai/gpt-4o",
+                    api_base="https://relay.example/v1",
+                    api_key="sk-secret-redir",
+                    messages=[{"role": "user", "content": "hi"}],
+                    client=redir_client,
+                    stream=is_stream,
+                )
+            assert redirect_hosts == ["relay.example"]
+    finally:
+        redir_client.close()
+
+    # 3. P0-3b & P0-3c: Mismatched dep_client origin is ignored; originless caller_http does not override multi-origin dep_clients
+    mismatched_client = httpx.Client(
+        base_url="https://wrong-origin.example/v1",
+        transport=httpx.MockTransport(lambda _r: (_ for _ in ()).throw(AssertionError("mismatched dep_client must not be used"))),
+    )
+    dep_a_hits: List[str] = []
+    dep_b_hits: List[str] = []
+    dep_a_client = httpx.Client(
+        base_url="https://origin-a.example/v1",
+        transport=httpx.MockTransport(
+            lambda r: (dep_a_hits.append(str(r.url)), httpx.Response(503, json={"error": {"message": "busy"}}))[1]
+        ),
+    )
+    dep_b_client = httpx.Client(
+        base_url="https://origin-b.example/v1",
+        transport=httpx.MockTransport(
+            lambda r: (
+                dep_b_hits.append(str(r.url)),
+                httpx.Response(200, json={"id": "ok", "model": "gpt-4o", "choices": [{"index": 0, "message": {"role": "assistant", "content": "dep-b"}, "finish_reason": "stop"}]}),
+            )[1]
+        ),
+    )
+    originless_caller = httpx.Client(
+        transport=httpx.MockTransport(lambda _r: (_ for _ in ()).throw(AssertionError("originless caller_http must not override multi-origin dep_clients")))
+    )
+    try:
+        r_mismatch = NativeUnifiedRouter(
+            model_list=[
+                {
+                    "model_name": "openai/gpt-4o",
+                    "litellm_params": {"model": "openai/gpt-4o", "api_base": "https://origin-a.example/v1", "api_key": "sk-a", "client": mismatched_client},
+                }
+            ]
+        )
+        assert not r_mismatch._deployment_clients
+
+        r_multi = NativeUnifiedRouter(
+            model_list=[
+                {
+                    "model_name": "openai/gpt-4o",
+                    "litellm_params": {"model": "openai/gpt-4o", "api_base": "https://origin-a.example/v1", "api_key": "sk-a", "client": dep_a_client},
+                    "model_info": {"priority": 0},
+                },
+                {
+                    "model_name": "openai/gpt-4o",
+                    "litellm_params": {"model": "openai/gpt-4o", "api_base": "https://origin-b.example/v1", "api_key": "sk-b", "client": dep_b_client},
+                    "model_info": {"priority": 1},
+                },
+            ],
+            num_retries=1,
+            sleep_fn=lambda _s: None,
+        )
+        out = r_multi.completion(
+            model="openai/gpt-4o",
+            messages=[{"role": "user", "content": "hi"}],
+            client=originless_caller,
+        )
+        assert out.choices[0].message.content == "dep-b"
+        assert len(dep_a_hits) == 1 and len(dep_b_hits) == 1
+    finally:
+        mismatched_client.close()
+        dep_a_client.close()
+        dep_b_client.close()
+        originless_caller.close()
+
+
+def test_round2_p1_1_p1_2_stream_close_retry_race_and_close_aware_base_transport() -> None:
+    """Round 2 P1-1 & P1-2: close() racing with pre-chunk retry releases replacement ctx; close-aware BaseTransport survives retries."""
+    from src.llm.native_engine import NativeStreamWrapper
+
+    # 1. P1-1: NativeStreamWrapper.close() races with _on_pre_chunk_retry opening a replacement connection
+    retry_started = threading.Event()
+    allow_retry_return = threading.Event()
+    replacement_closed = threading.Event()
+
+    class _TrackedCtx:
+        def __init__(self, on_close: Optional[Callable[[], None]] = None) -> None:
+            self.closed = False
+            self._on_close = on_close
+
+        def __exit__(self, *_args: Any) -> None:
+            self.closed = True
+            if self._on_close is not None:
+                self._on_close()
+
+    init_ctx = _TrackedCtx()
+    repl_ctx = _TrackedCtx(on_close=replacement_closed.set)
+    spec = DeploymentSpec(alias="openai/gpt-4o", wire_model="gpt-4o", protocol="openai_chat", provider="openai")
+
+    def _failing_iter(_entry: Any, _chunks: Any, _secrets: Any, _cancel: Any) -> Any:
+        raise NativeConnectionError("pre-chunk drop", provider="openai")
+        yield  # pragma: no cover
+
+    def _slow_retry(_exc: Exception, _dep_id: str) -> Tuple[Any, Optional[Exception]]:
+        retry_started.set()
+        allow_retry_return.wait(timeout=5.0)
+        return (spec, repl_ctx, None, iter([]), None, []), None
+
+    wrapper = NativeStreamWrapper(
+        entry=spec,
+        ctx=init_ctx,
+        resp=None,  # type: ignore[arg-type]
+        byte_iter=iter([]),
+        shared_transport_client=None,
+        pooled_lease=None,
+        pool=None,
+        using_pool=False,
+        iter_stream_fn=_failing_iter,
+        secrets=[],
+        deadline=None,
+        clock=time.monotonic,
+        cancel_check=None,
+        on_pre_chunk_retry=_slow_retry,
+    )
+
+    def _consume() -> None:
+        list(wrapper)
+
+    t = threading.Thread(target=_consume)
+    t.start()
+    assert retry_started.wait(timeout=5.0)
+    wrapper.close()
+    allow_retry_return.set()
+    t.join(timeout=5.0)
+    assert init_ctx.closed is True
+    assert repl_ctx.closed is True
+    assert replacement_closed.is_set()
+
+    # 2. P1-2: Close-aware BaseTransport MUST stay open across retries and close ONCE when call ends
+    class _CloseAwareTransport(httpx.BaseTransport):
+        def __init__(self, *, stream_mode: bool) -> None:
+            self.stream_mode = stream_mode
+            self.calls = 0
+            self.close_count = 0
+            self.is_closed = False
+
+        def handle_request(self, request: httpx.Request) -> httpx.Response:
+            del request
+            if self.is_closed:
+                raise RuntimeError("Injected BaseTransport was prematurely closed before retry!")
+            self.calls += 1
+            if self.calls == 1:
+                return httpx.Response(503, json={"error": {"message": "transient 503"}})
+            if self.stream_mode:
+                return httpx.Response(
+                    200,
+                    headers={"Content-Type": "text/event-stream"},
+                    content=(
+                        b'data: {"id":"s2","model":"gpt-4o","choices":[{"index":0,"delta":{"content":"retry-stream-ok"},"finish_reason":"stop"}]}\n\n'
+                        b"data: [DONE]\n\n"
+                    ),
+                )
+            return httpx.Response(
+                200,
+                json={"id": "c2", "model": "gpt-4o", "choices": [{"index": 0, "message": {"role": "assistant", "content": "retry-ok"}, "finish_reason": "stop"}]},
+            )
+
+        def close(self) -> None:
+            self.is_closed = True
+            self.close_count += 1
+
+    t_non_stream = _CloseAwareTransport(stream_mode=False)
+    r_non_stream = NativeUnifiedRouter(
+        model_list=[{"model_name": "openai/gpt-4o", "litellm_params": {"model": "openai/gpt-4o", "api_base": "https://relay.example/v1", "api_key": "sk-1"}}],
+        http_transport=t_non_stream,
+        num_retries=1,
+        sleep_fn=lambda _s: None,
+    )
+    res_ns = r_non_stream.completion(model="openai/gpt-4o", messages=[{"role": "user", "content": "hi"}])
+    assert res_ns.choices[0].message.content == "retry-ok"
+    assert t_non_stream.calls == 2
+    assert t_non_stream.close_count == 1
+
+    t_stream = _CloseAwareTransport(stream_mode=True)
+    r_stream = NativeUnifiedRouter(
+        model_list=[{"model_name": "openai/gpt-4o", "litellm_params": {"model": "openai/gpt-4o", "api_base": "https://relay.example/v1", "api_key": "sk-1"}}],
+        http_transport=t_stream,
+        num_retries=1,
+        sleep_fn=lambda _s: None,
+    )
+    st = r_stream.completion(model="openai/gpt-4o", messages=[{"role": "user", "content": "hi"}], stream=True)
+    assert "".join(c.choices[0].delta.content or "" for c in st) == "retry-stream-ok"
+    assert t_stream.calls == 2
+    assert t_stream.close_count == 1
+
+
+def test_round2_p1_3_p1_4_p1_7c_bom_json_waf_403_exact_64k_text_plain_and_pct_secret() -> None:
+    """Round 2 P1-3, P1-4, P1-7c: BOM JSON, HTML 403 w/ JSON MIME, exact 64 KiB error stop, text/plain JSON error, preamble timeout retry, percent-encoded query secret."""
+    # 1. P1-3a: Valid BOM-prefixed JSON succeeds
+    bom_payload = b'\xef\xbb\xbf{"id":"bom1","model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":"bom-ok"},"finish_reason":"stop"}]}'
+    tr_bom = NativeUnifiedTransport(
+        http_transport=httpx.MockTransport(
+            lambda _r: httpx.Response(200, headers={"Content-Type": "application/json"}, content=bom_payload)
+        )
+    )
+    assert tr_bom.completion(
+        model="openai/gpt-4o",
+        api_base="https://relay.example/v1",
+        api_key="sk-1",
+        messages=[{"role": "user", "content": "hi"}],
+    ).choices[0].message.content == "bom-ok"
+
+    # 2. P1-3b: HTTP 403 WAF HTML mislabeled as application/json -> NativeProviderBlockedError (NOT NativeAuthenticationError!)
+    tr_waf = NativeUnifiedTransport(
+        http_transport=httpx.MockTransport(
+            lambda _r: httpx.Response(
+                403,
+                headers={"Content-Type": "application/json"},
+                content=b"<!DOCTYPE html><html><body>Just a moment... Cloudflare</body></html>",
+            )
+        )
+    )
+    with pytest.raises(NativeProviderBlockedError):
+        tr_waf.completion(
+            model="openai/gpt-4o",
+            api_base="https://relay.example/v1",
+            api_key="sk-1",
+            messages=[{"role": "user", "content": "hi"}],
+        )
+
+    # 3. P1-4a: Exact 65,536-byte error body stops immediately without reading trailing blocking chunk!
+    class _Exact64KStream(httpx.SyncByteStream):
+        def __iter__(self):
+            yield b"E" * 65536
+            raise httpx.ReadTimeout("Should NOT read past max_bytes=65536!")
+
+    tr_64k = NativeUnifiedTransport(
+        http_transport=httpx.MockTransport(
+            lambda _r: httpx.Response(500, headers={"Content-Type": "text/plain"}, stream=_Exact64KStream())
+        )
+    )
+    with pytest.raises(NativeAPIError) as exc_64k:
+        tr_64k.completion(
+            model="openai/gpt-4o",
+            api_base="https://relay.example/v1",
+            api_key="sk-1",
+            messages=[{"role": "user", "content": "hi"}],
+        )
+    assert exc_64k.value.status_code == 500
+
+    # 4. P1-4b: HTTP 200 text/plain JSON error classified cleanly as NativeRateLimitError
+    tr_plain = NativeUnifiedTransport(
+        http_transport=httpx.MockTransport(
+            lambda _r: httpx.Response(
+                200,
+                headers={"Content-Type": "text/plain"},
+                content=b'{"error":{"code":429,"message":"rate limited over text/plain","type":"rate_limit_error"}}',
+            )
+        )
+    )
+    with pytest.raises(NativeRateLimitError):
+        tr_plain.completion(
+            model="openai/gpt-4o",
+            api_base="https://relay.example/v1",
+            api_key="sk-1",
+            messages=[{"role": "user", "content": "hi"}],
+            stream=True,
+        )
+
+    # 5. P1-4b: Timeout during stream-open HTML preamble read is retried cleanly on attempt 2!
+    preamble_attempts = [0]
+
+    class _TimeoutPreambleStream(httpx.SyncByteStream):
+        def __iter__(self):
+            raise httpx.ReadTimeout("stalled HTML preamble")
+            yield b""  # pragma: no cover
+
+    def _preamble_handler(_r: httpx.Request) -> httpx.Response:
+        preamble_attempts[0] += 1
+        if preamble_attempts[0] == 1:
+            return httpx.Response(200, headers={"Content-Type": "text/html"}, stream=_TimeoutPreambleStream())
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "text/event-stream"},
+            content=(
+                b'data: {"id":"p2","model":"gpt-4o","choices":[{"index":0,"delta":{"content":"recovered"},"finish_reason":"stop"}]}\n\n'
+                b"data: [DONE]\n\n"
+            ),
+        )
+
+    r_preamble = NativeUnifiedRouter(
+        model_list=[{"model_name": "openai/gpt-4o", "litellm_params": {"model": "openai/gpt-4o", "api_base": "https://relay.example/v1", "api_key": "sk-1"}}],
+        http_transport=httpx.MockTransport(_preamble_handler),
+        num_retries=1,
+        sleep_fn=lambda _s: None,
+    )
+    st_pre = r_preamble.completion(model="openai/gpt-4o", messages=[{"role": "user", "content": "hi"}], stream=True)
+    assert "".join(c.choices[0].delta.content or "" for c in st_pre) == "recovered"
+    assert preamble_attempts[0] == 2
+
+    # 6. P1-7c: Percent-encoded query key (?api%5Fkey=...) redacts BOTH raw and decoded secret values!
+    raw_secret = "my%2Bsecret%2Ftoken99"
+    decoded_secret = "my+secret/token99"
+    tr_pct = NativeUnifiedTransport(
+        http_transport=httpx.MockTransport(
+            lambda _r: httpx.Response(
+                400,
+                json={"error": {"message": f"bad raw={raw_secret} decoded={decoded_secret}"}},
+            )
+        )
+    )
+    with pytest.raises(NativeBadRequestError) as exc_pct:
+        tr_pct.completion(
+            model="gemini/gemini-2.5-flash",
+            api_base=f"https://proxy.example/v1beta?api%5Fkey={raw_secret}",
+            messages=[{"role": "user", "content": "hi"}],
+        )
+    assert raw_secret not in str(exc_pct.value)
+    assert decoded_secret not in str(exc_pct.value)
+    assert raw_secret not in str(exc_pct.value.body)
+    assert decoded_secret not in str(exc_pct.value.body)
+
+
+def test_round2_p1_6a_p1_7a_p1_8_p1_10_p2_recovery_ranker_proxy_and_system_config(
+    tmp_path: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Round 2 P1-6a, P1-7a, P1-8, P1-10, P2: non-native recovery no-op, YAML max_tokens recovery, tuple/httpx Timeout deadline, ranker response_format suppression, proxy key, SystemConfigService error classification."""
+    from types import SimpleNamespace
+    from src.llm.errors import call_litellm_with_param_recovery
+    from src.llm.native_engine import _current_proxy_env_key
+    from src.llm.transport import LiteLLMTransport, use_transport
+    from src.services.screening import ranker
+
+    # 1. P1-6a: LiteLLMTransport.create_router strips _dsa_* and dsa_channel_protocol
+    captured_ml: List[Dict[str, Any]] = []
+
+    class _CaptureLitellmRouter:
+        def __init__(self, model_list: List[Dict[str, Any]], **_kw: Any) -> None:
+            captured_ml.extend(model_list)
+
+    lt = LiteLLMTransport()
+    monkeypatch.setattr(lt, "_load_litellm", lambda: SimpleNamespace(Router=_CaptureLitellmRouter))
+    lt.create_router(
+        [
+            {
+                "model_name": "openai/gpt-4o",
+                "litellm_params": {
+                    "model": "openai/gpt-4o",
+                    "api_key": "sk-1",
+                    "dsa_channel_protocol": "openai",
+                    "_dsa_internal": True,
+                },
+            }
+        ]
+    )
+    assert "dsa_channel_protocol" not in captured_ml[0]["litellm_params"]
+    assert "_dsa_internal" not in captured_ml[0]["litellm_params"]
+
+    # 2. P1-6a: Non-native RuntimeError does NOT retry when only native-only _dsa_* keys changed
+    non_native_calls = [0]
+
+    def _non_native_400(_kw: Dict[str, Any]) -> str:
+        non_native_calls[0] += 1
+        raise RuntimeError("Unsupported parameter: 'max_completion_tokens'. Use 'max_tokens' instead.")
+
+    with pytest.raises(RuntimeError, match="max_completion_tokens"):
+        call_litellm_with_param_recovery(
+            _non_native_400,
+            model="openai/gpt-5",
+            call_kwargs={"model": "openai/gpt-5", "messages": [], "max_tokens": 64},
+            cache_recovery=False,
+        )
+    assert non_native_calls[0] == 1
+
+    # 3. P1-8: Deployment YAML max_tokens (NOT in caller kwargs) still recovers with _dsa_force_max_tokens=True on native 400!
+    yaml_bodies: List[Dict[str, Any]] = []
+
+    def _yaml_max_handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8"))
+        yaml_bodies.append(body)
+        if "max_completion_tokens" in body:
+            return httpx.Response(400, json={"error": {"message": "Unsupported parameter: 'max_completion_tokens'. Use 'max_tokens'."}})
+        return httpx.Response(200, json={"id": "c1", "model": "gpt-5", "choices": [{"index": 0, "message": {"role": "assistant", "content": "yaml-recovered"}, "finish_reason": "stop"}]})
+
+    r_yaml_max = NativeUnifiedRouter(
+        model_list=[
+            {
+                "model_name": "openai/gpt-5",
+                "litellm_params": {"model": "openai/gpt-5", "api_base": "https://relay.example/v1", "api_key": "sk-1", "max_tokens": 256},
+            }
+        ],
+        http_transport=httpx.MockTransport(_yaml_max_handler),
+    )
+    out_ymax = call_litellm_with_param_recovery(
+        lambda kw: r_yaml_max.completion(**kw),
+        model="openai/gpt-5",
+        call_kwargs={"model": "openai/gpt-5", "messages": [{"role": "user", "content": "hi"}]},
+        cache_recovery=False,
+    )
+    assert out_ymax.choices[0].message.content == "yaml-recovered"
+    assert "max_completion_tokens" in yaml_bodies[0]
+    assert yaml_bodies[1]["max_tokens"] == 256 and "max_completion_tokens" not in yaml_bodies[1]
+
+    # 4. P1-8: Tuple and httpx.Timeout preserve one monotonic deadline inside call_litellm_with_param_recovery
+    for raw_t, initial_budget in (((0.5, 1.0), 1.0), (httpx.Timeout(1.0), 1.0)):
+        seen_t: List[Any] = []
+
+        def _slow_rec(kw: Dict[str, Any]) -> str:
+            seen_t.append(kw["timeout"])
+            if len(seen_t) == 1:
+                time.sleep(0.08)
+                raise RuntimeError("Unsupported parameter: temperature is not supported")
+            return "ok"
+
+        assert call_litellm_with_param_recovery(
+            _slow_rec,
+            model="openai/gpt-4o",
+            call_kwargs={"model": "openai/gpt-4o", "messages": [], "temperature": 0.5, "timeout": raw_t},
+            cache_recovery=False,
+        ) == "ok"
+        assert len(seen_t) == 2
+        assert seen_t[0] == raw_t
+        assert isinstance(seen_t[1], float) and seen_t[1] < initial_budget - 0.03
+
+    # 5. P1-10: Ranker JSON-mode fallback retry suppresses inherited deployment YAML response_format!
+    ranker_yaml = tmp_path / "ranker_rf.yaml"
+    ranker_yaml.write_text(
+        json.dumps(
+            {
+                "model_list": [
+                    {
+                        "model_name": "openai/rank-rf",
+                        "litellm_params": {
+                            "model": "openai/rank-rf",
+                            "api_base": "https://relay.example/v1",
+                            "api_key": "sk-rank",
+                            "response_format": {"type": "json_object"},
+                        },
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    ranker_bodies: List[Dict[str, Any]] = []
+
+    def _ranker_rf_handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8"))
+        ranker_bodies.append(body)
+        if "response_format" in body:
+            return httpx.Response(400, json={"error": {"message": "response_format is not supported by this model"}})
+        return httpx.Response(200, json={"id": "rk", "model": "rank-rf", "choices": [{"index": 0, "message": {"role": "assistant", "content": '{"ranked":[]}'}, "finish_reason": "stop"}]})
+
+    with use_transport(NativeUnifiedTransport(http_transport=httpx.MockTransport(_ranker_rf_handler))):
+        out_rk = ranker._call_litellm_router(
+            config_path=str(ranker_yaml),
+            model_chain=["openai/rank-rf"],
+            messages=[{"role": "user", "content": "rank"}],
+            temperature=0.1,
+            json_mode=True,
+            timeout_sec=10.0,
+        )
+    assert out_rk == '{"ranked":[]}'
+    assert len(ranker_bodies) == 2
+    assert "response_format" in ranker_bodies[0]
+    assert "response_format" not in ranker_bodies[1]
+
+    # 6. P2: SystemConfigService classifies NativeConfigError BEFORE substring quota/timeout checks
+    svc = SystemConfigService()
+    assert svc._classify_llm_exception(NativeConfigError("quota config missing api_base")).error_code == "config_error"
+    assert svc._classify_llm_exception(NativeConfigError("timeout config invalid")).error_code == "config_error"
+
+    # 7. P2: Pooled client proxy key distinguishes ALL_PROXY vs all_proxy
+    monkeypatch.setenv("ALL_PROXY", "http://upper.proxy:8080")
+    monkeypatch.delenv("all_proxy", raising=False)
+    k1 = _current_proxy_env_key()
+    monkeypatch.setenv("all_proxy", "http://lower.proxy:8080")
+    k2 = _current_proxy_env_key()
+    assert k1 != k2
+
+    # 8. P1-7a: Analyzer CLI -> HTTP fallback overrides CLI-seeded transport in audit_context
+    for k in list(os.environ.keys()):
+        if k.startswith(("LLM_", "LITELLM_", "OPENAI_", "GEMINI_", "ANTHROPIC_", "DEEPSEEK_")):
+            monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("LLM_TRANSPORT_MODE", "native")
+    monkeypatch.setenv("LLM_CHANNELS", "relay")
+    monkeypatch.setenv("LLM_RELAY_PROTOCOL", "openai")
+    monkeypatch.setenv("LLM_RELAY_BASE_URL", "https://relay.example/v1")
+    monkeypatch.setenv("LLM_RELAY_API_KEY", "sk-fb-1234")
+    monkeypatch.setenv("LLM_RELAY_MODELS", "gpt-4o")
+    monkeypatch.setenv("LITELLM_MODEL", "openai/gpt-4o")
+    Config.reset_instance()
+    try:
+        def _ok_fb(_r: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"id": "fb", "model": "gpt-4o", "choices": [{"index": 0, "message": {"role": "assistant", "content": "OK"}, "finish_reason": "stop"}]})
+
+        with use_transport(NativeUnifiedTransport(http_transport=httpx.MockTransport(_ok_fb))):
+            from src.llm.backend_registry import CLAUDE_CODE_CLI_BACKEND_ID, LITELLM_BACKEND_ID
+            from src.llm.generation_backend import GenerationError, GenerationErrorCode
+
+            analyzer = GeminiAnalyzer()
+            orig_get_backend = analyzer._get_generation_backend
+
+            class _FailingCliBackend:
+                def generate(self, *_a: Any, **_kw: Any) -> Any:
+                    raise GenerationError(
+                        error_code=GenerationErrorCode.UNKNOWN_BACKEND_ERROR,
+                        stage="generate",
+                        retryable=False,
+                        fallbackable=True,
+                        backend=CLAUDE_CODE_CLI_BACKEND_ID,
+                        provider=CLAUDE_CODE_CLI_BACKEND_ID,
+                    )
+
+            audit_ctx: Dict[str, Any] = {"transport": CLAUDE_CODE_CLI_BACKEND_ID, "analysis_mode": "stock_analysis"}
+            monkeypatch.setattr(analyzer, "get_generation_backend_config_error", lambda: None)
+            monkeypatch.setattr(
+                analyzer,
+                "_resolve_generation_backend_config",
+                lambda: (CLAUDE_CODE_CLI_BACKEND_ID, LITELLM_BACKEND_ID),
+            )
+            monkeypatch.setattr(
+                analyzer,
+                "_get_generation_backend",
+                lambda bid=None: _FailingCliBackend() if bid == CLAUDE_CODE_CLI_BACKEND_ID else orig_get_backend(bid),
+            )
+            _txt, _m, usage = analyzer._call_litellm("Say OK", {"max_tokens": 16}, audit_context=audit_ctx)
+            assert usage["transport"] == "native"
+            assert audit_ctx["transport"] == CLAUDE_CODE_CLI_BACKEND_ID
     finally:
         Config.reset_instance()
 
