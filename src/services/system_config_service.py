@@ -12,7 +12,7 @@ import shutil
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 from urllib.parse import urlparse, urlunparse
 
 import requests
@@ -85,6 +85,7 @@ from src.llm.backend_registry import (
 from src.llm.generation_params import apply_litellm_generation_params
 from src.llm.local_cli_backend import resolve_local_cli_preset
 from src.llm.response_content import strip_leading_think_wrapper
+from src.llm.transport import dispatch_completion, reset_transport_cache
 from src.notification_contracts import (
     FEISHU_APP_BOT_ENV_GROUP,
     FEISHU_WEBHOOK_ENV_GROUP,
@@ -376,6 +377,7 @@ class SystemConfigService:
         reset_tool_registry()
         reset_fetcher_manager()
         reset_search_service()
+        reset_transport_cache()
 
     @classmethod
     def _normalize_display_value(cls, key: str, value: str) -> str:
@@ -1291,12 +1293,19 @@ class SystemConfigService:
         timeout_seconds: float = 20.0,
         capability_checks: Sequence[str] = (),
         use_saved_secret: bool = False,
+        extra_headers: Optional[Mapping[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Run a minimal completion call against one channel definition."""
         requested_capabilities = self._normalize_llm_capability_checks(capability_checks)
         raw_models = [str(model).strip() for model in models if str(model).strip()]
         channel_name = name.strip() or "channel"
         base_url = resolve_llm_channel_base_url(channel_name, base_url)
+        normalized_extra_headers: Dict[str, str] = {}
+        if isinstance(extra_headers, Mapping):
+            for header_key, header_val in extra_headers.items():
+                key_text = str(header_key).strip()
+                if key_text and header_val is not None:
+                    normalized_extra_headers[key_text] = str(header_val)
         if not raw_models and channel_name.lower() == "modelflare":
             effective_map = self._build_generation_backend_base_map()
             raw_models = resolve_llm_channel_models(
@@ -1314,6 +1323,16 @@ class SystemConfigService:
             use_saved_secret=use_saved_secret,
             stage=generation_stage,
         )
+        for header_key, header_val in normalized_extra_headers.items():
+            if header_key.lower() in {
+                "authorization",
+                "proxy-authorization",
+                "x-api-key",
+                "api-key",
+                "x-goog-api-key",
+                "cookie",
+            }:
+                redaction_values.update(self._build_redaction_values(header_val))
         if resolved_secret is None:
             result = secret_error
             if requested_capabilities and "capability_results" not in result:
@@ -1409,16 +1428,27 @@ class SystemConfigService:
         selected_api_key = api_keys[0] if api_keys else ""
         redaction_values.update(self._build_redaction_values(selected_api_key))
 
+        effective_api_surface = (
+            resolved_api_surface
+            if resolved_protocol == "openai"
+            or resolved_api_surface == "responses"
+            or wire_model.startswith("openai/")
+            else None
+        )
         call_kwargs: Dict[str, Any] = {
             "model": wire_model,
             "messages": [{"role": "user", "content": "Reply with OK"}],
             "max_tokens": 256,  # Increased to allow MiniMax-M3 thinking process + response
             "timeout": max(5.0, float(timeout_seconds)),
         }
+        if effective_api_surface:
+            call_kwargs["api_surface"] = effective_api_surface
         if selected_api_key:
             call_kwargs["api_key"] = selected_api_key
         if base_url.strip():
             call_kwargs["api_base"] = base_url.strip()
+        if normalized_extra_headers:
+            call_kwargs["extra_headers"] = dict(normalized_extra_headers)
         call_kwargs = apply_litellm_generation_params(
             call_kwargs,
             wire_model,
@@ -1426,7 +1456,6 @@ class SystemConfigService:
         )
 
         try:
-            import litellm
             from src.agent.llm_adapter import (
                 resolve_fallback_litellm_wire_models,
                 register_fallback_model_pricing,
@@ -1456,7 +1485,7 @@ class SystemConfigService:
                     hermes_call_kwargs.pop("api_key", None)
                     hermes_call_kwargs.pop("api_base", None)
                     response = call_litellm_with_param_recovery(
-                        lambda kwargs: litellm.completion(**kwargs),
+                        lambda kwargs: dispatch_completion(**kwargs),
                         model=wire_model,
                         call_kwargs=hermes_call_kwargs,
                         logger=logger,
@@ -1464,7 +1493,7 @@ class SystemConfigService:
                     )
             else:
                 response = call_litellm_with_param_recovery(
-                    lambda kwargs: litellm.completion(**kwargs),
+                    lambda kwargs: dispatch_completion(**kwargs),
                     model=wire_model,
                     call_kwargs=call_kwargs,
                     logger=logger,
@@ -1502,22 +1531,26 @@ class SystemConfigService:
             capability_results: Dict[str, Any] = {}
             if requested_capabilities and is_reserved_hermes_name(channel_name):
                 capability_results = self._run_hermes_capability_checks(
-                    litellm_module=litellm,
+                    litellm_module=None,
                     resolved_model=resolved_model,
                     selected_api_key=selected_api_key,
                     base_url=base_url,
                     timeout_seconds=timeout_seconds,
                     capability_checks=requested_capabilities,
                     redaction_values=redaction_values,
+                    api_surface=effective_api_surface,
+                    extra_headers=normalized_extra_headers or None,
                 )
             elif requested_capabilities:
                 capability_results = self._run_llm_capability_checks(
-                    litellm_module=litellm,
+                    litellm_module=None,
                     resolved_model=wire_model,
                     selected_api_key=selected_api_key,
                     base_url=base_url,
                     timeout_seconds=timeout_seconds,
                     capability_checks=requested_capabilities,
+                    api_surface=effective_api_surface,
+                    extra_headers=normalized_extra_headers or None,
                 )
             return self._build_llm_channel_result(
                 success=True,
@@ -1593,13 +1626,15 @@ class SystemConfigService:
     def _run_hermes_capability_checks(
         cls,
         *,
-        litellm_module: Any,
+        litellm_module: Any = None,
         resolved_model: str,
         selected_api_key: str,
         base_url: str,
         timeout_seconds: float,
         capability_checks: Sequence[str],
         redaction_values: Optional[Set[str]] = None,
+        api_surface: Optional[str] = None,
+        extra_headers: Optional[Mapping[str, str]] = None,
     ) -> Dict[str, Dict[str, Any]]:
         results: Dict[str, Dict[str, Any]] = {}
         for capability in capability_checks:
@@ -1629,10 +1664,12 @@ class SystemConfigService:
                         messages=[{"role": "user", "content": 'Return exactly this JSON object: {"status":"ok"}'}],
                         max_tokens=64,
                         extra={"response_format": {"type": "json_object"}, "client": client},
+                        api_surface=api_surface,
+                        extra_headers=extra_headers,
                     )
                     call_kwargs.pop("api_key", None)
                     call_kwargs.pop("api_base", None)
-                    response = litellm_module.completion(**call_kwargs)
+                    response = dispatch_completion(compat_proxy=litellm_module, **call_kwargs)
                     content, parse_error_code, parse_error, parse_reason = cls._extract_llm_completion_content(response)
                 latency_ms = int((time.perf_counter() - started_at) * 1000)
                 if parse_error_code:
@@ -1685,12 +1722,14 @@ class SystemConfigService:
     def _run_llm_capability_checks(
         cls,
         *,
-        litellm_module: Any,
+        litellm_module: Any = None,
         resolved_model: str,
         selected_api_key: str,
         base_url: str,
         timeout_seconds: float,
         capability_checks: Sequence[str],
+        api_surface: Optional[str] = None,
+        extra_headers: Optional[Mapping[str, str]] = None,
     ) -> Dict[str, Dict[str, Any]]:
         results: Dict[str, Dict[str, Any]] = {}
         for capability in capability_checks:
@@ -1701,6 +1740,8 @@ class SystemConfigService:
                     selected_api_key=selected_api_key,
                     base_url=base_url,
                     timeout_seconds=timeout_seconds,
+                    api_surface=api_surface,
+                    extra_headers=extra_headers,
                 )
             elif capability == "tools":
                 results[capability] = cls._run_tools_capability_check(
@@ -1709,6 +1750,8 @@ class SystemConfigService:
                     selected_api_key=selected_api_key,
                     base_url=base_url,
                     timeout_seconds=timeout_seconds,
+                    api_surface=api_surface,
+                    extra_headers=extra_headers,
                 )
             elif capability == "stream":
                 results[capability] = cls._run_stream_capability_check(
@@ -1717,6 +1760,8 @@ class SystemConfigService:
                     selected_api_key=selected_api_key,
                     base_url=base_url,
                     timeout_seconds=timeout_seconds,
+                    api_surface=api_surface,
+                    extra_headers=extra_headers,
                 )
             elif capability == "vision":
                 results[capability] = cls._run_vision_capability_check(
@@ -1725,6 +1770,8 @@ class SystemConfigService:
                     selected_api_key=selected_api_key,
                     base_url=base_url,
                     timeout_seconds=timeout_seconds,
+                    api_surface=api_surface,
+                    extra_headers=extra_headers,
                 )
         return results
 
@@ -1732,15 +1779,18 @@ class SystemConfigService:
     def _run_json_capability_check(
         cls,
         *,
-        litellm_module: Any,
+        litellm_module: Any = None,
         resolved_model: str,
         selected_api_key: str,
         base_url: str,
         timeout_seconds: float,
+        api_surface: Optional[str] = None,
+        extra_headers: Optional[Mapping[str, str]] = None,
     ) -> Dict[str, Any]:
         try:
             started_at = time.perf_counter()
-            response = litellm_module.completion(
+            response = dispatch_completion(
+                compat_proxy=litellm_module,
                 **cls._build_llm_capability_completion_kwargs(
                     resolved_model=resolved_model,
                     selected_api_key=selected_api_key,
@@ -1749,7 +1799,9 @@ class SystemConfigService:
                     messages=[{"role": "user", "content": 'Return exactly this JSON object: {"status":"ok"}'}],
                     max_tokens=64,
                     extra={"response_format": {"type": "json_object"}},
-                )
+                    api_surface=api_surface,
+                    extra_headers=extra_headers,
+                ),
             )
             latency_ms = int((time.perf_counter() - started_at) * 1000)
             content, parse_error_code, parse_error, parse_reason = cls._extract_llm_completion_content(response)
@@ -1800,11 +1852,13 @@ class SystemConfigService:
     def _run_tools_capability_check(
         cls,
         *,
-        litellm_module: Any,
+        litellm_module: Any = None,
         resolved_model: str,
         selected_api_key: str,
         base_url: str,
         timeout_seconds: float,
+        api_surface: Optional[str] = None,
+        extra_headers: Optional[Mapping[str, str]] = None,
     ) -> Dict[str, Any]:
         tools = [
             {
@@ -1822,7 +1876,8 @@ class SystemConfigService:
         ]
         try:
             started_at = time.perf_counter()
-            response = litellm_module.completion(
+            response = dispatch_completion(
+                compat_proxy=litellm_module,
                 **cls._build_llm_capability_completion_kwargs(
                     resolved_model=resolved_model,
                     selected_api_key=selected_api_key,
@@ -1834,7 +1889,9 @@ class SystemConfigService:
                         "tools": tools,
                         "tool_choice": {"type": "function", "function": {"name": "dsa_probe_echo"}},
                     },
-                )
+                    api_surface=api_surface,
+                    extra_headers=extra_headers,
+                ),
             )
             latency_ms = int((time.perf_counter() - started_at) * 1000)
             tool_names = cls._extract_llm_tool_call_names(response)
@@ -1863,16 +1920,19 @@ class SystemConfigService:
     def _run_stream_capability_check(
         cls,
         *,
-        litellm_module: Any,
+        litellm_module: Any = None,
         resolved_model: str,
         selected_api_key: str,
         base_url: str,
         timeout_seconds: float,
+        api_surface: Optional[str] = None,
+        extra_headers: Optional[Mapping[str, str]] = None,
     ) -> Dict[str, Any]:
         stream = None
         started_at = time.perf_counter()
         try:
-            stream = litellm_module.completion(
+            stream = dispatch_completion(
+                compat_proxy=litellm_module,
                 **cls._build_llm_capability_completion_kwargs(
                     resolved_model=resolved_model,
                     selected_api_key=selected_api_key,
@@ -1881,7 +1941,9 @@ class SystemConfigService:
                     messages=[{"role": "user", "content": "Reply with OK"}],
                     max_tokens=32,
                     extra={"stream": True},
-                )
+                    api_surface=api_surface,
+                    extra_headers=extra_headers,
+                ),
             )
             for index, chunk in enumerate(stream):
                 content = cls._extract_llm_stream_chunk_content(chunk)
@@ -1921,15 +1983,18 @@ class SystemConfigService:
     def _run_vision_capability_check(
         cls,
         *,
-        litellm_module: Any,
+        litellm_module: Any = None,
         resolved_model: str,
         selected_api_key: str,
         base_url: str,
         timeout_seconds: float,
+        api_surface: Optional[str] = None,
+        extra_headers: Optional[Mapping[str, str]] = None,
     ) -> Dict[str, Any]:
         try:
             started_at = time.perf_counter()
-            response = litellm_module.completion(
+            response = dispatch_completion(
+                compat_proxy=litellm_module,
                 **cls._build_llm_capability_completion_kwargs(
                     resolved_model=resolved_model,
                     selected_api_key=selected_api_key,
@@ -1945,7 +2010,9 @@ class SystemConfigService:
                         }
                     ],
                     max_tokens=32,
-                )
+                    api_surface=api_surface,
+                    extra_headers=extra_headers,
+                ),
             )
             latency_ms = int((time.perf_counter() - started_at) * 1000)
             content, parse_error_code, parse_error, parse_reason = cls._extract_llm_completion_content(response)
@@ -1981,6 +2048,8 @@ class SystemConfigService:
         messages: List[Dict[str, Any]],
         max_tokens: int,
         extra: Optional[Dict[str, Any]] = None,
+        api_surface: Optional[str] = None,
+        extra_headers: Optional[Mapping[str, str]] = None,
     ) -> Dict[str, Any]:
         try:
             timeout = float(timeout_seconds)
@@ -1996,6 +2065,10 @@ class SystemConfigService:
             call_kwargs["api_key"] = selected_api_key
         if base_url.strip():
             call_kwargs["api_base"] = base_url.strip()
+        if api_surface:
+            call_kwargs["api_surface"] = api_surface
+        if extra_headers:
+            call_kwargs["extra_headers"] = dict(extra_headers)
         if extra:
             call_kwargs.update(extra)
         call_kwargs = apply_litellm_generation_params(

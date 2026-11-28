@@ -18,9 +18,13 @@ import time
 from dataclasses import dataclass
 from typing import Optional, Dict, Any, List, Tuple, Callable, Union
 
-import litellm
 from json_repair import repair_json
-from litellm import Router
+
+from src.llm.transport import (
+    create_litellm_compat_proxy,
+    create_router,
+    dispatch_completion,
+)
 
 from src.agent.llm_adapter import (
     apply_thinking_extra_body_to_model_list,
@@ -112,6 +116,8 @@ from src.market_phase_prompt import format_market_phase_prompt_section
 from src.market_structure_prompt import format_market_structure_prompt_section
 
 logger = logging.getLogger(__name__)
+litellm = create_litellm_compat_proxy()
+Router = create_router
 
 
 def _describe_llm_result_model(
@@ -3181,10 +3187,11 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                     return
             prepared_router_model_list = apply_thinking_extra_body_to_model_list(router_model_list)
             try:
-                self._router = Router(
-                    model_list=prepared_router_model_list,
+                self._router = create_router(
+                    prepared_router_model_list,
                     routing_strategy="simple-shuffle",
                     num_retries=2,
+                    router_factory=Router if Router is not create_router else None,
                 )
             except TypeError:
                 logger.debug("Analyzer LLM: Router constructor signature not compatible; fallback to direct mode")
@@ -3229,10 +3236,11 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
             prepared_legacy_model_list = apply_thinking_extra_body_to_model_list(legacy_model_list)
             self._legacy_router_model_list = prepared_legacy_model_list
             try:
-                self._router = Router(
-                    model_list=prepared_legacy_model_list,
+                self._router = create_router(
+                    prepared_legacy_model_list,
                     routing_strategy="simple-shuffle",
                     num_retries=2,
+                    router_factory=Router if Router is not create_router else None,
                 )
             except TypeError:
                 logger.debug("Analyzer LLM: Legacy Router constructor signature not compatible; using legacy model_list fallback")
@@ -3475,21 +3483,21 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                 hermes_kwargs["extra_body"] = merged_hermes_extra
             with open_hermes_no_proxy_client(api_key=api_key, base_url=base_url, timeout=timeout) as client:
                 hermes_kwargs["client"] = client
-                return litellm.completion(**hermes_kwargs)
+                return dispatch_completion(compat_proxy=litellm, **hermes_kwargs)
 
         wire_models = resolve_fallback_litellm_wire_models(model, config.llm_model_list)
         register_fallback_model_pricing(wire_models)
         effective_kwargs = dict(call_kwargs)
         if use_channel_router and self._router and model in router_model_names:
-            return self._router.completion(**effective_kwargs)
+            return dispatch_completion(router=self._router, **effective_kwargs)
         if self._router and model == config.litellm_model and not use_channel_router:
-            return self._router.completion(**effective_kwargs)
+            return dispatch_completion(router=self._router, **effective_kwargs)
 
         keys = get_api_keys_for_model(model, config)
         if keys:
             effective_kwargs["api_key"] = keys[0]
         effective_kwargs.update(extra_litellm_params(model, config))
-        return litellm.completion(**effective_kwargs)
+        return dispatch_completion(compat_proxy=litellm, **effective_kwargs)
 
     def _normalize_usage(
         self,

@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import logging
-import math
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -22,6 +21,7 @@ from src.agent.provider_trace import (
     strip_trace_metadata,
     trace_model_matches,
 )
+from src.llm.transport import estimate_tokens, estimate_tokens_fallback
 from src.llm.usage import should_persist_usage_telemetry
 from src.storage import ChatSessionStateConflict, DatabaseManager, get_db, persist_llm_usage
 
@@ -85,14 +85,11 @@ def estimate_text_tokens(text: str, config: Any) -> int:
     """Estimate tokens deterministically enough for compression decisions."""
     normalized_text = text or ""
     try:
-        import litellm  # type: ignore
-
         model = get_effective_agent_primary_model(config)
-        count = litellm.token_counter(model=model, text=normalized_text)
-        return max(0, int(count or 0))
+        return estimate_tokens(normalized_text, model=model)
     except Exception as exc:
         logger.debug("Token counter failed; using character heuristic: %s", exc)
-        return int(math.ceil(len(normalized_text) / 3))
+        return estimate_tokens_fallback(normalized_text)
 
 
 def estimate_messages_tokens(messages: Sequence[Dict[str, Any]], config: Any) -> int:

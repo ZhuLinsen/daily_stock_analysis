@@ -2973,7 +2973,9 @@ class ScreeningOpportunitiesApiTestCase(unittest.TestCase):
         fake_litellm = SimpleNamespace(completion=completion_impl)
 
         def screen_impl(_strategy: str, **_kwargs):
-            fake_litellm.completion(
+            from src.llm.transport import dispatch_completion
+
+            dispatch_completion(
                 model="gemini/gemini-2.5-flash",
                 api_key="dsa-gemini-key",
                 messages=[{"role": "user", "content": "rank"}],
@@ -2990,10 +2992,7 @@ class ScreeningOpportunitiesApiTestCase(unittest.TestCase):
 
         self.assertEqual(payload["candidate_count"], 0)
         self.assertEqual(completion_calls[0]["extra_headers"], {"x-tenant": "dsa"})
-        self.assertIsNot(fake_litellm.completion, completion_impl)
-        self.assertTrue(
-            getattr(fake_litellm.completion, "_screening_litellm_completion_bridge", False),
-        )
+        self.assertIs(fake_litellm.completion, completion_impl)
 
     def test_screen_bridges_legacy_openai_fields_into_screening_runtime_env(self) -> None:
         config = Config(
@@ -3064,7 +3063,9 @@ class ScreeningOpportunitiesApiTestCase(unittest.TestCase):
         fake_litellm = SimpleNamespace(completion=completion_impl)
 
         def screen_impl(_strategy: str, **_kwargs):
-            fake_litellm.completion(
+            from src.llm.transport import dispatch_completion
+
+            dispatch_completion(
                 model="openai/gpt-4o-mini",
                 api_key="dsa-openai-key",
                 api_base="https://openai-compatible.example/v1",
@@ -3086,10 +3087,7 @@ class ScreeningOpportunitiesApiTestCase(unittest.TestCase):
             completion_calls[0]["api_base"],
             "https://openai-compatible.example/v1",
         )
-        self.assertIsNot(fake_litellm.completion, completion_impl)
-        self.assertTrue(
-            getattr(fake_litellm.completion, "_screening_litellm_completion_bridge", False),
-        )
+        self.assertIs(fake_litellm.completion, completion_impl)
 
     def test_screen_bridges_openai_channel_base_url_and_headers(self) -> None:
         config = Config(
@@ -3119,15 +3117,17 @@ class ScreeningOpportunitiesApiTestCase(unittest.TestCase):
         captured: dict[str, object] = {}
 
         def screen_impl(_strategy: str, **kwargs: Dict[str, Any]) -> dict[str, object]:
+            from src.llm.transport import dispatch_completion
+
             captured["config"] = kwargs.get("config")
             captured["context"] = kwargs.get("context")
-            fake_litellm.completion(
+            dispatch_completion(
                 model="openai/gpt-4o-mini",
                 api_key="dsa-openai-primary",
                 api_base="https://primary-openai.example/v1",
                 messages=[{"role": "user", "content": "primary"}],
             )
-            fake_litellm.completion(
+            dispatch_completion(
                 model="openai/gpt-4.1",
                 api_key="dsa-openai-primary",
                 api_base="https://primary-openai.example/v1",
@@ -3197,13 +3197,15 @@ class ScreeningOpportunitiesApiTestCase(unittest.TestCase):
         fake_litellm = SimpleNamespace(completion=completion_impl)
 
         def screen_impl(_strategy: str, **_kwargs) -> dict[str, object]:
-            fake_litellm.completion(
+            from src.llm.transport import dispatch_completion
+
+            dispatch_completion(
                 model="openai/gpt-4o-mini",
                 api_key="dsa-openai-primary",
                 api_base="https://primary.openai.example/v1",
                 messages=[{"role": "user", "content": "rank-1"}],
             )
-            fake_litellm.completion(
+            dispatch_completion(
                 model="openai/gpt-4.1",
                 api_key="dsa-openai-fallback",
                 api_base="https://fallback.openai.example/v1",
@@ -3233,7 +3235,7 @@ class ScreeningOpportunitiesApiTestCase(unittest.TestCase):
         )
         self.assertEqual(primary_call["api_base"], "https://primary.openai.example/v1")
         self.assertEqual(fallback_call["api_base"], "https://fallback.openai.example/v1")
-        self.assertTrue(getattr(fake_litellm.completion, "_screening_litellm_completion_bridge", False))
+        self.assertIs(fake_litellm.completion, completion_impl)
 
     def test_screen_handles_concurrent_requests_without_litellm_header_cross_pollution(self) -> None:
         config_a = Config(
@@ -3277,6 +3279,8 @@ class ScreeningOpportunitiesApiTestCase(unittest.TestCase):
         fake_litellm = SimpleNamespace(completion=completion_impl)
 
         def screen_impl(_strategy: str, **kwargs: Any) -> Dict[str, Any]:
+            from src.llm.transport import dispatch_completion
+
             context = kwargs.get("context") or {}
             llm = context.get("llm", {})
             channels = llm.get("channels") or []
@@ -3286,7 +3290,7 @@ class ScreeningOpportunitiesApiTestCase(unittest.TestCase):
                 thread_b_ready.wait(timeout=2)
             else:
                 thread_b_ready.set()
-            fake_litellm.completion(
+            dispatch_completion(
                 model="gemini/gemini-2.5-flash",
                 api_key=(channels[0].get("api_keys") or [""])[0],
                 messages=[{"role": "user", "content": "rank"}],

@@ -15,8 +15,15 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
-import litellm
-from litellm import Router
+from src.llm.transport import (
+    can_register_model,
+    create_litellm_compat_proxy,
+    create_router,
+    dispatch_completion,
+    get_model_cost,
+    register_model,
+    resolve_exception_types,
+)
 
 from src.config import (
     extra_litellm_params,
@@ -60,20 +67,13 @@ logger = logging.getLogger(__name__)
 # streaming chunk 向全局线程池提交一次 asyncio.run() 日志任务；Windows 上每次都会新建
 # Proactor 事件循环和回环 socketpair，长报告产生数千次，既耗 CPU，又会让线程池卡在
 # socketpair 的 accept() 上，导致 CLI 打印「程序执行完成」后进程无法退出。
-litellm.disable_streaming_logging = True
+litellm = create_litellm_compat_proxy(disable_streaming_logging=True)
+Router = create_router
 
 
-def _resolve_litellm_exception(name: str) -> type[BaseException]:
-    """Return a catchable LiteLLM exception class even in stubbed test environments."""
-    exc = getattr(litellm, name, None)
-    if isinstance(exc, type) and issubclass(exc, BaseException):
-        return exc
-
-    class _FallbackLiteLLMError(Exception):
-        pass
-
-    _FallbackLiteLLMError.__name__ = f"Fallback{name}"
-    return _FallbackLiteLLMError
+def _resolve_litellm_exception(name: str) -> Tuple[type[BaseException], ...]:
+    """Return catchable exception classes across active and compatibility transports."""
+    return resolve_exception_types(name, compat_proxy=litellm)
 
 
 # ============================================================
@@ -457,11 +457,7 @@ class LLMToolAdapter:
         """
         for model_name, pricing in _CUSTOM_MODEL_PRICING.items():
             try:
-                litellm.register_model(
-                    {
-                        model_name: pricing
-                    }
-                )
+                register_model({model_name: pricing}, compat_proxy=litellm)
                 logger.debug(f"Registered custom pricing for {model_name}")
             except Exception as e:
                 logger.debug(f"Model {model_name} may already be registered or pricing error: {e}")
@@ -573,10 +569,11 @@ class LLMToolAdapter:
                 logger.warning("Agent LLM: no Agent-safe channel deployments after Hermes filtering")
                 return
             prepared_model_list = apply_thinking_extra_body_to_model_list(model_list)
-            self._router = Router(
-                model_list=prepared_model_list,
+            self._router = create_router(
+                prepared_model_list,
                 routing_strategy="simple-shuffle",
                 num_retries=2,
+                router_factory=Router if Router is not create_router else None,
             )
             self._router_has_merged_extra_body = True
             unique_models = list(dict.fromkeys(
@@ -612,10 +609,11 @@ class LLMToolAdapter:
                 for k in keys
             ])
             self._legacy_router_model_list = legacy_model_list
-            self._router = Router(
-                model_list=legacy_model_list,
+            self._router = create_router(
+                legacy_model_list,
                 routing_strategy="simple-shuffle",
                 num_retries=2,
+                router_factory=Router if Router is not create_router else None,
             )
             self._router_has_merged_extra_body = True
             logger.info(
@@ -860,7 +858,7 @@ class LLMToolAdapter:
         if use_channel_router and self._router and model in _router_model_names:
             # Channel / YAML path: Router manages all models in its model_list
             response = call_litellm_with_param_recovery(
-                lambda kwargs: self._router.completion(**kwargs),
+                lambda kwargs: dispatch_completion(router=self._router, **kwargs),
                 model=model,
                 call_kwargs=call_kwargs,
                 model_list=recovery_model_list,
@@ -869,7 +867,7 @@ class LLMToolAdapter:
         elif self._router and model == agent_primary_model and not use_channel_router:
             # Legacy path: Router for primary model multi-key
             response = call_litellm_with_param_recovery(
-                lambda kwargs: self._router.completion(**kwargs),
+                lambda kwargs: dispatch_completion(router=self._router, **kwargs),
                 model=model,
                 call_kwargs=call_kwargs,
                 model_list=recovery_model_list,
@@ -880,7 +878,7 @@ class LLMToolAdapter:
             # providers like groq/ or bedrock/ that are not in the Router
             # model_list even when channel mode is active)
             response = call_litellm_with_param_recovery(
-                lambda kwargs: litellm.completion(**kwargs),
+                lambda kwargs: dispatch_completion(compat_proxy=litellm, **kwargs),
                 model=model,
                 call_kwargs=call_kwargs,
                 model_list=recovery_model_list,
@@ -1087,12 +1085,9 @@ def register_fallback_model_pricing(models: Iterable[str]) -> None:
     """Register zero-cost pricing for unknown OpenAI-compatible models."""
     if not models:
         return
-    register = getattr(litellm, "register_model", None)
-    if not callable(register):
+    if not can_register_model(compat_proxy=litellm):
         return
-    cost_map = getattr(litellm, "model_cost", {})
-    if not isinstance(cost_map, dict):
-        cost_map = {}
+    cost_map = get_model_cost(compat_proxy=litellm)
     for model in models:
         provider, wire_model = _split_provider_model(str(model))
         if provider != "openai":
@@ -1104,7 +1099,7 @@ def register_fallback_model_pricing(models: Iterable[str]) -> None:
             if wire_model in cost_map:
                 continue
             try:
-                register({wire_model: dict(custom_pricing)})
+                register_model({wire_model: dict(custom_pricing)}, compat_proxy=litellm)
                 logger.debug("Registered custom pricing for %s", wire_model)
             except Exception as exc:
                 logger.debug(
@@ -1117,7 +1112,7 @@ def register_fallback_model_pricing(models: Iterable[str]) -> None:
         if wire_model in cost_map or wire_model in _FALLBACK_MODEL_PRICING_REGISTERED:
             continue
         try:
-            register({wire_model: dict(_FALLBACK_MODEL_PRICING)})
+            register_model({wire_model: dict(_FALLBACK_MODEL_PRICING)}, compat_proxy=litellm)
             _FALLBACK_MODEL_PRICING_REGISTERED.add(wire_model)
             logger.debug("Registered fallback pricing for %s", wire_model)
         except Exception as exc:

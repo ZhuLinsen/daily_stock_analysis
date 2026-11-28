@@ -15,24 +15,28 @@ import json
 import logging
 import random
 import re
-import sys
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from src.config import Config, channel_allows_empty_api_key, get_config
+from src.config import (
+    Config,
+    apply_litellm_api_surface,
+    channel_allows_empty_api_key,
+    get_config,
+    normalize_llm_channel_api_surface,
+)
 from src.llm.hermes import route_has_hermes
+from src.llm.transport import (
+    create_litellm_compat_proxy,
+    dispatch_completion,
+    resolve_env_reference,
+    resolve_litellm_params_env,
+)
 
 logger = logging.getLogger(__name__)
 
-
-class _LiteLLMPlaceholder:
-    """Provide a patchable placeholder before litellm is imported."""
-
-    completion = None
-
-
-# Keep a patchable module attribute while still avoiding a hard import at module load.
-litellm = sys.modules.get("litellm") or _LiteLLMPlaceholder()
+# Keep a patchable module attribute while avoiding a hard import at module load.
+litellm = create_litellm_compat_proxy()
 
 EXTRACT_PROMPT = """请分析这张股票市场截图或图片，提取其中所有可见的股票代码及名称。
 
@@ -245,7 +249,8 @@ def _get_api_keys_for_model(model: str, cfg: Config) -> List[str]:
     """Return available API keys for the given litellm model."""
     deployment_keys: List[str] = []
     for deployment in _matching_vision_deployments(model, cfg):
-        key = str((deployment.get("litellm_params") or {}).get("api_key") or "").strip()
+        raw_key = (deployment.get("litellm_params") or {}).get("api_key")
+        key = str(resolve_env_reference(raw_key) or "").strip()
         if key and len(key) >= 8 and key not in deployment_keys:
             deployment_keys.append(key)
     if deployment_keys:
@@ -259,17 +264,17 @@ def _get_api_keys_for_model(model: str, cfg: Config) -> List[str]:
 
 def _deployment_allows_empty_api_key(deployment: Dict[str, Any]) -> bool:
     """Return whether a configured vision deployment is a supported keyless endpoint."""
-    params = deployment.get("litellm_params") or {}
+    params = resolve_litellm_params_env(deployment.get("litellm_params") or {})
     if str(params.get("api_key") or "").strip():
         return False
     wire_model = str(params.get("model") or "").strip()
     protocol = wire_model.split("/", 1)[0] if "/" in wire_model else None
-    return channel_allows_empty_api_key(protocol, params.get("api_base"))
+    api_base = params.get("api_base") or params.get("base_url")
+    return channel_allows_empty_api_key(protocol, api_base)
 
 
 def _call_litellm_vision(image_b64: str, mime_type: str, api_key: Optional[str] = None) -> str:
-    """Extract stock codes from an image using litellm (all providers via OpenAI vision format)."""
-    global litellm
+    """Extract stock codes from an image using the configured LLM transport (OpenAI vision format)."""
     cfg = get_config()
     model = _resolve_vision_model()
     if not model:
@@ -282,12 +287,13 @@ def _call_litellm_vision(image_b64: str, mime_type: str, api_key: Optional[str] 
     key = api_key if api_key and api_key in keys else (random.choice(keys) if keys else None)
 
     deployment_params: Dict[str, Any] = {}
+    deployment_info: Dict[str, Any] = {}
     if deployments:
         deployment = next(
             (
                 item
                 for item in deployments
-                if str((item.get("litellm_params") or {}).get("api_key") or "").strip() == key
+                if str(resolve_env_reference((item.get("litellm_params") or {}).get("api_key")) or "").strip() == key
             ),
             None,
         )
@@ -299,10 +305,25 @@ def _call_litellm_vision(image_b64: str, mime_type: str, api_key: Optional[str] 
             if deployment is not None:
                 key = None
         if deployment is not None:
-            deployment_params = dict(deployment.get("litellm_params") or {})
+            deployment_params = resolve_litellm_params_env(deployment.get("litellm_params") or {})
+            raw_info = deployment.get("model_info")
+            if isinstance(raw_info, dict):
+                deployment_info = dict(raw_info)
     if key is None and not deployment_params:
         raise ValueError(f"No API key found for vision model {model}")
     wire_model = str(deployment_params.get("model") or model).strip()
+    raw_api_surface = str(
+        deployment_info.get("dsa_api_surface")
+        or deployment_params.get("api_surface")
+        or ""
+    ).strip()
+    resolved_api_surface = (
+        normalize_llm_channel_api_surface(raw_api_surface)
+        if raw_api_surface
+        else ""
+    )
+    if resolved_api_surface == "responses":
+        wire_model = apply_litellm_api_surface(wire_model, resolved_api_surface)
 
     data_url = f"data:{mime_type};base64,{image_b64}"
     call_kwargs: dict = {
@@ -322,8 +343,13 @@ def _call_litellm_vision(image_b64: str, mime_type: str, api_key: Optional[str] 
     effective_api_key = str(deployment_params.get("api_key") or key or "").strip()
     if effective_api_key:
         call_kwargs["api_key"] = effective_api_key
-    if deployment_params.get("api_base"):
-        call_kwargs["api_base"] = deployment_params["api_base"]
+    deployment_api_base = str(
+        deployment_params.get("api_base") or deployment_params.get("base_url") or ""
+    ).strip()
+    if deployment_api_base:
+        call_kwargs["api_base"] = deployment_api_base
+    if resolved_api_surface:
+        call_kwargs["api_surface"] = resolved_api_surface
     if deployment_params.get("extra_headers"):
         call_kwargs["extra_headers"] = dict(deployment_params["extra_headers"])
     # Add api_base and custom headers for OpenAI-compatible providers
@@ -333,10 +359,7 @@ def _call_litellm_vision(image_b64: str, mime_type: str, api_key: Optional[str] 
         if cfg.openai_base_url and "aihubmix.com" in cfg.openai_base_url:
             call_kwargs["extra_headers"] = {"APP-Code": "GPIJ3886"}
 
-    if getattr(litellm, "completion", None) is None:
-        import litellm as litellm_module
-        litellm = litellm_module
-    response = litellm.completion(**call_kwargs)
+    response = dispatch_completion(compat_proxy=litellm, **call_kwargs)
     if response and response.choices and response.choices[0].message.content:
         return response.choices[0].message.content
     raise ValueError("LiteLLM vision returned empty response")
