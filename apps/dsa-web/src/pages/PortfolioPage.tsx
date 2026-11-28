@@ -122,6 +122,12 @@ type FxRefreshContext = {
   requestId: number;
 };
 
+type CsvCommitResultEntry = {
+  result: PortfolioImportCommitResponse;
+  dryRun: boolean;
+  seq: number;
+};
+
 const PORTFOLIO_INPUT_CLASS =
   'input-surface input-focus-glow h-11 w-full rounded-xl border bg-transparent px-4 text-sm transition-all focus:outline-none disabled:cursor-not-allowed disabled:opacity-60';
 const PORTFOLIO_SELECT_CLASS = `${PORTFOLIO_INPUT_CLASS} appearance-none pr-10`;
@@ -666,7 +672,6 @@ const PortfolioPage: React.FC = () => {
   const [portfolioSignalsWarning, setPortfolioSignalsWarning] = useState<string | null>(null);
   const [portfolioSignalsRefreshKey, setPortfolioSignalsRefreshKey] = useState(0);
   const portfolioSignalsRequestRef = useRef(0);
-  const [positionAnalysisLoadingKey, setPositionAnalysisLoadingKey] = useState<string | null>(null);
   const [positionAnalysisMessage, setPositionAnalysisMessage] = useState<string | null>(null);
 
   const [brokers, setBrokers] = useState<PortfolioImportBrokerItem[]>([]);
@@ -674,9 +679,9 @@ const PortfolioPage: React.FC = () => {
   const [csvFile, setCsvFile] = useState<File | null>(null);
   const [csvDryRun, setCsvDryRun] = useState(true);
   const [csvParsing, setCsvParsing] = useState(false);
-  const [csvCommitting, setCsvCommitting] = useState(false);
+  const [csvCommittingAccounts, setCsvCommittingAccounts] = useState<Record<number, boolean>>({});
   const [csvParseResult, setCsvParseResult] = useState<PortfolioImportParseResponse | null>(null);
-  const [csvCommitResult, setCsvCommitResult] = useState<PortfolioImportCommitResponse | null>(null);
+  const [csvCommitResultsByAccount, setCsvCommitResultsByAccount] = useState<Record<number, CsvCommitResultEntry>>({});
   const [brokerLoadWarning, setBrokerLoadWarning] = useState<string | null>(null);
 
   const [eventType, setEventType] = useState<EventType>('trade');
@@ -689,6 +694,7 @@ const PortfolioPage: React.FC = () => {
   const [eventPage, setEventPage] = useState(1);
   const [eventTotal, setEventTotal] = useState(0);
   const [eventLoading, setEventLoading] = useState(false);
+  const [eventsError, setEventsError] = useState<ParsedApiError | null>(null);
   const [tradeEvents, setTradeEvents] = useState<PortfolioTradeListItem[]>([]);
   const [cashEvents, setCashEvents] = useState<PortfolioCashLedgerListItem[]>([]);
   const [corporateEvents, setCorporateEvents] = useState<PortfolioCorporateActionListItem[]>([]);
@@ -696,6 +702,9 @@ const PortfolioPage: React.FC = () => {
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [pendingAccountDelete, setPendingAccountDelete] = useState<PendingAccountDelete | null>(null);
   const [accountDeleteLoading, setAccountDeleteLoading] = useState(false);
+  const [tradeSubmittingAccounts, setTradeSubmittingAccounts] = useState<Record<number, boolean>>({});
+  const [cashSubmittingAccounts, setCashSubmittingAccounts] = useState<Record<number, boolean>>({});
+  const [corpSubmittingAccounts, setCorpSubmittingAccounts] = useState<Record<number, boolean>>({});
 
   const [tradeForm, setTradeForm] = useState({
     symbol: '',
@@ -725,11 +734,54 @@ const PortfolioPage: React.FC = () => {
   });
 
   const queryAccountId = selectedAccount === 'all' ? undefined : selectedAccount;
+  const snapshotScopeKey = `${queryAccountId ?? 'all'}:${costMethod}`;
+  const eventsScopeKey = `${queryAccountId ?? 'all'}:${eventType}:${eventDateFrom}:${eventDateTo}:${eventSymbol}:${eventSide}:${eventDirection}:${eventActionType}`;
+  const eventsPageScopeKey = `${eventsScopeKey}:page:${eventPage}`;
   const refreshViewKey = `${selectedAccount === 'all' ? 'all' : `account:${selectedAccount}`}:cost:${costMethod}`;
   const refreshContextRef = useRef<FxRefreshContext>({ viewKey: refreshViewKey, requestId: 0 });
+  const mountedRef = useRef(true);
+  const accountsRequestRef = useRef(0);
+  const accountsCommittedSeqRef = useRef(0);
+  const brokersRequestRef = useRef(0);
+  const snapshotRequestRef = useRef(0);
+  const snapshotCommittedSeqRef = useRef(0);
+  const riskCommittedSeqRef = useRef(0);
+  const snapshotLoadingRequestRef = useRef(0);
+  const eventsRequestRef = useRef(0);
+  const eventsCommittedSeqRef = useRef(0);
+  const activeQueryAccountIdRef = useRef<number | undefined>(queryAccountId);
+  const activeSnapshotScopeKeyRef = useRef(snapshotScopeKey);
+  const activeEventsScopeKeyRef = useRef(eventsScopeKey);
+  const activeEventPageRef = useRef(eventPage);
+  const refreshPortfolioDataRef = useRef<(page?: number) => Promise<void>>(async () => undefined);
+  activeQueryAccountIdRef.current = queryAccountId;
+  activeSnapshotScopeKeyRef.current = snapshotScopeKey;
+  activeEventsScopeKeyRef.current = eventsScopeKey;
+  activeEventPageRef.current = eventPage;
+  const tradeSubmitInFlightRef = useRef<Set<number>>(new Set());
+  const cashSubmitInFlightRef = useRef<Set<number>>(new Set());
+  const corpSubmitInFlightRef = useRef<Set<number>>(new Set());
+  const tradeFormRevisionRef = useRef(0);
+  const cashFormRevisionRef = useRef(0);
+  const corpFormRevisionRef = useRef(0);
+  const csvParseInFlightRef = useRef(false);
+  const csvCommitInFlightRef = useRef<Set<number>>(new Set());
+  const csvCommitSeqRef = useRef(0);
+  const deleteInFlightRef = useRef(false);
+  const accountDeleteInFlightRef = useRef(false);
+  const accountCreateInFlightRef = useRef(false);
+  const analyzingPositionKeysRef = useRef<Set<string>>(new Set());
+  const [analyzingPositionKeys, setAnalyzingPositionKeys] = useState<Record<string, boolean>>({});
   const hasAccounts = accounts.length > 0;
   const writableAccount = selectedAccount === 'all' ? undefined : accounts.find((item) => item.id === selectedAccount);
   const writableAccountId = writableAccount?.id;
+  const tradeSubmitting = writableAccountId != null && Boolean(tradeSubmittingAccounts[writableAccountId]);
+  const cashSubmitting = writableAccountId != null && Boolean(cashSubmittingAccounts[writableAccountId]);
+  const corpSubmitting = writableAccountId != null && Boolean(corpSubmittingAccounts[writableAccountId]);
+  const csvCommitting = writableAccountId != null && Boolean(csvCommittingAccounts[writableAccountId]);
+  const activeCsvCommitEntry = writableAccountId != null
+    ? (csvCommitResultsByAccount[writableAccountId] ?? null)
+    : null;
   const writeBlocked = !writableAccountId;
   const canDeleteSelectedAccount = Boolean(writableAccountId) && !isLoading && !fxRefreshing && !accountDeleteLoading;
   const totalEventPages = Math.max(1, Math.ceil(eventTotal / DEFAULT_PAGE_SIZE));
@@ -739,16 +791,69 @@ const PortfolioPage: React.FC = () => {
       ? cashEvents.length
       : corporateEvents.length;
 
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      accountsRequestRef.current += 1;
+      accountsCommittedSeqRef.current = accountsRequestRef.current;
+      brokersRequestRef.current += 1;
+      snapshotRequestRef.current += 1;
+      snapshotCommittedSeqRef.current = snapshotRequestRef.current;
+      riskCommittedSeqRef.current = snapshotRequestRef.current;
+      snapshotLoadingRequestRef.current += 1;
+      eventsRequestRef.current += 1;
+      eventsCommittedSeqRef.current = eventsRequestRef.current;
+      refreshContextRef.current.requestId += 1;
+    };
+  }, []);
+
+  const setAccountBusy = useCallback((
+    setter: React.Dispatch<React.SetStateAction<Record<number, boolean>>>,
+    accountId: number,
+    busy: boolean,
+  ) => {
+    setter((prev) => {
+      if (busy) {
+        return prev[accountId] ? prev : { ...prev, [accountId]: true };
+      }
+      if (!prev[accountId]) return prev;
+      const next = { ...prev };
+      delete next[accountId];
+      return next;
+    });
+  }, []);
+
+  const updateTradeForm = useCallback((updater: (prev: typeof tradeForm) => typeof tradeForm) => {
+    tradeFormRevisionRef.current += 1;
+    setTradeForm(updater);
+  }, []);
+
+  const updateCashForm = useCallback((updater: (prev: typeof cashForm) => typeof cashForm) => {
+    cashFormRevisionRef.current += 1;
+    setCashForm(updater);
+  }, []);
+
+  const updateCorpForm = useCallback((updater: (prev: typeof corpForm) => typeof corpForm) => {
+    corpFormRevisionRef.current += 1;
+    setCorpForm(updater);
+  }, []);
+
   const isActiveRefreshContext = (requestedViewKey: string, requestedRequestId: number) => {
     return (
-      refreshContextRef.current.viewKey === requestedViewKey
+      mountedRef.current
+      && refreshContextRef.current.viewKey === requestedViewKey
       && refreshContextRef.current.requestId === requestedRequestId
     );
   };
 
   const loadAccounts = useCallback(async () => {
+    const requestId = accountsRequestRef.current + 1;
+    accountsRequestRef.current = requestId;
     try {
       const response = await portfolioApi.getAccounts(false);
+      if (!mountedRef.current || requestId < accountsCommittedSeqRef.current) return;
+      accountsCommittedSeqRef.current = requestId;
       const items = response.accounts || [];
       setAccounts(items);
       setSelectedAccount((prev) => {
@@ -758,37 +863,64 @@ const PortfolioPage: React.FC = () => {
       });
       if (items.length === 0) setShowCreateAccount(true);
     } catch (err) {
+      if (
+        !mountedRef.current
+        || requestId < accountsCommittedSeqRef.current
+        || requestId !== accountsRequestRef.current
+      ) {
+        return;
+      }
+      accountsCommittedSeqRef.current = requestId;
       setError(getParsedApiError(err));
     }
   }, []);
 
   const loadBrokers = useCallback(async () => {
+    const requestId = brokersRequestRef.current + 1;
+    brokersRequestRef.current = requestId;
+    const isActiveRequest = () => mountedRef.current && brokersRequestRef.current === requestId;
+    const selectSupportedBroker = (items: PortfolioImportBrokerItem[]) => {
+      setSelectedBroker((prev) => (
+        items.some((item) => item.broker === prev) ? prev : items[0].broker
+      ));
+    };
     try {
       const response = await portfolioApi.listImportBrokers();
+      if (!isActiveRequest()) return;
       const brokerItems = response.brokers || [];
       if (brokerItems.length === 0) {
         setBrokers(FALLBACK_BROKERS);
         setBrokerLoadWarning('券商列表接口返回为空，已回退为内置券商列表（华泰/中信/招商）。');
-        if (!FALLBACK_BROKERS.some((item) => item.broker === selectedBroker)) {
-          setSelectedBroker(FALLBACK_BROKERS[0].broker);
-        }
+        selectSupportedBroker(FALLBACK_BROKERS);
         return;
       }
       setBrokers(brokerItems);
       setBrokerLoadWarning(null);
-      if (!brokerItems.some((item) => item.broker === selectedBroker)) {
-        setSelectedBroker(brokerItems[0].broker);
-      }
+      selectSupportedBroker(brokerItems);
     } catch {
+      if (!isActiveRequest()) return;
       setBrokers(FALLBACK_BROKERS);
       setBrokerLoadWarning('券商列表接口不可用，已回退为内置券商列表（华泰/中信/招商）。');
-      if (!FALLBACK_BROKERS.some((item) => item.broker === selectedBroker)) {
-        setSelectedBroker(FALLBACK_BROKERS[0].broker);
-      }
+      selectSupportedBroker(FALLBACK_BROKERS);
     }
-  }, [selectedBroker]);
+  }, []);
 
   const loadSnapshotAndRisk = useCallback(async () => {
+    const scopeKey = snapshotScopeKey;
+    const requestId = snapshotRequestRef.current + 1;
+    snapshotRequestRef.current = requestId;
+    const loadingRequestId = snapshotLoadingRequestRef.current + 1;
+    snapshotLoadingRequestRef.current = loadingRequestId;
+    const canCommitSnapshot = () => (
+      mountedRef.current
+      && activeSnapshotScopeKeyRef.current === scopeKey
+      && requestId >= snapshotCommittedSeqRef.current
+    );
+    const canCommitRisk = () => (
+      mountedRef.current
+      && activeSnapshotScopeKeyRef.current === scopeKey
+      && requestId >= riskCommittedSeqRef.current
+    );
     setIsLoading(true);
     setRiskWarning(null);
     try {
@@ -797,6 +929,8 @@ const PortfolioPage: React.FC = () => {
         costMethod,
         includeRealtime: false,
       });
+      if (!canCommitSnapshot()) return;
+      snapshotCommittedSeqRef.current = requestId;
       setSnapshot(snapshotData);
       setError(null);
 
@@ -806,23 +940,44 @@ const PortfolioPage: React.FC = () => {
           costMethod,
           includeRealtime: false,
         });
+        if (!canCommitRisk()) return;
+        riskCommittedSeqRef.current = requestId;
         setRisk(riskData);
+        setRiskWarning(null);
       } catch (riskErr) {
+        if (!canCommitRisk() || requestId !== snapshotRequestRef.current) return;
+        riskCommittedSeqRef.current = requestId;
         setRisk(null);
         const parsed = getParsedApiError(riskErr);
         setRiskWarning(parsed.message || '风险数据获取失败，已降级为仅展示快照数据。');
       }
     } catch (err) {
+      if (!canCommitSnapshot() || requestId !== snapshotRequestRef.current) return;
+      snapshotCommittedSeqRef.current = requestId;
+      riskCommittedSeqRef.current = Math.max(riskCommittedSeqRef.current, requestId);
       setSnapshot(null);
       setRisk(null);
+      setRiskWarning(null);
       setError(getParsedApiError(err));
     } finally {
-      setIsLoading(false);
+      if (mountedRef.current && snapshotLoadingRequestRef.current === loadingRequestId) {
+        setIsLoading(false);
+      }
     }
-  }, [queryAccountId, costMethod]);
+  }, [queryAccountId, costMethod, snapshotScopeKey]);
 
   const loadEventsPage = useCallback(async (page: number) => {
+    const scopeKey = eventsScopeKey;
+    const requestId = eventsRequestRef.current + 1;
+    eventsRequestRef.current = requestId;
+    const canCommitEvents = () => (
+      mountedRef.current
+      && activeEventsScopeKeyRef.current === scopeKey
+      && activeEventPageRef.current === page
+      && requestId >= eventsCommittedSeqRef.current
+    );
     setEventLoading(true);
+    setEventsError(null);
     try {
       if (eventType === 'trade') {
         const response = await portfolioApi.listTrades({
@@ -834,6 +989,9 @@ const PortfolioPage: React.FC = () => {
           page,
           pageSize: DEFAULT_PAGE_SIZE,
         });
+        if (!canCommitEvents()) return;
+        eventsCommittedSeqRef.current = requestId;
+        setEventsError(null);
         setTradeEvents(response.items || []);
         setEventTotal(response.total || 0);
       } else if (eventType === 'cash') {
@@ -845,6 +1003,9 @@ const PortfolioPage: React.FC = () => {
           page,
           pageSize: DEFAULT_PAGE_SIZE,
         });
+        if (!canCommitEvents()) return;
+        eventsCommittedSeqRef.current = requestId;
+        setEventsError(null);
         setCashEvents(response.items || []);
         setEventTotal(response.total || 0);
       } else {
@@ -857,13 +1018,23 @@ const PortfolioPage: React.FC = () => {
           page,
           pageSize: DEFAULT_PAGE_SIZE,
         });
+        if (!canCommitEvents()) return;
+        eventsCommittedSeqRef.current = requestId;
+        setEventsError(null);
         setCorporateEvents(response.items || []);
         setEventTotal(response.total || 0);
       }
     } catch (err) {
-      setError(getParsedApiError(err));
+      if (!canCommitEvents() || requestId !== eventsRequestRef.current) return;
+      eventsCommittedSeqRef.current = requestId;
+      setTradeEvents([]);
+      setCashEvents([]);
+      setCorporateEvents([]);
+      setEventsError(getParsedApiError(err));
     } finally {
-      setEventLoading(false);
+      if (mountedRef.current && requestId === eventsRequestRef.current) {
+        setEventLoading(false);
+      }
     }
   }, [
     eventActionType,
@@ -873,6 +1044,7 @@ const PortfolioPage: React.FC = () => {
     eventSide,
     eventSymbol,
     eventType,
+    eventsScopeKey,
     queryAccountId,
   ]);
 
@@ -883,6 +1055,27 @@ const PortfolioPage: React.FC = () => {
   const refreshPortfolioData = useCallback(async (page = eventPage) => {
     await Promise.all([loadSnapshotAndRisk(), loadEventsPage(page)]);
   }, [eventPage, loadEventsPage, loadSnapshotAndRisk]);
+  refreshPortfolioDataRef.current = refreshPortfolioData;
+
+  useEffect(() => {
+    const scopeBaselineSeq = snapshotRequestRef.current;
+    snapshotCommittedSeqRef.current = scopeBaselineSeq;
+    riskCommittedSeqRef.current = scopeBaselineSeq;
+    setRisk(null);
+    setRiskWarning(null);
+  }, [snapshotScopeKey]);
+
+  useEffect(() => {
+    setEventTotal(0);
+  }, [eventsScopeKey]);
+
+  useEffect(() => {
+    eventsCommittedSeqRef.current = eventsRequestRef.current;
+    setEventsError(null);
+    setTradeEvents([]);
+    setCashEvents([]);
+    setCorporateEvents([]);
+  }, [eventsPageScopeKey]);
 
   useEffect(() => {
     void loadAccounts();
@@ -907,6 +1100,7 @@ const PortfolioPage: React.FC = () => {
   }, [refreshViewKey]);
 
   useEffect(() => {
+    activeEventPageRef.current = 1;
     setEventPage(1);
   }, [eventType, queryAccountId, eventDateFrom, eventDateTo, eventSymbol, eventSide, eventDirection, eventActionType]);
 
@@ -1053,7 +1247,9 @@ const PortfolioPage: React.FC = () => {
 
   const handleAnalyzePosition = async (row: FlatPosition) => {
     const key = `${row.accountId}-${row.symbol}-${row.market}`;
-    setPositionAnalysisLoadingKey(key);
+    if (analyzingPositionKeysRef.current.has(key)) return;
+    analyzingPositionKeysRef.current.add(key);
+    setAnalyzingPositionKeys((prev) => ({ ...prev, [key]: true }));
     setPositionAnalysisMessage(null);
     setError(null);
     try {
@@ -1062,11 +1258,21 @@ const PortfolioPage: React.FC = () => {
         analysisPhase: 'auto',
         force: false,
       });
+      if (!mountedRef.current) return;
       setPositionAnalysisMessage(`已提交 ${row.symbol} 分析任务：${task.taskId}`);
     } catch (err) {
+      if (!mountedRef.current) return;
       setError(getParsedApiError(err));
     } finally {
-      setPositionAnalysisLoadingKey(null);
+      analyzingPositionKeysRef.current.delete(key);
+      if (mountedRef.current) {
+        setAnalyzingPositionKeys((prev) => {
+          if (!prev[key]) return prev;
+          const next = { ...prev };
+          delete next[key];
+          return next;
+        });
+      }
     }
   };
 
@@ -1103,24 +1309,49 @@ const PortfolioPage: React.FC = () => {
       setWriteWarning('请先在右上角选择具体账户，再进行录入或导入提交。');
       return;
     }
+    const submittedAccountId = writableAccountId;
+    if (tradeSubmitInFlightRef.current.has(submittedAccountId)) return;
+    const submittedRevision = tradeFormRevisionRef.current;
+    const submittedSymbol = tradeForm.symbol;
+    const submittedTradeUid = tradeForm.tradeUid;
+    const submittedNote = tradeForm.note;
+    tradeSubmitInFlightRef.current.add(submittedAccountId);
+    setAccountBusy(setTradeSubmittingAccounts, submittedAccountId, true);
     try {
       setWriteWarning(null);
       await portfolioApi.createTrade({
-        accountId: writableAccountId,
-        symbol: tradeForm.symbol,
+        accountId: submittedAccountId,
+        symbol: submittedSymbol,
         tradeDate: tradeForm.tradeDate,
         side: tradeForm.side,
         quantity: Number(tradeForm.quantity),
         price: Number(tradeForm.price),
         fee: Number(tradeForm.fee || 0),
         tax: Number(tradeForm.tax || 0),
-        tradeUid: tradeForm.tradeUid || undefined,
-        note: tradeForm.note || undefined,
+        tradeUid: submittedTradeUid || undefined,
+        note: submittedNote || undefined,
       });
-      await refreshPortfolioData();
-      setTradeForm((prev) => ({ ...prev, symbol: '', tradeUid: '', note: '' }));
+      if (!mountedRef.current) return;
+      if (tradeFormRevisionRef.current === submittedRevision) {
+        tradeFormRevisionRef.current += 1;
+        setTradeForm((prev) => ({
+          ...prev,
+          symbol: '',
+          tradeUid: '',
+          note: '',
+        }));
+      }
+      if (activeQueryAccountIdRef.current === submittedAccountId || activeQueryAccountIdRef.current === undefined) {
+        await refreshPortfolioDataRef.current();
+      }
     } catch (err) {
+      if (!mountedRef.current) return;
       setError(getParsedApiError(err));
+    } finally {
+      tradeSubmitInFlightRef.current.delete(submittedAccountId);
+      if (mountedRef.current) {
+        setAccountBusy(setTradeSubmittingAccounts, submittedAccountId, false);
+      }
     }
   };
 
@@ -1130,20 +1361,42 @@ const PortfolioPage: React.FC = () => {
       setWriteWarning('请先在右上角选择具体账户，再进行录入或导入提交。');
       return;
     }
+    const submittedAccountId = writableAccountId;
+    if (cashSubmitInFlightRef.current.has(submittedAccountId)) return;
+    const submittedRevision = cashFormRevisionRef.current;
+    const submittedNote = cashForm.note;
+    cashSubmitInFlightRef.current.add(submittedAccountId);
+    setAccountBusy(setCashSubmittingAccounts, submittedAccountId, true);
     try {
       setWriteWarning(null);
       await portfolioApi.createCashLedger({
-        accountId: writableAccountId,
+        accountId: submittedAccountId,
         eventDate: cashForm.eventDate,
         direction: cashForm.direction,
         amount: Number(cashForm.amount),
         currency: cashForm.currency || undefined,
-        note: cashForm.note || undefined,
+        note: submittedNote || undefined,
       });
-      await refreshPortfolioData();
-      setCashForm((prev) => ({ ...prev, note: '' }));
+      if (!mountedRef.current) return;
+      if (cashFormRevisionRef.current === submittedRevision) {
+        cashFormRevisionRef.current += 1;
+        setCashForm((prev) => ({
+          ...prev,
+          amount: '',
+          note: '',
+        }));
+      }
+      if (activeQueryAccountIdRef.current === submittedAccountId || activeQueryAccountIdRef.current === undefined) {
+        await refreshPortfolioDataRef.current();
+      }
     } catch (err) {
+      if (!mountedRef.current) return;
       setError(getParsedApiError(err));
+    } finally {
+      cashSubmitInFlightRef.current.delete(submittedAccountId);
+      if (mountedRef.current) {
+        setAccountBusy(setCashSubmittingAccounts, submittedAccountId, false);
+      }
     }
   };
 
@@ -1153,35 +1406,76 @@ const PortfolioPage: React.FC = () => {
       setWriteWarning('请先在右上角选择具体账户，再进行录入或导入提交。');
       return;
     }
+    const submittedAccountId = writableAccountId;
+    if (corpSubmitInFlightRef.current.has(submittedAccountId)) return;
+    const submittedRevision = corpFormRevisionRef.current;
+    const submittedSymbol = corpForm.symbol;
+    const submittedNote = corpForm.note;
+    corpSubmitInFlightRef.current.add(submittedAccountId);
+    setAccountBusy(setCorpSubmittingAccounts, submittedAccountId, true);
     try {
       setWriteWarning(null);
       await portfolioApi.createCorporateAction({
-        accountId: writableAccountId,
-        symbol: corpForm.symbol,
+        accountId: submittedAccountId,
+        symbol: submittedSymbol,
         effectiveDate: corpForm.effectiveDate,
         actionType: corpForm.actionType,
         cashDividendPerShare: corpForm.cashDividendPerShare ? Number(corpForm.cashDividendPerShare) : undefined,
         splitRatio: corpForm.splitRatio ? Number(corpForm.splitRatio) : undefined,
-        note: corpForm.note || undefined,
+        note: submittedNote || undefined,
       });
-      await refreshPortfolioData();
-      setCorpForm((prev) => ({ ...prev, symbol: '', note: '' }));
+      if (!mountedRef.current) return;
+      if (corpFormRevisionRef.current === submittedRevision) {
+        corpFormRevisionRef.current += 1;
+        setCorpForm((prev) => ({
+          ...prev,
+          symbol: '',
+          note: '',
+        }));
+      }
+      if (activeQueryAccountIdRef.current === submittedAccountId || activeQueryAccountIdRef.current === undefined) {
+        await refreshPortfolioDataRef.current();
+      }
     } catch (err) {
+      if (!mountedRef.current) return;
       setError(getParsedApiError(err));
+    } finally {
+      corpSubmitInFlightRef.current.delete(submittedAccountId);
+      if (mountedRef.current) {
+        setAccountBusy(setCorpSubmittingAccounts, submittedAccountId, false);
+      }
     }
   };
 
   const handleParseCsv = async () => {
-    if (!csvFile) return;
+    if (!csvFile || csvParseInFlightRef.current) return;
+    csvParseInFlightRef.current = true;
+    const parseAccountId = activeQueryAccountIdRef.current;
+    const parseStartedSeq = csvCommitSeqRef.current;
     try {
       setCsvParsing(true);
       const parsed = await portfolioApi.parseCsvImport(selectedBroker, csvFile);
+      if (!mountedRef.current) return;
       setCsvParseResult(parsed);
-      setCsvCommitResult(null);
+      if (parseAccountId !== undefined) {
+        setCsvCommitResultsByAccount((prev) => {
+          const existing = prev[parseAccountId];
+          if (!existing || existing.seq > parseStartedSeq) {
+            return prev;
+          }
+          const next = { ...prev };
+          delete next[parseAccountId];
+          return next;
+        });
+      }
     } catch (err) {
+      if (!mountedRef.current) return;
       setError(getParsedApiError(err));
     } finally {
-      setCsvParsing(false);
+      csvParseInFlightRef.current = false;
+      if (mountedRef.current) {
+        setCsvParsing(false);
+      }
     }
   };
 
@@ -1191,18 +1485,47 @@ const PortfolioPage: React.FC = () => {
       setWriteWarning('请先在右上角选择具体账户，再进行录入或导入提交。');
       return;
     }
+    const submittedAccountId = writableAccountId;
+    if (csvCommitInFlightRef.current.has(submittedAccountId)) return;
+    const submittedBroker = selectedBroker;
+    const submittedFile = csvFile;
+    const submittedDryRun = csvDryRun;
+    csvCommitInFlightRef.current.add(submittedAccountId);
     try {
       setWriteWarning(null);
-      setCsvCommitting(true);
-      const committed = await portfolioApi.commitCsvImport(writableAccountId, selectedBroker, csvFile, csvDryRun);
-      setCsvCommitResult(committed);
-      if (!csvDryRun) {
-        await refreshPortfolioData();
+      setAccountBusy(setCsvCommittingAccounts, submittedAccountId, true);
+      const committed = await portfolioApi.commitCsvImport(
+        submittedAccountId,
+        submittedBroker,
+        submittedFile,
+        submittedDryRun,
+      );
+      if (!mountedRef.current) return;
+      const effectiveDryRun = typeof committed.dryRun === 'boolean' ? committed.dryRun : submittedDryRun;
+      const commitSeq = csvCommitSeqRef.current + 1;
+      csvCommitSeqRef.current = commitSeq;
+      setCsvCommitResultsByAccount((prev) => ({
+        ...prev,
+        [submittedAccountId]: {
+          result: committed,
+          dryRun: effectiveDryRun,
+          seq: commitSeq,
+        },
+      }));
+      if (
+        !effectiveDryRun
+        && (activeQueryAccountIdRef.current === submittedAccountId || activeQueryAccountIdRef.current === undefined)
+      ) {
+        await refreshPortfolioDataRef.current();
       }
     } catch (err) {
+      if (!mountedRef.current) return;
       setError(getParsedApiError(err));
     } finally {
-      setCsvCommitting(false);
+      csvCommitInFlightRef.current.delete(submittedAccountId);
+      if (mountedRef.current) {
+        setAccountBusy(setCsvCommittingAccounts, submittedAccountId, false);
+      }
     }
   };
 
@@ -1226,33 +1549,51 @@ const PortfolioPage: React.FC = () => {
   };
 
   const handleConfirmAccountDelete = async () => {
-    if (!pendingAccountDelete || accountDeleteLoading) return;
+    if (!pendingAccountDelete || accountDeleteLoading || accountDeleteInFlightRef.current) return;
 
+    accountDeleteInFlightRef.current = true;
     try {
       setAccountDeleteLoading(true);
       setWriteWarning(null);
-      await portfolioApi.deleteAccount(pendingAccountDelete.accountId);
-      const nextAccount = accounts.find((item) => item.id !== pendingAccountDelete.accountId);
+      const deletedAccountId = pendingAccountDelete.accountId;
+      await portfolioApi.deleteAccount(deletedAccountId);
+      if (!mountedRef.current) return;
+      setCsvCommitResultsByAccount((prev) => {
+        if (!(deletedAccountId in prev)) return prev;
+        const next = { ...prev };
+        delete next[deletedAccountId];
+        return next;
+      });
+      const nextAccount = accounts.find((item) => item.id !== deletedAccountId);
       setSelectedAccount(nextAccount?.id ?? 'all');
       setPendingAccountDelete(null);
       setShowCreateAccount(!nextAccount);
       await loadAccounts();
+      if (!mountedRef.current) return;
+      activeEventPageRef.current = 1;
       setEventPage(1);
     } catch (err) {
+      if (!mountedRef.current) return;
       setError(getParsedApiError(err));
     } finally {
-      setAccountDeleteLoading(false);
+      accountDeleteInFlightRef.current = false;
+      if (mountedRef.current) {
+        setAccountDeleteLoading(false);
+      }
     }
   };
 
   const handleConfirmDelete = async () => {
-    if (!pendingDelete || deleteLoading) return;
+    if (!pendingDelete || deleteLoading || deleteInFlightRef.current) return;
     if (!writableAccountId) {
       setWriteWarning('请先在右上角选择具体账户，再进行删除修正。');
       setPendingDelete(null);
       return;
     }
 
+    const submittedAccountId = writableAccountId;
+    const submittedEventsScopeKey = eventsScopeKey;
+    deleteInFlightRef.current = true;
     const nextPage = currentEventCount === 1 && eventPage > 1 ? eventPage - 1 : eventPage;
     try {
       setDeleteLoading(true);
@@ -1264,26 +1605,38 @@ const PortfolioPage: React.FC = () => {
       } else {
         await portfolioApi.deleteCorporateAction(pendingDelete.id);
       }
+      if (!mountedRef.current) return;
       setPendingDelete(null);
-      if (nextPage !== eventPage) {
+      if (activeEventsScopeKeyRef.current === submittedEventsScopeKey && nextPage !== eventPage) {
+        activeEventPageRef.current = nextPage;
         setEventPage(nextPage);
       }
-      await refreshPortfolioData(nextPage);
+      if (activeQueryAccountIdRef.current === submittedAccountId || activeQueryAccountIdRef.current === undefined) {
+        await refreshPortfolioDataRef.current(
+          activeEventsScopeKeyRef.current === submittedEventsScopeKey ? nextPage : undefined,
+        );
+      }
     } catch (err) {
+      if (!mountedRef.current) return;
       setError(getParsedApiError(err));
     } finally {
-      setDeleteLoading(false);
+      deleteInFlightRef.current = false;
+      if (mountedRef.current) {
+        setDeleteLoading(false);
+      }
     }
   };
 
   const handleCreateAccount = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (accountCreating || accountCreateInFlightRef.current) return;
     const name = accountForm.name.trim();
     if (!name) {
       setAccountCreateError('账户名称不能为空。');
       setAccountCreateSuccess(null);
       return;
     }
+    accountCreateInFlightRef.current = true;
     try {
       setAccountCreating(true);
       setAccountCreateError(null);
@@ -1294,7 +1647,10 @@ const PortfolioPage: React.FC = () => {
         market: accountForm.market,
         baseCurrency: accountForm.baseCurrency.trim() || 'CNY',
       });
-      await loadAccounts();
+      if (!mountedRef.current) return;
+      accountsRequestRef.current += 1;
+      accountsCommittedSeqRef.current = accountsRequestRef.current;
+      setAccounts((prev) => (prev.some((item) => item.id === created.id) ? prev : [...prev, created]));
       setSelectedAccount(created.id);
       setShowCreateAccount(false);
       setWriteWarning(null);
@@ -1305,17 +1661,24 @@ const PortfolioPage: React.FC = () => {
         baseCurrency: accountForm.baseCurrency,
       });
       setAccountCreateSuccess('账户创建成功，已自动切换到该账户。');
+      await loadAccounts();
+      if (!mountedRef.current) return;
     } catch (err) {
+      if (!mountedRef.current) return;
       const parsed = getParsedApiError(err);
       setAccountCreateError(parsed.message || '创建账户失败，请稍后重试。');
       setAccountCreateSuccess(null);
     } finally {
-      setAccountCreating(false);
+      accountCreateInFlightRef.current = false;
+      if (mountedRef.current) {
+        setAccountCreating(false);
+      }
     }
   };
 
   const handleRefresh = async () => {
     await Promise.all([loadAccounts(), loadSnapshotAndRisk(), loadEvents(), loadBrokers()]);
+    if (!mountedRef.current) return;
     setPortfolioSignalsRefreshKey((current) => current + 1);
   };
 
@@ -1328,6 +1691,8 @@ const PortfolioPage: React.FC = () => {
     if (!isActiveRefreshContext(requestedViewKey, requestedRequestId)) {
       return false;
     }
+    const snapReqId = snapshotRequestRef.current + 1;
+    snapshotRequestRef.current = snapReqId;
 
     setRiskWarning(null);
 
@@ -1340,6 +1705,10 @@ const PortfolioPage: React.FC = () => {
       if (!isActiveRefreshContext(requestedViewKey, requestedRequestId)) {
         return false;
       }
+      if (snapReqId < snapshotCommittedSeqRef.current) {
+        return true;
+      }
+      snapshotCommittedSeqRef.current = snapReqId;
       setSnapshot(snapshotData);
       setError(null);
 
@@ -1352,12 +1721,20 @@ const PortfolioPage: React.FC = () => {
         if (!isActiveRefreshContext(requestedViewKey, requestedRequestId)) {
           return false;
         }
+        if (snapReqId < riskCommittedSeqRef.current) {
+          return true;
+        }
+        riskCommittedSeqRef.current = snapReqId;
         setRisk(riskData);
         setRiskWarning(null);
       } catch (riskErr) {
         if (!isActiveRefreshContext(requestedViewKey, requestedRequestId)) {
           return false;
         }
+        if (snapReqId < riskCommittedSeqRef.current || snapReqId !== snapshotRequestRef.current) {
+          return true;
+        }
+        riskCommittedSeqRef.current = snapReqId;
         setRisk(null);
         const parsed = getParsedApiError(riskErr);
         setRiskWarning(parsed.message || '风险数据获取失败，已降级为仅展示快照数据。');
@@ -1367,8 +1744,14 @@ const PortfolioPage: React.FC = () => {
       if (!isActiveRefreshContext(requestedViewKey, requestedRequestId)) {
         return false;
       }
+      if (snapReqId < snapshotCommittedSeqRef.current || snapReqId !== snapshotRequestRef.current) {
+        return true;
+      }
+      snapshotCommittedSeqRef.current = snapReqId;
+      riskCommittedSeqRef.current = Math.max(riskCommittedSeqRef.current, snapReqId);
       setSnapshot(null);
       setRisk(null);
+      setRiskWarning(null);
       setError(getParsedApiError(err));
       return false;
     }
@@ -1754,7 +2137,7 @@ const PortfolioPage: React.FC = () => {
                 <tbody>
                   {positionRows.map((row) => {
                     const rowKey = `${row.accountId}-${row.symbol}-${row.market}`;
-                    const analyzing = positionAnalysisLoadingKey === rowKey;
+                    const analyzing = Boolean(analyzingPositionKeys[rowKey]);
                     const signal = signalByPositionKey.get(rowKey);
                     return (
                     <tr key={rowKey} className="border-b border-white/5">
@@ -1908,30 +2291,30 @@ const PortfolioPage: React.FC = () => {
           <h3 className="text-sm font-semibold text-foreground mb-3">手工录入：交易</h3>
           <form className="space-y-2" onSubmit={handleTradeSubmit}>
             <input className={PORTFOLIO_INPUT_CLASS} placeholder="股票代码（例如 600519）" value={tradeForm.symbol}
-              onChange={(e) => setTradeForm((prev) => ({ ...prev, symbol: e.target.value }))} required />
+              onChange={(e) => updateTradeForm((prev) => ({ ...prev, symbol: e.target.value }))} required />
             <div className="grid grid-cols-2 gap-2">
               <input className={PORTFOLIO_INPUT_CLASS} type="date" value={tradeForm.tradeDate}
-                onChange={(e) => setTradeForm((prev) => ({ ...prev, tradeDate: e.target.value }))} required />
+                onChange={(e) => updateTradeForm((prev) => ({ ...prev, tradeDate: e.target.value }))} required />
               <select className={PORTFOLIO_SELECT_CLASS} value={tradeForm.side}
-                onChange={(e) => setTradeForm((prev) => ({ ...prev, side: e.target.value as PortfolioSide }))}>
+                onChange={(e) => updateTradeForm((prev) => ({ ...prev, side: e.target.value as PortfolioSide }))}>
                 <option value="buy">买入</option>
                 <option value="sell">卖出</option>
               </select>
             </div>
             <div className="grid grid-cols-2 gap-2">
               <input className={PORTFOLIO_INPUT_CLASS} type="number" min="0" step="0.0001" placeholder="数量（必填）" value={tradeForm.quantity}
-                onChange={(e) => setTradeForm((prev) => ({ ...prev, quantity: e.target.value }))} required />
+                onChange={(e) => updateTradeForm((prev) => ({ ...prev, quantity: e.target.value }))} required />
               <input className={PORTFOLIO_INPUT_CLASS} type="number" min="0" step="0.0001" placeholder="成交价（必填）" value={tradeForm.price}
-                onChange={(e) => setTradeForm((prev) => ({ ...prev, price: e.target.value }))} required />
+                onChange={(e) => updateTradeForm((prev) => ({ ...prev, price: e.target.value }))} required />
             </div>
             <div className="grid grid-cols-2 gap-2">
               <input className={PORTFOLIO_INPUT_CLASS} type="number" min="0" step="0.0001" placeholder="手续费（可选）" value={tradeForm.fee}
-                onChange={(e) => setTradeForm((prev) => ({ ...prev, fee: e.target.value }))} />
+                onChange={(e) => updateTradeForm((prev) => ({ ...prev, fee: e.target.value }))} />
               <input className={PORTFOLIO_INPUT_CLASS} type="number" min="0" step="0.0001" placeholder="税费（可选）" value={tradeForm.tax}
-                onChange={(e) => setTradeForm((prev) => ({ ...prev, tax: e.target.value }))} />
+                onChange={(e) => updateTradeForm((prev) => ({ ...prev, tax: e.target.value }))} />
             </div>
             <p className="text-xs text-secondary">手续费和税费可留空，系统将按 0 处理。</p>
-            <button type="submit" className="btn-secondary w-full" disabled={!writableAccountId}>提交交易</button>
+            <button type="submit" className="btn-secondary w-full" disabled={!writableAccountId || tradeSubmitting}>提交交易</button>
           </form>
         </Card>
 
@@ -1940,18 +2323,18 @@ const PortfolioPage: React.FC = () => {
           <form className="space-y-2" onSubmit={handleCashSubmit}>
             <div className="grid grid-cols-2 gap-2">
               <input className={PORTFOLIO_INPUT_CLASS} type="date" value={cashForm.eventDate}
-                onChange={(e) => setCashForm((prev) => ({ ...prev, eventDate: e.target.value }))} required />
+                onChange={(e) => updateCashForm((prev) => ({ ...prev, eventDate: e.target.value }))} required />
               <select className={PORTFOLIO_SELECT_CLASS} value={cashForm.direction}
-                onChange={(e) => setCashForm((prev) => ({ ...prev, direction: e.target.value as PortfolioCashDirection }))}>
+                onChange={(e) => updateCashForm((prev) => ({ ...prev, direction: e.target.value as PortfolioCashDirection }))}>
                 <option value="in">流入</option>
                 <option value="out">流出</option>
               </select>
             </div>
             <input className={PORTFOLIO_INPUT_CLASS} type="number" min="0" step="0.0001" placeholder="金额"
-              value={cashForm.amount} onChange={(e) => setCashForm((prev) => ({ ...prev, amount: e.target.value }))} required />
+              value={cashForm.amount} onChange={(e) => updateCashForm((prev) => ({ ...prev, amount: e.target.value }))} required />
             <input className={PORTFOLIO_INPUT_CLASS} placeholder={`币种（可选，默认 ${writableAccount?.baseCurrency || '账户基准币'}）`} value={cashForm.currency}
-              onChange={(e) => setCashForm((prev) => ({ ...prev, currency: e.target.value }))} />
-            <button type="submit" className="btn-secondary w-full" disabled={!writableAccountId}>提交资金流水</button>
+              onChange={(e) => updateCashForm((prev) => ({ ...prev, currency: e.target.value }))} />
+            <button type="submit" className="btn-secondary w-full" disabled={!writableAccountId || cashSubmitting}>提交资金流水</button>
           </form>
         </Card>
 
@@ -1959,12 +2342,12 @@ const PortfolioPage: React.FC = () => {
           <h3 className="text-sm font-semibold text-foreground mb-3">手工录入：公司行为</h3>
           <form className="space-y-2" onSubmit={handleCorporateSubmit}>
             <input className={PORTFOLIO_INPUT_CLASS} placeholder="股票代码" value={corpForm.symbol}
-              onChange={(e) => setCorpForm((prev) => ({ ...prev, symbol: e.target.value }))} required />
+              onChange={(e) => updateCorpForm((prev) => ({ ...prev, symbol: e.target.value }))} required />
             <div className="grid grid-cols-2 gap-2">
               <input className={PORTFOLIO_INPUT_CLASS} type="date" value={corpForm.effectiveDate}
-                onChange={(e) => setCorpForm((prev) => ({ ...prev, effectiveDate: e.target.value }))} required />
+                onChange={(e) => updateCorpForm((prev) => ({ ...prev, effectiveDate: e.target.value }))} required />
               <select className={PORTFOLIO_SELECT_CLASS} value={corpForm.actionType}
-                onChange={(e) => setCorpForm((prev) => ({ ...prev, actionType: e.target.value as PortfolioCorporateActionType }))}>
+                onChange={(e) => updateCorpForm((prev) => ({ ...prev, actionType: e.target.value as PortfolioCorporateActionType }))}>
                 <option value="cash_dividend">现金分红</option>
                 <option value="split_adjustment">拆并股调整</option>
               </select>
@@ -1972,13 +2355,13 @@ const PortfolioPage: React.FC = () => {
             {corpForm.actionType === 'cash_dividend' ? (
               <input className={PORTFOLIO_INPUT_CLASS} type="number" min="0" step="0.000001" placeholder="每股分红"
                 value={corpForm.cashDividendPerShare}
-                onChange={(e) => setCorpForm((prev) => ({ ...prev, cashDividendPerShare: e.target.value, splitRatio: '' }))} required />
+                onChange={(e) => updateCorpForm((prev) => ({ ...prev, cashDividendPerShare: e.target.value, splitRatio: '' }))} required />
             ) : (
               <input className={PORTFOLIO_INPUT_CLASS} type="number" min="0" step="0.000001" placeholder="拆并股比例"
                 value={corpForm.splitRatio}
-                onChange={(e) => setCorpForm((prev) => ({ ...prev, splitRatio: e.target.value, cashDividendPerShare: '' }))} required />
+                onChange={(e) => updateCorpForm((prev) => ({ ...prev, splitRatio: e.target.value, cashDividendPerShare: '' }))} required />
             )}
-            <button type="submit" className="btn-secondary w-full" disabled={!writableAccountId}>提交企业行为</button>
+            <button type="submit" className="btn-secondary w-full" disabled={!writableAccountId || corpSubmitting}>提交企业行为</button>
           </form>
         </Card>
       </section>
@@ -2029,11 +2412,11 @@ const PortfolioPage: React.FC = () => {
                 className="rounded-lg px-3 py-2 text-xs shadow-none"
               />
             ) : null}
-            {csvCommitResult ? (
+            {activeCsvCommitEntry ? (
               <InlineAlert
-                variant={getCsvCommitVariant(csvCommitResult, csvDryRun)}
-                title={csvDryRun ? 'CSV 预演结果' : 'CSV 提交结果'}
-                message={`${csvDryRun ? '预演检查' : '实际写入'}：写入 ${csvCommitResult.insertedCount} 条，重复 ${csvCommitResult.duplicateCount} 条，失败 ${csvCommitResult.failedCount} 条。`}
+                variant={getCsvCommitVariant(activeCsvCommitEntry.result, activeCsvCommitEntry.dryRun)}
+                title={activeCsvCommitEntry.dryRun ? 'CSV 预演结果' : 'CSV 提交结果'}
+                message={`${activeCsvCommitEntry.dryRun ? '预演检查' : '实际写入'}：写入 ${activeCsvCommitEntry.result.insertedCount} 条，重复 ${activeCsvCommitEntry.result.duplicateCount} 条，失败 ${activeCsvCommitEntry.result.failedCount} 条。`}
                 className="rounded-lg px-3 py-2 text-xs shadow-none"
               />
             ) : null}
@@ -2088,76 +2471,87 @@ const PortfolioPage: React.FC = () => {
               {writeBlocked ? '删除修正仅在单账户视图可用。请先选择具体账户后再删除错误流水。' : '如有错误流水，可直接删除后重新录入。'}
             </div>
             <div className="max-h-64 overflow-auto rounded-lg border border-white/10 p-2">
-              {eventType === 'trade' && tradeEvents.map((item) => (
-                <div key={`t-${item.id}`} className="flex items-start justify-between gap-3 border-b border-white/5 py-2 text-xs text-secondary">
-                  <div className="min-w-0">
-                    {item.tradeDate} {formatSideLabel(item.side)} {item.symbol} 数量={item.quantity} 价格={item.price}
-                  </div>
-                  {!writeBlocked ? (
-                    <button
-                      type="button"
-                      className="btn-secondary shrink-0 !px-3 !py-1 !text-[11px]"
-                      onClick={() => openDeleteDialog({
-                        eventType: 'trade',
-                        id: item.id,
-                        message: `确认删除 ${item.tradeDate} 的${formatSideLabel(item.side)}流水 ${item.symbol}（数量 ${item.quantity}，价格 ${item.price}）吗？`,
-                      })}
-                    >
-                      删除
-                    </button>
-                  ) : null}
-                </div>
-              ))}
-              {eventType === 'cash' && cashEvents.map((item) => (
-                <div key={`c-${item.id}`} className="flex items-start justify-between gap-3 border-b border-white/5 py-2 text-xs text-secondary">
-                  <div className="min-w-0">
-                    {item.eventDate} {formatCashDirectionLabel(item.direction)} {item.amount} {item.currency}
-                  </div>
-                  {!writeBlocked ? (
-                    <button
-                      type="button"
-                      className="btn-secondary shrink-0 !px-3 !py-1 !text-[11px]"
-                      onClick={() => openDeleteDialog({
-                        eventType: 'cash',
-                        id: item.id,
-                        message: `确认删除 ${item.eventDate} 的资金流水（${formatCashDirectionLabel(item.direction)} ${item.amount} ${item.currency}）吗？`,
-                      })}
-                    >
-                      删除
-                    </button>
-                  ) : null}
-                </div>
-              ))}
-              {eventType === 'corporate' && corporateEvents.map((item) => (
-                <div key={`ca-${item.id}`} className="flex items-start justify-between gap-3 border-b border-white/5 py-2 text-xs text-secondary">
-                  <div className="min-w-0">
-                    {item.effectiveDate} {formatCorporateActionLabel(item.actionType)} {item.symbol}
-                  </div>
-                  {!writeBlocked ? (
-                    <button
-                      type="button"
-                      className="btn-secondary shrink-0 !px-3 !py-1 !text-[11px]"
-                      onClick={() => openDeleteDialog({
-                        eventType: 'corporate',
-                        id: item.id,
-                        message: `确认删除 ${item.effectiveDate} 的公司行为 ${formatCorporateActionLabel(item.actionType)}（${item.symbol}）吗？`,
-                      })}
-                    >
-                      删除
-                    </button>
-                  ) : null}
-                </div>
-              ))}
-              {!eventLoading
-                && ((eventType === 'trade' && tradeEvents.length === 0)
-                  || (eventType === 'cash' && cashEvents.length === 0)
-                  || (eventType === 'corporate' && corporateEvents.length === 0)) ? (
-                    <EmptyState
-                      title="暂无流水"
-                      description="调整筛选条件或先录入一笔交易、资金流水或公司行为。"
-                      className="border-none bg-transparent px-3 py-6 shadow-none"
-                    />
-                  ) : null}
+              {eventsError ? (
+                <InlineAlert
+                  variant="danger"
+                  title="流水加载失败"
+                  message={eventsError.message || '无法加载事件流水，请刷新重试。'}
+                  className="rounded-lg px-3 py-2 text-xs shadow-none"
+                />
+              ) : (
+                <>
+                  {eventType === 'trade' && tradeEvents.map((item) => (
+                    <div key={`t-${item.id}`} className="flex items-start justify-between gap-3 border-b border-white/5 py-2 text-xs text-secondary">
+                      <div className="min-w-0">
+                        {item.tradeDate} {formatSideLabel(item.side)} {item.symbol} 数量={item.quantity} 价格={item.price}
+                      </div>
+                      {!writeBlocked ? (
+                        <button
+                          type="button"
+                          className="btn-secondary shrink-0 !px-3 !py-1 !text-[11px]"
+                          onClick={() => openDeleteDialog({
+                            eventType: 'trade',
+                            id: item.id,
+                            message: `确认删除 ${item.tradeDate} 的${formatSideLabel(item.side)}流水 ${item.symbol}（数量 ${item.quantity}，价格 ${item.price}）吗？`,
+                          })}
+                        >
+                          删除
+                        </button>
+                      ) : null}
+                    </div>
+                  ))}
+                  {eventType === 'cash' && cashEvents.map((item) => (
+                    <div key={`c-${item.id}`} className="flex items-start justify-between gap-3 border-b border-white/5 py-2 text-xs text-secondary">
+                      <div className="min-w-0">
+                        {item.eventDate} {formatCashDirectionLabel(item.direction)} {item.amount} {item.currency}
+                      </div>
+                      {!writeBlocked ? (
+                        <button
+                          type="button"
+                          className="btn-secondary shrink-0 !px-3 !py-1 !text-[11px]"
+                          onClick={() => openDeleteDialog({
+                            eventType: 'cash',
+                            id: item.id,
+                            message: `确认删除 ${item.eventDate} 的资金流水（${formatCashDirectionLabel(item.direction)} ${item.amount} ${item.currency}）吗？`,
+                          })}
+                        >
+                          删除
+                        </button>
+                      ) : null}
+                    </div>
+                  ))}
+                  {eventType === 'corporate' && corporateEvents.map((item) => (
+                    <div key={`ca-${item.id}`} className="flex items-start justify-between gap-3 border-b border-white/5 py-2 text-xs text-secondary">
+                      <div className="min-w-0">
+                        {item.effectiveDate} {formatCorporateActionLabel(item.actionType)} {item.symbol}
+                      </div>
+                      {!writeBlocked ? (
+                        <button
+                          type="button"
+                          className="btn-secondary shrink-0 !px-3 !py-1 !text-[11px]"
+                          onClick={() => openDeleteDialog({
+                            eventType: 'corporate',
+                            id: item.id,
+                            message: `确认删除 ${item.effectiveDate} 的公司行为 ${formatCorporateActionLabel(item.actionType)}（${item.symbol}）吗？`,
+                          })}
+                        >
+                          删除
+                        </button>
+                      ) : null}
+                    </div>
+                  ))}
+                  {!eventLoading
+                    && ((eventType === 'trade' && tradeEvents.length === 0)
+                      || (eventType === 'cash' && cashEvents.length === 0)
+                      || (eventType === 'corporate' && corporateEvents.length === 0)) ? (
+                        <EmptyState
+                          title="暂无流水"
+                          description="调整筛选条件或先录入一笔交易、资金流水或公司行为。"
+                          className="border-none bg-transparent px-3 py-6 shadow-none"
+                        />
+                      ) : null}
+                </>
+              )}
             </div>
             <div className="flex items-center justify-between text-xs text-secondary">
               <span>第 {eventPage} / {totalEventPages} 页</span>
