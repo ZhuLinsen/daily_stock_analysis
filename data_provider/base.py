@@ -150,6 +150,10 @@ def normalize_stock_code(stock_code: str) -> str:
     # while preserving explicit Yahoo suffix forms for JP/KR/TW.
     if '.' in code:
         base, suffix = code.rsplit('.', 1)
+        if suffix.upper() == 'AX':
+            if not is_suffix_market_symbol(code, "au"):
+                raise ValueError(f"Invalid ASX Yahoo symbol: {code!r}")
+            return code.upper()
         if suffix.upper() == 'T' and base.isdigit() and len(base) in (4, 5):
             return f"{base}.{suffix.upper()}"
         if suffix.upper() in ('KS', 'KQ') and base.isdigit() and len(base) == 6:
@@ -258,6 +262,8 @@ def _is_meaningful_chip_distribution(chip: Any) -> bool:
 
 def _market_tag(code: str) -> str:
     """返回市场标签: cn/us/hk/jp/kr/tw."""
+    if is_suffix_market_symbol(code, "au"):
+        return "au"
     if _is_us_market(code):
         return "us"
     if _is_hk_market(code):
@@ -664,7 +670,7 @@ class DataFetcherManager:
         "MiaoxiangFetcher": set(),
         "PytdxFetcher": {"cn"},
         "BaostockFetcher": {"cn"},
-        "YfinanceFetcher": {"cn", "hk", "us", "jp", "kr", "tw"},
+        "YfinanceFetcher": {"cn", "hk", "us", "jp", "kr", "tw", "au"},
         "LongbridgeFetcher": {"hk", "us"},
         "FutuFetcher": {"hk", "cn", "us"},
         "FinnhubFetcher": {"us"},
@@ -840,7 +846,7 @@ class DataFetcherManager:
         skipped: List[str] = []
         for fetcher in fetchers:
             supported = cls._DAILY_MARKET_FETCHER_SUPPORT.get(fetcher.name)
-            if supported is not None and market not in supported:
+            if (market == "au" and supported is None) or (supported is not None and market not in supported):
                 skipped.append(fetcher.name)
             else:
                 kept.append(fetcher)
@@ -2046,7 +2052,7 @@ class DataFetcherManager:
         is_jp = (not is_us) and (not is_hk) and _is_jp_market(stock_code)
         is_kr = (not is_us) and (not is_hk) and _is_kr_market(stock_code)
         is_tw = (not is_us) and (not is_hk) and _is_tw_market(stock_code)
-        market = "us" if is_us else "hk" if is_hk else "jp" if is_jp else "kr" if is_kr else "tw" if is_tw else "cn"
+        market = _market_tag(stock_code)
         if market != "cn":
             fetchers = self._filter_daily_fetchers_for_market(fetchers, market)
         fetchers = self._filter_fetchers_by_capability(fetchers, capability="daily_data")
@@ -2585,8 +2591,9 @@ class DataFetcherManager:
         is_kr = (not is_us) and (not is_hk) and _is_kr_market(stock_code)
         is_tw = (not is_us) and (not is_hk) and _is_tw_market(stock_code)
 
-        if is_jp or is_kr or is_tw:
-            market_label = "JP" if is_jp else "KR" if is_kr else "TW"
+        is_au = is_suffix_market_symbol(stock_code, "au")
+        if is_jp or is_kr or is_tw or is_au:
+            market_label = "AU" if is_au else "JP" if is_jp else "KR" if is_kr else "TW"
             quote = self._try_fetcher_quote(stock_code, "YfinanceFetcher", **target_kwargs)
             if quote is not None:
                 logger.info(f"[realtime quote] {market_label} {stock_code} fetched (source: YfinanceFetcher)")
@@ -3145,6 +3152,11 @@ class DataFetcherManager:
         # Normalize code (strip SH/SZ prefix etc.)
         stock_code = normalize_stock_code(stock_code)
 
+        # Current chip-distribution providers are CN-only. Never submit an
+        # Australian symbol to a provider that may strip or misread its suffix.
+        if is_suffix_market_symbol(stock_code, "au"):
+            return None
+
         from .realtime_types import get_chip_circuit_breaker
         from src.config import get_config
 
@@ -3314,7 +3326,10 @@ class DataFetcherManager:
                     continue
             elif market != "cn":
                 supported_markets = self._DAILY_MARKET_FETCHER_SUPPORT.get(fetcher.name)
-                if supported_markets is not None and market not in supported_markets:
+                # ASX names come only from fetchers that declare AU support.
+                if (market == "au" and supported_markets is None) or (
+                    supported_markets is not None and market not in supported_markets
+                ):
                     continue
             if not self._is_fetcher_available(fetcher, capability="stock_name"):
                 continue
@@ -3530,6 +3545,8 @@ class DataFetcherManager:
                     logger.warning(f"[TickFlowFetcher] failed to fetch index quotes: {e}")
 
         for fetcher in self._fetchers:
+            if region == "au" and fetcher.name != "YfinanceFetcher":
+                continue
             if region == "cn" and fetcher.name == "TickFlowFetcher":
                 continue
             try:
@@ -4536,7 +4553,7 @@ class DataFetcherManager:
         stock_code = normalize_stock_code(stock_code)
         market = _market_tag(stock_code)
         is_etf = _is_etf_code(stock_code)
-        if market in {"us", "hk", "jp", "kr", "tw"}:
+        if market in {"us", "hk", "jp", "kr", "tw", "au"}:
             return self._build_offshore_fundamental_context(
                 stock_code,
                 market=market,

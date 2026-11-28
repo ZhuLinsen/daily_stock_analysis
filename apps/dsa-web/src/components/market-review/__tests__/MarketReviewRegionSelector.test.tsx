@@ -14,7 +14,8 @@ describe('MarketReviewRegionSelector', () => {
     expect(serializeMarketReviewRegions(['kr', 'jp'])).toBe('jp,kr');
     expect(serializeMarketReviewRegions(['tw', 'cn'])).toBe('cn,tw');
     expect(serializeMarketReviewRegions(['cn', 'hk', 'us', 'jp', 'kr'])).toBe('cn,hk,us,jp,kr');
-    expect(serializeMarketReviewRegions(['cn', 'hk', 'us', 'jp', 'kr', 'tw'])).toBe('both');
+    expect(serializeMarketReviewRegions(['cn', 'hk', 'us', 'jp', 'kr', 'tw'])).toBe('cn,hk,us,jp,kr,tw');
+    expect(serializeMarketReviewRegions(['au', 'cn'])).toBe('cn,au');
   });
 
   it('keeps the runtime-resolved server default opaque and emits a canonical override', () => {
@@ -51,7 +52,7 @@ describe('MarketReviewRegionSelector', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '选择大盘复盘市场' }));
     fireEvent.click(screen.getByRole('button', { name: '全部市场' }));
-    expect(onChange).toHaveBeenLastCalledWith(['cn', 'hk', 'us', 'jp', 'kr', 'tw']);
+    expect(onChange).toHaveBeenLastCalledWith(['cn', 'hk', 'us', 'jp', 'kr', 'tw', 'au']);
 
     fireEvent.click(screen.getByRole('button', { name: /服务器默认/ }));
     expect(onChange).toHaveBeenLastCalledWith(undefined);

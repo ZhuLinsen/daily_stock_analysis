@@ -107,8 +107,18 @@ TW_PROFILE = MarketProfile(
 )
 
 
+AU_PROFILE = MarketProfile(
+    region="au", mood_index_code="AXJO",
+    news_queries=["ASX Australian stock market", "S&P ASX 200 RBA Australia market news"],
+    prompt_index_hint="分析 S&P/ASX 200 与 All Ordinaries；按悉尼交易日标注时间，缺失新闻、市场宽度或资金流时明确说明，不编造。",
+    has_market_stats=False, has_sector_rankings=False,
+)
+
+
 def get_profile(region: str) -> MarketProfile:
     """根据 region 返回对应的 MarketProfile"""
+    if region == "au":
+        return AU_PROFILE
     if region == "us":
         return US_PROFILE
     if region == "hk":

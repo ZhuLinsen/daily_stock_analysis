@@ -42,6 +42,19 @@ describe('stock code validation', () => {
   );
 
   test.each([
+    ['BHP.AX', 'BHP.AX'],
+    ['a2m.ax', 'A2M.AX'],
+    ['A200.AX', 'A200.AX'],
+  ])('accepts AU ASX suffix code %s', (input, normalized) => {
+    expect(validateStockCode(input)).toEqual({ valid: true, normalized });
+    expect(isObviouslyInvalidStockQuery(input)).toBe(false);
+  });
+
+  test.each(['TOOLONG7.AX', 'B-H.AX', '.AX', 'BHP.AXX'])('rejects invalid AU-like code %s', (input) => {
+    expect(validateStockCode(input).valid).toBe(false);
+  });
+
+  test.each([
     ['sh000016', 'SH000016'],
     ['sh000300', 'SH000300'],
     ['sz399001', 'SZ399001'],

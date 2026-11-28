@@ -345,6 +345,21 @@ describe('PortfolioPage FX refresh', () => {
     );
   }
 
+  it('creates an Australian account in English with AUD as the default currency', async () => {
+    renderEnglishPage();
+    await waitForInitialLoad();
+
+    fireEvent.click(screen.getByRole('button', { name: 'New account' }));
+    fireEvent.change(screen.getByPlaceholderText('Account name (required)'), { target: { value: 'CMC' } });
+    fireEvent.change(screen.getByDisplayValue('Market: A-shares (cn)'), { target: { value: 'au' } });
+    expect(screen.getByPlaceholderText('Base currency (e.g. AUD/USD/CNY)')).toHaveValue('AUD');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create account' }));
+    await waitFor(() => expect(createAccount).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'CMC', market: 'au', baseCurrency: 'AUD' }),
+    ));
+  });
+
   it('uses fast portfolio valuation for page snapshot and risk loads', async () => {
     render(<PortfolioPage />);
 

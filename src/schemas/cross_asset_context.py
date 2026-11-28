@@ -32,7 +32,7 @@ CrossAssetItemStatus = Literal["ok", "not_supported", "error"]
 # The six asset groups of the cross-asset-v1 contract.
 CROSS_ASSET_GROUPS = ("indices", "fx", "rates", "commodities", "crypto", "volatility")
 
-_VALID_MARKETS = frozenset({"cn", "hk", "us", "jp", "kr", "tw"})
+_VALID_MARKETS = frozenset({"cn", "hk", "us", "jp", "kr", "tw", "au"})
 
 
 class _CrossAssetModel(BaseModel):

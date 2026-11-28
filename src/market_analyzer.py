@@ -266,7 +266,7 @@ class MarketAnalyzer:
         self.search_service = search_service
         self.analyzer = analyzer
         self.data_manager = DataFetcherManager()
-        self.region = region if region in ("cn", "us", "hk", "jp", "kr", "tw") else "cn"
+        self.region = region if region in ("cn", "us", "hk", "jp", "kr", "tw", "au") else "cn"
         self.profile: MarketProfile = get_profile(self.region)
         self.strategy = get_market_strategy_blueprint(self.region)
 
@@ -414,6 +414,8 @@ class MarketAnalyzer:
 
     def _get_market_scope_name(self, review_language: str | None = None) -> str:
         review_language = review_language or self._get_review_language()
+        if self.region == "au":
+            return "Australian ASX market" if review_language == "en" else "澳大利亚 ASX 市场"
         if self.region == "us":
             return "US market" if review_language == "en" else "美股市场"
         if self.region == "hk":
@@ -430,6 +432,8 @@ class MarketAnalyzer:
 
     def _get_turnover_unit_label(self) -> str:
         """Return the turnover unit label for the current market/language."""
+        if self.region == "au":
+            return "AUD bn" if self._get_review_language() == "en" else "十亿澳元"
         if self.region == "us":
             return "USD bn" if self._get_review_language() == "en" else "十亿美元"
         if self.region == "hk":
@@ -446,7 +450,7 @@ class MarketAnalyzer:
         """Format raw turnover according to market-specific units."""
         if amount_raw == 0.0:
             return "N/A"
-        if self.region in ("us", "hk", "jp", "kr", "tw"):
+        if self.region in ("us", "hk", "jp", "kr", "tw", "au"):
             return f"{amount_raw / 1e9:.2f}"
         if amount_raw > 1e6:
             return f"{amount_raw / 1e8:.0f}"
@@ -468,15 +472,20 @@ class MarketAnalyzer:
                 "jp": "Japan Market Recap",
                 "kr": "Korea Market Recap",
                 "tw": "Taiwan Market Recap",
+                "au": "Australian ASX Market Recap",
             }
             market_name = market_names.get(self.region, "A-share Market Recap")
             return f"## {date} {market_name}"
+        if self.region == "au":
+            return f"## {date} 澳股 ASX 大盘复盘"
         if self.region == "tw":
             return f"## {date} 台股大盘复盘"
         return f"## {date} 大盘复盘"
 
     def _get_index_hint(self) -> str:
         if self._get_review_language() == "en":
+            if self.region == "au":
+                return "Analyze S&P/ASX 200 and All Ordinaries with dated Sydney-session evidence; disclose missing data."
             if self.region == "us":
                 return "Analyze the key moves in the S&P 500, Nasdaq, Dow, and other major indices."
             if self.region == "hk":
@@ -703,7 +712,7 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         Returns:
             MarketOverview: 市场概览数据对象
         """
-        now = get_market_now("tw") if self.region == "tw" else datetime.now()
+        now = get_market_now(self.region) if self.region in {"tw", "au"} else datetime.now()
         today = now.strftime('%Y-%m-%d')
         overview = MarketOverview(date=today)
         
@@ -892,6 +901,7 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             "jp": "日本股市" if review_language == "zh" else "Japan stock market",
             "kr": "韩国股市" if review_language == "zh" else "Korea stock market",
             "tw": "台股市场" if review_language == "zh" else "Taiwan stock market",
+            "au": "澳大利亚 ASX 市场" if review_language == "zh" else "Australian ASX stock market",
         }
         
         try:
@@ -2393,7 +2403,7 @@ Concept lagging: {bottom_concepts_text if bottom_concepts_text else "N/A"}"""
         output_template_sections = self._build_output_template_sections(review_language)
         zh_market_scope_name = self._get_market_scope_name("zh")
         zh_report_title = f"{overview.date} 大盘复盘"
-        if self.region in ("jp", "kr", "tw"):
+        if self.region in ("jp", "kr", "tw", "au"):
             zh_report_title = f"{overview.date} {zh_market_scope_name}大盘复盘"
         workflow_hint = (
             "报告要像交易员盘后工作台：先给结论，再按数据表、主线、催化、计划展开"
@@ -2541,7 +2551,7 @@ Output the report content directly, no extra commentary.
                 market_mood = self._get_market_mood_text("mild_down", template_language)
             else:
                 market_mood = self._get_market_mood_text("strong_down", template_language)
-        elif self.region == "tw":
+        elif self.region in {"tw", "au"}:
             market_mood = "insufficient index data" if template_language == "en" else "指数数据不足"
         else:
             market_mood = self._get_market_mood_text("range", template_language)
@@ -2583,6 +2593,7 @@ Output the report content directly, no extra commentary.
                 "jp": "Japan Market Recap",
                 "kr": "Korea Market Recap",
                 "tw": "Taiwan Market Recap",
+                "au": "Australian ASX Market Recap",
             }
             market_name = market_names.get(self.region, "A-share Market Recap")
             report = f"""## {overview.date} {market_name}
@@ -2604,7 +2615,7 @@ Market conditions can change quickly. The data above is for reference only and d
 """
             return report
 
-        market_labels = {"cn": "A股", "us": "美股", "hk": "港股", "jp": "日股", "kr": "韩股", "tw": "台股"}
+        market_labels = {"cn": "A股", "us": "美股", "hk": "港股", "jp": "日股", "kr": "韩股", "tw": "台股", "au": "澳股"}
         market_label = market_labels.get(self.region, "A股")
         dashboard_block = (
             self._build_stats_block(overview)

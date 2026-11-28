@@ -142,8 +142,8 @@ class YfinanceFetcher(BaseFetcher):
             return yf_symbol
 
         # 日股/韩股/台股 MVP：显式 Yahoo Finance suffix-only 代码，原样传给 Yahoo。
-        if self._is_jp_kr_suffix_stock(code) or self._is_tw_suffix_stock(code):
-            logger.debug(f"Identified as JP/KR/TW Yahoo suffix symbol: {code}")
+        if is_suffix_market_symbol(code):
+            logger.debug(f"Identified as offshore Yahoo suffix symbol: {code}")
             return code
 
         # 港股：hk前缀 -> .HK后缀
@@ -403,6 +403,17 @@ class YfinanceFetcher(BaseFetcher):
         """
         import yfinance as yf
 
+        if region == "au":
+            results = []
+            for code, symbol, name in [("AXJO", "^AXJO", "S&P/ASX 200"), ("AORD", "^AORD", "All Ordinaries")]:
+                try:
+                    item = self._fetch_yf_ticker_data(yf, symbol, name, code)
+                    if item:
+                        item["market"] = "au"
+                        results.append(item)
+                except Exception as exc:
+                    logger.warning("ASX index %s unavailable: %s", symbol, exc)
+            return results or None
         if region == "us":
             return self._get_us_main_indices(yf)
         if region == "hk":
@@ -878,6 +889,7 @@ class YfinanceFetcher(BaseFetcher):
             or _is_hk_market(stock_code)
             or self._is_jp_kr_suffix_stock(stock_code)
             or self._is_tw_suffix_stock(stock_code)
+            or is_suffix_market_symbol(stock_code, "au")
         ):
             logger.debug(f"[Yfinance] {stock_code} is not a supported US, HK, or JP/KR/TW symbol, skipping")
             return None
@@ -1027,6 +1039,7 @@ class YfinanceFetcher(BaseFetcher):
                 source=RealtimeSource.FALLBACK,
                 market=suffix_market or ("hk" if _is_hk_market(stock_code) else "us" if is_us_symbol else None),
                 currency=str(ticker_info.get("currency") or "").upper() or None,
+                quote_type=str(ticker_info.get("quoteType") or "").upper() or None,
                 data_quality="partial" if missing_fields else "ok",
                 missing_fields=missing_fields or None,
                 price=price,

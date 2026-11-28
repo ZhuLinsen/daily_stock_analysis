@@ -930,7 +930,7 @@ class ComputeEffectiveRegionTestCase(unittest.TestCase):
         with patch.object(trading_calendar, "_XCALS_AVAILABLE", False):
             self.assertEqual(
                 trading_calendar.get_open_markets_today(),
-                {"cn", "hk", "us", "jp", "kr", "tw"},
+                {"cn", "hk", "us", "jp", "kr", "tw", "au"},
             )
 
     def test_both_all_open_returns_comma_joined_supported_markets(self):

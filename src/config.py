@@ -1377,7 +1377,7 @@ class Config:
     cross_asset_context_timeout_seconds: int = 8
     # 收盘数据 stale 判定天数（指数/利率按交易日+1 自然日判定）
     cross_asset_context_stale_days: int = 2
-    # 大盘复盘市场区域：cn(A股)、hk(港股)、us(美股)、jp(日股)、kr(韩股)、tw(台股)、both(全部市场)
+    # 大盘复盘市场区域：cn(A股)、hk(港股)、us(美股)、jp(日股)、kr(韩股)、tw(台股)、au(澳股)、both(全部七个市场)
     market_review_region: str = "cn"
     market_review_color_scheme: str = "green_up"
     # 交易日检查：默认启用，非交易日跳过执行；设为 false 或 --force-run 可强制执行（Issue #373）
@@ -3267,7 +3267,7 @@ class Config:
 
         logging.getLogger(__name__).warning(
             f"Invalid MARKET_REVIEW_REGION value '{value}', falling back to default 'cn' "
-            "(valid: cn / hk / us / jp / kr / tw / both; comma-separated valid values supported)"
+            "(valid: cn / hk / us / jp / kr / tw / au / both; comma-separated valid values supported)"
         )
         return 'cn'
 

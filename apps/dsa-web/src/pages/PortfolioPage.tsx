@@ -589,8 +589,22 @@ const PortfolioExposureList: React.FC<{
   </div>
 );
 
-const DECISION_SIGNAL_MARKETS = new Set<DecisionSignalMarket>(['cn', 'hk', 'us', 'jp', 'kr', 'tw']);
-type PortfolioAccountMarket = 'cn' | 'hk' | 'us' | 'jp' | 'kr' | 'tw';
+const DECISION_SIGNAL_MARKETS = new Set<DecisionSignalMarket>(['cn', 'hk', 'us', 'jp', 'kr', 'tw', 'au']);
+type PortfolioAccountMarket = 'cn' | 'hk' | 'us' | 'jp' | 'kr' | 'tw' | 'au';
+
+const ACCOUNT_MARKETS: Array<{ code: PortfolioAccountMarket; label: 'marketCn' | 'marketHk' | 'marketUs' | 'marketJp' | 'marketKr' | 'marketTw' | 'marketAu'; currency: string }> = [
+  { code: 'cn', label: 'marketCn', currency: 'CNY' },
+  { code: 'hk', label: 'marketHk', currency: 'HKD' },
+  { code: 'us', label: 'marketUs', currency: 'USD' },
+  { code: 'jp', label: 'marketJp', currency: 'JPY' },
+  { code: 'kr', label: 'marketKr', currency: 'KRW' },
+  { code: 'tw', label: 'marketTw', currency: 'TWD' },
+  { code: 'au', label: 'marketAu', currency: 'AUD' },
+];
+
+function defaultCurrencyForMarket(market: PortfolioAccountMarket): string {
+  return ACCOUNT_MARKETS.find((item) => item.code === market)?.currency ?? 'CNY';
+}
 
 function toDecisionSignalMarket(value: string | null | undefined): DecisionSignalMarket | undefined {
   const normalized = String(value || '').toLowerCase();
@@ -1632,7 +1646,7 @@ const PortfolioPage: React.FC = () => {
     if (accountCreating || accountCreateInFlightRef.current) return;
     const name = accountForm.name.trim();
     if (!name) {
-      setAccountCreateError('账户名称不能为空。');
+      setAccountCreateError(text.accountNameRequired);
       setAccountCreateSuccess(null);
       return;
     }
@@ -1645,7 +1659,7 @@ const PortfolioPage: React.FC = () => {
         name,
         broker: accountForm.broker.trim() || undefined,
         market: accountForm.market,
-        baseCurrency: accountForm.baseCurrency.trim() || 'CNY',
+        baseCurrency: accountForm.baseCurrency.trim() || defaultCurrencyForMarket(accountForm.market),
       });
       if (!mountedRef.current) return;
       accountsRequestRef.current += 1;
@@ -1660,13 +1674,13 @@ const PortfolioPage: React.FC = () => {
         market: accountForm.market,
         baseCurrency: accountForm.baseCurrency,
       });
-      setAccountCreateSuccess('账户创建成功，已自动切换到该账户。');
+      setAccountCreateSuccess(text.createAccountSucceeded);
       await loadAccounts();
       if (!mountedRef.current) return;
     } catch (err) {
       if (!mountedRef.current) return;
       const parsed = getParsedApiError(err);
-      setAccountCreateError(parsed.message || '创建账户失败，请稍后重试。');
+      setAccountCreateError(parsed.message || text.createAccountFailed);
       setAccountCreateSuccess(null);
     } finally {
       accountCreateInFlightRef.current = false;
@@ -1922,7 +1936,7 @@ const PortfolioPage: React.FC = () => {
       {(showCreateAccount || !hasAccounts) ? (
         <Card padding="md">
           <div className="flex items-center justify-between gap-2">
-            <h2 className="text-sm font-semibold text-foreground">新建账户</h2>
+            <h2 className="text-sm font-semibold text-foreground">{text.createAccount}</h2>
             {hasAccounts ? (
               <button
                 type="button"
@@ -1933,17 +1947,17 @@ const PortfolioPage: React.FC = () => {
                   setAccountCreateSuccess(null);
                 }}
               >
-                收起
+                {text.collapse}
               </button>
             ) : (
-              <span className="text-xs text-secondary">创建后自动切换到该账户</span>
+              <span className="text-xs text-secondary">{text.createAccountAutoSwitch}</span>
             )}
           </div>
           {accountCreateError ? (
             <InlineAlert
               variant="danger"
               className="mt-2 rounded-lg px-2 py-1 text-xs shadow-none"
-              title="创建账户失败"
+              title={text.createAccountFailedTitle}
               message={accountCreateError}
             />
           ) : null}
@@ -1951,43 +1965,52 @@ const PortfolioPage: React.FC = () => {
             <InlineAlert
               variant="success"
               className="mt-2 rounded-lg px-2 py-1 text-xs shadow-none"
-              title="创建账户成功"
+              title={text.createAccountSucceededTitle}
               message={accountCreateSuccess}
             />
           ) : null}
           <form className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-2" onSubmit={handleCreateAccount}>
             <input
               className={`${PORTFOLIO_INPUT_CLASS} md:col-span-2`}
-              placeholder="账户名称（必填）"
+              placeholder={text.accountNamePlaceholder}
               value={accountForm.name}
               onChange={(e) => setAccountForm((prev) => ({ ...prev, name: e.target.value }))}
             />
             <input
               className={PORTFOLIO_INPUT_CLASS}
-              placeholder="券商（可选，如 Demo/华泰）"
+              placeholder={text.brokerPlaceholder}
               value={accountForm.broker}
               onChange={(e) => setAccountForm((prev) => ({ ...prev, broker: e.target.value }))}
             />
             <input
               className={PORTFOLIO_INPUT_CLASS}
-              placeholder="基准币（如 CNY/USD/HKD）"
+              placeholder={text.baseCurrencyPlaceholder}
               value={accountForm.baseCurrency}
               onChange={(e) => setAccountForm((prev) => ({ ...prev, baseCurrency: e.target.value.toUpperCase() }))}
             />
             <select
               className={PORTFOLIO_SELECT_CLASS}
               value={accountForm.market}
-              onChange={(e) => setAccountForm((prev) => ({ ...prev, market: e.target.value as PortfolioAccountMarket }))}
+              onChange={(e) => {
+                const market = e.target.value as PortfolioAccountMarket;
+                setAccountForm((prev) => ({
+                  ...prev,
+                  market,
+                  // Follow the market's currency unless the user typed a different one.
+                  baseCurrency: prev.baseCurrency === defaultCurrencyForMarket(prev.market)
+                    ? defaultCurrencyForMarket(market)
+                    : prev.baseCurrency,
+                }));
+              }}
             >
-              <option value="cn">市场：A 股（cn）</option>
-              <option value="hk">市场：港股（hk）</option>
-              <option value="us">市场：美股（us）</option>
-              <option value="jp">市场：日股（jp）</option>
-              <option value="kr">市场：韩股（kr）</option>
-              <option value="tw">市场：台股（tw）</option>
+              {ACCOUNT_MARKETS.map(({ code, label }) => (
+                <option key={code} value={code}>
+                  {text.marketOption.replace('{market}', text[label]).replace('{code}', code)}
+                </option>
+              ))}
             </select>
             <button type="submit" className="btn-secondary text-sm" disabled={accountCreating}>
-              {accountCreating ? '创建中...' : '创建账户'}
+              {accountCreating ? text.creatingAccount : text.createAccountSubmit}
             </button>
           </form>
         </Card>

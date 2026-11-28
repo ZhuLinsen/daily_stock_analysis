@@ -19,6 +19,7 @@ const STOCK_CODE_PATTERNS = [
   /^\d{4,5}\.T$/, // Japan Yahoo suffix format, for example 7203.T
   /^\d{4,6}\.(TW|TWO)$/, // Taiwan Yahoo suffix format, for example 2330.TW or 6488.TWO
   /^\d{6}\.(KS|KQ)$/, // Korea Yahoo suffix format, for example 005930.KS or 247540.KQ
+  /^[A-Z0-9]{1,6}\.AX$/, // Australia ASX suffix format, for example BHP.AX or A2M.AX
   /^[A-Z]{1,5}(?:\.(?:US|[A-Z]))?$/, // Common US ticker format
   /^[A-Z]{1,5}-[A-Z]{1,2}$/, // Yahoo class-share and preferred-share symbols
   /^CSI\d{6}$/, // Registered CSI index canonical (e.g. csi930955)
@@ -34,7 +35,7 @@ export const looksLikeStockCode = (value: string): boolean => {
 };
 
 /**
- * Validate common A-share, HK, US, JP, KR, and TW stock code formats.
+ * Validate common A-share, HK, US, JP, KR, TW, and AU stock code formats.
  */
 export const validateStockCode = (value: string, language?: UiLanguage): ValidationResult => {
   const normalized = value.trim().toUpperCase();

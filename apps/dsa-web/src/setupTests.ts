@@ -1,4 +1,9 @@
 import '@testing-library/jest-dom';
+import { configure } from '@testing-library/react';
+
+// Shared CI runners can take over 1 s to settle a page's first mocked load;
+// the 1 s default made unrelated findBy/waitFor calls fail at random.
+configure({ asyncUtilTimeout: 5000 });
 
 class MemoryStorageMock implements Storage {
   private readonly values = new Map<string, string>();

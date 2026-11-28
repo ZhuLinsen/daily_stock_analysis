@@ -385,6 +385,13 @@ class TestParseCodesFromText:
 
 
 class TestParseItemsFromText:
+    def test_keeps_asx_suffix_codes(self):
+        text = (
+            '[{"code":"BHP.AX","name":"BHP"},{"code":"a2m.ax","name":"a2 Milk"},'
+            '{"code":"A200.AX","name":"ETF"},{"code":"TOOLONG7.AX"},{"code":"B-H.AX"}]'
+        )
+        assert [i[0] for i in _parse_items_from_text(text)] == ["BHP.AX", "A2M.AX", "A200.AX"]
+
     def test_parses_new_format(self):
         text = '[{"code":"600519","name":"贵州茅台","confidence":"high"},{"code":"00700","name":"腾讯控股","confidence":"medium"}]'
         items = _parse_items_from_text(text)

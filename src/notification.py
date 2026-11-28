@@ -2244,6 +2244,8 @@ class NotificationService(
         lines.append("")
 
     _CURRENCY_SUFFIX = {
+        "AUD": "澳元",
+        "NZD": "新西兰元",
         "USD": "美元",
         "HKD": "港元",
         "CNY": "元",

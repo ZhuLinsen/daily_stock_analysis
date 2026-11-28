@@ -19,9 +19,11 @@ class SuffixMarketSpec:
     market: str
     suffixes: tuple[str, ...]
     digit_lengths: tuple[int, ...]
+    alphanumeric: bool = False
 
 
 _SUFFIX_MARKET_SPECS: tuple[SuffixMarketSpec, ...] = (
+    SuffixMarketSpec("au", ("AX",), (1, 2, 3, 4, 5, 6), alphanumeric=True),
     SuffixMarketSpec("jp", ("T",), (4, 5)),
     SuffixMarketSpec("kr", ("KS", "KQ"), (6,)),
     # Taiwan support mirrors the same suffix-only pattern; keep it here so the
@@ -59,7 +61,8 @@ def get_suffix_market(stock_code: str) -> Optional[str]:
     spec = _SUFFIX_TO_SPEC.get(suffix)
     if spec is None:
         return None
-    if not (base.isdigit() and len(base) in spec.digit_lengths):
+    valid_base = base.isascii() and (base.isalnum() if spec.alphanumeric else base.isdigit())
+    if not (valid_base and len(base) in spec.digit_lengths):
         return None
     return spec.market
 

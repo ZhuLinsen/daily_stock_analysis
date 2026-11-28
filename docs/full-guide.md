@@ -535,7 +535,7 @@ daily_stock_analysis/
 | `GUARD_PASSIVE_MODE` | 仅记录日志不拦截，便于先观察 | `false` |
 | `MARKET_REVIEW_ENABLED` | 启用大盘复盘 | `true` |
 | `DAILY_MARKET_CONTEXT_ENABLED` | 将当日大盘环境摘要注入个股分析 Prompt，并在高风险/退潮环境下软化激进买入建议；默认开启，设为 `false` 后仍可运行大盘复盘 | `true` |
-| `MARKET_REVIEW_REGION` | 大盘复盘市场区域：cn(A股)、hk(港股)、us(美股)、jp(日股)、kr(韩股)、tw(台股)、both(全部六市场)，支持逗号子集（如 cn,tw） | `cn` |
+| `MARKET_REVIEW_REGION` | 大盘复盘市场区域：cn(A股)、hk(港股)、us(美股)、jp(日股)、kr(韩股)、tw(台股)、au(澳股，ASX `.AX`，详见 [澳股支持](asx_support.md))、both(全部七个市场 `cn,hk,us,jp,kr,tw,au`)，支持逗号子集（如 cn,tw） | `cn` |
 | `MARKET_REVIEW_COLOR_SCHEME` | 大盘复盘指数涨跌颜色：`green_up`=绿涨红跌（默认），`red_up`=红涨绿跌 | `green_up` |
 | `TRADING_DAY_CHECK_ENABLED` | 交易日检查：默认 `true`，非交易日跳过执行；设为 `false` 或使用 `--force-run` 可强制执行（Issue #373） | `true` |
 | `SCHEDULE_ENABLED` | 启用定时任务 | `false` |
@@ -967,7 +967,7 @@ docker run -e SCHEDULE_ENABLED=true -e SCHEDULE_RUN_IMMEDIATELY=false ...
 
 > 兼容说明：如果运行时显式传入 `RUN_IMMEDIATELY`，但没有单独传 `SCHEDULE_RUN_IMMEDIATELY`，内置调度模式会继续继承前者，避免被 `.env` 中持久化的 `SCHEDULE_RUN_IMMEDIATELY` 旧值反向覆盖。
 
-> 兼容说明（Issue #1815）：`MARKET_REVIEW_REGION=cn|hk|us|jp|kr|tw|both` 仅扩展大盘复盘输入集合；JP/KR/TW 仅供复盘上下文消费，不会放开 Market Light 告警。台股复盘复用既有加权/柜买指数与新闻检索；指数缺失会在报告和分享图片中明确披露；图片保留所有“数据边界”章节的限制项，历史报告和组合市场也适用。不提供市场宽度、三大法人资金流、成交额汇总或板块排行。`both` 现在包含台股，会增加请求次数和耗时；保留旧五市场请设为 `cn,hk,us,jp,kr`。历史配置不会自动改写，默认仍为 `cn`。
+> 兼容说明（Issue #1815）：`MARKET_REVIEW_REGION=cn|hk|us|jp|kr|tw|both` 仅扩展大盘复盘输入集合；JP/KR/TW 仅供复盘上下文消费，不会放开 Market Light 告警。台股复盘复用既有加权/柜买指数与新闻检索；指数缺失会在报告和分享图片中明确披露；图片保留所有“数据边界”章节的限制项，历史报告和组合市场也适用。不提供市场宽度、三大法人资金流、成交额汇总或板块排行。`both` 现在包含台股，会增加请求次数和耗时；保留旧五市场请设为 `cn,hk,us,jp,kr`。历史配置不会自动改写，默认仍为 `cn`。后续新增的 `au`（澳股 ASX，`.AX`）同样只扩展复盘输入，不放开 Market Light 告警；`both` 现为七市场 `cn,hk,us,jp,kr,tw,au`，保留六市场请设为 `cn,hk,us,jp,kr,tw`，详见 [澳股支持](asx_support.md)。
 > - `src/config.py`、`src/core/config_registry.py`、`src/services/system_config_service.py` 的改动仅是配置语义扩展，不改 `provider`/`model`/`base_url` 的运行时路由，也不触发 provider/model/base URL 迁移或清理逻辑。
 > - 本轮实际受控配置项：`MARKET_REVIEW_REGION`、`MARKET_REVIEW_COLOR_SCHEME`；`LITELLM_MODEL`、`AGENT_LITELLM_MODEL`、`LITELLM_FALLBACK_MODELS`、`VISION_MODEL`、`OPENAI_BASE_URL` 等旧值保持原子 upsert 语义，不会在更新其他字段时被静默清空或覆盖。
 > - 可核验证据摘要：官方 provider / Base URL / 模型命名来源沿用 [LLM 配置指南](LLM_CONFIG_GUIDE.md#常用官方文档来源用于核对预设-provider--base-url--模型命名)，当前运行时依赖窗口沿用 `requirements.txt` 中的 `litellm>=1.80.10,!=1.82.7,!=1.82.8,<1.99.0`；本轮不新增配置迁移脚本或清理分支，保存/导入仍只写本次提交键。`tests/test_system_config_service.py::SystemConfigServiceTestCase::test_update_market_review_region_does_not_trigger_runtime_model_cleanup` 覆盖只保存 `MARKET_REVIEW_REGION` 时不清空或改写 `LITELLM_CONFIG`、`LLM_CHANNELS`、`LLM_OPENAI_*`、`LITELLM_MODEL`、`AGENT_LITELLM_MODEL`、`LITELLM_FALLBACK_MODELS`、`VISION_MODEL`、`OPENAI_*` 等旧配置。
@@ -1937,6 +1937,7 @@ python main.py --serve-only --host 0.0.0.0 --port 8888
 | 美股 | 1-5 字母（可选 .X 后缀） | `AAPL`、`TSLA`、`BRK.B` |
 | 日股 | Yahoo 后缀 `.T` | `7203.T`、`6758.T` |
 | 韩股 | Yahoo 后缀 `.KS` / `.KQ` | `005930.KS`、`247540.KQ` |
+| 澳股 | Yahoo 后缀 `.AX`（必须带后缀，详见 [澳股支持](asx_support.md)） | `BHP.AX`、`A2M.AX`、`A200.AX` |
 | 美股指数 | SPX/DJI/IXIC 等 | `SPX`、`DJI`、`NASDAQ`、`VIX` |
 
 ### 注意事项

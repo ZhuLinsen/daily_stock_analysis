@@ -532,6 +532,33 @@ describe('stockPoolStore', () => {
     expect(analysisApi.analyzeAsync).not.toHaveBeenCalled();
   });
 
+  it('accepts typed ASX suffix codes and normalizes them to upper case', async () => {
+    vi.mocked(analysisApi.analyzeAsync).mockResolvedValue({
+      taskId: 'task-au-1',
+      stockCode: 'A2M.AX',
+      status: 'pending',
+      message: 'accepted',
+    } as never);
+
+    useStockPoolStore.getState().setQuery('a2m.ax');
+    await useStockPoolStore.getState().submitAnalysis();
+
+    const state = useStockPoolStore.getState();
+    expect(state.inputError).toBeUndefined();
+    expect(analysisApi.analyzeAsync).toHaveBeenCalledWith(expect.objectContaining({
+      stockCode: 'A2M.AX',
+    }));
+  });
+
+  it('rejects malformed ASX-like input before calling the API', async () => {
+    useStockPoolStore.getState().setQuery('TOOLONG7.AX');
+
+    await useStockPoolStore.getState().submitAnalysis();
+
+    expect(useStockPoolStore.getState().inputError).toBe('请输入有效的股票代码或股票名称');
+    expect(analysisApi.analyzeAsync).not.toHaveBeenCalled();
+  });
+
   it('accepts HK suffix codes from autocomplete without local validation errors', async () => {
     vi.mocked(analysisApi.analyzeAsync).mockResolvedValue({
       taskId: 'task-hk-1',

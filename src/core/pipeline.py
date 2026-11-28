@@ -585,6 +585,11 @@ class StockAnalysisPipeline:
             )
 
             # 断点续传检查：如果最新可复用交易日的数据已存在，则跳过
+            if get_market_for_stock(code) == "au":
+                # Never reuse legacy ASX bars fetched under a China/US identity.
+                cached_rows = self.db.get_latest_data(code, days=60)
+                if any(getattr(row, "data_source", None) != "YfinanceFetcher" for row in cached_rows):
+                    force_refresh = True
             if not force_refresh and self.db.has_today_data(code, target_date):
                 logger.info(
                     f"{stock_name}({code}) {target_date} data already exists, skipping fetch (resume)"
@@ -1310,6 +1315,8 @@ class StockAnalysisPipeline:
             quote_source_name = str(quote_source_name) if quote_source_name is not None else None
             enhanced['realtime'] = {
                 'name': getattr(realtime_quote, 'name', ''),
+                'currency': getattr(realtime_quote, 'currency', None),
+                'quote_type': getattr(realtime_quote, 'quote_type', None),
                 'price': getattr(realtime_quote, 'price', None),
                 'change_pct': getattr(realtime_quote, 'change_pct', None),
                 'volume_ratio': volume_ratio,
@@ -1488,9 +1495,14 @@ class StockAnalysisPipeline:
                             pass
 
         # ETF/index flag for analyzer prompt (Fixes #274)
-        enhanced['is_index_etf'] = SearchService.is_index_or_etf(
-            context.get('code', ''), enhanced.get('stock_name', stock_name)
-        )
+        if get_market_for_stock(context.get('code', '')) == 'au':
+            # ASX identity comes from provider metadata, not name/ticker guesses.
+            quote_type = str(getattr(realtime_quote, 'quote_type', '') or '').upper()
+            enhanced['is_index_etf'] = quote_type in {'ETF', 'INDEX'}
+        else:
+            enhanced['is_index_etf'] = SearchService.is_index_or_etf(
+                context.get('code', ''), enhanced.get('stock_name', stock_name)
+            )
 
         # P0: append unified fundamental block; keep as additional context only
         enhanced["fundamental_context"] = (
@@ -2295,7 +2307,7 @@ class StockAnalysisPipeline:
             market = "cn"
         else:
             market = get_market_for_stock(normalize_stock_code(code))
-        if market not in {"jp", "kr", "tw"}:
+        if market not in {"jp", "kr", "tw", "au"}:
             return context
 
         try:
@@ -3822,10 +3834,19 @@ class StockAnalysisPipeline:
             
             if not success:
                 logger.warning(f"[{code}] Data fetch failed: {error}")
+                # ASX is fail-closed: no invented neutral rating after data failure.
+                if get_market_for_stock(code) == "au":
+                    return None
                 # 即使获取失败，也尝试用已有数据分析
             else:
                 self._emit_progress(16, f"{code}：行情数据准备完成")
             
+            if get_market_for_stock(code) == "au":
+                cached_rows = self.db.get_latest_data(code, days=60)
+                if not cached_rows or any(getattr(row, "data_source", None) != "YfinanceFetcher" for row in cached_rows):
+                    logger.error("[%s] ASX history missing or contains untrusted legacy providers; refusing analysis", code)
+                    return None
+
             # Step 2: AI 分析
             if skip_analysis:
                 logger.info(f"[{code}] Skipping AI analysis (dry-run mode)")
