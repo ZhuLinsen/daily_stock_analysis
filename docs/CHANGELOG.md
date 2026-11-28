@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [改进] 新增原生 4 协议 HTTPX + SSE 传输引擎与共享解析器（#2622 Phase 2，默认保持 `LLM_TRANSPORT_MODE=litellm` 零行为变化）：新增 `src/llm/native_resolve.py`、`src/llm/native_types.py`、`src/llm/sse.py`、`src/llm/native_pool.py`、`src/llm/native_engine.py` 及 OpenAI Chat/Responses、Anthropic Messages、Gemini REST 协议适配器，支持 `auto` 按别名混合路由（云 IAM 委托 LiteLLM、同组其余原生运行）与 `native` 零 `litellm` 导入严格模式；实现确定性 R1 协议优先级（移除 `gpt-5`/`o3` 自动劫持）、fail-closed 端点与同源凭据绑定、`urlsplit` 查询/分号安全归一化、HTTP 200 HTML/WAF 403/带内错误分级与双处脱敏、单调截止与可关闭流句柄、`max_tokens`/`stream_options` 一键恢复、Doctor 模式报告及全链路离线与 LiteLLM 对等回归测试。
 - [改进] 引入统一 LLM 传输门面 `src/llm/transport.py` 与 `DeploymentSpec` 归一化契约（#2622 Phase 1）：将全部运行时 `litellm` 直接调用与延迟加载收敛至门面并在进程首次加载 `litellm` 前默认设置 `LITELLM_LOCAL_MODEL_COST_MAP=True`（离线安全，未显式覆盖时新模型定价走本地价目表/零成本兜底），提供线程/协程隔离的 `ContextVar` 传输切换与 CJK 感知 token 估算兜底；统一选股请求头代理以消除全局 `litellm.completion` monkey-patch 并修复跨主机/多路由凭据头泄漏，补齐 YAML `os.environ/...` 解析、OpenAI 通道 `dsa_api_surface`/`dsa_channel_protocol` 持久化、Vision `base_url` 与 `dsa_api_surface` 对齐、`SystemConfigService.test_llm_channel` 服务层 `api_surface`/`extra_headers` 透传与脱敏、配置重载缓存清理，并新增全仓 AST 导入边界守卫测试。
 - [修复] 历史决策信号回填和重评估保存时，按报告生成当日的服务器时区偏移换算 UTC，修复跨夏令时回填导致的创建和到期时间偏移。
 - [测试] 经只读 MCP 服务 `McpReadOnlySurface.call_tool` 校验 `analyze_pattern` 四种长影线形态的 `type`，覆盖工具白名单、股票范围、脱敏与序列化环节。

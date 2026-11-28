@@ -1127,6 +1127,10 @@ class SystemConfigService:
         request_headers = {"Accept": "application/json"}
         if selected_api_key:
             request_headers["Authorization"] = f"Bearer {selected_api_key}"
+        if "aihubmix.com" in base_url.lower() and not any(
+            k.lower() == "app-code" for k in request_headers
+        ):
+            request_headers["APP-Code"] = "GPIJ3886"
 
         try:
             models_url = self._build_llm_models_url(base_url)
@@ -1462,8 +1466,13 @@ class SystemConfigService:
             call_kwargs["api_key"] = selected_api_key
         if base_url.strip():
             call_kwargs["api_base"] = base_url.strip()
-        if normalized_extra_headers:
-            call_kwargs["extra_headers"] = dict(normalized_extra_headers)
+        effective_extra_headers = dict(normalized_extra_headers)
+        if "aihubmix.com" in base_url.lower() and not any(
+            k.lower() == "app-code" for k in effective_extra_headers
+        ):
+            effective_extra_headers["APP-Code"] = "GPIJ3886"
+        if effective_extra_headers:
+            call_kwargs["extra_headers"] = effective_extra_headers
         call_kwargs = apply_litellm_generation_params(
             call_kwargs,
             wire_model,
@@ -1500,7 +1509,7 @@ class SystemConfigService:
                     hermes_call_kwargs.pop("api_key", None)
                     hermes_call_kwargs.pop("api_base", None)
                     response = call_litellm_with_param_recovery(
-                        lambda kwargs: dispatch_completion(**kwargs),
+                        lambda kwargs: dispatch_completion(config=getattr(self, "_config", None), **kwargs),
                         model=wire_model,
                         call_kwargs=hermes_call_kwargs,
                         logger=logger,
@@ -1508,7 +1517,7 @@ class SystemConfigService:
                     )
             else:
                 response = call_litellm_with_param_recovery(
-                    lambda kwargs: dispatch_completion(**kwargs),
+                    lambda kwargs: dispatch_completion(config=getattr(self, "_config", None), **kwargs),
                     model=wire_model,
                     call_kwargs=call_kwargs,
                     logger=logger,
@@ -4808,6 +4817,25 @@ class SystemConfigService:
     def _classify_llm_exception(exc: Exception) -> _LLMDiagnostic:
         exc_name = type(exc).__name__.lower()
         text = str(exc).lower()
+        # P2: Classify typed NativeConfigError BEFORE message-substring timeout/quota checks.
+        if exc_name == "nativeconfigerror" or getattr(exc, "error_code", None) in {
+            "fallback_only_provider",
+            "missing_api_base",
+            "unknown_provider_without_api_base",
+            "unsupported_wire_protocol",
+            "unsupported_custom_provider",
+            "unsupported_channel_protocol",
+            "endpoint_surface_mismatch",
+            "unresolved_endpoint_env",
+            "conflicting_api_base",
+            "invalid_deployment_param",
+        }:
+            return _LLMDiagnostic(
+                "config_error",
+                False,
+                str(exc) or "LLM native transport configuration error",
+                str(getattr(exc, "error_code", None) or "native_config_error"),
+            )
         if isinstance(exc, TimeoutError) or "timeout" in exc_name or "timed out" in text:
             return _LLMDiagnostic("timeout", True, "LLM request timed out", "timeout")
         if any(token in text for token in ("billing", "balance", "insufficient balance")):
@@ -4830,6 +4858,31 @@ class SystemConfigService:
                 True,
                 "LLM request was rejected by quota or rate limiting",
                 "rate_limit",
+            )
+        if getattr(exc, "is_waf_blocked", False) or (
+            getattr(exc, "error_code", None) == "provider_blocked"
+        ):
+            return _LLMDiagnostic(
+                "request_blocked",
+                False,
+                "Blocked by Cloudflare/WAF, not invalid API key",
+                "provider_blocked",
+            )
+        if getattr(exc, "error_code", None) == "non_json_html" or (
+            "text/html" in text and "base url" in text
+        ):
+            return _LLMDiagnostic(
+                "format_error",
+                False,
+                "Endpoint returned HTML instead of JSON; missing /v1 in Base URL?",
+                "non_json_html",
+            )
+        if getattr(exc, "status_code", None) == 404 and "/responses" in text and "model" not in text:
+            return _LLMDiagnostic(
+                "network_error",
+                False,
+                "Relay lacks /responses; use Chat Completions",
+                "endpoint_not_found",
             )
         if SystemConfigService._has_provider_prefix_mismatch_signal(text):
             return _LLMDiagnostic(

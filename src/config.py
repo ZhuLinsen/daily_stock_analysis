@@ -1048,6 +1048,7 @@ class Config:
     # === AI 分析配置 ===
     generation_backend: str = LITELLM_BACKEND_ID
     generation_fallback_backend: str = LITELLM_BACKEND_ID
+    llm_transport_mode: str = "litellm"
     generation_backend_timeout_seconds: int = DEFAULT_LOCAL_CLI_TIMEOUT_SECONDS
     generation_backend_max_output_bytes: int = DEFAULT_LOCAL_CLI_MAX_OUTPUT_BYTES
     generation_backend_max_concurrency: int = DEFAULT_GENERATION_BACKEND_MAX_CONCURRENCY
@@ -2000,6 +2001,7 @@ class Config:
             ),
             generation_backend=generation_backend,
             generation_fallback_backend=generation_fallback_backend,
+            llm_transport_mode=cls._resolve_llm_transport_mode(),
             generation_backend_timeout_seconds=generation_backend_timeout_seconds,
             generation_backend_max_output_bytes=generation_backend_max_output_bytes,
             generation_backend_max_concurrency=generation_backend_max_concurrency,
@@ -3331,6 +3333,12 @@ class Config:
 
         return default_priority
 
+    @staticmethod
+    def _resolve_llm_transport_mode() -> str:
+        from src.llm.transport import resolve_llm_transport_mode
+
+        return resolve_llm_transport_mode(os.getenv("LLM_TRANSPORT_MODE"))
+
     @classmethod
     def reset_instance(cls) -> None:
         """重置单例（主要用于测试）"""
@@ -3338,6 +3346,9 @@ class Config:
         cls._BOOTSTRAP_RUNTIME_ENV_OVERRIDES_CAPTURED = False
         cls._BOOTSTRAP_RUNTIME_ENV_OVERRIDES = frozenset()
         cls._BOOTSTRAP_RUNTIME_ENV_PRESENT_KEYS = frozenset()
+        from src.llm.transport import reset_transport_cache
+
+        reset_transport_cache()
 
     def has_searxng_enabled(self) -> bool:
         """Whether SearXNG fallback is enabled via self-hosted or public mode."""

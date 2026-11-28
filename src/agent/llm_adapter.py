@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 from src.llm.transport import (
+    NativeConfigError,
     can_register_model,
     create_litellm_compat_proxy,
     create_router,
@@ -224,7 +225,23 @@ def _object_to_dict(value: Any) -> Dict[str, Any]:
         except Exception:
             pass
     result: Dict[str, Any] = {}
-    for key in ("type", "text", "content", "thinking", "signature", "data"):
+    for key in (
+        "type",
+        "text",
+        "content",
+        "thinking",
+        "signature",
+        "data",
+        "thought",
+        "thoughtSignature",
+        "thought_signature",
+        "functionCall",
+        "encrypted_content",
+        "summary",
+        "id",
+        "name",
+        "input",
+    ):
         if hasattr(value, key):
             result[key] = getattr(value, key)
     return result
@@ -246,7 +263,11 @@ def _extract_provider_blocks(choice: Any) -> Tuple[List[Dict[str, Any]], Optiona
     for owner in (message, choice):
         if owner is None:
             continue
+        has_provider_blocks = isinstance(getattr(owner, "provider_blocks", None), list)
         for attr in ("content", "content_blocks", "provider_blocks", "thinking_blocks"):
+            if attr == "thinking_blocks" and has_provider_blocks:
+                # Avoid duplicating thinking blocks already preserved in ordered provider_blocks.
+                continue
             value = getattr(owner, attr, None)
             if isinstance(value, list):
                 block_sources.append(value)
@@ -569,12 +590,30 @@ class LLMToolAdapter:
                 logger.warning("Agent LLM: no Agent-safe channel deployments after Hermes filtering")
                 return
             prepared_model_list = apply_thinking_extra_body_to_model_list(model_list)
-            self._router = create_router(
-                prepared_model_list,
-                routing_strategy="simple-shuffle",
-                num_retries=2,
-                router_factory=Router if Router is not create_router else None,
-            )
+            try:
+                self._router = create_router(
+                    prepared_model_list,
+                    routing_strategy="simple-shuffle",
+                    num_retries=2,
+                    router_factory=Router if Router is not create_router else None,
+                    config=config,
+                )
+            except NativeConfigError as exc:
+                self._backend_error = GenerationError(
+                    error_code=GenerationErrorCode.CAPABILITY_UNSUPPORTED,
+                    stage="generation",
+                    retryable=False,
+                    fallbackable=False,
+                    backend=LITELLM_BACKEND_ID,
+                    provider=exc.llm_provider or "native",
+                    details={
+                        "reason": exc.error_code or "native_transport_unsupported",
+                        "message": str(exc),
+                        "primary_model": litellm_model,
+                    },
+                )
+                logger.error("Agent LLM: native transport rejected channel/YAML router config: %s", exc)
+                return
             self._router_has_merged_extra_body = True
             unique_models = list(dict.fromkeys(
                 e['litellm_params']['model'] for e in model_list
@@ -609,12 +648,30 @@ class LLMToolAdapter:
                 for k in keys
             ])
             self._legacy_router_model_list = legacy_model_list
-            self._router = create_router(
-                legacy_model_list,
-                routing_strategy="simple-shuffle",
-                num_retries=2,
-                router_factory=Router if Router is not create_router else None,
-            )
+            try:
+                self._router = create_router(
+                    legacy_model_list,
+                    routing_strategy="simple-shuffle",
+                    num_retries=2,
+                    router_factory=Router if Router is not create_router else None,
+                    config=config,
+                )
+            except NativeConfigError as exc:
+                self._backend_error = GenerationError(
+                    error_code=GenerationErrorCode.CAPABILITY_UNSUPPORTED,
+                    stage="generation",
+                    retryable=False,
+                    fallbackable=False,
+                    backend=LITELLM_BACKEND_ID,
+                    provider=exc.llm_provider or "native",
+                    details={
+                        "reason": exc.error_code or "native_transport_unsupported",
+                        "message": str(exc),
+                        "primary_model": litellm_model,
+                    },
+                )
+                logger.error("Agent LLM: native transport rejected legacy router config: %s", exc)
+                return
             self._router_has_merged_extra_body = True
             logger.info(
                 f"Agent LLM: Legacy Router initialized with {len(keys)} keys "
@@ -858,7 +915,7 @@ class LLMToolAdapter:
         if use_channel_router and self._router and model in _router_model_names:
             # Channel / YAML path: Router manages all models in its model_list
             response = call_litellm_with_param_recovery(
-                lambda kwargs: dispatch_completion(router=self._router, **kwargs),
+                lambda kwargs: dispatch_completion(router=self._router, config=self._config, **kwargs),
                 model=model,
                 call_kwargs=call_kwargs,
                 model_list=recovery_model_list,
@@ -867,7 +924,7 @@ class LLMToolAdapter:
         elif self._router and model == agent_primary_model and not use_channel_router:
             # Legacy path: Router for primary model multi-key
             response = call_litellm_with_param_recovery(
-                lambda kwargs: dispatch_completion(router=self._router, **kwargs),
+                lambda kwargs: dispatch_completion(router=self._router, config=self._config, **kwargs),
                 model=model,
                 call_kwargs=call_kwargs,
                 model_list=recovery_model_list,
@@ -878,7 +935,7 @@ class LLMToolAdapter:
             # providers like groq/ or bedrock/ that are not in the Router
             # model_list even when channel mode is active)
             response = call_litellm_with_param_recovery(
-                lambda kwargs: dispatch_completion(compat_proxy=litellm, **kwargs),
+                lambda kwargs: dispatch_completion(compat_proxy=litellm, config=self._config, **kwargs),
                 model=model,
                 call_kwargs=call_kwargs,
                 model_list=recovery_model_list,
@@ -979,10 +1036,17 @@ class LLMToolAdapter:
                     openai_msg["reasoning_content"] = msg["reasoning_content"]
                 openai_messages.append(openai_msg)
             else:
-                openai_messages.append({
+                converted_msg: Dict[str, Any] = {
                     "role": msg["role"],
-                    "content": msg["content"],
-                })
+                    "content": (
+                        msg.get("provider_blocks")
+                        if msg["role"] == "assistant" and msg.get("provider_blocks")
+                        else msg["content"]
+                    ),
+                }
+                if msg["role"] == "assistant" and msg.get("reasoning_content") is not None:
+                    converted_msg["reasoning_content"] = msg["reasoning_content"]
+                openai_messages.append(converted_msg)
         return openai_messages
 
     def _trace_provider_for_target(self, target_model: Optional[str]) -> str:

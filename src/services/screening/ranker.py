@@ -12,8 +12,10 @@ from src.config import apply_litellm_api_surface, normalize_llm_channel_api_surf
 from src.llm.errors import call_litellm_with_param_recovery
 from src.llm.generation_params import apply_litellm_generation_params
 from src.llm.transport import (
+    NativeConfigError,
     create_router,
     dispatch_completion,
+    find_unresolved_env_var,
     normalize_model_list_entries,
     silence_litellm_logs,
 )
@@ -991,6 +993,27 @@ def _call_litellm_router(
         raw_model_list = data.get("model_list")
         if not isinstance(raw_model_list, list) or not raw_model_list:
             return None
+        requested_aliases = {str(m).strip() for m in model_chain if str(m).strip()}
+        for raw_entry in raw_model_list:
+            if not isinstance(raw_entry, dict):
+                continue
+            raw_params = raw_entry.get("litellm_params")
+            if not isinstance(raw_params, dict):
+                continue
+            entry_alias = (
+                str(raw_entry.get("model_name") or "").strip()
+                or str(raw_params.get("model") or "").strip()
+            )
+            # P1-1: Validate unset endpoint env vars ONLY on YAML entries matching requested
+            # model_chain aliases so unrelated unused aliases do not break default screening.
+            if requested_aliases and entry_alias not in requested_aliases:
+                continue
+            for endpoint_key in ("base_url", "api_base"):
+                missing_var = find_unresolved_env_var(raw_params.get(endpoint_key))
+                if missing_var is not None:
+                    raise ValueError(
+                        f"Screening YAML deployment {endpoint_key} environment variable '{missing_var}' is not set"
+                    )
         model_list = normalize_model_list_entries(raw_model_list)
         if not model_list:
             return None
@@ -1024,7 +1047,16 @@ def _call_litellm_router(
             except Exception:
                 raise
     except Exception as exc:
-        if _is_timeout_error(exc):
+        if (
+            _is_timeout_error(exc)
+            or isinstance(exc, NativeConfigError)
+            or getattr(exc, "error_code", None) == "unknown_router_alias"
+            or (
+                isinstance(exc, ValueError)
+                and "environment variable" in str(exc)
+                and "is not set" in str(exc)
+            )
+        ):
             raise
         logger.warning("LiteLLM router config failed, falling back to direct calls: %s", exc)
     return None
@@ -1071,6 +1103,8 @@ def _call_screening_litellm_completion(
         # duplicate expensive work while the first request is still running.
         retry_kwargs = dict(call_kwargs)
         retry_kwargs.pop("response_format", None)
+        # P1-10: Also suppress any inherited deployment YAML request_defaults["response_format"].
+        retry_kwargs["_dsa_disable_response_format"] = True
         return call_litellm_with_param_recovery(
             call,
             model=model,
