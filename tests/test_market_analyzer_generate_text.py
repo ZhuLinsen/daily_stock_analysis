@@ -176,11 +176,11 @@ class TestAnalyzerGenerateText:
 
         assert result.success is True
         assert result.model_used == actual_model
-        returned = [record.message for record in caplog.records if "[LLM返回]" in record.message]
+        returned = [record.message for record in caplog.records if "[LLM Response]" in record.message]
         assert len(returned) == 1
         assert actual_model in returned[0]
-        assert ("已回退" in returned[0]) is fallback
-        assert f"=== {actual_model} 完整响应" in caplog.text
+        assert ("fallback" in returned[0]) is fallback
+        assert f"=== {actual_model} Full Response" in caplog.text
 
     def test_legacy_market_group_normalizes_supported_markets(self):
         from src.analyzer import _legacy_market_group
@@ -4612,7 +4612,8 @@ Index text.
 
         prompt = ma._build_review_prompt(overview, [])
         direction = "↑" if changes[-1] > 0 else "↓"
-        assert f"- Volatility: 100.00 ({direction}{abs(changes[-1]):.2f}%)" in prompt
+        # OR-COR-f4725a90：指数行情行在括号内附带内部代码（供附录原样回传），报价本身保持不变。
+        assert f"- Volatility ({vix_code}): 100.00 ({direction}{abs(changes[-1]):.2f}%)" in prompt
         payload = ma.build_market_review_payload(overview, [], injected)
         assert payload["market_light"] == snapshot
         assert payload["indices"] == original_quotes

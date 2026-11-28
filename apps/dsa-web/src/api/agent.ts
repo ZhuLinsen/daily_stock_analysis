@@ -110,6 +110,7 @@ export interface SkillInfo {
   id: string;
   name: string;
   description: string;
+  category?: string | null;
 }
 
 export interface SkillsResponse {

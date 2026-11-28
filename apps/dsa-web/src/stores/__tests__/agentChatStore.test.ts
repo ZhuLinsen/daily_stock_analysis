@@ -1,4 +1,10 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { createElement } from 'react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { fireEvent, render, screen } from '@testing-library/react';
+import { localizeParsedApiError } from '../../api/error';
+import { ApiErrorAlert } from '../../components/common/ApiErrorAlert';
+import { UiLanguageProvider, useUiLanguage } from '../../contexts/UiLanguageContext';
+import { UI_LANGUAGE_STORAGE_KEY } from '../../utils/uiLanguage';
 import { useAgentChatStore } from '../agentChatStore';
 import type { ActiveStockContext, ChatSessionDetail } from '../../api/agent';
 
@@ -892,5 +898,204 @@ describe('agentChatStore session Skill state', () => {
     useAgentChatStore.getState().startNewChat();
 
     expect(useAgentChatStore.getState().selectedSkillIds).toBeNull();
+  });
+
+  describe('localization (EN)', () => {
+    afterEach(() => {
+      window.localStorage.removeItem(UI_LANGUAGE_STORAGE_KEY);
+      document.documentElement.lang = '';
+    });
+
+    it('localizes default skill label, separator, interrupted stream, empty content, and protocol error in English', async () => {
+      window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'en');
+
+      vi.mocked(agentApi.chatStream).mockResolvedValueOnce(
+        createStreamResponse([
+          accepted('req-en-empty'),
+          'data: {"type":"done","success":true,"content":""}',
+        ]),
+      );
+      await useAgentChatStore.getState().startStream(
+        { message: 'Analyze AAPL', session_id: 'session-test', request_id: 'req-en-empty' },
+      );
+      expect(useAgentChatStore.getState().messages[0].skillName).toBe('General');
+      expect(useAgentChatStore.getState().messages[1].content).toBe('(No content)');
+
+      vi.mocked(agentApi.chatStream).mockResolvedValueOnce(
+        createStreamResponse([
+          accepted('req-en-multi'),
+          'data: {"type":"done","success":true,"content":"Done"}',
+        ]),
+      );
+      await useAgentChatStore.getState().startStream(
+        { message: 'Analyze AAPL', session_id: 'session-test', request_id: 'req-en-multi', skills: ['bull_trend', 'risk'] },
+        { skillNames: ['Bull Trend', 'Risk Control'] },
+      );
+      expect(useAgentChatStore.getState().messages.at(-1)?.skillName).toBe('Bull Trend, Risk Control');
+
+      vi.mocked(agentApi.chatStream).mockResolvedValueOnce(
+        createStreamResponse([
+          accepted('req-en-interrupted'),
+          'data: {"type":"thinking","step":1,"message":"Working"}',
+        ]),
+      );
+      await useAgentChatStore.getState().startStream({
+        message: 'Analyze AAPL',
+        session_id: 'session-test',
+        request_id: 'req-en-interrupted',
+      });
+      expect(useAgentChatStore.getState().chatError).toMatchObject({
+        title: 'Incomplete response',
+        message: 'The Agent stream was interrupted before completion. Please try again.',
+      });
+
+      vi.mocked(agentApi.chatStream).mockResolvedValueOnce(
+        createStreamResponse([
+          'data: {"type":"done","success":false,"error":"context failed"}',
+        ]),
+      );
+      await useAgentChatStore.getState().startStream({
+        message: 'Analyze AAPL',
+        session_id: 'session-test',
+        request_id: 'req-en-unaccepted',
+      });
+      expect(useAgentChatStore.getState().chatError).toMatchObject({
+        title: 'Request not accepted',
+        message: 'The Agent did not acknowledge this message. Keep your input and try again.',
+      });
+    });
+
+    it('uses the active language when an SSE stream is interrupted after an in-flight language switch', async () => {
+      window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'zh');
+      document.documentElement.lang = 'zh-CN';
+
+      let controllerRef!: ReadableStreamDefaultController<Uint8Array>;
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controllerRef = controller;
+          controller.enqueue(encoder.encode(`${accepted('req-switch')}\n`));
+        },
+      });
+      vi.mocked(agentApi.chatStream).mockResolvedValueOnce(
+        new Response(stream, {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        }),
+      );
+
+      const pending = useAgentChatStore.getState().startStream({
+        message: '分析 600519',
+        session_id: 'session-test',
+        request_id: 'req-switch',
+      });
+
+      await vi.waitFor(() => {
+        expect(useAgentChatStore.getState().messages).toHaveLength(1);
+      });
+      document.documentElement.lang = 'en';
+      controllerRef.close();
+      await pending;
+
+      expect(useAgentChatStore.getState().chatError).toMatchObject({
+        title: 'Incomplete response',
+        message: 'The Agent stream was interrupted before completion. Please try again.',
+      });
+    });
+
+    it('re-localizes settled stream protocol and interruption errors when UI language switches afterward (OR-COR-5d4b8f21)', async () => {
+      const ChatErrorHarness = () => {
+        const chatError = useAgentChatStore((s) => s.chatError);
+        const { setLanguage } = useUiLanguage();
+        return createElement(
+          'div',
+          null,
+          createElement('button', { type: 'button', onClick: () => setLanguage('en') }, 'switch-en'),
+          createElement('button', { type: 'button', onClick: () => setLanguage('zh') }, 'switch-zh'),
+          chatError ? createElement(ApiErrorAlert, { error: chatError }) : null,
+        );
+      };
+
+      // 1. Settled protocolError (unaccepted stream event) created in zh, switched zh -> en -> zh
+      window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'zh');
+      document.documentElement.lang = 'zh-CN';
+      vi.mocked(agentApi.chatStream).mockResolvedValueOnce(
+        createStreamResponse([
+          'data: {"type":"done","success":false,"error":"context failed"}',
+        ]),
+      );
+      await useAgentChatStore.getState().startStream({
+        message: '分析 600519',
+        session_id: 'session-test',
+        request_id: 'req-settled-protocol',
+      });
+      const settledProtocolError = useAgentChatStore.getState().chatError!;
+      expect(settledProtocolError.title).toBe('请求未被接受');
+
+      const { unmount } = render(
+        createElement(UiLanguageProvider, null, createElement(ChatErrorHarness)),
+      );
+      expect(screen.getByText('请求未被接受')).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('button', { name: 'switch-en' }));
+      expect(screen.getByText('Request not accepted')).toBeInTheDocument();
+      expect(screen.getByText('The Agent did not acknowledge this message. Keep your input and try again.')).toBeInTheDocument();
+      expect(screen.getByRole('alert').textContent).not.toMatch(/[\u4e00-\u9fff]/);
+      expect(localizeParsedApiError(settledProtocolError, 'en')).toMatchObject({
+        title: 'Request not accepted',
+      });
+
+      fireEvent.click(screen.getByRole('button', { name: 'switch-zh' }));
+      expect(screen.getByText('请求未被接受')).toBeInTheDocument();
+      unmount();
+
+      // 2. Settled incomplete stream error created in en, switched en -> zh -> en
+      window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'en');
+      document.documentElement.lang = 'en';
+      vi.mocked(agentApi.chatStream).mockResolvedValueOnce(
+        createStreamResponse([accepted('req-settled-incomplete')]),
+      );
+      await useAgentChatStore.getState().startStream({
+        message: 'Analyze AAPL',
+        session_id: 'session-test',
+        request_id: 'req-settled-incomplete',
+      });
+      expect(useAgentChatStore.getState().chatError?.title).toBe('Incomplete response');
+
+      const { unmount: unmountIncomplete } = render(
+        createElement(UiLanguageProvider, null, createElement(ChatErrorHarness)),
+      );
+      expect(screen.getByText('Incomplete response')).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('button', { name: 'switch-zh' }));
+      expect(screen.getByText('回复未完整返回')).toBeInTheDocument();
+      expect(screen.getByText('Agent 流式响应在完成前中断，请重试。')).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('button', { name: 'switch-en' }));
+      expect(screen.getByText('Incomplete response')).toBeInTheDocument();
+      unmountIncomplete();
+
+      // 3. Settled stream error with custom error_code + empty message (fallback) preserves resolver & code
+      window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'zh');
+      document.documentElement.lang = 'zh-CN';
+      vi.mocked(agentApi.chatStream).mockResolvedValueOnce(
+        createStreamResponse([
+          accepted('req-settled-fallback'),
+          'data: {"type":"error","error_code":"custom_stream_err","request_id":"req-settled-fallback","session_id":"session-test"}',
+        ]),
+      );
+      await useAgentChatStore.getState().startStream({
+        message: '分析 600519',
+        session_id: 'session-test',
+        request_id: 'req-settled-fallback',
+      });
+      const fallbackErr = useAgentChatStore.getState().chatError!;
+      expect(fallbackErr.code).toBe('custom_stream_err');
+      expect(fallbackErr.message).toContain('分析出错');
+
+      const localizedFallbackEn = localizeParsedApiError(fallbackErr, 'en');
+      expect(localizedFallbackEn.code).toBe('custom_stream_err');
+      expect(localizedFallbackEn.message).toContain('Analysis error');
+      expect(localizedFallbackEn.message).not.toMatch(/[\u4e00-\u9fff]/);
+    });
   });
 });

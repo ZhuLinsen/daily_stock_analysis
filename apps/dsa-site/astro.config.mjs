@@ -117,7 +117,7 @@ export default defineConfig({
               slug: 'docs/features/decision-signals',
             },
             {
-              label: 'Agent 15 种内置策略',
+              label: 'Agent 20 种内置策略',
               translations: { en: 'Trading Strategies' },
               slug: 'docs/features/strategies',
             },

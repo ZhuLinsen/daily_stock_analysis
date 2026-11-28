@@ -6,7 +6,9 @@ Tools:
 - analyze_trend: comprehensive technical trend analysis
 """
 
+from datetime import date
 import logging
+import math
 from typing import Optional
 
 from src.agent.tools.registry import ToolParameter, ToolDefinition, ToolPolicy
@@ -22,16 +24,31 @@ _ANALYSIS_READ_POLICY = ToolPolicy.declared(
 )
 
 
+def _extract_latest_bar_date(df) -> Optional[date]:
+    """Return the latest valid calendar date present in `df['date']`, or None."""
+    if df is None or getattr(df, "empty", True) or "date" not in df.columns:
+        return None
+    import pandas as pd
+
+    parsed = pd.to_datetime(df["date"], errors="coerce").dropna()
+    if parsed.empty:
+        return None
+    return parsed.max().date()
+
+
 def _fetch_trend_data(stock_code: str):
     """Fetch historical OHLCV (DataFrame) for trend analysis. DB first, then DataFetcher fallback."""
     from src.services.history_loader import load_history_df
 
-    df, _ = load_history_df(stock_code, days=60)
+    df, source = load_history_df(stock_code, days=60)
+    if df is not None:
+        df.attrs["_history_source"] = source
     return df
 
 
 def _handle_analyze_trend(stock_code: str) -> dict:
     """Run technical trend analysis on a stock."""
+    from src.services.history_loader import get_frozen_target_date
     from src.stock_analyzer import StockTrendAnalyzer
 
     if not (stock_code and str(stock_code).strip()):
@@ -51,7 +68,16 @@ def _handle_analyze_trend(stock_code: str) -> dict:
         logger.warning("analyze_trend(%s): Trend analysis failed", stock_code, exc_info=True)
         return {"error": f"Trend analysis failed for {stock_code}"}
 
-    return {
+    source = getattr(df, "attrs", {}).get("_history_source")
+    latest_bar_date = _extract_latest_bar_date(df)
+    effective_target = get_frozen_target_date() or date.today()
+    is_stale = (source == "db_cache_stale") or (
+        latest_bar_date is not None
+        and source in ("db_cache", "db_cache_stale")
+        and latest_bar_date < effective_target
+    )
+
+    payload = {
         "code": result.code,
         "trend_status": result.trend_status.value,
         "ma_alignment": result.ma_alignment,
@@ -85,7 +111,17 @@ def _handle_analyze_trend(stock_code: str) -> dict:
         "signal_score": result.signal_score,
         "signal_reasons": result.signal_reasons,
         "risk_factors": result.risk_factors,
+        "data_date": latest_bar_date.isoformat() if latest_bar_date else None,
+        "source": source,
+        "is_stale": bool(is_stale),
     }
+    if is_stale:
+        date_text = latest_bar_date.isoformat() if latest_bar_date else "unknown"
+        payload["stale_warning"] = (
+            f"Provider fallback unavailable; computed from cached bars as of {date_text} "
+            f"(target date {effective_target.isoformat()})"
+        )
+    return payload
 
 
 analyze_trend_tool = ToolDefinition(
@@ -330,6 +366,7 @@ def _handle_analyze_pattern(stock_code: str, days: int = 60) -> dict:
     if df is None or df.empty:
         return {"error": f"No historical data for {stock_code}"}
 
+    history_close = df["close"].values  # everything loaded: the trend before a candle may precede the scan
     df = df.tail(days).copy().reset_index(drop=True)
     if len(df) < 10:
         return {"error": f"Insufficient data for pattern analysis (got {len(df)} days, need >= 10)"}
@@ -366,6 +403,19 @@ def _handle_analyze_pattern(stock_code: str, days: int = 60) -> dict:
         bd = body(i)
         us = upper_shadow(i)
         ls = lower_shadow(i)
+        # Long-shadow candles are named by the trend before them: MA5 against MA10 on the closes
+        # before the candle, and only when the last of those closes is beyond MA5 the same way
+        # (below it in a decline, above it in an advance). Otherwise, or with fewer than 10 closes,
+        # the trend is unclear and the candle gets no name.
+        end = len(history_close) - n + i
+        falling = rising = False
+        if end >= 10:
+            before = history_close[end - 10:end]
+            ma5, ma10, prev_close = sum(before[5:]) / 5, sum(before) / 10, before[-1]
+            # isclose: values that tie as quoted can differ by float rounding once summed; a tie is no direction.
+            if not (math.isclose(ma5, ma10) or math.isclose(prev_close, ma5)):
+                falling = ma5 < ma10 and prev_close < ma5
+                rising = ma5 > ma10 and prev_close > ma5
 
         # Doji
         if bd < avg_body * 0.1 and (us + ls) > bd * 3:
@@ -375,22 +425,28 @@ def _handle_analyze_pattern(stock_code: str, days: int = 60) -> dict:
                 "strength": "弱", "desc": "多空平衡，可能变盘信号"
             })
 
-        # Hammer / Hanging Man
-        if ls > body(i) * 2 and us < body(i) * 0.5:
-            label = "锤子线 (Hammer)" if i == 0 or c[i] >= c[i - 1] else "上吊线 (Hanging Man)"
+        # Hammer after a decline / Hanging Man after an advance
+        if ls > body(i) * 2 and us < body(i) * 0.5 and (falling or rising):
+            label, desc = (
+                ("锤子线 (Hammer)", "下影线长，潜在支撑/反转") if falling
+                else ("上吊线 (Hanging Man)", "下影线长，上涨后的潜在见顶")
+            )
             patterns_detected.append({
                 "pattern": label, "type": "reversal_signal",
                 "day_offset": -(n - 1 - i),
-                "strength": "中", "desc": "下影线长，潜在支撑/反转"
+                "strength": "中", "desc": desc
             })
 
-        # Shooting Star / Inverted Hammer
-        if us > body(i) * 2 and ls < body(i) * 0.5:
-            label = "流星线 (Shooting Star)" if is_bearish(i) else "倒锤子"
+        # Inverted Hammer after a decline / Shooting Star after an advance
+        if us > body(i) * 2 and ls < body(i) * 0.5 and (falling or rising):
+            label, signal, desc = (
+                ("倒锤子", "reversal_signal", "上影线长，下跌后的潜在反转") if falling
+                else ("流星线 (Shooting Star)", "bearish_signal", "上影线长，潜在压力/反转")
+            )
             patterns_detected.append({
-                "pattern": label, "type": "bearish_signal",
+                "pattern": label, "type": signal,
                 "day_offset": -(n - 1 - i),
-                "strength": "中", "desc": "上影线长，潜在压力/反转"
+                "strength": "中", "desc": desc
             })
 
         # Big bullish / bearish candle
@@ -524,9 +580,98 @@ analyze_pattern_tool = ToolDefinition(
 )
 
 
+def _handle_calculate_quant_factors(stock_code: str, days: int = 120) -> dict:
+    """Compute quantitative multi-factor indicators (BOLL, Donchian, ATR, KDJ, ADX, OBV/VWAP/MFI, Momentum)."""
+    import pandas as pd
+
+    from src.quant_factors import compute_quant_factors
+    from src.services.history_loader import get_frozen_target_date, load_history_df
+
+    if not (stock_code and str(stock_code).strip()):
+        return {"error": "stock_code is required"}
+
+    try:
+        lookback = max(30, min(int(days), 365))
+    except (TypeError, ValueError):
+        lookback = 120
+
+    df, source = load_history_df(stock_code, days=lookback, min_records=min(lookback, 61))
+    if df is None or df.empty:
+        return {"error": f"No historical data available for quant factor analysis on {stock_code}"}
+
+    frozen = get_frozen_target_date()
+    if "date" in df.columns:
+        if frozen is not None:
+            parsed_dates = pd.to_datetime(df["date"], errors="coerce").dt.date
+            df = df[parsed_dates.isna() | (parsed_dates <= frozen)].copy()
+        df = df.sort_values("date").reset_index(drop=True)
+
+    if len(df) > lookback:
+        df = df.tail(lookback).reset_index(drop=True)
+
+    if len(df) < 20:
+        return {"error": f"Insufficient data for quant factor analysis on {stock_code} (need >= 20 days)"}
+
+    try:
+        result = compute_quant_factors(df, stock_code)
+    except Exception:
+        logger.warning("calculate_quant_factors(%s): Quant factor calculation failed", stock_code, exc_info=True)
+        return {"error": f"Quant factor calculation failed for {stock_code}"}
+
+    payload = result.to_dict()
+    if not payload.get("sufficient_data"):
+        return {"error": f"Insufficient valid OHLCV bars for quant factor analysis on {stock_code}"}
+
+    latest_bar_date = _extract_latest_bar_date(df)
+    effective_target = frozen or date.today()
+    is_stale = (source == "db_cache_stale") or (
+        latest_bar_date is not None
+        and source in ("db_cache", "db_cache_stale")
+        and latest_bar_date < effective_target
+    )
+    payload["data_date"] = latest_bar_date.isoformat() if latest_bar_date else None
+    payload["source"] = source
+    payload["is_stale"] = bool(is_stale)
+    if is_stale:
+        date_text = latest_bar_date.isoformat() if latest_bar_date else "unknown"
+        payload["stale_warning"] = (
+            f"Provider fallback unavailable; computed from cached bars as of {date_text} "
+            f"(target date {effective_target.isoformat()})"
+        )
+    return payload
+
+
+calculate_quant_factors_tool = ToolDefinition(
+    name="calculate_quant_factors",
+    description="Calculate institutional quantitative multi-factor indicators over daily history. "
+                "Returns Bollinger Bands (20,2) & squeeze status, Donchian channels (20/10d breakout), "
+                "ATR(14) & 2xATR stop-loss, HV20 annualized volatility, VCP contraction ratio, "
+                "KDJ(9,3,3), Wilder ADX(14)/+DI/-DI trend regime, OBV & divergence, 20d VWAP bias, "
+                "MFI(14), 5/20/60d momentum, 60d max drawdown, Sharpe60, and composite factor score.",
+    parameters=[
+        ToolParameter(
+            name="stock_code",
+            type="string",
+            description="Stock code, e.g., '600519'",
+        ),
+        ToolParameter(
+            name="days",
+            type="integer",
+            description="Number of recent trading days to inspect (default: 120, range 30-365)",
+            required=False,
+            default=120,
+        ),
+    ],
+    handler=_handle_calculate_quant_factors,
+    category="analysis",
+    policy=_ANALYSIS_READ_POLICY,
+)
+
+
 ALL_ANALYSIS_TOOLS = [
     analyze_trend_tool,
     calculate_ma_tool,
     get_volume_analysis_tool,
     analyze_pattern_tool,
+    calculate_quant_factors_tool,
 ]

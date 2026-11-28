@@ -1,12 +1,20 @@
-import { useCallback, useMemo, useRef, useState } from 'react';
-import { createParsedApiError, getParsedApiError, type ParsedApiError } from '../api/error';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  createLocalizedParsedApiError,
+  createParsedApiError,
+  getParsedApiError,
+  localizeParsedApiError,
+  type ParsedApiError,
+} from '../api/error';
 import { systemConfigApi, SystemConfigConflictError, SystemConfigValidationError } from '../api/systemConfig';
+import { useActiveUiLanguage } from '../contexts/UiLanguageContext';
 import type {
   ConfigValidationIssue,
   SystemConfigCategorySchema,
   SystemConfigItem,
   SystemConfigUpdateItem,
 } from '../types/systemConfig';
+import { resolveActiveUiLanguage } from '../utils/format';
 import { serializeStockListValue } from '../utils/stockList';
 
 type ToastState = {
@@ -16,6 +24,12 @@ type ToastState = {
   type: 'error';
   error: ParsedApiError;
 } | null;
+
+type ToastNotice =
+  | { kind: 'no_changes' }
+  | { kind: 'updated'; warnings: string[] }
+  | { kind: 'error'; error: ParsedApiError }
+  | null;
 
 type RetryAction = 'load' | 'save' | null;
 
@@ -69,6 +83,8 @@ function normalizeFieldValue(value: string, schema: SystemConfigItem['schema'] |
 }
 
 export function useSystemConfig() {
+  const activeLanguage = useActiveUiLanguage();
+
   // Server state
   const [configVersion, setConfigVersion] = useState<string>('');
   const [maskToken, setMaskToken] = useState<string>('******');
@@ -80,15 +96,63 @@ export function useSystemConfig() {
   const [draftValues, setDraftValues] = useState<Record<string, string>>({});
   const [activeCategory, setActiveCategory] = useState<string>('base');
   const [validationIssues, setValidationIssues] = useState<ConfigValidationIssue[]>([]);
-  const [toast, setToast] = useState<ToastState>(null);
+  const [toastNotice, setToastNotice] = useState<ToastNotice>(null);
+
+  const toast = useMemo<ToastState>(() => {
+    if (!toastNotice) {
+      return null;
+    }
+    const isEn = activeLanguage === 'en';
+    if (toastNotice.kind === 'no_changes') {
+      return { type: 'success', message: isEn ? 'No unsaved changes.' : '当前没有可保存的修改。' };
+    }
+    if (toastNotice.kind === 'updated') {
+      const warningText = toastNotice.warnings.length > 0
+        ? isEn
+          ? `; Warnings: ${toastNotice.warnings.join('; ')}`
+          : `；警告：${toastNotice.warnings.join('；')}`
+        : '';
+      return {
+        type: 'success',
+        message: isEn ? `Settings updated${warningText}` : `配置已更新${warningText}`,
+      };
+    }
+    return { type: 'error', error: localizeParsedApiError(toastNotice.error, activeLanguage) };
+  }, [activeLanguage, toastNotice]);
 
   // Request state
   const [isLoading, setIsLoading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
-  const [loadError, setLoadError] = useState<ParsedApiError | null>(null);
-  const [saveError, setSaveError] = useState<ParsedApiError | null>(null);
+  const [loadErrorState, setLoadErrorState] = useState<ParsedApiError | null>(null);
+  const [saveErrorState, setSaveErrorState] = useState<ParsedApiError | null>(null);
+  const loadError = useMemo(
+    () => (loadErrorState ? localizeParsedApiError(loadErrorState, activeLanguage) : null),
+    [activeLanguage, loadErrorState],
+  );
+  const saveError = useMemo(
+    () => (saveErrorState ? localizeParsedApiError(saveErrorState, activeLanguage) : null),
+    [activeLanguage, saveErrorState],
+  );
   const [retryAction, setRetryAction] = useState<RetryAction>(null);
   const serverItemByKeyRef = useRef<Record<string, SystemConfigItem>>({});
+  const mountedRef = useRef(true);
+  const nextConfigRequestSeqRef = useRef(0);
+  const committedConfigSeqRef = useRef(0);
+  const loadRequestIdRef = useRef(0);
+  const saveInFlightRef = useRef(false);
+  const lastFailedSaveItemsRef = useRef<SystemConfigUpdateItem[] | null>(null);
+  const lastFailedSaveVersionRef = useRef<string | null>(null);
+  const pendingCommittedKeysRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      nextConfigRequestSeqRef.current += 1;
+      committedConfigSeqRef.current = nextConfigRequestSeqRef.current;
+      loadRequestIdRef.current += 1;
+    };
+  }, []);
 
   const mergedItems = useMemo(() => {
     return sortItemsByOrder(
@@ -222,37 +286,69 @@ export function useSystemConfig() {
   );
 
   const load = useCallback(async (): Promise<boolean> => {
+    const reqSeq = ++nextConfigRequestSeqRef.current;
+    const loadId = ++loadRequestIdRef.current;
+    lastFailedSaveItemsRef.current = null;
+    lastFailedSaveVersionRef.current = null;
     setIsLoading(true);
-    setLoadError(null);
+    setLoadErrorState(null);
     setRetryAction(null);
 
     try {
       const config = await systemConfigApi.getConfig(true);
+      if (!mountedRef.current) {
+        return false;
+      }
+      if (reqSeq < committedConfigSeqRef.current) {
+        // A newer read already succeeded and committed fresher server state.
+        return true;
+      }
+      committedConfigSeqRef.current = reqSeq;
+      pendingCommittedKeysRef.current.clear();
+      setSaveErrorState(null);
       setLlmModelProviders(config.llmModelProviders || []);
       setLlmYamlActive(config.llmYamlActive);
       applyServerPayload(config.items, config.configVersion, config.maskToken);
-      setToast(null);
+      setToastNotice(null);
       return true;
     } catch (error: unknown) {
-      setLoadError(getParsedApiError(error));
-      setRetryAction('load');
+      if (!mountedRef.current) {
+        return false;
+      }
+      if (reqSeq < committedConfigSeqRef.current) {
+        return true;
+      }
+      if (reqSeq === nextConfigRequestSeqRef.current) {
+        setLoadErrorState(getParsedApiError(error, resolveActiveUiLanguage()));
+        setRetryAction('load');
+      }
       return false;
     } finally {
-      setIsLoading(false);
+      if (mountedRef.current && loadId === loadRequestIdRef.current) {
+        setIsLoading(false);
+      }
     }
   }, [applyServerPayload]);
 
   const resetDraft = useCallback(() => {
+    lastFailedSaveItemsRef.current = null;
+    lastFailedSaveVersionRef.current = null;
+    pendingCommittedKeysRef.current.clear();
     const next: Record<string, string> = {};
     for (const item of serverItems) {
       next[item.key] = item.value;
     }
     setDraftValues(next);
     setValidationIssues([]);
-    setSaveError(null);
+    setSaveErrorState(null);
   }, [serverItems]);
 
   const applyPartialUpdate = useCallback((updatedItems: Array<{ key: string; value: string }>) => {
+    lastFailedSaveItemsRef.current = null;
+    lastFailedSaveVersionRef.current = null;
+    for (const item of updatedItems) {
+      pendingCommittedKeysRef.current.delete(item.key);
+    }
     setDraftValues((prevDraft) => {
       const nextDraft = { ...prevDraft };
       for (const item of updatedItems) {
@@ -264,18 +360,35 @@ export function useSystemConfig() {
 
   const refreshAfterExternalSave = useCallback(
     async (committedKeys: string[]) => {
+      for (const key of committedKeys) {
+        pendingCommittedKeysRef.current.add(key);
+      }
+      const reqSeq = ++nextConfigRequestSeqRef.current;
       const config = await systemConfigApi.getConfig(true);
+      if (!mountedRef.current || reqSeq < committedConfigSeqRef.current) {
+        return;
+      }
+      committedConfigSeqRef.current = reqSeq;
+      const mergedCommittedKeys = Array.from(pendingCommittedKeysRef.current);
+      pendingCommittedKeysRef.current.clear();
+      lastFailedSaveItemsRef.current = null;
+      lastFailedSaveVersionRef.current = null;
+      setSaveErrorState(null);
+      setRetryAction((prev) => (prev === 'save' ? null : prev));
       setLlmModelProviders(config.llmModelProviders || []);
       setLlmYamlActive(config.llmYamlActive);
       applyServerPayload(config.items, config.configVersion, config.maskToken, {
         preserveDirty: true,
-        committedKeys,
+        committedKeys: mergedCommittedKeys,
       });
     },
     [applyServerPayload],
   );
 
   const setDraftValue = useCallback((key: string, value: string) => {
+    lastFailedSaveItemsRef.current = null;
+    lastFailedSaveVersionRef.current = null;
+    pendingCommittedKeysRef.current.delete(key);
     setDraftValues((previous) => ({
       ...previous,
       [key]: value,
@@ -300,38 +413,58 @@ export function useSystemConfig() {
   }, [dirtyKeys, draftValues, serverItemByKey]);
 
   const save = useCallback(async (changedItems?: SystemConfigUpdateItem[]): Promise<SaveResult> => {
+    const startIsEn = resolveActiveUiLanguage() === 'en';
+    if (saveInFlightRef.current) {
+      return {
+        success: false,
+        message: startIsEn ? 'Configuration save already in progress' : '配置保存进行中',
+      };
+    }
+
     const explicitItems = changedItems ?? [];
     const resolvedChangedItems = explicitItems.length > 0 ? explicitItems : getChangedItems();
 
     if (!explicitItems.length && !hasDirty) {
-      setToast({ type: 'success', message: '当前没有可保存的修改。' });
-      return { success: true, message: '当前没有可保存的修改' };
+      setToastNotice({ kind: 'no_changes' });
+      return { success: true, message: startIsEn ? 'No unsaved changes' : '当前没有可保存的修改' };
     }
 
     if (!resolvedChangedItems.length) {
-      setToast({ type: 'success', message: '当前没有可保存的修改。' });
-      return { success: true, message: '当前没有可保存的修改' };
+      setToastNotice({ kind: 'no_changes' });
+      return { success: true, message: startIsEn ? 'No unsaved changes' : '当前没有可保存的修改' };
     }
 
+    lastFailedSaveItemsRef.current = explicitItems.length > 0 ? [...explicitItems] : null;
+    lastFailedSaveVersionRef.current = configVersion;
+    saveInFlightRef.current = true;
     setIsSaving(true);
-    setSaveError(null);
+    setSaveErrorState(null);
     setRetryAction(null);
 
     try {
       const validateResult = await systemConfigApi.validate({ items: resolvedChangedItems });
+      if (!mountedRef.current) {
+        return { success: false };
+      }
       setValidationIssues(validateResult.issues || []);
 
       if (!validateResult.valid) {
-        setSaveError(createParsedApiError({
-          title: '配置校验未通过',
-          message: '请先修正表单错误后再保存。',
-          rawMessage: '配置校验未通过，请先修正表单错误。',
-          category: 'http_error',
-        }));
+        const currentIsEn = resolveActiveUiLanguage() === 'en';
+        setSaveErrorState(createLocalizedParsedApiError((lang) => {
+          const isEn = lang === 'en';
+          return createParsedApiError({
+            title: isEn ? 'Configuration validation failed' : '配置校验未通过',
+            message: isEn ? 'Fix the form errors before saving.' : '请先修正表单错误后再保存。',
+            rawMessage: isEn
+              ? 'Configuration validation failed. Fix the form errors before saving.'
+              : '配置校验未通过，请先修正表单错误。',
+            category: 'http_error',
+          });
+        }, resolveActiveUiLanguage()));
         setRetryAction('save');
         return {
           success: false,
-          message: '配置校验未通过',
+          message: currentIsEn ? 'Configuration validation failed' : '配置校验未通过',
           issues: validateResult.issues,
         };
       }
@@ -343,37 +476,80 @@ export function useSystemConfig() {
         items: resolvedChangedItems,
       });
 
-      const refreshed = await systemConfigApi.getConfig(true);
-      setLlmModelProviders(refreshed.llmModelProviders || []);
-      setLlmYamlActive(refreshed.llmYamlActive);
-      applyServerPayload(refreshed.items, refreshed.configVersion, refreshed.maskToken);
-
-      const warningText = updateResult.warnings?.length
-        ? `；警告：${updateResult.warnings.join('；')}`
-        : '';
-      setToast({ type: 'success', message: `配置已更新${warningText}` });
-      return { success: true };
-    } catch (error: unknown) {
-      if (error instanceof SystemConfigValidationError) {
-        setValidationIssues(error.issues);
-        setSaveError(error.parsedError);
-      } else if (error instanceof SystemConfigConflictError) {
-        setSaveError(createParsedApiError({
-          title: '配置版本冲突',
-          message: `${error.message}，请先重新加载配置。`,
-          rawMessage: error.parsedError.rawMessage,
-          status: error.parsedError.status,
-          category: error.parsedError.category,
-        }));
-      } else {
-        setSaveError(getParsedApiError(error));
+      for (const item of resolvedChangedItems) {
+        pendingCommittedKeysRef.current.add(item.key);
+      }
+      lastFailedSaveItemsRef.current = null;
+      lastFailedSaveVersionRef.current = null;
+      if (!mountedRef.current) {
+        return { success: true };
       }
 
-      setToast({ type: 'error', error: getParsedApiError(error) });
+      const refreshSeq = ++nextConfigRequestSeqRef.current;
+      const refreshed = await systemConfigApi.getConfig(true);
+      if (!mountedRef.current) {
+        return { success: true };
+      }
+      if (refreshSeq >= committedConfigSeqRef.current) {
+        committedConfigSeqRef.current = refreshSeq;
+        pendingCommittedKeysRef.current.clear();
+        setLlmModelProviders(refreshed.llmModelProviders || []);
+        setLlmYamlActive(refreshed.llmYamlActive);
+        applyServerPayload(refreshed.items, refreshed.configVersion, refreshed.maskToken);
+      }
+
+      setToastNotice({
+        kind: 'updated',
+        warnings: updateResult.warnings ?? [],
+      });
+      return { success: true };
+    } catch (error: unknown) {
+      const currentLanguage = resolveActiveUiLanguage();
+      const currentIsEn = currentLanguage === 'en';
+      if (!mountedRef.current) {
+        return { success: false, message: currentIsEn ? 'Save failed' : '保存失败' };
+      }
+
+      let resolvedError: ParsedApiError;
+      if (error instanceof SystemConfigValidationError) {
+        setValidationIssues(error.issues);
+        resolvedError = localizeParsedApiError(
+          error.parsedError ?? getParsedApiError(error, currentLanguage),
+          currentLanguage,
+        );
+      } else if (error instanceof SystemConfigConflictError) {
+        const baseParsedError = error.parsedError ?? getParsedApiError(error, currentLanguage);
+        resolvedError = createLocalizedParsedApiError((lang) => {
+          const localizedBase = localizeParsedApiError(baseParsedError, lang);
+          const isEn = lang === 'en';
+          const detailMessage = localizedBase.message || error.message;
+          const enSuffix = detailMessage.endsWith('.')
+            ? ' Please reload settings first.'
+            : '. Please reload settings first.';
+          const zhSuffix = detailMessage.endsWith('。')
+            ? '请先重新加载配置。'
+            : '，请先重新加载配置。';
+          return createParsedApiError({
+            title: isEn ? 'Configuration version conflict' : '配置版本冲突',
+            message: isEn ? `${detailMessage}${enSuffix}` : `${detailMessage}${zhSuffix}`,
+            rawMessage: localizedBase.rawMessage,
+            status: localizedBase.status,
+            category: localizedBase.category,
+          });
+        }, currentLanguage);
+      } else {
+        resolvedError = getParsedApiError(error, currentLanguage);
+      }
+
+      setSaveErrorState(resolvedError);
+      setToastNotice({ kind: 'error', error: resolvedError });
       setRetryAction('save');
-      return { success: false, message: '保存失败' };
+      return { success: false, message: currentIsEn ? 'Save failed' : '保存失败' };
     } finally {
-      setIsSaving(false);
+      saveInFlightRef.current = false;
+      if (mountedRef.current) {
+        setIsSaving(false);
+      }
     }
   }, [
     applyServerPayload,
@@ -389,12 +565,16 @@ export function useSystemConfig() {
       return;
     }
     if (retryAction === 'save') {
-      await save();
+      const itemsToReplay =
+        lastFailedSaveItemsRef.current && lastFailedSaveVersionRef.current === configVersion
+          ? lastFailedSaveItemsRef.current
+          : undefined;
+      await save(itemsToReplay);
     }
-  }, [load, retryAction, save]);
+  }, [configVersion, load, retryAction, save]);
 
   const clearToast = useCallback(() => {
-    setToast(null);
+    setToastNotice(null);
   }, []);
 
   return {

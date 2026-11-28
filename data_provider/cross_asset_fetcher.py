@@ -214,7 +214,7 @@ class CrossAssetFetcher:
             try:
                 snapshot[group] = self._fetch_group(normalized, group, trade_date, deadline)
             except Exception as exc:  # defensive: group-level backstop
-                logger.warning("[CrossAssetFetcher] %s 组抓取异常: %s", group, exc)
+                logger.warning("[CrossAssetFetcher] %s group fetch error: %s", group, exc)
                 snapshot[group] = {
                     "_group": self._error_item(
                         name=group,

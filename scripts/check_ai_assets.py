@@ -43,8 +43,11 @@ REQUIRED_CI_JOBS_IN_AGENTS = (
     "backend-gate",
     "docker-build",
     "web-gate",
+    "desktop-tests",
+    "site-gate",
     "desktop-futu-package-windows",
     "desktop-futu-package-macos",
+    "ci-gate",
 )
 
 

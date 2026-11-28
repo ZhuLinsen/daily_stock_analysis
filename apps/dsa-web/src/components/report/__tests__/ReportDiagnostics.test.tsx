@@ -1,6 +1,6 @@
 import { StrictMode } from 'react';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { historyApi } from '../../../api/history';
 import type { RunDiagnosticSummary } from '../../../types/analysis';
 import { ReportDiagnostics } from '../ReportDiagnostics';
@@ -42,14 +42,34 @@ const diagnosticSummary: RunDiagnosticSummary = {
 };
 
 describe('ReportDiagnostics', () => {
+  let originalClipboard: PropertyDescriptor | undefined;
+  let originalExecCommand: PropertyDescriptor | undefined;
+
   beforeEach(() => {
     vi.clearAllMocks();
+    originalClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+    originalExecCommand = Object.getOwnPropertyDescriptor(document, 'execCommand');
     Object.defineProperty(navigator, 'clipboard', {
       configurable: true,
       value: {
         writeText: vi.fn().mockResolvedValue(undefined),
       },
     });
+  });
+
+  afterEach(() => {
+    if (originalClipboard) {
+      Object.defineProperty(navigator, 'clipboard', originalClipboard);
+    } else {
+      Reflect.deleteProperty(navigator, 'clipboard');
+    }
+    if (originalExecCommand) {
+      Object.defineProperty(document, 'execCommand', originalExecCommand);
+    } else {
+      Reflect.deleteProperty(document, 'execCommand');
+    }
+    vi.restoreAllMocks();
+    vi.useRealTimers();
   });
 
   it('loads historical diagnostics in a collapsed panel and copies sanitized text', async () => {
@@ -113,5 +133,135 @@ describe('ReportDiagnostics', () => {
       expect(historyApi.getDiagnostics).toHaveBeenCalledTimes(2);
     });
     expect(await screen.findByText('运行状态')).toBeInTheDocument();
+  });
+
+  it('copies diagnostics via execCommand fallback on HTTP and shows copyFailed when unavailable', async () => {
+    vi.useFakeTimers();
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: undefined,
+    });
+    const execCommand = vi.fn().mockReturnValue(true);
+    Object.defineProperty(document, 'execCommand', {
+      configurable: true,
+      value: execCommand,
+    });
+
+    render(<ReportDiagnostics summary={diagnosticSummary} />);
+    fireEvent.click(screen.getByText('运行状态'));
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: '复制排障信息' }));
+      await Promise.resolve();
+    });
+    expect(screen.getByRole('button', { name: '已复制' })).toBeInTheDocument();
+    expect(execCommand).toHaveBeenCalledWith('copy');
+
+    act(() => {
+      vi.advanceTimersByTime(2000);
+    });
+    expect(screen.getByRole('button', { name: '复制排障信息' })).toBeInTheDocument();
+
+    execCommand.mockReturnValue(false);
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: '复制排障信息' }));
+      await Promise.resolve();
+    });
+
+    expect(screen.getByRole('button', { name: '复制失败' })).toBeInTheDocument();
+    expect(consoleErrorSpy).toHaveBeenCalled();
+
+    act(() => {
+      vi.advanceTimersByTime(2000);
+    });
+    expect(screen.getByRole('button', { name: '复制排障信息' })).toBeInTheDocument();
+  });
+
+  it('resets copy feedback on summary change and ignores stale async clipboard resolutions', async () => {
+    let resolveClipboard!: () => void;
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: {
+        writeText: vi
+          .fn()
+          .mockImplementationOnce(
+            () => new Promise<void>((resolve) => {
+              resolveClipboard = resolve;
+            }),
+          )
+          .mockResolvedValue(undefined),
+      },
+    });
+
+    const summaryA = { ...diagnosticSummary, copyText: 'trace-A-copy' };
+    const summaryB = { ...diagnosticSummary, copyText: 'trace-B-copy' };
+
+    const { rerender } = render(<ReportDiagnostics recordId={1} summary={summaryA} />);
+    fireEvent.click(screen.getByText('运行状态'));
+    fireEvent.click(screen.getByRole('button', { name: '复制排障信息' }));
+
+    rerender(<ReportDiagnostics recordId={2} summary={summaryB} />);
+    expect(screen.getByRole('button', { name: '复制排障信息' })).toBeInTheDocument();
+
+    await act(async () => {
+      resolveClipboard();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(screen.getByRole('button', { name: '复制排障信息' })).toBeInTheDocument();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: '复制排障信息' }));
+      await Promise.resolve();
+    });
+    expect(screen.getByRole('button', { name: '已复制' })).toBeInTheDocument();
+
+    rerender(<ReportDiagnostics recordId={1} summary={summaryA} />);
+    expect(screen.getByRole('button', { name: '复制排障信息' })).toBeInTheDocument();
+  });
+
+  it('skips execCommand fallback when a stale summary writeText rejects after switching and copying summary B', async () => {
+    let rejectSummaryA!: (reason?: unknown) => void;
+    const writeText = vi
+      .fn()
+      .mockImplementationOnce(
+        () => new Promise<void>((_resolve, reject) => {
+          rejectSummaryA = reject;
+        }),
+      )
+      .mockResolvedValueOnce(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+    const execCommand = vi.fn().mockReturnValue(true);
+    Object.defineProperty(document, 'execCommand', {
+      configurable: true,
+      value: execCommand,
+    });
+
+    const summaryA = { ...diagnosticSummary, copyText: 'trace-A-copy' };
+    const summaryB = { ...diagnosticSummary, copyText: 'trace-B-copy' };
+
+    const { rerender } = render(<ReportDiagnostics recordId={1} summary={summaryA} />);
+    fireEvent.click(screen.getByText('运行状态'));
+    fireEvent.click(screen.getByRole('button', { name: '复制排障信息' }));
+
+    rerender(<ReportDiagnostics recordId={2} summary={summaryB} />);
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: '复制排障信息' }));
+      await Promise.resolve();
+    });
+    expect(screen.getByRole('button', { name: '已复制' })).toBeInTheDocument();
+
+    await act(async () => {
+      rejectSummaryA(new DOMException('Denied', 'NotAllowedError'));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(execCommand).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: '已复制' })).toBeInTheDocument();
   });
 });

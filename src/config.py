@@ -1334,6 +1334,9 @@ class Config:
     etf_rotation_switch_buffer_pct: float = 2.0
     etf_rotation_cost_bps: float = 10.0
     etf_rotation_backtest_years: int = 8
+    etf_rotation_scoring_mode: str = "return"
+    etf_rotation_weighting: str = "equal"
+    etf_rotation_vol_lookback_days: int = 20
     
     # === 日志配置 ===
     log_dir: str = "./logs"  # 日志文件目录
@@ -1762,7 +1765,7 @@ class Config:
                 elif anthropic_api_keys:
                     litellm_model = f'anthropic/{_anthropic_model_name}'
                 elif deepseek_api_keys:
-                    litellm_model = 'deepseek/deepseek-v4-flash'
+                    litellm_model = 'deepseek/deepseek-flash'
                 elif openai_api_keys:
                     # For openai-compatible models, add prefix only if not already prefixed
                     if '/' not in _openai_model_name:
@@ -1872,7 +1875,7 @@ class Config:
                 invalid_searxng_urls.append(u)
         if invalid_searxng_urls:
             logger.warning(
-                "SEARXNG_BASE_URLS 中存在无效 URL，已忽略（数量: %d）",
+                "Invalid URL(s) in SEARXNG_BASE_URLS ignored (count: %d)",
                 len(invalid_searxng_urls),
             )
         searxng_public_instances_enabled = parse_env_bool(
@@ -2035,7 +2038,7 @@ class Config:
             # Overall provider fallback order: Gemini > Anthropic > OpenAI-compatible (incl. AIHubmix).
             # base_url is auto-set to aihubmix.com/v1 when AIHUBMIX_KEY is used and no explicit
             # OPENAI_BASE_URL override is provided.
-            # Model names match upstream (e.g. gemini-3.6-flash, gpt-6.1-sol, deepseek-v4-flash).
+            # Model names match upstream (e.g. gemini-3.6-flash, gpt-6.1-sol, deepseek-flash).
             openai_api_key=openai_api_keys[0] if openai_api_keys else None,
             openai_base_url=openai_base_url,
             openai_model=_openai_model_name,
@@ -2363,6 +2366,12 @@ class Config:
             etf_rotation_backtest_years=parse_env_int(
                 os.getenv('ETF_ROTATION_BACKTEST_YEARS'), 8,
                 field_name='ETF_ROTATION_BACKTEST_YEARS', minimum=1, maximum=30,
+            ),
+            etf_rotation_scoring_mode=cls._parse_etf_rotation_scoring_mode(os.getenv('ETF_ROTATION_SCORING_MODE')),
+            etf_rotation_weighting=cls._parse_etf_rotation_weighting(os.getenv('ETF_ROTATION_WEIGHTING')),
+            etf_rotation_vol_lookback_days=parse_env_int(
+                os.getenv('ETF_ROTATION_VOL_LOOKBACK_DAYS'), 20,
+                field_name='ETF_ROTATION_VOL_LOOKBACK_DAYS', minimum=2, maximum=500,
             ),
             log_dir=os.getenv('LOG_DIR', './logs'),
             log_level=os.getenv('LOG_LEVEL', 'INFO'),
@@ -3194,6 +3203,22 @@ class Config:
         logger.warning("ETF_ROTATION_REBALANCE=%r is invalid; falling back to weekly", value)
         return 'weekly'
 
+    @staticmethod
+    def _parse_etf_rotation_scoring_mode(value: Optional[str]) -> str:
+        normalized = (value or 'return').strip().lower()
+        if normalized in ('return', 'vol_adjusted', 'composite', 'trend_r2'):
+            return normalized
+        logger.warning("ETF_ROTATION_SCORING_MODE=%r is invalid; falling back to return", value)
+        return 'return'
+
+    @staticmethod
+    def _parse_etf_rotation_weighting(value: Optional[str]) -> str:
+        normalized = (value or 'equal').strip().lower()
+        if normalized in ('equal', 'inverse_vol'):
+            return normalized
+        logger.warning("ETF_ROTATION_WEIGHTING=%r is invalid; falling back to equal", value)
+        return 'equal'
+
     @classmethod
     def _parse_market_review_region(cls, value: str) -> str:
         """解析大盘复盘市场区域，非法值记录警告后回退为 cn"""
@@ -3202,7 +3227,8 @@ class Config:
             return normalized
 
         logging.getLogger(__name__).warning(
-            f"MARKET_REVIEW_REGION 配置值 '{value}' 无效，已回退为默认值 'cn'（合法值：cn / hk / us / jp / kr / tw / both；支持逗号分隔有效值）"
+            f"Invalid MARKET_REVIEW_REGION value '{value}', falling back to default 'cn' "
+            "(valid: cn / hk / us / jp / kr / tw / both; comma-separated valid values supported)"
         )
         return 'cn'
 
@@ -3214,7 +3240,8 @@ class Config:
         if v in ('green_up', 'red_up'):
             return v
         logging.getLogger(__name__).warning(
-            "MARKET_REVIEW_COLOR_SCHEME 配置值 '%s' 无效，已回退为默认值 'green_up'（合法值：green_up / red_up）",
+            "Invalid MARKET_REVIEW_COLOR_SCHEME value '%s', falling back to default 'green_up' "
+            "(valid: green_up / red_up)",
             value,
         )
         return 'green_up'

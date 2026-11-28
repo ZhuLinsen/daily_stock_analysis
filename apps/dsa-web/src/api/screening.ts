@@ -102,6 +102,15 @@ export type ScreeningExplanationItem = {
   value?: number | null;
 };
 
+export type ScreeningStrategyStyle = {
+  riskProfile?: string;
+  holdingPeriod?: string;
+  executionStyle?: string;
+  marketRegime?: string[];
+  capitalProfile?: string;
+  uiBadge?: string;
+};
+
 export type ScreeningStrategy = {
   id: string;
   name: string;
@@ -114,6 +123,10 @@ export type ScreeningStrategy = {
   analysisSkills?: string[];
   marketScope?: string[];
   market?: string;
+  requiresDailyFeatures?: boolean;
+  activeFilters?: string[];
+  factorWeights?: Record<string, number>;
+  style?: ScreeningStrategyStyle;
 };
 
 export type ScreeningStrategiesResponse = {

@@ -754,6 +754,7 @@ describe('DecisionSignalsPage', () => {
   });
 
   it('reports an expired signal refresh separately and refreshes active views', async () => {
+    const recentCreatedAt = new Date(Date.now() - 60 * 60 * 1000).toISOString();
     const refreshedItem = makeSignal({
       id: 90,
       decisionProfile: 'balanced',
@@ -761,6 +762,8 @@ describe('DecisionSignalsPage', () => {
       triggerSource: 'api',
       action: 'buy',
       status: 'active',
+      createdAt: recentCreatedAt,
+      updatedAt: recentCreatedAt,
       metadata: {
         decision_profile: 'balanced',
         profile_source: 'user_selected',
@@ -988,7 +991,7 @@ describe('DecisionSignalsPage', () => {
 
     renderPage();
     await screen.findByText('决策风格重评估预览');
-    fireEvent.click(screen.getByRole('button', { name: '查看 贵州茅台 AI 建议详情' }));
+    fireEvent.click(await screen.findByRole('button', { name: '查看 贵州茅台 AI 建议详情' }));
 
     await waitFor(() => {
       expect(screen.getAllByText('该信号不支持重评估').length).toBeGreaterThan(0);

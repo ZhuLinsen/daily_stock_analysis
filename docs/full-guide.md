@@ -59,12 +59,12 @@ daily_stock_analysis/
 |------------|------|:----:|
 | `MODELFLARE_KEY` | [Modelflare](https://modelflare.dev/sign-up?utm_source=github&utm_campaign=daily_stock_analysis) API Key，自动补齐默认地址和模型 | 推荐 |
 | `LLM_X6AI_API_KEY` | [x6.ai](https://console.x6pro.io/register?code=zJ2qSdns) API Key，低成本接入 Claude、GPT 等 100+ 模型 | 推荐 |
-| `AIHUBMIX_KEY` | AIHubMix API Key，一 Key 切换使用全系模型，本项目可享 10% 优惠 | 可选 |
 | `GEMINI_API_KEY` | [Google AI Studio](https://aistudio.google.com/) 获取免费 Key | 可选 |
 | `ANTHROPIC_API_KEY` | Anthropic Claude API Key | 可选 |
 | `OPENAI_API_KEY` | OpenAI 兼容 API Key（支持 DeepSeek、通义千问等） | 可选 |
 | `OPENAI_BASE_URL` | OpenAI 兼容 API 地址（如 `https://api.deepseek.com`） | 可选 |
-| `OPENAI_MODEL` | 模型名称（如 `gemini-3.6-flash`、`deepseek-v4-flash`、`gpt-6.1-sol`） | 可选 |
+| `OPENAI_MODEL` | 模型名称（如 `gemini-3.6-flash`、`deepseek-flash`、`gpt-6.1-sol`） | 可选 |
+| `AIHUBMIX_KEY` | [AIHubMix](https://inferera.com/?aff=CfMq) API Key（自动适配 Base URL） | 可选 |
 | `ANSPIRE_API_KEYS` | [Anspire](https://open.anspire.cn/dsa?share_code=QFBC0FYC) API Key（可选，模型与搜索共用；可用性以账号权限为准） | 可选 |
 
 > *注：以上模型 Key / 渠道至少配置一个。Modelflare 只需填写 `MODELFLARE_KEY`，单渠道默认模型为 `openai/gpt-6.1-sol`（可通过 `LITELLM_MODEL` 覆盖），接入地址默认使用 `https://modelflare.dev/v1`，完整示例见 [LLM 配置指南](LLM_CONFIG_GUIDE.md#示例modelflare)。实际模型以账号权限为准。启动时配置校验会在缺少可用 AI 模型 Key 或模型渠道时给出明确错误提示。
@@ -209,10 +209,10 @@ daily_stock_analysis/
 
 如果你想快速开始，最少需要配置以下项：
 
-1. **AI 模型**：按 [Modelflare Channels 示例](LLM_CONFIG_GUIDE.md#示例modelflare) 配置，或使用 `AIHUBMIX_KEY`（[AIHubmix](https://inferera.com/?aff=CfMq)，一 Key 多模型）、`GEMINI_API_KEY` 或 `OPENAI_API_KEY`
+1. **AI 模型**：按 [Modelflare Channels 示例](LLM_CONFIG_GUIDE.md#示例modelflare) 配置，或使用 `GEMINI_API_KEY`、`OPENAI_API_KEY`、`AIHUBMIX_KEY` 等
 2. **通知渠道**：至少配置一个，如 `WECHAT_WEBHOOK_URL` 或 `EMAIL_SENDER` + `EMAIL_PASSWORD`
 3. **股票列表**：`STOCK_LIST`（必填）
-4. **搜索 API**：`SERPAPI_API_KEYS` 或 `TAVILY_API_KEYS`；`ANSPIRE_API_KEYS` 仍可选用
+4. **搜索 API**：`SERPAPI_API_KEYS`、`TAVILY_API_KEYS` 或 `ANSPIRE_API_KEYS`
 
 > 💡 配置完以上 4 项即可开始使用！
 
@@ -285,18 +285,18 @@ daily_stock_analysis/
 | `LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL` | Prompt cache 诊断级别：`off` / `basic` / `debug`；basic/debug 仅在 debug 日志和测试可观察对象中提供脱敏诊断，不作为公开 Usage API 或普通设置页输出 | `off` | 否 |
 | `LLM_USAGE_HMAC_SECRET` | LLM 用量遥测 message HMAC 密钥；留空时自动使用数据目录中的本地密钥文件 | - | 否 |
 | `LLM_USAGE_HMAC_KEY_VERSION` | LLM 用量遥测 HMAC 密钥版本标签，轮换密钥时同步更新 | `local-v1` | 否 |
-| `AIHUBMIX_KEY` | [AIHubmix](https://inferera.com/?aff=CfMq) API Key，一 Key 切换使用全系模型，无需额外配置 Base URL | - | 可选 |
 | `GEMINI_API_KEY` | Google Gemini API Key | - | 可选 |
 | `GEMINI_MODEL` | 主模型名称（legacy，`LITELLM_MODEL` 优先） | `gemini-3.6-flash` | 否 |
 | `GEMINI_MODEL_FALLBACK` | 备选模型（legacy） | `gemini-3.5-flash-lite` | 否 |
 | `OPENAI_API_KEY` | OpenAI 兼容 API Key | - | 可选 |
 | `OPENAI_BASE_URL` | OpenAI 兼容 API 地址 | - | 可选 |
 | `OLLAMA_API_BASE` | Ollama 本地服务地址（如 `http://localhost:11434`），详见 [LLM 配置指南](LLM_CONFIG_GUIDE.md) | - | 可选 |
-| `OPENAI_MODEL` | OpenAI 模型名称（legacy，AIHubmix 用户可填如 `gemini-3.6-flash`、`gpt-6.1-sol`） | `gpt-6.1-sol` | 可选 |
+| `OPENAI_MODEL` | OpenAI 模型名称（legacy，如 `gpt-6.1-sol`） | `gpt-6.1-sol` | 可选 |
 | `ANTHROPIC_API_KEY` | Anthropic Claude API Key | - | 可选 |
 | `ANTHROPIC_MODEL` | Claude 模型名称 | `claude-sonnet-4-6` | 可选 |
 | `ANTHROPIC_TEMPERATURE` | Claude 温度参数（0.0-1.0） | `0.7` | 可选 |
 | `ANTHROPIC_MAX_TOKENS` | Claude 响应最大 token 数 | `8192` | 可选 |
+| `AIHUBMIX_KEY` | [AIHubmix](https://inferera.com/?aff=CfMq) API Key（自动适配 `https://aihubmix.com/v1`） | - | 可选 |
 | `ANSPIRE_API_KEYS` | [Anspire](https://open.anspire.cn/dsa?share_code=QFBC0FYC) API Key（可选，模型与搜索共用；可用性以账号权限为准） | - | 可选 |
 
 > GitHub Actions 说明：仓库自带 `00-daily-analysis.yml` 在 `GENERATION_FALLBACK_BACKEND` 未配置时显式使用 `litellm`，避免未设置的 Secret/Variable 被导出为空值并意外禁用 backend fallback。若要在 Actions 中禁用 backend fallback，请将 fallback 设为 primary backend，让 resolver 走 self no-op。
@@ -419,7 +419,7 @@ daily_stock_analysis/
 调试入口：
 
 - 每条返回会保留 `relevance_score` / `relevance_category` / `relevance_reasons` 元数据，最终 `to_text()` 与情报上下文会附带对应「关联度」说明；
-- 搜索链路日志会输出 `[新闻相关度]` 统计，便于复盘为何该批次触发了 direct/sector/macro 分层。
+- 搜索链路日志会输出 `[NewsRelevance]` 统计，便于复盘为何该批次触发了 direct/sector/macro 分层。
 
 兼容与回退说明：该改动不新增/修改模型、provider、Base URL、LiteLLM route、配置清理或回写逻辑；若出现异常，只能通过回滚本次提交恢复旧排序行为，不涉及历史配置迁移。
 
@@ -502,6 +502,20 @@ daily_stock_analysis/
 > - 超时控制为 `best-effort` 软超时：阶段会按预算快速降级继续执行，但不保证硬中断底层三方调用。
 > - `FUNDAMENTAL_STAGE_TIMEOUT_SECONDS=8.0` 表示新增基本面阶段的目标预算，不是严格硬 SLA；Windows、Docker 或免费数据源被限流时可继续调高到 `12-15s`。
 > - 若要硬 SLA，请在后续版本升级为子进程隔离执行并在超时后强制终止。
+
+#### 大盘复盘结构化字段（Issue #1584）
+
+大盘复盘在保持既有 Markdown 报告与历史记录兼容的前提下，新增以下可选结构化字段（旧消费者忽略未知字段；payload 缺字段时 Web/历史/推送渲染与旧版完全一致）：
+
+- `summary`：市场温度（0-100；LLM 未给出时回落到市场亮灯分）、市场状态（弱势调整/震荡分化/强势扩散/指数强但个股弱等）、建议仓位（如 0-3 成）、核心结论一句话（点明普涨/普跌/权重护盘/成长杀跌/风险偏好回落等结构）。
+- `indices[].comment`：指数一句话点评；美股支持权重股拉动/拖累识别，A 股支持权重护盘/成长杀跌/中小盘扩散识别。指数行情不含历史收盘价或均线数值，因此不提供均线状态字段（避免展示无行情支撑的推断；待后续接入真实均线计算后再展示）。Prompt 在每条指数行情后附内部代码并要求附录原样回传；消费端兼容常见行情符号别名（`^N225`、`000001.SH`、`^GSPC` 等）并支持名称回退，匹配不唯一时不挂载。
+- `breadth.divergence_diagnosis`：结合涨跌家数、涨跌停、成交额与指数结构的宽度与分化诊断；LLM 未给出时按“指数涨跌与上涨家数占比背离”确定性兜底组装，仅在宽度数据可用时出现；指数行情全部缺失时，兜底只陈述涨跌家数结论并明确标注“仅基于涨跌家数统计、未与指数表现对比”，不会给出“宽度与指数匹配”的结论。
+- `style_rotation`：成长/防御/资源/消费等风格切换信号（`signal`）与说明（`comment`）。
+- `catalysts[]`：消息催化按 `direction`（bullish/bearish/neutral，中英文输入自动归一化）、`scope`（影响范围）、`persistence`（一次性/短期/中期）、`digested`（是否已被市场消化）归类；缺 `title` 的条目丢弃，最多保留 8 条。
+- `next_day_plan`：明日观察清单（`watchlist`）、仓位调整建议（`position_advice`）与触发失效条件（`invalidation`）。
+- `cross_market_note`（可选 P3）：其他市场（美/日/韩）对明日走势的综合参考文本；不引入任何外部数据源新依赖。
+
+实现方式：复盘 Prompt 要求 LLM 在报告末尾输出一个 ```json 结构化附录；后端提取并从 Markdown 中剥离后并入 payload，解析失败或字段缺失时逐字段降级为 null/省略，文本字段剔除未配对的 UTF-16 代理码点（避免历史快照写库失败），绝不中断复盘生成，也不新增任何环境配置键。Web「大盘复盘」视图对上述字段可选渲染（无字段时与旧版零差异）。
 
 ### 其他配置
 
@@ -1513,7 +1527,7 @@ GEMINI_MODEL=gemini-3.6-flash
 # OpenAI 兼容（备选）
 OPENAI_API_KEY=xxx
 OPENAI_BASE_URL=https://api.deepseek.com
-OPENAI_MODEL=deepseek-v4-flash
+OPENAI_MODEL=deepseek-flash
 # deepseek-chat / deepseek-reasoner 已被官方公告于 2026/07/24 停用，请迁移
 ```
 
@@ -1739,7 +1753,7 @@ FastAPI 提供 RESTful API 服务，支持配置管理和触发分析。
 - 📝 **配置管理** - 查看/修改自选股列表
 - 🗂️ **首页三视图** - 首页提供「历史 / 自选 / 今日」工作区，默认进入历史视图；移动端抽屉内三个列表均由各自的内层视口承接纵向触摸滚动，外层卡片不会截断手势，桌面端仍保留卡片边界裁剪；自选股行可用鼠标或键盘打开已确认的最新分析详情，提示始终跟随当前的查找中、查找失败或确认无详情状态；任何 stock-bar 请求及完成任务后的数据刷新都会在开始时进入待确认状态，重新确认或状态未知期间不会开放旧 stock-bar 或 fallback 报告；自选页刷新会同时重试列表和详情状态，逐股票详情补查使用固定并发上限，并在刷新或页面状态切换时取消已失效批次；支持批量提交全部或仅提交“今日未分析”股票
 - 📌 **任务面板折叠** - 首页任务面板可折叠/展开，折叠后保留 pending/processing 摘要并把更多侧栏空间让给自选股列表；折叠状态在当前页面会话内保持
-- 🧭 **界面语言切换** - 登录态与退出态均支持界面语言快速切换（`zh` / `en`），独立于 `REPORT_LANGUAGE`，用于静态 UI 文案与导航骨架 选股页面的控件、任务状态、历史记录和金额单位也会随界面语言切换。公司名称、自定义策略和数据源返回的分析文字保留原文。
+- 🧭 **界面语言切换** - 登录态与退出态均支持界面语言快速切换（`zh` / `en`），独立于 `REPORT_LANGUAGE`，用于静态 UI 文案与导航骨架 选股页面的控件、任务状态、历史记录和金额单位也会随界面语言切换。公司名称、自定义策略和数据源返回的分析文字保留原文。首页策略选择器与问股页策略选择区会将内置策略的名称和说明显示为英文；同 ID 策略的名称与说明分别仅在仍与内置原文一致时翻译，否则保留接口返回的原文。问股页快捷提问会作为消息原文发送，暂不随界面语言翻译。
 - 🚀 **快速分析** - 通过 API 接口触发个股分析；首页也提供“大盘复盘”按钮和单次市场选择器，可在 Docker/server 模式下按服务器默认或临时选择的单个/多个市场后台触发复盘
 - 🎯 **策略选择** - 首页支持显式选择分析策略 skill；不传 `skills` 时按系统默认策略运行，便于保持与历史行为兼容
 - 🧪 **今日状态/任务刷新防抖** - 首页「今日」与「自选」通过带有时区感知的历史区间判断并发起分页历史查询；任务完成后由最新一次 stock bar 刷新成功才清除失败态，避免旧请求乱序覆盖新状态导致重复提交
@@ -1749,7 +1763,7 @@ FastAPI 提供 RESTful API 服务，支持配置管理和触发分析。
 - 🗂️ **大盘复盘任务可见性** - 首页触发大盘复盘后会返回 `task_id` 并轮询 `GET /api/v1/analysis/status/{task_id}`，在进行中/完成/失败场景给出可见反馈，失败时直接透出报错内容
 - 🗂️ **市场复盘历史独立入口** - 大盘复盘历史通过专用入口与普通个股历史隔离；建议通过 `stock_code=MARKET` + `report_type=market_review` 直接查询与回放大盘复盘记录
 - **阅读报告表格** - 个股完整报告和大盘复盘中的 Markdown 表格会在单元格内折行显示长文本。列数较多时，可横向滚动查看其余列。
-- **价格点位图** - 在 Web 或桌面端打开已保存的个股报告，点击「狙击点位」卡片右上角的「价格点位图」后才会请求日线行情。图表最多展示最近 60 个交易日的收盘价，叠加 MA5、MA20 和可解析的理想买入、二次买入、止损、止盈点位。若报告保存价与当前行情出现明显价格尺度差异，为避免把复权行情与旧报告点位错误叠加，图表会保留行情走势并隐藏参考线，同时给出提示。行情为空或加载失败时可点击「重新加载」。此功能无需配置。
+- **价格点位图** - 在 Web 或桌面端打开已保存的个股报告，点击「狙击点位」卡片右上角的「价格点位图」后才会按需请求日线行情。默认展示最近 `60D`（支持切换 `20D` / `40D` / `60D` / `全部`，其中`全部`指本次日线响应返回的全部交易日），叠加 MA5、MA20、可选主图叠加层（MA60、BOLL，默认关闭）、默认关闭的附图指标面板（`RSI(14)` / `MACD` / `KDJ`）、定量诊断徽标（盈亏比、RSI、BOLL 带宽/收口、MACD、MA20 乖离、年化波动、最大回撤、ATR%）以及可解析的理想买入、二次买入、止损、止盈点位。若报告保存价与当前行情出现明显价格尺度差异，为避免把复权行情与旧报告点位错误叠加，图表会保留行情走势并隐藏参考线，同时给出提示；若底层数据源仅返回收盘价回填的合成 OHLC（`ohlc_synthesized=true`）或未复权历史（`price_adjustment=unadjusted`），图表会自动隐藏伪造开盘/高低价区间或暂停跨日衍生统计与技术指标曲线并给出状态提示。行情为空或加载失败时可点击「重新加载」。此功能无需配置。
 - 🧾 **市场复盘历史可复用** - 大盘复盘任务会持久化到分析历史，`report_type` 为 `market_review`，可直接通过历史列表/详情打开对应 Markdown 或详情页，不会重新触发分析重算
 - 🧭 **市场位置卡片** - A 股普通分析报告会展示市场题材层和个股位置层，区分大盘主线、主关联题材、题材阶段、个股位置和缺失证据
 - 🧩 **输入数据块可见** - 普通分析报告会在历史详情、同步响应和 completed 任务状态中返回低敏 `AnalysisContextPack` overview，Web 报告页在策略点位和资讯之后默认折叠展示数据块状态、来源、缺失原因和降级摘要

@@ -255,7 +255,7 @@ class TestAuthFailureDegradation:
         assert delay is None
         client._handle_auth_error(Exception("Authentication failed: again"))
         assert client._running is False
-        assert "放弃" in caplog.text or "give up" in caplog.text.lower()
+        assert "giving up" in caplog.text.lower()
 
     def test_non_auth_error_does_not_consume_auth_budget(self):
         client = self._client()
@@ -323,7 +323,7 @@ class TestSingleConnectionMutex:
 
         assert started is False
         thread_cls.assert_not_called()
-        assert "单连接" in caplog.text or "已在运行" in caplog.text
+        assert "single-connection" in caplog.text.lower() or "already running" in caplog.text.lower()
 
     def test_start_background_creates_exactly_one_thread(self):
         client = self._client()
@@ -582,7 +582,7 @@ class TestTextMessageRoundTrip:
         coro = _noop()
         handler._schedule_reply(coro)
         coro.close()
-        assert "事件循环不可用" in caplog.text
+        assert "SDK event loop unavailable" in caplog.text
 
 
 # ---------------------------------------------------------------------------
@@ -994,7 +994,7 @@ class TestHourlyConversationQuota:
 
         # First 1000 replies went out; replies 1001..1020 dropped by the hour.
         assert sdk_client.reply.call_count == 1000
-        assert "超限" in caplog.text or "1000" in caplog.text
+        assert "rate limit exceeded" in caplog.text or "1000" in caplog.text
 
     def test_outbound_gate_hour_exhaustion_rejects(self):
         handler, _ = self._handler()
@@ -1034,12 +1034,12 @@ class TestHourlyConversationQuota:
         for _ in range(1000):
             handler._outbound_hour_limiter.is_allowed("chat-pro")
         assert client.send_to_chat("chat-pro", "report") is False
-        assert "超限" in caplog.text
+        assert "rate limit exceeded" in caplog.text
 
         caplog.clear()
         # Quota open + loop unavailable -> quota passed, loop missing rejects.
         assert client.send_to_chat("chat-other", "report") is False
-        assert "事件循环不可用" in caplog.text
+        assert "SDK event loop unavailable" in caplog.text
 
     def test_send_to_chat_happy_path_and_errcode_ack(self, caplog):
         client = self._client()
@@ -1065,7 +1065,7 @@ class TestHourlyConversationQuota:
 
             sdk_client.send_message = _ack_err
             assert client.send_to_chat("chat-ok", "📊 报告") is False
-            assert "会话" in caplog.text  # precondition hint on non-zero errcode
+            assert "existing session" in caplog.text  # precondition hint on non-zero errcode
         finally:
             client._loop = None
             client._handler._loop = None
@@ -1078,7 +1078,7 @@ class TestHourlyConversationQuota:
         client._running = False
 
         assert client.send_to_chat("chat-a", "x") is False
-        assert "未运行" in caplog.text
+        assert "not running" in caplog.text
 
 
 # ---------------------------------------------------------------------------
@@ -1621,7 +1621,7 @@ class TestOutboundSendConfirmationQuota:
         loop, thread = self._start_ack_loop(client, _ack_reject)
         try:
             assert client.send_to_chat("chat-e", "report") is False
-            assert "会话" in caplog.text  # precondition hint
+            assert "existing session" in caplog.text  # precondition hint
 
             minute, hour = self._window_counts(handler, "chat-e")
             assert (minute, hour) == (0, 0), (
@@ -1648,7 +1648,7 @@ class TestOutboundSendConfirmationQuota:
             f"no-loop passive reply kept debits: minute={minute} hour={hour}"
         )
         sdk_client.reply.assert_not_called()
-        assert "事件循环不可用" in caplog.text
+        assert "SDK event loop unavailable" in caplog.text
 
     def test_passive_reply_with_loop_still_records_once(self):
         """正常被动路径行为保持：有循环时记账一次并调度发送。"""
@@ -1920,7 +1920,7 @@ class TestTimeoutConservativeQuota:
                 assert client.send_to_chat(
                     "chat-t", "x", timeout_seconds=0.15
                 ) is False
-                assert "不确定" in caplog.text or "超时" in caplog.text
+                assert "uncertain" in caplog.text.lower() or "timeout" in caplog.text.lower()
 
             minute, hour = self._counts(handler, "chat-t")
             assert (minute, hour) == (30, 30), (
@@ -1933,7 +1933,7 @@ class TestTimeoutConservativeQuota:
             ) is False
             minute, hour = self._counts(handler, "chat-t")
             assert (minute, hour) == (30, 30)
-            assert "超限" in caplog.text
+            assert "rate limit exceeded" in caplog.text
         finally:
             client._running = False
             client._loop = None
@@ -1991,7 +1991,7 @@ class TestTimeoutConservativeQuota:
                 assert (minute, hour) == (1, 1), (
                     f"runtime error refunded: minute={minute} hour={hour}"
                 )
-            assert "保留记账" in caplog.text  # 同步分支 + 终态分支均保留记账
+            assert "quota kept" in caplog.text  # 同步分支 + 终态分支均保留记账
         finally:
             client._running = False
             client._loop = None
@@ -2037,7 +2037,7 @@ class TestTimeoutConservativeQuota:
             assert (minute, hour) == (1, 1), (
                 f"passive ack timeout refunded: minute={minute} hour={hour}"
             )
-            assert "保留记账" in caplog.text
+            assert "quota kept" in caplog.text
         finally:
             loop.call_soon_threadsafe(loop.stop)
             thread.join(timeout=5)
@@ -2281,7 +2281,7 @@ class TestScheduleWithinQuotaCriticalSection:
             # Coroutine was closed, not leaked.
             assert "coro" in captured
             assert captured["coro"].cr_frame is None
-            assert "退还" in caplog.text
+            assert "quota refunded" in caplog.text
         finally:
             client._running = False
             client._loop = None
@@ -2326,7 +2326,7 @@ class TestGlobalBotEnabledGate:
         # webhook 同款语义：静默忽略（不回复用户）
         schedule.assert_not_called()
         sdk_client.reply.assert_not_called()
-        assert "机器人功能未启用" in caplog.text
+        assert "Bot feature disabled" in caplog.text
 
     def test_bot_disabled_gate_precedes_dedup_and_ratelimit(self):
         """门在排重/限流之前：禁用时连 msgid 缓存与会话限流都不消费。"""

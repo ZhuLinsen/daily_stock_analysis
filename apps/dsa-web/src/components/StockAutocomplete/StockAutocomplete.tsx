@@ -5,15 +5,16 @@
  * Supports keyboard navigation, IME input method, graceful degradation
  */
 
-import { Component, useRef, useEffect, useState } from 'react';
+import { Component, useCallback, useRef, useEffect, useState } from 'react';
 import type { KeyboardEvent } from 'react';
 import type { ErrorInfo, ReactNode } from 'react';
 import { createPortal } from 'react-dom';
+import { useUiLanguage } from '../../contexts/UiLanguageContext';
 import { useStockIndex } from '../../hooks/useStockIndex';
 import { useAutocomplete } from '../../hooks/useAutocomplete';
 import { SuggestionsList } from './SuggestionsList';
 import { cn } from '../../utils/cn';
-import type { Market } from '../../types/stockIndex';
+import type { Market, StockSuggestion } from '../../types/stockIndex';
 
 const AUTOCOMPLETE_INPUT_CLASS =
   'input-surface input-focus-glow h-11 w-full rounded-xl border bg-transparent px-4 text-sm transition-all focus:outline-none disabled:cursor-not-allowed disabled:opacity-60';
@@ -45,10 +46,13 @@ function FallbackInput({
   onChange,
   onSubmit,
   disabled = false,
-  placeholder = '输入股票代码或名称',
+  placeholder,
   ariaLabel,
   className,
 }: StockAutocompleteProps) {
+  const { language } = useUiLanguage();
+  const resolvedPlaceholder = placeholder ?? (language === 'en' ? 'Enter stock code or name' : '输入股票代码或名称');
+
   return (
     <input
       type="text"
@@ -60,7 +64,7 @@ function FallbackInput({
           onSubmit(value);
         }
       }}
-      placeholder={placeholder}
+      placeholder={resolvedPlaceholder}
       aria-label={ariaLabel}
       disabled={disabled}
       className={cn(AUTOCOMPLETE_INPUT_CLASS, className)}
@@ -107,10 +111,12 @@ function StockAutocompleteInner({
   onChange,
   onSubmit,
   disabled = false,
-  placeholder = '输入股票代码或名称',
+  placeholder,
   ariaLabel,
   className,
 }: StockAutocompleteProps) {
+  const { language } = useUiLanguage();
+  const resolvedPlaceholder = placeholder ?? (language === 'en' ? 'Enter stock code or name' : '输入股票代码或名称');
   const { index, loading, fallback } = useStockIndex();
   const {
     // query,
@@ -121,6 +127,7 @@ function StockAutocompleteInner({
     setHighlightedIndex,
     highlightPrevious,
     highlightNext,
+    handleSelect,
     close,
     // reset,
     isComposing,
@@ -131,7 +138,24 @@ function StockAutocompleteInner({
 
   const inputRef = useRef<HTMLInputElement>(null);
   const prevValueRef = useRef(value);
+  const blurTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [dropdownStyle, setDropdownStyle] = useState<{ top: number; left: number; width: string } | null>(null);
+  const hasQueryText = Boolean(value.trim());
+  const [prevHasQueryText, setPrevHasQueryText] = useState(hasQueryText);
+  if (prevHasQueryText !== hasQueryText) {
+    setPrevHasQueryText(hasQueryText);
+    if (!hasQueryText && dropdownStyle !== null) {
+      setDropdownStyle(null);
+    }
+  }
+  const isDropdownOpen = isOpen && hasQueryText;
+
+  const clearBlurTimer = useCallback(() => {
+    if (blurTimerRef.current !== null) {
+      clearTimeout(blurTimerRef.current);
+      blurTimerRef.current = null;
+    }
+  }, []);
 
   const updateDropdownPosition = () => {
     if (!inputRef.current) {
@@ -147,22 +171,39 @@ function StockAutocompleteInner({
     });
   };
 
-  const closeSuggestions = () => {
+  const closeSuggestions = useCallback(() => {
+    clearBlurTimer();
     close();
     setDropdownStyle(null);
+  }, [clearBlurTimer, close]);
+
+  const selectSuggestion = (selected: StockSuggestion) => {
+    prevValueRef.current = selected.displayCode;
+    handleSelect(selected);
+    closeSuggestions();
+    onChange(selected.displayCode);
+    onSubmit(selected.canonicalCode, selected.nameZh, 'autocomplete', {
+      market: selected.market,
+      displayCode: selected.displayCode,
+    });
   };
+
+  useEffect(() => clearBlurTimer, [clearBlurTimer]);
 
   // Sync external value with internal query (only when value truly changes)
   useEffect(() => {
     if (prevValueRef.current !== value) {
       setQuery(value);
       prevValueRef.current = value;
+      if (!value.trim()) {
+        clearBlurTimer();
+      }
     }
-  }, [value, setQuery]);
+  }, [value, setQuery, clearBlurTimer]);
 
   // Calculate suggestion box position (using fixed positioning)
   useEffect(() => {
-    if (!isOpen) {
+    if (!isDropdownOpen) {
       return;
     }
 
@@ -175,7 +216,7 @@ function StockAutocompleteInner({
       window.removeEventListener('resize', updateDropdownPosition);
       window.removeEventListener('scroll', updateDropdownPosition, true);
     };
-  }, [isOpen]);
+  }, [isDropdownOpen]);
 
   useEffect(() => {
     if (!autocompleteError) {
@@ -192,26 +233,24 @@ function StockAutocompleteInner({
 
     switch (e.key) {
       case 'ArrowDown':
-        e.preventDefault();
-        highlightNext();
+        if (isDropdownOpen) {
+          e.preventDefault();
+          highlightNext();
+        }
         break;
       case 'ArrowUp':
-        e.preventDefault();
-        highlightPrevious();
+        if (isDropdownOpen) {
+          e.preventDefault();
+          highlightPrevious();
+        }
         break;
       case 'Enter':
         e.preventDefault();
-        if (highlightedIndex >= 0 && suggestions[highlightedIndex]) {
+        if (isDropdownOpen && highlightedIndex >= 0 && suggestions[highlightedIndex]) {
           // Select highlighted item
-          const selected = suggestions[highlightedIndex];
-          onChange(selected.displayCode);
-          closeSuggestions();
-          onSubmit(selected.canonicalCode, selected.nameZh, 'autocomplete', {
-            market: selected.market,
-            displayCode: selected.displayCode,
-          });
+          selectSuggestion(suggestions[highlightedIndex]);
         } else {
-          // Submit directly
+          // Submit raw input without hiding open suggestions so rejected inputs keep suggestions visible.
           onSubmit(value);
         }
         break;
@@ -233,7 +272,11 @@ function StockAutocompleteInner({
 
   // Delay closing on blur (avoid immediate close when clicking suggestion items)
   const handleBlur = () => {
-    setTimeout(() => closeSuggestions(), 200);
+    clearBlurTimer();
+    blurTimerRef.current = setTimeout(() => {
+      blurTimerRef.current = null;
+      closeSuggestions();
+    }, 200);
   };
 
   // Fallback mode: use normal input
@@ -244,7 +287,7 @@ function StockAutocompleteInner({
         onChange={onChange}
         onSubmit={onSubmit}
         disabled={disabled}
-        placeholder={placeholder}
+        placeholder={resolvedPlaceholder}
         ariaLabel={ariaLabel}
         className={className}
       />
@@ -257,27 +300,31 @@ function StockAutocompleteInner({
         ref={inputRef}
         type="text"
         value={value}
-        onChange={(e) => onChange(e.target.value)}
+        onChange={(e) => {
+          clearBlurTimer();
+          onChange(e.target.value);
+        }}
         onKeyDown={handleKeyDown}
         onCompositionStart={handleCompositionStart}
         onCompositionEnd={handleCompositionEnd}
         onFocus={() => {
-          if (isOpen) {
+          clearBlurTimer();
+          if (isDropdownOpen) {
             updateDropdownPosition();
           }
         }}
         onBlur={handleBlur}
-        placeholder={placeholder}
+        placeholder={resolvedPlaceholder}
         aria-label={ariaLabel}
         disabled={disabled}
         className={cn(
           AUTOCOMPLETE_INPUT_CLASS,
-          isOpen && "rounded-b-none",
+          isDropdownOpen && "rounded-b-none",
           className
         )}
         aria-autocomplete="none"
         role="combobox"
-        aria-expanded={isOpen}
+        aria-expanded={isDropdownOpen}
         aria-haspopup="listbox"
         aria-controls="suggestions-list"
       />
@@ -290,21 +337,11 @@ function StockAutocompleteInner({
       )}
 
       {/* Suggestion dropdown list */}
-      {isOpen && dropdownStyle && createPortal(
+      {isDropdownOpen && dropdownStyle && createPortal(
         <SuggestionsList
           suggestions={suggestions}
           highlightedIndex={highlightedIndex}
-          onSelect={(s) => {
-            // Update external value (shown in input box)
-            onChange(s.displayCode);
-            // Close dropdown list
-            closeSuggestions();
-            // Submit analysis
-            onSubmit(s.canonicalCode, s.nameZh, 'autocomplete', {
-              market: s.market,
-              displayCode: s.displayCode,
-            });
-          }}
+          onSelect={selectSuggestion}
           onMouseEnter={(index) => setHighlightedIndex(index)}
           style={{ position: 'fixed', ...dropdownStyle }}
         />,

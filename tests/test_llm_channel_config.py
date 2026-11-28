@@ -1390,7 +1390,7 @@ class LLMChannelConfigTestCase(unittest.TestCase):
     @patch("src.config.setup_env")
     @patch.object(Config, "_parse_litellm_yaml", return_value=[])
     @patch("src.config.logger.warning")
-    def test_deepseek_key_defaults_to_v4_flash_without_deprecation_warning(
+    def test_deepseek_key_defaults_to_deepseek_flash_without_deprecation_warning(
         self,
         mock_warning,
         _mock_parse_yaml,
@@ -1398,6 +1398,26 @@ class LLMChannelConfigTestCase(unittest.TestCase):
     ) -> None:
         env = {
             "DEEPSEEK_API_KEY": "sk-test-value",
+        }
+
+        with patch.dict(os.environ, env, clear=True):
+            config = Config._load_from_env()
+
+        self.assertEqual(config.litellm_model, "deepseek/deepseek-flash")
+        mock_warning.assert_not_called()
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    @patch("src.config.logger.warning")
+    def test_legacy_deepseek_v4_flash_explicit_model_is_preserved(
+        self,
+        mock_warning,
+        _mock_parse_yaml,
+        _mock_setup_env,
+    ) -> None:
+        env = {
+            "DEEPSEEK_API_KEY": "sk-test-value",
+            "LITELLM_MODEL": "deepseek/deepseek-v4-flash",
         }
 
         with patch.dict(os.environ, env, clear=True):

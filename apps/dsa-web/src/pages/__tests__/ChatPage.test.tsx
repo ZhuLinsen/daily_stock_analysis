@@ -3,7 +3,7 @@ import { StrictMode, useState } from 'react';
 import { createMemoryRouter, MemoryRouter, RouterProvider } from 'react-router-dom';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createParsedApiError } from '../../api/error';
-import { UiLanguageProvider } from '../../contexts/UiLanguageContext';
+import { UiLanguageProvider, useUiLanguage } from '../../contexts/UiLanguageContext';
 import { historyApi } from '../../api/history';
 import type { ActiveStockContext } from '../../api/agent';
 import type { Message, ProgressStep } from '../../stores/agentChatStore';
@@ -34,6 +34,7 @@ const {
   mockRemoveFromWatchlist,
   mockDownloadSession,
   mockFormatSessionAsMarkdown,
+  mockFormatSessionForNotification,
   mockStockIndex,
   mockStockIndexState,
 } = vi.hoisted(() => {
@@ -61,6 +62,7 @@ const {
     mockRemoveFromWatchlist: vi.fn(),
     mockDownloadSession: vi.fn(),
     mockFormatSessionAsMarkdown: vi.fn(),
+    mockFormatSessionForNotification: vi.fn(),
     mockStockIndex,
     // Mutable registry-load state for the async window shared by every backend.
     mockStockIndexState: {
@@ -133,6 +135,7 @@ vi.mock('../../api/systemConfig', () => ({
 vi.mock('../../utils/chatExport', () => ({
   downloadSession: mockDownloadSession,
   formatSessionAsMarkdown: mockFormatSessionAsMarkdown,
+  formatSessionForNotification: mockFormatSessionForNotification,
 }));
 
 vi.mock('../../api/history', () => ({
@@ -279,6 +282,7 @@ beforeEach(() => {
   });
   mockDownloadSession.mockImplementation(() => {});
   mockFormatSessionAsMarkdown.mockReturnValue('# exported session');
+  mockFormatSessionForNotification.mockReturnValue('# exported session');
   mockStockIndexState.index = mockStockIndex;
   mockStockIndexState.loading = false;
   mockStockIndexState.error = null;
@@ -724,8 +728,9 @@ describe('ChatPage', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: '导出会话为 Markdown 文件' }));
 
-    expect(mockDownloadSession).toHaveBeenCalledWith(mockStoreState.messages);
+    expect(mockDownloadSession).toHaveBeenCalledWith(mockStoreState.messages, 'zh', expect.any(Array));
     expect(mockFormatSessionAsMarkdown).not.toHaveBeenCalled();
+    expect(mockFormatSessionForNotification).not.toHaveBeenCalled();
   });
 
   it('renders assistant skill labels with shared badge semantics', async () => {
@@ -1095,6 +1100,52 @@ describe('ChatPage', () => {
     expect(wave).not.toBeDisabled();
   });
 
+  it('renders built-in strategy names and picker labels in English', async () => {
+    window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'en');
+    mockGetSkills.mockResolvedValue({
+      skills: [
+        { id: 'chan_theory', name: '缠论', description: '基于缠论笔、线段、中枢结构，判断趋势级别、买卖点与背驰信号。' },
+        { id: 'ma_golden_cross', name: '均线金叉', description: '检测均线金叉配合量能确认信号，经典的趋势反转/延续信号。' },
+        { id: 'my_strategy', name: '我的策略', description: '自定义' },
+        { id: 'constructor', name: '原型同名策略', description: '自定义' },
+      ],
+      default_skill_id: 'chan_theory',
+    });
+
+    render(
+      <UiLanguageProvider>
+        <MemoryRouter initialEntries={['/chat']}>
+          <ChatPage />
+        </MemoryRouter>
+      </UiLanguageProvider>,
+    );
+
+    expect(await screen.findByRole('checkbox', { name: 'Chan Theory' })).toBeInTheDocument();
+    expect(screen.getByRole('checkbox', { name: 'MA Golden Cross' })).toBeInTheDocument();
+    expect(screen.getByRole('checkbox', { name: '我的策略' })).toBeInTheDocument();
+    expect(screen.getByRole('checkbox', { name: '原型同名策略' })).toBeInTheDocument();
+    expect(screen.getByRole('checkbox', { name: 'General analysis' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Expand strategy selection' })).toBeInTheDocument();
+    expect(screen.queryByRole('checkbox', { name: '缠论' })).not.toBeInTheDocument();
+    expect(screen.queryByText('通用分析')).not.toBeInTheDocument();
+
+    // Quick questions stay verbatim: the server confirms the target stock from
+    // the Chinese message text, so only the strategy label is translated.
+    fireEvent.click(screen.getByRole('button', { name: '用缠论分析茅台' }));
+
+    await waitFor(() => {
+      expect(mockStartStream).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: '用缠论分析茅台',
+          skills: ['chan_theory'],
+        }),
+        expect.objectContaining({
+          skillNames: ['Chan Theory'],
+        }),
+      );
+    });
+  });
+
   it('quick questions override the current multi-skill selection', async () => {
     mockGetSkills.mockResolvedValue({
       skills: [
@@ -1257,7 +1308,7 @@ describe('ChatPage', () => {
       errorCode: 'backend_removed',
       message: 'Codex App Server has been removed',
     });
-    mockFormatSessionAsMarkdown.mockReturnValue('# exported markdown');
+    mockFormatSessionForNotification.mockReturnValue('# exported markdown');
 
     render(
       <MemoryRouter initialEntries={['/chat']}>
@@ -1268,7 +1319,7 @@ describe('ChatPage', () => {
     fireEvent.click(await screen.findByRole('button', { name: '发送到已配置的通知机器人/邮箱' }));
 
     await waitFor(() => {
-      expect(mockFormatSessionAsMarkdown).toHaveBeenCalledWith(mockStoreState.messages);
+      expect(mockFormatSessionForNotification).toHaveBeenCalledWith(mockStoreState.messages, 'zh', expect.any(Array));
       expect(mockSendChat).toHaveBeenCalledWith('# exported markdown');
     });
 
@@ -2114,5 +2165,663 @@ describe('watchlist button with code variants', () => {
     expect(await screen.findByText(`已加入自选 ${stock}`)).toBeInTheDocument();
     expect(screen.getByText('从自选删除')).toBeInTheDocument();
     expect(mockRemoveFromWatchlist).not.toHaveBeenCalled();
+  });
+
+  it('copies assistant reply via legacy fallback when navigator.clipboard is unavailable', async () => {
+    const originalClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+    const originalExecCommand = Object.getOwnPropertyDescriptor(document, 'execCommand');
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: undefined,
+    });
+    const execCommand = vi.fn().mockReturnValue(true);
+    Object.defineProperty(document, 'execCommand', {
+      configurable: true,
+      value: execCommand,
+    });
+    mockStoreState.messages = [
+      { id: 'assistant-copy', role: 'assistant', content: '测试 HTTP 回退复制内容' },
+    ];
+
+    try {
+      render(
+        <MemoryRouter initialEntries={['/chat']}>
+          <ChatPage />
+        </MemoryRouter>,
+      );
+
+      const copyButton = await screen.findByRole('button', { name: '复制' });
+      await act(async () => {
+        fireEvent.click(copyButton);
+        await Promise.resolve();
+      });
+
+      expect(execCommand).toHaveBeenCalledWith('copy');
+      expect(await screen.findByRole('button', { name: '已复制' })).toBeInTheDocument();
+    } finally {
+      if (originalClipboard) {
+        Object.defineProperty(navigator, 'clipboard', originalClipboard);
+      } else {
+        Reflect.deleteProperty(navigator, 'clipboard');
+      }
+      if (originalExecCommand) {
+        Object.defineProperty(document, 'execCommand', originalExecCommand);
+      } else {
+        Reflect.deleteProperty(document, 'execCommand');
+      }
+    }
+  });
+
+  it('surfaces copy failure and clears stale copied state on retry failure', async () => {
+    vi.useFakeTimers();
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const originalClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+    const originalExecCommand = Object.getOwnPropertyDescriptor(document, 'execCommand');
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: undefined,
+    });
+    const execCommand = vi.fn().mockReturnValue(false);
+    Object.defineProperty(document, 'execCommand', {
+      configurable: true,
+      value: execCommand,
+    });
+    mockStoreState.messages = [
+      { id: 'assistant-copy-fail', role: 'assistant', content: '复制失败状态测试' },
+    ];
+
+    try {
+      render(
+        <MemoryRouter initialEntries={['/chat']}>
+          <ChatPage />
+        </MemoryRouter>,
+      );
+
+      // Initial failure shows '复制失败' and resets back to '复制' after 2000ms.
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: '复制' }));
+        await Promise.resolve();
+      });
+      expect(screen.getByRole('button', { name: '复制失败' })).toBeInTheDocument();
+
+      act(() => {
+        vi.advanceTimersByTime(2000);
+      });
+      expect(screen.getByRole('button', { name: '复制' })).toBeInTheDocument();
+
+      // Succeed first -> '已复制', then retry and fail before timer expires -> immediately '复制失败'.
+      execCommand.mockReturnValueOnce(true).mockReturnValueOnce(false);
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: '复制' }));
+        await Promise.resolve();
+      });
+      expect(screen.getByRole('button', { name: '已复制' })).toBeInTheDocument();
+
+      act(() => {
+        vi.advanceTimersByTime(500);
+      });
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: '已复制' }));
+        await Promise.resolve();
+      });
+      expect(screen.getByRole('button', { name: '复制失败' })).toBeInTheDocument();
+
+      act(() => {
+        vi.advanceTimersByTime(2000);
+      });
+      expect(screen.getByRole('button', { name: '复制' })).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+      consoleErrorSpy.mockRestore();
+      if (originalClipboard) {
+        Object.defineProperty(navigator, 'clipboard', originalClipboard);
+      } else {
+        Reflect.deleteProperty(navigator, 'clipboard');
+      }
+      if (originalExecCommand) {
+        Object.defineProperty(document, 'execCommand', originalExecCommand);
+      } else {
+        Reflect.deleteProperty(document, 'execCommand');
+      }
+    }
+  });
+
+  it('skips execCommand fallback when an older message writeText rejects after copying a newer message', async () => {
+    const originalClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+    const originalExecCommand = Object.getOwnPropertyDescriptor(document, 'execCommand');
+    let rejectFirstMessage!: (reason?: unknown) => void;
+    const writeText = vi
+      .fn()
+      .mockImplementationOnce(
+        () => new Promise<void>((_resolve, reject) => {
+          rejectFirstMessage = reject;
+        }),
+      )
+      .mockResolvedValueOnce(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+    const execCommand = vi.fn().mockReturnValue(true);
+    Object.defineProperty(document, 'execCommand', {
+      configurable: true,
+      value: execCommand,
+    });
+    mockStoreState.messages = [
+      { id: 'assistant-msg-a', role: 'assistant', content: '消息 A 内容' },
+      { id: 'assistant-msg-b', role: 'assistant', content: '消息 B 内容' },
+    ];
+
+    try {
+      render(
+        <MemoryRouter initialEntries={['/chat']}>
+          <ChatPage />
+        </MemoryRouter>,
+      );
+
+      const copyButtons = await screen.findAllByRole('button', { name: '复制' });
+      expect(copyButtons).toHaveLength(2);
+
+      // Copy message A (pending), then copy message B (succeeds).
+      fireEvent.click(copyButtons[0]);
+      await act(async () => {
+        fireEvent.click(copyButtons[1]);
+        await Promise.resolve();
+      });
+      expect(screen.getByRole('button', { name: '已复制' })).toBeInTheDocument();
+
+      // Message A's pending writeText rejects -> must NOT run execCommand or show failure.
+      await act(async () => {
+        rejectFirstMessage(new DOMException('Denied', 'NotAllowedError'));
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(execCommand).not.toHaveBeenCalled();
+      expect(screen.getByRole('button', { name: '已复制' })).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: '复制失败' })).not.toBeInTheDocument();
+    } finally {
+      if (originalClipboard) {
+        Object.defineProperty(navigator, 'clipboard', originalClipboard);
+      } else {
+        Reflect.deleteProperty(navigator, 'clipboard');
+      }
+      if (originalExecCommand) {
+        Object.defineProperty(document, 'execCommand', originalExecCommand);
+      } else {
+        Reflect.deleteProperty(document, 'execCommand');
+      }
+    }
+  });
+
+  it('does not leave a retried message button stuck on copied when superseded by another message copy', async () => {
+    vi.useFakeTimers();
+    const originalClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+    const originalExecCommand = Object.getOwnPropertyDescriptor(document, 'execCommand');
+    let rejectRetryA!: (reason?: unknown) => void;
+    const writeText = vi
+      .fn()
+      .mockResolvedValueOnce(undefined)
+      .mockImplementationOnce(
+        () => new Promise<void>((_resolve, reject) => {
+          rejectRetryA = reject;
+        }),
+      )
+      .mockResolvedValueOnce(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+    const execCommand = vi.fn().mockReturnValue(true);
+    Object.defineProperty(document, 'execCommand', {
+      configurable: true,
+      value: execCommand,
+    });
+    mockStoreState.messages = [
+      { id: 'assistant-msg-a', role: 'assistant', content: '消息 A 内容' },
+      { id: 'assistant-msg-b', role: 'assistant', content: '消息 B 内容' },
+    ];
+
+    try {
+      render(
+        <MemoryRouter initialEntries={['/chat']}>
+          <ChatPage />
+        </MemoryRouter>,
+      );
+
+      const [btnA, btnB] = screen.getAllByRole('button', { name: '复制' });
+      // 1) Copy A -> '已复制'
+      await act(async () => {
+        fireEvent.click(btnA);
+        await Promise.resolve();
+      });
+      expect(screen.getByRole('button', { name: '已复制' })).toBeInTheDocument();
+
+      // 2) Retry A (pending) -> immediately copy B (succeeds) -> A retry rejects
+      fireEvent.click(screen.getByRole('button', { name: '已复制' }));
+      await act(async () => {
+        fireEvent.click(btnB);
+        await Promise.resolve();
+      });
+      await act(async () => {
+        rejectRetryA(new DOMException('Denied', 'NotAllowedError'));
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(execCommand).not.toHaveBeenCalled();
+      expect(screen.getAllByRole('button', { name: '已复制' })).toHaveLength(1);
+      expect(screen.getAllByRole('button', { name: '复制' })).toHaveLength(1);
+
+      // 3) After 2000ms, both buttons reset cleanly to '复制' (no stuck '已复制').
+      act(() => {
+        vi.advanceTimersByTime(2000);
+      });
+      expect(screen.queryByRole('button', { name: '已复制' })).not.toBeInTheDocument();
+      expect(screen.getAllByRole('button', { name: '复制' })).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+      if (originalClipboard) {
+        Object.defineProperty(navigator, 'clipboard', originalClipboard);
+      } else {
+        Reflect.deleteProperty(navigator, 'clipboard');
+      }
+      if (originalExecCommand) {
+        Object.defineProperty(document, 'execCommand', originalExecCommand);
+      } else {
+        Reflect.deleteProperty(document, 'execCommand');
+      }
+    }
+  });
+
+  it('filters strategies by quant category when catalog has 6 or more skills and keeps selection across category switches', async () => {
+    mockStoreState.selectedSkillIds = [];
+    mockGetSkills.mockResolvedValue({
+      skills: [
+        { id: 'bull_trend', name: '默认多头趋势', description: '趋势分析', category: 'trend' },
+        { id: 'ma_golden_cross', name: '均线金叉', description: '均线交叉', category: 'trend' },
+        { id: 'bottom_volume', name: '底部放量', description: '底部形态', category: 'pattern' },
+        { id: 'growth_quality', name: '成长质量', description: '基本面成长', category: 'framework' },
+        { id: 'vcp_breakout', name: 'VCP 波动收敛突破', description: 'VCP 量价策略', category: 'quant' },
+        { id: 'turtle_donchian', name: '海龟唐奇安趋势', description: '海龟趋势策略', category: 'quant' },
+      ],
+      default_skill_id: 'bull_trend',
+    });
+
+    render(
+      <MemoryRouter initialEntries={['/chat']}>
+        <ChatPage />
+      </MemoryRouter>,
+    );
+
+    const quantPill = await screen.findByRole('button', { name: '量化因子 (2)' });
+    fireEvent.click(quantPill);
+
+    expect(screen.queryByRole('checkbox', { name: '均线金叉' })).not.toBeInTheDocument();
+    const vcpBox = screen.getByRole('checkbox', { name: 'VCP 波动收敛突破' });
+    fireEvent.click(vcpBox);
+    expect(vcpBox).toBeChecked();
+
+    fireEvent.click(screen.getByRole('button', { name: '趋势顺势 (2)' }));
+    const maBox = screen.getByRole('checkbox', { name: '均线金叉' });
+    fireEvent.click(maBox);
+    expect(maBox).toBeChecked();
+
+    fireEvent.change(screen.getByPlaceholderText(/分析 600519/), {
+      target: { value: '综合分析 600519' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+
+    await waitFor(() => {
+      expect(mockStartStream).toHaveBeenCalledWith(
+        expect.objectContaining({
+          skills: expect.arrayContaining(['vcp_breakout', 'ma_golden_cross']),
+        }),
+        expect.any(Object),
+      );
+    });
+  });
+});
+
+const LanguageSwitchControl = () => {
+  const { setLanguage } = useUiLanguage();
+  return (
+    <button type="button" onClick={() => setLanguage('zh')}>
+      Switch to ZH
+    </button>
+  );
+};
+
+describe('ChatPage English UI localization', () => {
+  it('renders Ask AI header, sidebar, empty state, composer, and context compression in English', async () => {
+    window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'en');
+
+    render(
+      <UiLanguageProvider>
+        <MemoryRouter initialEntries={['/chat']}>
+          <ChatPage />
+        </MemoryRouter>
+      </UiLanguageProvider>,
+    );
+
+    expect(document.title).toBe('Ask AI - DSA');
+    expect(await screen.findByRole('heading', { name: 'Ask AI' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'History' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Start new chat' })).toBeInTheDocument();
+    expect(screen.getByText('2 messages')).toBeInTheDocument();
+    expect(screen.getByText('Start asking')).toBeInTheDocument();
+    expect(
+      screen.getByPlaceholderText('e.g. Analyze AAPL / Is Apple a buy now? (Enter to send, Shift+Enter for new line)'),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Send' })).toBeInTheDocument();
+    expect(screen.getByText('Context compression')).toBeInTheDocument();
+    expect(screen.getByText('Save tokens on long chats')).toBeInTheDocument();
+    expect(screen.getByText('Disabled')).toBeInTheDocument();
+
+    const compressionToggle = await screen.findByRole('checkbox', { name: /Context compression/ });
+    await waitFor(() => expect(compressionToggle).not.toBeDisabled());
+    fireEvent.click(compressionToggle);
+    await waitFor(() => expect(screen.getByText('Enabled')).toBeInTheDocument());
+  });
+
+  it('renders message actions, thinking summary, delete modal, watchlist feedback, and markdown export in English', async () => {
+    window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'en');
+    mockStoreState.messages = [
+      { id: 'user-1', role: 'user', content: 'Analyze 600519' },
+      {
+        id: 'assistant-1',
+        role: 'assistant',
+        content: 'Strong uptrend.',
+        skillName: 'Trend Analysis',
+        thinkingSteps: [
+          { type: 'thinking', step: 1 },
+          { type: 'tool_done', tool: 'get_quote', display_name: 'Quote', duration: 1.2, success: true },
+        ],
+      },
+    ];
+    mockStoreState.activeStockContext = {
+      stock_code: '600519',
+      canonical_id: 'sh600519',
+      stock_name: 'Kweichow Moutai',
+      asset_type: 'stock',
+    };
+    mockAddToWatchlist.mockResolvedValue(['600519']);
+
+    const capturedBlobs: Blob[] = [];
+    const originalCreateObjectURL = URL.createObjectURL;
+    const originalRevokeObjectURL = URL.revokeObjectURL;
+    Object.defineProperty(URL, 'createObjectURL', {
+      configurable: true,
+      writable: true,
+      value: vi.fn((blob: Blob) => {
+        capturedBlobs.push(blob);
+        return 'blob:chat-msg-test';
+      }),
+    });
+    Object.defineProperty(URL, 'revokeObjectURL', {
+      configurable: true,
+      writable: true,
+      value: vi.fn(),
+    });
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+
+    try {
+      render(
+        <UiLanguageProvider>
+          <MemoryRouter initialEntries={['/chat']}>
+            <ChatPage />
+          </MemoryRouter>
+        </UiLanguageProvider>,
+      );
+
+      expect(await screen.findByRole('button', { name: 'Export session as Markdown' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Send to configured notification bot/email' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Copy' })).toBeInTheDocument();
+
+      expect(screen.getByText('Thinking process')).toBeInTheDocument();
+      expect(screen.getByText('1 tool call · 1.2s')).toBeInTheDocument();
+      fireEvent.click(screen.getByText('Thinking process'));
+      expect(await screen.findByText('Step 1: Thinking')).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Export message as Markdown' }));
+      expect(capturedBlobs).toHaveLength(1);
+      const exportedMarkdown = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result));
+        reader.onerror = () => reject(reader.error);
+        reader.readAsText(capturedBlobs[0]);
+      });
+      expect(exportedMarkdown).toContain('# AI Response · Trend Analysis');
+
+      fireEvent.click(screen.getByRole('button', { name: 'Add to watchlist' }));
+      await waitFor(() => expect(mockAddToWatchlist).toHaveBeenCalledWith('600519'));
+      expect(await screen.findByText('Added 600519 to watchlist')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Remove from watchlist' })).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('button', { name: /Delete conversation 请简要分析 600519/ }));
+      expect(await screen.findByText('Once deleted, this conversation cannot be recovered. Delete it?')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Delete' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Cancel' })).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    } finally {
+      clickSpy.mockRestore();
+      Object.defineProperty(URL, 'createObjectURL', {
+        configurable: true,
+        writable: true,
+        value: originalCreateObjectURL,
+      });
+      Object.defineProperty(URL, 'revokeObjectURL', {
+        configurable: true,
+        writable: true,
+        value: originalRevokeObjectURL,
+      });
+    }
+  });
+
+  it('renders empty sidebar and connecting stage in English and keeps context compression error localized across language toggle without refetching', async () => {
+    window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'en');
+    mockStoreState.sessions = [];
+    mockStoreState.loading = true;
+    mockStoreState.progressSteps = [];
+    mockGetSystemConfig.mockRejectedValue(createParsedApiError({ title: 'Error', message: '', category: 'unknown' }));
+
+    render(
+      <UiLanguageProvider>
+        <MemoryRouter initialEntries={['/chat']}>
+          <LanguageSwitchControl />
+          <ChatPage />
+        </MemoryRouter>
+      </UiLanguageProvider>,
+    );
+
+    expect(await screen.findByText('No chat history yet')).toBeInTheDocument();
+    expect(screen.getByText('Connecting...')).toBeInTheDocument();
+    expect(await screen.findByText('Unable to load context compression setting')).toBeInTheDocument();
+    expect(mockGetSystemConfig).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Switch to ZH' }));
+    expect(await screen.findByText('无法读取上下文压缩配置')).toBeInTheDocument();
+    expect(mockGetSystemConfig).toHaveBeenCalledTimes(1);
+  });
+
+  it('localizes multi-skill badges with English delimiters, passes language to exports, and updates watchlist/send toast on language switch', async () => {
+    window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'en');
+    mockStoreState.messages = [
+      { id: 'user-1', role: 'user', content: 'Analyze 600519' },
+      {
+        id: 'assistant-1',
+        role: 'assistant',
+        content: 'Bullish alignment',
+        skills: ['chan_theory', 'ma_golden_cross'],
+        skillNames: ['缠论', '均线金叉'],
+      },
+    ];
+    mockStoreState.activeStockContext = {
+      stock_code: '600519',
+      canonical_id: 'sh600519',
+      stock_name: 'Kweichow Moutai',
+      asset_type: 'stock',
+    };
+    mockAddToWatchlist.mockResolvedValue(['600519']);
+    mockFormatSessionForNotification.mockReturnValue('# Ask AI Session');
+
+    const capturedBlobs: Blob[] = [];
+    const originalCreateObjectURL = URL.createObjectURL;
+    const originalRevokeObjectURL = URL.revokeObjectURL;
+    Object.defineProperty(URL, 'createObjectURL', {
+      configurable: true,
+      writable: true,
+      value: vi.fn((blob: Blob) => {
+        capturedBlobs.push(blob);
+        return 'blob:multi-skill-test';
+      }),
+    });
+    Object.defineProperty(URL, 'revokeObjectURL', {
+      configurable: true,
+      writable: true,
+      value: vi.fn(),
+    });
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+
+    try {
+      render(
+        <UiLanguageProvider>
+          <MemoryRouter initialEntries={['/chat']}>
+            <LanguageSwitchControl />
+            <ChatPage />
+          </MemoryRouter>
+        </UiLanguageProvider>,
+      );
+
+      expect(await screen.findByText('Chan Theory, MA Golden Cross')).toBeInTheDocument();
+      expect(screen.getByLabelText('Skill Chan Theory, MA Golden Cross')).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Export session as Markdown' }));
+      expect(mockDownloadSession).toHaveBeenCalledWith(mockStoreState.messages, 'en', expect.any(Array));
+
+      fireEvent.click(screen.getByRole('button', { name: 'Send to configured notification bot/email' }));
+      await waitFor(() => {
+        expect(mockFormatSessionForNotification).toHaveBeenCalledWith(mockStoreState.messages, 'en', expect.any(Array));
+      });
+      expect(await screen.findByText('Sent to notification channels')).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Export message as Markdown' }));
+      const exportedMessage = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result));
+        reader.onerror = () => reject(reader.error);
+        reader.readAsText(capturedBlobs[0]);
+      });
+      expect(exportedMessage).toContain('# AI Response · Chan Theory, MA Golden Cross');
+
+      fireEvent.click(screen.getByRole('button', { name: 'Add to watchlist' }));
+      expect(await screen.findByText('Added 600519 to watchlist')).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Switch to ZH' }));
+      expect(await screen.findByText('已发送到通知渠道')).toBeInTheDocument();
+      expect(screen.getByText('已加入自选 600519')).toBeInTheDocument();
+    } finally {
+      clickSpy.mockRestore();
+      Object.defineProperty(URL, 'createObjectURL', {
+        configurable: true,
+        writable: true,
+        value: originalCreateObjectURL,
+      });
+      Object.defineProperty(URL, 'revokeObjectURL', {
+        configurable: true,
+        writable: true,
+        value: originalRevokeObjectURL,
+      });
+    }
+  });
+
+  it('preserves custom skill names matching built-in IDs and caps EN notification length within 50000 chars', async () => {
+    window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'en');
+    mockGetSkills.mockResolvedValue({
+      skills: [
+        { id: 'ma_golden_cross', name: '均线金叉', description: 'Built-in' },
+        { id: 'volume_custom', name: 'ma_golden_cross', description: 'Custom volume rule' },
+      ],
+      default_skill_id: 'ma_golden_cross',
+      default_skill_ids: ['ma_golden_cross'],
+    });
+    const bodyChunk = 'a'.repeat(1239);
+    const longMessages: Message[] = [];
+    for (let i = 0; i < 20; i += 1) {
+      longMessages.push({ id: `u-${i}`, role: 'user', content: `Q${i}:${bodyChunk.slice(0, 1239 - (`Q${i}:`).length)}` });
+      longMessages.push({
+        id: `a-${i}`,
+        role: 'assistant',
+        content: `A${i}:${bodyChunk.slice(0, 1239 - (`A${i}:`).length)}`,
+        ...(i === 0 ? { skills: ['volume_custom'], skillNames: ['ma_golden_cross'] } : {}),
+      });
+    }
+    mockStoreState.messages = longMessages;
+
+    const actualExport = await vi.importActual<typeof import('../../utils/chatExport')>('../../utils/chatExport');
+    mockFormatSessionForNotification.mockImplementation((msgs, lang, sks) =>
+      actualExport.formatSessionForNotification(msgs, lang, sks),
+    );
+
+    const capturedBlobs: Blob[] = [];
+    const originalCreateObjectURL = URL.createObjectURL;
+    const originalRevokeObjectURL = URL.revokeObjectURL;
+    Object.defineProperty(URL, 'createObjectURL', {
+      configurable: true,
+      writable: true,
+      value: vi.fn((blob: Blob) => {
+        capturedBlobs.push(blob);
+        return 'blob:custom-skill-test';
+      }),
+    });
+    Object.defineProperty(URL, 'revokeObjectURL', {
+      configurable: true,
+      writable: true,
+      value: vi.fn(),
+    });
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+
+    try {
+      render(
+        <UiLanguageProvider>
+          <MemoryRouter initialEntries={['/chat']}>
+            <ChatPage />
+          </MemoryRouter>
+        </UiLanguageProvider>,
+      );
+
+      expect(await screen.findByLabelText('Skill ma_golden_cross')).toBeInTheDocument();
+      expect(screen.queryByLabelText('Skill MA Golden Cross')).not.toBeInTheDocument();
+
+      fireEvent.click(screen.getAllByRole('button', { name: 'Export message as Markdown' })[0]);
+      const exportedMessage = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result));
+        reader.onerror = () => reject(reader.error);
+        reader.readAsText(capturedBlobs[0]);
+      });
+      expect(exportedMessage).toContain('# AI Response · ma_golden_cross');
+      expect(exportedMessage).not.toContain('MA Golden Cross');
+
+      fireEvent.click(screen.getByRole('button', { name: 'Send to configured notification bot/email' }));
+      await waitFor(() => {
+        expect(mockSendChat).toHaveBeenCalledTimes(1);
+      });
+      const sentMarkdown = String(mockSendChat.mock.calls[0][0]);
+      expect(sentMarkdown.length).toBeLessThanOrEqual(50_000);
+      expect(sentMarkdown).not.toContain('MA Golden Cross');
+    } finally {
+      clickSpy.mockRestore();
+      Object.defineProperty(URL, 'createObjectURL', {
+        configurable: true,
+        writable: true,
+        value: originalCreateObjectURL,
+      });
+      Object.defineProperty(URL, 'revokeObjectURL', {
+        configurable: true,
+        writable: true,
+        value: originalRevokeObjectURL,
+      });
+    }
   });
 });

@@ -1,6 +1,7 @@
-import { describe, expect, test } from 'vitest';
+import { afterEach, describe, expect, test } from 'vitest';
 
-import { buildChatFollowUpContext } from '../chatFollowUp';
+import { buildChatFollowUpContext, buildFollowUpPrompt } from '../chatFollowUp';
+import { UI_LANGUAGE_STORAGE_KEY } from '../uiLanguage';
 import type { AnalysisReport } from '../../types/analysis';
 
 describe('chat follow-up context', () => {
@@ -127,5 +128,29 @@ describe('chat follow-up context', () => {
     const context = buildChatFollowUpContext('600519', '贵州茅台', report);
 
     expect(context).not.toHaveProperty('market_structure_context');
+  });
+});
+
+describe('buildFollowUpPrompt', () => {
+  afterEach(() => {
+    window.localStorage.removeItem(UI_LANGUAGE_STORAGE_KEY);
+    document.documentElement.lang = '';
+  });
+
+  test('uses Chinese by default and includes optional stock name', () => {
+    expect(buildFollowUpPrompt('600519', '贵州茅台')).toBe('请深入分析 贵州茅台(600519)');
+    expect(buildFollowUpPrompt('AAPL', null)).toBe('请深入分析 AAPL');
+  });
+
+  test('uses English when explicitly requested or when active UI language is en', () => {
+    expect(buildFollowUpPrompt('600519', '贵州茅台', 'en')).toBe('Please analyze 贵州茅台(600519) in depth');
+    expect(buildFollowUpPrompt('AAPL', null, 'en')).toBe('Please analyze AAPL in depth');
+
+    window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'en');
+    expect(buildFollowUpPrompt('AAPL', null)).toBe('Please analyze AAPL in depth');
+
+    window.localStorage.removeItem(UI_LANGUAGE_STORAGE_KEY);
+    document.documentElement.lang = 'en';
+    expect(buildFollowUpPrompt('AAPL', null)).toBe('Please analyze AAPL in depth');
   });
 });

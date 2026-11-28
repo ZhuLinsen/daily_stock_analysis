@@ -71,6 +71,7 @@ const requiredLocalizedKeys = [
   'NOTIFICATION_DAILY_DIGEST_ENABLED',
   'SCHEDULE_ENABLED',
   'DSA_RUNTIME_SCHEDULER_TIMEOUT_SECONDS',
+  'DSA_TIMEOUT_PARTIAL_NOTIFY',
   'SCHEDULE_RUN_IMMEDIATELY',
   'TRADING_DAY_CHECK_ENABLED',
   'WEBUI_HOST',
@@ -121,17 +122,28 @@ describe('systemConfigI18n required key coverage', () => {
   });
 
   it('documents the runtime scheduler timeout in both UI languages', () => {
-    const zh = getSettingsHelpContent('settings.system.schedule', undefined, 'zh-CN');
-    const en = getSettingsHelpContent('settings.system.schedule', undefined, 'en');
-    const zhText = JSON.stringify(zh);
-    const enText = JSON.stringify(en);
+    const zh = getSettingsHelpContent('settings.system.DSA_RUNTIME_SCHEDULER_TIMEOUT_SECONDS', undefined, 'zh-CN');
+    const en = getSettingsHelpContent('settings.system.DSA_RUNTIME_SCHEDULER_TIMEOUT_SECONDS', undefined, 'en');
 
-    expect(zhText).toContain('DSA_RUNTIME_SCHEDULER_TIMEOUT_SECONDS');
-    expect(zhText).toContain('2700');
-    expect(zhText).toContain('60');
-    expect(enText).toContain('DSA_RUNTIME_SCHEDULER_TIMEOUT_SECONDS');
-    expect(enText).toContain('2700');
-    expect(enText).toContain('60');
+    expect(zh?.usage).toContain('2700');
+    expect(zh?.usage).toContain('60');
+    expect(en?.usage).toContain('2700');
+    expect(en?.usage).toContain('60');
+  });
+
+  it('documents timeout partial notification in both UI languages', () => {
+    const zh = getSettingsHelpContent('settings.system.DSA_TIMEOUT_PARTIAL_NOTIFY', undefined, 'zh-CN');
+    const en = getSettingsHelpContent('settings.system.DSA_TIMEOUT_PARTIAL_NOTIFY', undefined, 'en');
+
+    expect(getFieldTitleZh('DSA_TIMEOUT_PARTIAL_NOTIFY', 'DSA_TIMEOUT_PARTIAL_NOTIFY')).toBe('超时部分完成通知');
+    expect(getFieldDescriptionZh('DSA_TIMEOUT_PARTIAL_NOTIFY', 'schema fallback description')).toContain('部分完成');
+    expect(zh?.summary).toContain('部分完成');
+    expect(en?.summary).toContain('partial notification');
+    expect(en?.summary).not.toContain('Controls daily scheduled analysis');
+    expect(zh?.valueNotes?.join(' ')).toContain('不按本轮标识或超时时刻限定');
+    expect(en?.valueNotes?.join(' ')).toContain('no run identifier or upper time bound');
+    expect(zh?.impact?.join(' ')).toContain('不保证每次超时都收到推送');
+    expect(en?.impact?.join(' ')).toContain('does not guarantee a push on every timeout');
   });
 });
 

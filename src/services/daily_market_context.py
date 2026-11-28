@@ -118,7 +118,7 @@ class DailyMarketContextService:
         normalized_region = _normalize_context_region(region)
         if normalized_region is None:
             logger.info(
-                "跳过多市场或不支持区域的大盘上下文复用: region=%s",
+                "Skipping daily market context reuse for multi-market or unsupported region: region=%s",
                 region,
             )
             return None
@@ -137,7 +137,7 @@ class DailyMarketContextService:
                 cached = self._cache.pop(cache_key, None)
                 if cached is not None:
                     logger.debug(
-                        "强制刷新模式下清除当前查询的大盘上下文缓存: key=%s",
+                        "Cleared daily market context cache for current query in force_refresh mode: key=%s",
                         cache_key,
                     )
 
@@ -256,7 +256,7 @@ class DailyMarketContextService:
                 limit=20,
             )
         except Exception as exc:
-            logger.warning("读取大盘复盘历史失败，跳过市场上下文缓存: %s", exc)
+            logger.warning("Failed to read market review history; skipping market context cache: %s", exc)
             return None
 
         for record in records or []:
@@ -483,7 +483,7 @@ class DailyMarketContextService:
             )
         except Exception as exc:
             logger.warning(
-                "大盘复盘上下文生成失败，个股分析继续: %s",
+                "Failed to generate market review context; continuing stock analysis: %s",
                 exc,
                 exc_info=True,
             )
@@ -551,7 +551,8 @@ class DailyMarketContextService:
                         self._cache[cache_key] = generated
                         return generated
                     logger.warning(
-                        "市场复盘上下文锁已释放但仍未命中同日上下文，允许继续分析流程: region=%s, target_date=%s",
+                        "Market review context lock released without same-day context hit; "
+                        "allowing analysis to continue: region=%s, target_date=%s",
                         region,
                         target_date.isoformat(),
                     )
@@ -563,7 +564,8 @@ class DailyMarketContextService:
                 break
 
             logger.info(
-                "市场复盘上下文锁竞争等待: attempt=%s, wait_seconds=%.2f, region=%s, target_date=%s",
+                "Waiting on market review context lock contention: attempt=%s, wait_seconds=%.2f, "
+                "region=%s, target_date=%s",
                 attempt + 1,
                 wait_interval,
                 region,
@@ -576,7 +578,8 @@ class DailyMarketContextService:
             )
 
         logger.warning(
-            "市场复盘上下文锁竞争等待超限后仍未命中同日上下文，允许继续分析流程: region=%s, target_date=%s",
+            "Market review context lock wait exceeded limit without same-day hit; "
+            "allowing analysis to continue: region=%s, target_date=%s",
             region,
             target_date.isoformat(),
         )

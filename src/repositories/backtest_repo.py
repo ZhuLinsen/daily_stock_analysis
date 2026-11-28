@@ -88,6 +88,7 @@ class BacktestRepository:
         engine_version: str,
         analysis_date_from: Optional[date],
         analysis_date_to: Optional[date],
+        aligned_codes_out: Optional[set[str]] = None,
     ) -> int:
         """Align legacy result dates to their linked analysis snapshot date.
 
@@ -132,6 +133,8 @@ class BacktestRepository:
                 if result.analysis_date != analysis_date:
                     result.analysis_date = analysis_date
                     updated += 1
+                    if aligned_codes_out is not None and result.code:
+                        aligned_codes_out.add(result.code)
 
             if updated:
                 session.commit()
@@ -169,7 +172,7 @@ class BacktestRepository:
                 return len(results)
             except Exception as exc:
                 session.rollback()
-                logger.error(f"批量保存回测结果失败: {exc}")
+                logger.error(f"Failed to batch save backtest results: {exc}")
                 raise
 
     def get_results_paginated(

@@ -5,6 +5,9 @@ on:
     - cron: '0 2 * * 1-5'
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 concurrency:
   group: network-smoke-${{ github.ref }}
   cancel-in-progress: true
@@ -12,8 +15,6 @@ concurrency:
 jobs:
   smoke:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
     steps:
       - name: 📥 Checkout
         uses: actions/checkout@v5
@@ -22,13 +23,17 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: '3.11'
-          cache: 'pip'
+
+      - name: ⚡ Setup uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: requirements.txt
 
       - name: 📦 Install dependencies
         run: |
-          pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pytest
+          uv pip install --system -r requirements.txt
+          uv pip install --system pytest
 
       - name: 🌐 Run pytest network smoke (non-blocking)
         continue-on-error: true

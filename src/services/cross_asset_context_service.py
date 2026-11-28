@@ -427,7 +427,7 @@ class CrossAssetContextService:
             return context
         except Exception as exc:
             logger.warning(
-                "跨资产上下文组装失败，降级为 unknown 最小上下文: %s",
+                "Cross-asset context assembly failed, falling back to minimal unknown context: %s",
                 exc,
                 exc_info=True,
             )

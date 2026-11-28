@@ -83,12 +83,12 @@ class NtfySender:
     ) -> bool:
         """Publish a notification to ntfy using a JSON body with UTF-8 text."""
         if not self._is_ntfy_configured():
-            logger.warning("ntfy URL 未配置，跳过推送")
+            logger.warning("ntfy URL not configured, skipping notification")
             return False
 
         server_url, topic = self._resolve_ntfy_endpoint()
         if not server_url or not topic:
-            logger.error("NTFY_URL 必须是包含 topic path 的完整 endpoint，例如 https://ntfy.sh/my-topic")
+            logger.error("NTFY_URL must be a full endpoint including the topic path, e.g. https://ntfy.sh/my-topic")
             return False
 
         if title is None:
@@ -113,7 +113,7 @@ class NtfySender:
             )
         total_chunks = len(chunks)
         if total_chunks > 1:
-            logger.info("ntfy 消息内容超长，将分 %s 批发送", total_chunks)
+            logger.info("ntfy message exceeds length limit, sending in %s chunks", total_chunks)
 
         success_count = 0
         for index, chunk in enumerate(chunks):
@@ -128,7 +128,7 @@ class NtfySender:
             ):
                 success_count += 1
             elif total_chunks > 1:
-                logger.error("ntfy 第 %s/%s 批发送失败", index + 1, total_chunks)
+                logger.error("ntfy chunk %s/%s send failed", index + 1, total_chunks)
 
             # 批次间隔，避免连续发布触发限流
             if index < total_chunks - 1:
@@ -163,20 +163,20 @@ class NtfySender:
                 verify=self._webhook_verify_ssl,
             )
             if 200 <= response.status_code < 300:
-                logger.info("ntfy 消息发送成功")
+                logger.info("ntfy message sent successfully")
                 return True
 
-            logger.error("ntfy 请求失败: HTTP %s", response.status_code)
-            logger.debug("ntfy 响应内容: %s", response.text)
+            logger.error("ntfy request failed: HTTP %s", response.status_code)
+            logger.debug("ntfy response body: %s", response.text)
             return False
         except requests.exceptions.Timeout:
-            logger.error("发送 ntfy 消息失败: 请求超时")
+            logger.error("Failed to send ntfy message: request timed out")
             return False
         except requests.exceptions.RequestException as exc:
-            logger.error("发送 ntfy 消息失败: 网络请求异常")
-            logger.debug("ntfy 请求异常类型: %s", type(exc).__name__)
+            logger.error("Failed to send ntfy message: network request error")
+            logger.debug("ntfy request exception type: %s", type(exc).__name__)
             return False
         except Exception as exc:
-            logger.error("发送 ntfy 消息失败: 未知异常")
-            logger.debug("ntfy 未知异常类型: %s", type(exc).__name__)
+            logger.error("Failed to send ntfy message: unknown error")
+            logger.debug("ntfy unknown exception type: %s", type(exc).__name__)
             return False

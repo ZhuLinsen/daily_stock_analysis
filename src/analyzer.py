@@ -83,7 +83,7 @@ from src.llm.provider_cache import (
 )
 from src.llm.response_content import strip_leading_think_wrapper
 from src.storage import persist_llm_usage
-from src.data.stock_mapping import STOCK_NAME_MAP
+from src.data.stock_mapping import STOCK_NAME_MAP, lookup_static_stock_name
 from src.report_language import (
     get_signal_level,
     get_no_data_text,
@@ -122,9 +122,9 @@ def _describe_llm_result_model(
     """Describe the response identity; only a changed call route proves fallback."""
     actual_model = model_used or configured_model
     if route_model and route_model != configured_model:
-        return f"{actual_model}（配置模型 {configured_model}，已回退）"
+        return f"{actual_model} (configured: {configured_model}, fallback)"
     if actual_model != configured_model:
-        return f"{actual_model}（配置模型 {configured_model}）"
+        return f"{actual_model} (configured: {configured_model})"
     return actual_model
 
 
@@ -825,6 +825,94 @@ def _infer_trend_direction(trend: Dict[str, Any]) -> str:
 def _filter_conflicting_trend_items(items: List[str], conflict_hints: Tuple[str, ...]) -> List[str]:
     """Drop reasons that directly conflict with the final trend direction."""
     return [item for item in items if not _contains_trend_hint(item, conflict_hints)]
+
+
+def _format_quant_factors_prompt_section(
+    qf: Any,
+    *,
+    english: bool = False,
+    trend: Any = None,
+) -> str:
+    """Format pre-computed quantitative multi-factor indicators and trend complements."""
+    has_qf = isinstance(qf, dict) and bool(qf.get("sufficient_data"))
+    trend_dict = trend if isinstance(trend, dict) else {}
+    has_trend_extras = any(
+        trend_dict.get(k) is not None for k in ("ma60", "volume_ratio_5d", "rsi_6", "rsi_12", "rsi_24")
+    )
+    if not has_qf and not has_trend_extras:
+        return ""
+
+    def _opt_from(mapping: Dict[str, Any], key: str, suffix: str = "", fmt: str = ".2f") -> str:
+        val = mapping.get(key)
+        if val is None or isinstance(val, bool):
+            return "N/A"
+        try:
+            num = float(val)
+        except (TypeError, ValueError):
+            return "N/A"
+        if not math.isfinite(num):
+            return "N/A"
+        return f"{format(num, fmt)}{suffix}"
+
+    title = "#### Quantitative Multi-Factor Indicators" if english else "#### 量化多因子指标（预计算）"
+    lines: List[str] = ["", title]
+
+    if has_qf:
+        trail_bool = bool(qf.get("atr_trailing_stop_breached"))
+        if english:
+            lines.extend(
+                [
+                    f"- bars_analyzed={qf.get('bars_analyzed', 'N/A')} | quant_regime={qf.get('quant_regime', 'N/A')} | quant_composite_score={qf.get('quant_composite_score', 'N/A')}/100",
+                    f"- BOLL(20,2): lower={_opt_from(qf, 'boll_lower')} / mid={_opt_from(qf, 'boll_mid')} / upper={_opt_from(qf, 'boll_upper')} | boll_pct_b={_opt_from(qf, 'boll_pct_b')} | boll_bandwidth_pct={_opt_from(qf, 'boll_bandwidth_pct', '%')} (prev_boll_bandwidth_pct={_opt_from(qf, 'prev_boll_bandwidth_pct', '%')}, boll_squeeze={bool(qf.get('boll_squeeze'))}, boll_squeeze_prior={bool(qf.get('boll_squeeze_prior'))}, boll_squeeze_breakout={bool(qf.get('boll_squeeze_breakout'))})",
+                    f"- Donchian: donchian_high_20={_opt_from(qf, 'donchian_high_20')} / donchian_low_20={_opt_from(qf, 'donchian_low_20')} | donchian_high_10={_opt_from(qf, 'donchian_high_10')} / donchian_low_10={_opt_from(qf, 'donchian_low_10')} | donchian_signal={qf.get('donchian_signal', 'inside')}",
+                    f"- ATR & Vol: atr_14={_opt_from(qf, 'atr_14')} (atr_pct={_opt_from(qf, 'atr_pct', '%')}) | atr_stop_loss_long={_opt_from(qf, 'atr_stop_loss_long')} | atr_trailing_stop_long={_opt_from(qf, 'atr_trailing_stop_long')} (atr_trailing_stop_breached={trail_bool}) | atr_take_profit_2r={_opt_from(qf, 'atr_take_profit_2r')} | hv_20_annualized_pct={_opt_from(qf, 'hv_20_annualized_pct', '%')} | vcp_contraction_ratio={_opt_from(qf, 'vcp_contraction_ratio')}",
+                    f"- KDJ & ADX: kdj_k={_opt_from(qf, 'kdj_k', fmt='.1f')} kdj_d={_opt_from(qf, 'kdj_d', fmt='.1f')} kdj_j={_opt_from(qf, 'kdj_j', fmt='.1f')} (kdj_status={qf.get('kdj_status', 'neutral')}) | adx_14={_opt_from(qf, 'adx_14', fmt='.1f')} (plus_di_14={_opt_from(qf, 'plus_di_14', fmt='.1f')}, minus_di_14={_opt_from(qf, 'minus_di_14', fmt='.1f')}, adx_regime={qf.get('adx_regime', 'unknown')}, adx_direction={qf.get('adx_direction', 'neutral')})",
+                    f"- Flow & Momentum: obv_trend={qf.get('obv_trend', 'flat')} (obv_divergence={qf.get('obv_divergence', 'none')}) | vwap_20={_opt_from(qf, 'vwap_20')} (vwap_bias_pct={_opt_from(qf, 'vwap_bias_pct', '%', '+.2f')}) | mfi_14={_opt_from(qf, 'mfi_14', fmt='.1f')} (mfi_status={qf.get('mfi_status', 'neutral')}) | roc_5_pct={_opt_from(qf, 'roc_5_pct', '%', '+.2f')} roc_20_pct={_opt_from(qf, 'roc_20_pct', '%', '+.2f')} roc_60_pct={_opt_from(qf, 'roc_60_pct', '%', '+.2f')} | max_drawdown_60_pct={_opt_from(qf, 'max_drawdown_60_pct', '%')} | dist_from_high_60_pct={_opt_from(qf, 'dist_from_high_60_pct', '%', '+.2f')} | sharpe_60={_opt_from(qf, 'sharpe_60')}",
+                ]
+            )
+        else:
+            trail_cn = "已跌破" if trail_bool else "未跌破"
+            lines.extend(
+                [
+                    f"- 有效K线(bars_analyzed): {qf.get('bars_analyzed', 'N/A')} | quant_regime={qf.get('quant_regime', 'N/A')} | quant_composite_score={qf.get('quant_composite_score', 'N/A')}/100",
+                    f"- BOLL(20,2): 下轨={_opt_from(qf, 'boll_lower')} / 中轨={_opt_from(qf, 'boll_mid')} / 上轨={_opt_from(qf, 'boll_upper')} | boll_pct_b={_opt_from(qf, 'boll_pct_b')} | boll_bandwidth_pct={_opt_from(qf, 'boll_bandwidth_pct', '%')} (prev_boll_bandwidth_pct={_opt_from(qf, 'prev_boll_bandwidth_pct', '%')}, boll_squeeze={bool(qf.get('boll_squeeze'))}, boll_squeeze_prior={bool(qf.get('boll_squeeze_prior'))}, boll_squeeze_breakout={bool(qf.get('boll_squeeze_breakout'))})",
+                    f"- Donchian通道: donchian_high_20={_opt_from(qf, 'donchian_high_20')} / donchian_low_20={_opt_from(qf, 'donchian_low_20')} | donchian_high_10={_opt_from(qf, 'donchian_high_10')} / donchian_low_10={_opt_from(qf, 'donchian_low_10')} | donchian_signal={qf.get('donchian_signal', 'inside')}",
+                    f"- ATR与波动收敛: atr_14={_opt_from(qf, 'atr_14')} (atr_pct={_opt_from(qf, 'atr_pct', '%')}) | atr_stop_loss_long={_opt_from(qf, 'atr_stop_loss_long')} | atr_trailing_stop_long={_opt_from(qf, 'atr_trailing_stop_long')} ({trail_cn}, atr_trailing_stop_breached={trail_bool}) | 2R目标={_opt_from(qf, 'atr_take_profit_2r')} | hv_20_annualized_pct={_opt_from(qf, 'hv_20_annualized_pct', '%')} | vcp_contraction_ratio={_opt_from(qf, 'vcp_contraction_ratio')}",
+                    f"- KDJ与ADX: kdj_k={_opt_from(qf, 'kdj_k', fmt='.1f')} kdj_d={_opt_from(qf, 'kdj_d', fmt='.1f')} kdj_j={_opt_from(qf, 'kdj_j', fmt='.1f')} (kdj_status={qf.get('kdj_status', 'neutral')}) | adx_14={_opt_from(qf, 'adx_14', fmt='.1f')} (plus_di_14={_opt_from(qf, 'plus_di_14', fmt='.1f')}, minus_di_14={_opt_from(qf, 'minus_di_14', fmt='.1f')}, adx_regime={qf.get('adx_regime', 'unknown')}, adx_direction={qf.get('adx_direction', 'neutral')})",
+                    f"- 量价与风控: obv_trend={qf.get('obv_trend', 'flat')} (obv_divergence={qf.get('obv_divergence', 'none')}) | vwap_20={_opt_from(qf, 'vwap_20')} (vwap_bias_pct={_opt_from(qf, 'vwap_bias_pct', '%', '+.2f')}) | mfi_14={_opt_from(qf, 'mfi_14', fmt='.1f')} (mfi_status={qf.get('mfi_status', 'neutral')}) | roc_5_pct={_opt_from(qf, 'roc_5_pct', '%', '+.2f')} roc_20_pct={_opt_from(qf, 'roc_20_pct', '%', '+.2f')} roc_60_pct={_opt_from(qf, 'roc_60_pct', '%', '+.2f')} | max_drawdown_60_pct={_opt_from(qf, 'max_drawdown_60_pct', '%')} | dist_from_high_60_pct={_opt_from(qf, 'dist_from_high_60_pct', '%', '+.2f')} | sharpe_60={_opt_from(qf, 'sharpe_60')}",
+                ]
+            )
+
+    if has_trend_extras:
+        bars_analyzed = qf.get("bars_analyzed") if isinstance(qf, dict) else None
+        raw_ma60 = trend_dict.get("ma60")
+        if (
+            bars_analyzed is not None
+            and isinstance(bars_analyzed, (int, float))
+            and not isinstance(bars_analyzed, bool)
+            and int(bars_analyzed) < 60
+        ) or not raw_ma60:
+            ma60_str = "N/A"
+        else:
+            ma60_str = _opt_from(trend_dict, "ma60")
+        vr5_str = _opt_from(trend_dict, "volume_ratio_5d")
+        rsi6_str = _opt_from(trend_dict, "rsi_6")
+        rsi12_str = _opt_from(trend_dict, "rsi_12")
+        rsi24_str = _opt_from(trend_dict, "rsi_24")
+        rsi_status = trend_dict.get("rsi_status", "neutral")
+        if english:
+            lines.append(
+                f"- Trend Complements: MA60={ma60_str} | volume_ratio_5d={vr5_str} | "
+                f"RSI(6/12/24)={rsi6_str} / {rsi12_str} / {rsi24_str} (rsi_status={rsi_status})"
+            )
+        else:
+            lines.append(
+                f"- 趋势补充指标: MA60={ma60_str} | 五日量比(volume_ratio_5d)={vr5_str} | "
+                f"RSI(6/12/24)={rsi6_str} / {rsi12_str} / {rsi24_str} (rsi_status={rsi_status})"
+            )
+
+    lines.append("")
+    return "\n".join(lines)
 
 
 def _sanitize_trend_analysis_for_prompt(
@@ -1958,8 +2046,9 @@ def get_stock_name_multi_source(
             return context['realtime']['name']
 
     # 2. 从静态映射表获取
-    if stock_code in STOCK_NAME_MAP:
-        return STOCK_NAME_MAP[stock_code]
+    static_name = lookup_static_stock_name(stock_code, STOCK_NAME_MAP)
+    if static_name:
+        return static_name
 
     # 3. 从数据源获取
     if data_manager is None:
@@ -1967,7 +2056,7 @@ def get_stock_name_multi_source(
             from data_provider.base import DataFetcherManager
             data_manager = DataFetcherManager()
         except Exception as e:
-            logger.debug(f"无法初始化 DataFetcherManager: {e}")
+            logger.debug(f"Failed to initialize DataFetcherManager: {e}")
 
     if data_manager:
         try:
@@ -1977,7 +2066,7 @@ def get_stock_name_multi_source(
                 STOCK_NAME_MAP[stock_code] = name
                 return name
         except Exception as e:
-            logger.debug(f"从数据源获取股票名称失败: {e}")
+            logger.debug(f"Failed to fetch stock name from data source: {e}")
 
     # 4. 返回默认名称
     return f'股票{stock_code}'
@@ -4344,19 +4433,22 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
         # 请求前增加延时（防止连续请求触发限流）
         request_delay = config.gemini_request_delay
         if request_delay > 0:
-            logger.debug(f"[LLM] 请求前等待 {request_delay:.1f} 秒...")
+            logger.debug(f"[LLM] Waiting {request_delay:.1f}s before request...")
             _emit_progress(65, f"{code}：LLM 请求前等待 {request_delay:.1f} 秒")
             time.sleep(request_delay)
         
         # 优先从上下文获取股票名称（由 main.py 传入）
-        name = context.get('stock_name')
-        if not name or name.startswith('股票'):
+        raw_name = context.get('stock_name')
+        resolved_name = raw_name if raw_name and not raw_name.startswith('股票') else None
+        if not resolved_name:
             # 备选：从 realtime 中获取
             if 'realtime' in context and context['realtime'].get('name'):
-                name = context['realtime']['name']
+                resolved_name = context['realtime']['name']
             else:
                 # 最后从映射表获取
-                name = STOCK_NAME_MAP.get(code, f'股票{code}')
+                resolved_name = lookup_static_stock_name(code, STOCK_NAME_MAP)
+        name = resolved_name or f'股票{code}'
+        log_name = resolved_name or code
 
         backend_error = self.get_generation_backend_config_error()
         if backend_error is not None and not self._can_use_generation_fallback(backend_error):
@@ -4476,19 +4568,19 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
             if backend_id in LOCAL_CLI_GENERATION_BACKEND_IDS:
                 model_name = backend_id
                 legacy_audit_context["transport"] = backend_id
-            logger.info(f"========== AI 分析 {name}({code}) ==========")
-            logger.info(f"[LLM配置] 模型: {model_name}")
-            logger.info(f"[LLM配置] Prompt 长度: {len(prompt)} 字符")
-            logger.info(f"[LLM配置] 是否包含新闻: {'是' if news_context else '否'}")
+            logger.info(f"========== AI Analysis {log_name}({code}) ==========")
+            logger.info(f"[LLM Config] Model: {model_name}")
+            logger.info(f"[LLM Config] Prompt length: {len(prompt)} chars")
+            logger.info(f"[LLM Config] Includes news: {'Yes' if news_context else 'No'}")
 
             # 本地 CLI backend 是进程执行能力，不记录完整 prompt。
             if backend_id in LOCAL_CLI_GENERATION_BACKEND_IDS:
                 prompt_preview = redact_diagnostic_text(prompt, limit=500)
             else:
                 prompt_preview = prompt[:500] + "..." if len(prompt) > 500 else prompt
-            logger.info(f"[LLM Prompt 预览]\n{prompt_preview}")
+            logger.info(f"[LLM Prompt Preview]\n{prompt_preview}")
             if backend_id not in LOCAL_CLI_GENERATION_BACKEND_IDS:
-                logger.debug(f"=== 完整 Prompt ({len(prompt)}字符) ===\n{prompt}\n=== End Prompt ===")
+                logger.debug(f"=== Full Prompt ({len(prompt)} chars) ===\n{prompt}\n=== End Prompt ===")
 
             # 设置生成配置
             generation_config = {
@@ -4496,7 +4588,7 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                 "max_output_tokens": 8192,
             }
 
-            logger.info(f"[LLM调用] 开始调用 {model_name}...")
+            logger.info(f"[LLM Call] Calling {model_name}...")
             _emit_progress(68, f"{name}：LLM 已接收请求，等待响应")
 
             # 使用 litellm 调用（支持完整性校验重试）
@@ -4520,7 +4612,7 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                     if exc.last_response_text is not None:
                         logger.warning(
                             "[LLM JSON] %s(%s): all models returned invalid JSON, using text fallback",
-                            name,
+                            log_name,
                             code,
                         )
                         response_text = exc.last_response_text
@@ -4531,18 +4623,22 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                 elapsed = time.time() - start_time
 
                 # 记录响应信息
+                result_model = _describe_llm_result_model(
+                    model_name, model_used, llm_usage.get("route_model")
+                )
                 logger.info(
-                    f"[LLM返回] {_describe_llm_result_model(model_name, model_used, llm_usage.get('route_model'))} 响应成功, "
-                    f"耗时 {elapsed:.2f}s, 响应长度 {len(response_text)} 字符"
+                    f"[LLM Response] {result_model} succeeded, "
+                    f"elapsed {elapsed:.2f}s, length {len(response_text)} chars"
                 )
                 if backend_id in LOCAL_CLI_GENERATION_BACKEND_IDS:
                     response_preview = redact_diagnostic_text(response_text, limit=300)
                 else:
                     response_preview = response_text[:300] + "..." if len(response_text) > 300 else response_text
-                logger.info(f"[LLM返回 预览]\n{response_preview}")
+                logger.info(f"[LLM Response Preview]\n{response_preview}")
                 if backend_id not in LOCAL_CLI_GENERATION_BACKEND_IDS:
                     logger.debug(
-                        f"=== {model_used or model_name} 完整响应 ({len(response_text)}字符) ===\n{response_text}\n=== End Response ==="
+                        f"=== {model_used or model_name} Full Response ({len(response_text)} chars) ===\n"
+                        f"{response_text}\n=== End Response ==="
                     )
                 # Keep parser/retry progress monotonic so task progress/message never "goes backward".
                 parse_progress = min(99, 93 + retry_count * 2)
@@ -4576,7 +4672,7 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                     )
                     retry_count += 1
                     logger.info(
-                        "[LLM完整性] 必填字段缺失 %s，第 %d 次补全重试",
+                        "[LLM Integrity] Missing required fields %s, completion retry #%d",
                         missing_fields,
                         retry_count,
                     )
@@ -4588,7 +4684,7 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                 else:
                     self._apply_placeholder_fill(result, missing_fields)
                     logger.warning(
-                        "[LLM完整性] 必填字段缺失 %s，已占位补全，不阻塞流程",
+                        "[LLM Integrity] Missing required fields %s, filled with placeholders (non-blocking)",
                         missing_fields,
                     )
                     break
@@ -4596,13 +4692,16 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
             if should_persist_usage_telemetry(llm_usage):
                 persist_llm_usage(llm_usage, model_used, call_type="analysis", stock_code=code)
 
-            logger.info(f"[LLM解析] {name}({code}) 分析完成: {result.trend_prediction}, 评分 {result.sentiment_score}")
+            logger.info(
+                f"[LLM Parse] {log_name}({code}) analysis done: "
+                f"{result.trend_prediction}, score {result.sentiment_score}"
+            )
 
             return result
             
         except Exception as e:
             safe_error = self._sanitize_hermes_exception_text(e)
-            logger.error("AI 分析 %s(%s) 失败: %s", name, code, safe_error)
+            logger.error("AI analysis %s(%s) failed: %s", log_name, code, safe_error)
             return AnalysisResult(
                 code=code,
                 name=name,
@@ -4656,7 +4755,7 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
         # 优先使用上下文中的股票名称（从 realtime_quote 获取）
         stock_name = context.get('stock_name', name)
         if not stock_name or stock_name == f'股票{code}':
-            stock_name = STOCK_NAME_MAP.get(code, f'股票{code}')
+            stock_name = lookup_static_stock_name(code, STOCK_NAME_MAP) or f'股票{code}'
             
         if english and stock_name == f'股票{code}':
             stock_name = f'Stock {code}'
@@ -5162,6 +5261,13 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
 **一致性约束**：
 {chr(10).join('- ' + note for note in consistency_notes)}
 """
+            quant_section = _format_quant_factors_prompt_section(
+                trend.get('quant_factors'),
+                english=english,
+                trend=trend,
+            )
+            if quant_section:
+                prompt += quant_section
         
         # 添加昨日对比数据
         if 'yesterday' in context:
@@ -5772,7 +5878,10 @@ Output the complete Decision Dashboard in JSON format."""
                 _json_str, data = self._extract_analysis_json_object(response_text)
                 self._validate_analysis_minimal_contract(data)
             except Exception as exc:
-                logger.warning("无法从响应中提取唯一有效 JSON，标记为解析失败: %s", exc)
+                logger.warning(
+                    "Could not extract unique valid JSON from response, marking parse failed: %s",
+                    exc,
+                )
                 return self._parse_text_response(response_text, code, name)
 
             # 提取 dashboard 数据
@@ -5854,7 +5963,7 @@ Output the complete Decision Dashboard in JSON format."""
             )
                 
         except json.JSONDecodeError as e:
-            logger.warning(f"JSON 解析失败: {e}，标记为解析失败")
+            logger.warning(f"JSON parse failed: {e}, marking parse failed")
             return self._parse_text_response(response_text, code, name)
     
     def _fix_json_string(self, json_str: str) -> str:
@@ -6007,7 +6116,7 @@ Output the complete Decision Dashboard in JSON format."""
         
         for i, context in enumerate(contexts):
             if i > 0:
-                logger.debug(f"等待 {delay_between} 秒后继续...")
+                logger.debug(f"Waiting {delay_between}s before continuing...")
                 time.sleep(delay_between)
             
             result = self.analyze(context)

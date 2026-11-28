@@ -304,7 +304,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     },
     "LITELLM_MODEL": {
         "title": "Primary Model",
-        "description": "Primary model in provider/model format (e.g. gemini/gemini-3.6-flash, deepseek/deepseek-v4-flash, anthropic/claude-sonnet-4-6). If empty, it is auto-inferred from available API keys or channel declarations.",
+        "description": "Primary model in provider/model format (e.g. gemini/gemini-3.6-flash, deepseek/deepseek-flash, anthropic/claude-sonnet-4-6). If empty, it is auto-inferred from available API keys or channel declarations.",
         "category": "ai_model",
         "data_type": "string",
         "ui_control": "text",
@@ -317,7 +317,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "display_order": 1,
         "help_key": "settings.ai_model.LITELLM_MODEL",
         "examples": [
-            "LITELLM_MODEL=deepseek/deepseek-v4-flash",
+            "LITELLM_MODEL=deepseek/deepseek-flash",
             "LITELLM_MODEL=gemini/gemini-3.6-flash",
             "LITELLM_MODEL=ollama/qwen3:8b",
         ],
@@ -463,7 +463,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
             "LLM_CHANNELS=deepseek,aihubmix",
             "LLM_DEEPSEEK_BASE_URL=https://api.deepseek.com",
             "LLM_DEEPSEEK_API_KEY=sk-xxxx",
-            "LLM_DEEPSEEK_MODELS=deepseek-v4-flash,deepseek-v4-pro",
+            "LLM_DEEPSEEK_MODELS=deepseek-flash,deepseek-v4-pro",
         ],
         "docs": [
             {
@@ -732,7 +732,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     # ------------------------------------------------------------------
     "DEEPSEEK_API_KEY": {
         "title": "DeepSeek API Key",
-        "description": "Official DeepSeek API key (from https://platform.deepseek.com). A key set alone auto-infers deepseek/deepseek-v4-flash unless a higher-priority model configuration is present. Also works in multi-channel mode.",
+        "description": "Official DeepSeek API key (from https://platform.deepseek.com). A key set alone auto-infers deepseek/deepseek-flash (legacy alias deepseek-v4-flash remains accepted for compatibility) unless a higher-priority model configuration is present. Also works in multi-channel mode.",
         "category": "ai_model",
         "data_type": "string",
         "ui_control": "password",
@@ -746,7 +746,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "help_key": "settings.ai_model.provider_keys",
         "examples": [
             "DEEPSEEK_API_KEY=sk-xxxx",
-            "LITELLM_MODEL=deepseek/deepseek-v4-flash",
+            "LITELLM_MODEL=deepseek/deepseek-flash",
         ],
         "docs": [
             {
@@ -3310,7 +3310,10 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     },
     "DSA_RUNTIME_SCHEDULER_TIMEOUT_SECONDS": {
         "title": "Runtime Scheduler Timeout",
-        "description": "Hard timeout in seconds for each Web/API scheduled analysis.",
+        "description": (
+            "Hard timeout in seconds for each Web/API scheduled analysis; the "
+            "isolated analysis process is terminated on timeout, minimum 60 seconds."
+        ),
         "category": "system",
         "data_type": "integer",
         "ui_control": "number",
@@ -3321,7 +3324,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "options": [],
         "validation": {"min": 60},
         "display_order": 12,
-        "help_key": "settings.system.schedule",
+        "help_key": "settings.system.DSA_RUNTIME_SCHEDULER_TIMEOUT_SECONDS",
         "examples": [
             "DSA_RUNTIME_SCHEDULER_TIMEOUT_SECONDS=2700",
         ],
@@ -3336,8 +3339,9 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     "DSA_TIMEOUT_PARTIAL_NOTIFY": {
         "title": "Timeout Partial Notification",
         "description": (
-            "After a Web/API runtime scheduler hard timeout, send a partial "
-            "notification for analyses already saved to history."
+            "After a Web/API scheduled analysis hard timeout, attempt a partial "
+            "notification only when saved results exist and "
+            "DSA_TIMEOUT_PARTIAL_NOTIFY allows pushing."
         ),
         "category": "system",
         "data_type": "boolean",
@@ -3349,7 +3353,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "options": [],
         "validation": {},
         "display_order": 13,
-        "help_key": "settings.system.schedule",
+        "help_key": "settings.system.DSA_TIMEOUT_PARTIAL_NOTIFY",
         "examples": [
             "DSA_TIMEOUT_PARTIAL_NOTIFY=true",
             "DSA_TIMEOUT_PARTIAL_NOTIFY=false",
@@ -4850,7 +4854,7 @@ _FIELD_HELP_METADATA: Dict[str, Dict[str, Any]] = {
         "help_key": "settings.ai_model.provider_keys",
         "examples": [
             "DEEPSEEK_API_KEYS=sk-xxxx,sk-yyyy",
-            "LITELLM_MODEL=deepseek/deepseek-v4-flash",
+            "LITELLM_MODEL=deepseek/deepseek-flash",
         ],
         "docs": _DOC_LLM_CONFIG,
         "warning_codes": ["secret_value", "comma_separated_keys"],

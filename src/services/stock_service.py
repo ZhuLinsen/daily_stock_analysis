@@ -47,7 +47,7 @@ class StockService:
             quote = manager.get_realtime_quote(stock_code)
             
             if quote is None:
-                logger.warning(f"获取 {stock_code} 实时行情失败")
+                logger.warning(f"Failed to get realtime quote for {stock_code}")
                 return None
             
             # UnifiedRealtimeQuote 是 dataclass，使用 getattr 安全访问字段
@@ -79,10 +79,10 @@ class StockService:
             }
             
         except ImportError:
-            logger.warning("DataFetcherManager 未找到，使用占位数据")
+            logger.warning("DataFetcherManager not found, using placeholder data")
             return self._get_placeholder_quote(stock_code)
         except Exception as e:
-            logger.error(f"获取实时行情失败: {e}", exc_info=True)
+            logger.error(f"Failed to get realtime quote: {e}", exc_info=True)
             return None
     
     def get_history_data(
@@ -120,12 +120,27 @@ class StockService:
             df, source = manager.get_daily_data(stock_code, days=days)
             
             if df is None or df.empty:
-                logger.warning(f"获取 {stock_code} 历史数据失败")
+                logger.warning(f"Failed to get historical data for {stock_code}")
                 return {"stock_code": stock_code, "period": period, "data": []}
             
             # 获取股票名称
             stock_name = manager.get_stock_name(stock_code)
-            
+
+            ohlc_synthesized = bool(getattr(df, "attrs", {}).get("ohlc_synthesized", False))
+            raw_adjustment = getattr(df, "attrs", {}).get("price_adjustment")
+            if isinstance(raw_adjustment, str):
+                normalized_adj = raw_adjustment.strip().lower()
+                if normalized_adj in ("none", "unadjusted"):
+                    price_adjustment = "unadjusted"
+                elif normalized_adj in ("forward", "backward", "unknown"):
+                    price_adjustment = normalized_adj
+                else:
+                    price_adjustment = None
+            elif source in ("AlphaVantageFetcher", "TushareFetcher", "PytdxFetcher"):
+                price_adjustment = "unadjusted"
+            else:
+                price_adjustment = None
+
             # 转换为响应格式
             data = []
             for _, row in df.iterrows():
@@ -137,9 +152,9 @@ class StockService:
                 
                 data.append({
                     "date": date_str,
-                    "open": float(row.get("open", 0)),
-                    "high": float(row.get("high", 0)),
-                    "low": float(row.get("low", 0)),
+                    "open": 0.0 if ohlc_synthesized else float(row.get("open", 0)),
+                    "high": 0.0 if ohlc_synthesized else float(row.get("high", 0)),
+                    "low": 0.0 if ohlc_synthesized else float(row.get("low", 0)),
                     "close": float(row.get("close", 0)),
                     "volume": float(row.get("volume", 0)) if row.get("volume") else None,
                     "amount": float(row.get("amount", 0)) if row.get("amount") else None,
@@ -151,13 +166,15 @@ class StockService:
                 "stock_name": stock_name,
                 "period": period,
                 "data": data,
+                "price_adjustment": price_adjustment,
+                "ohlc_synthesized": ohlc_synthesized,
             }
             
         except ImportError:
-            logger.warning("DataFetcherManager 未找到，返回空数据")
+            logger.warning("DataFetcherManager not found, returning empty data")
             return {"stock_code": stock_code, "period": period, "data": []}
         except Exception as e:
-            logger.error(f"获取历史数据失败: {e}", exc_info=True)
+            logger.error(f"Failed to get historical data: {e}", exc_info=True)
             return {"stock_code": stock_code, "period": period, "data": []}
     
     def _get_placeholder_quote(self, stock_code: str) -> Dict[str, Any]:

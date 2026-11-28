@@ -1,6 +1,6 @@
 import type React from 'react';
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { BarChart3, Clipboard, FileText, Gauge, Layers, ShieldAlert, TrendingUp, WalletCards, Workflow } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { BarChart3, Clipboard, FileText, Gauge, Layers, ShieldAlert, TrendingUp, TriangleAlert, WalletCards, Workflow } from 'lucide-react';
 import { historyApi } from '../../api/history';
 import { formatUiText, UI_TEXT } from '../../i18n/uiText';
 import type {
@@ -9,6 +9,7 @@ import type {
   MarketReviewPayloadSection,
   ReportLanguage,
 } from '../../types/analysis';
+import { copyTextToClipboard } from '../../utils/clipboard';
 import { markdownToPlainText } from '../../utils/markdown';
 import { getReportText, normalizeReportLanguage } from '../../utils/reportLanguage';
 import { Card } from '../common';
@@ -27,6 +28,12 @@ interface MarketReviewReportViewProps {
 }
 
 type CopyType = 'markdown' | 'text';
+type CopyStatus = 'copied' | 'failed';
+type CopyFeedback = {
+  type: CopyType;
+  status: CopyStatus;
+  contentKey: string;
+};
 type LoadedMarkdown = {
   recordId: number;
   content: string;
@@ -48,6 +55,11 @@ type StructuredMarketData = {
   indices: NonNullable<MarketReviewPayload['indices']>;
   sectors?: MarketReviewPayload['sectors'];
   concepts?: MarketReviewPayload['concepts'];
+  summary?: MarketReviewPayload['summary'];
+  styleRotation?: MarketReviewPayload['styleRotation'];
+  catalysts?: MarketReviewPayload['catalysts'];
+  nextDayPlan?: MarketReviewPayload['nextDayPlan'];
+  crossMarketNote?: MarketReviewPayload['crossMarketNote'];
 };
 
 const isMarketReviewPayload = (value: unknown): value is MarketReviewPayload =>
@@ -102,12 +114,18 @@ const getSectionIcon = (title: string): typeof FileText => {
   return FileText;
 };
 
-const splitMarketReviewSections = (markdown: string): MarketReviewSection[] => {
+const splitMarketReviewSections = (
+  markdown: string,
+  fallbackTitles: { fullReview: string; overview: string } = {
+    fullReview: MARKET_REVIEW_TEXT.zh.fullReview,
+    overview: MARKET_REVIEW_TEXT.zh.overview,
+  },
+): MarketReviewSection[] => {
   const matches = Array.from(markdown.matchAll(SECTION_HEADING_PATTERN));
   if (matches.length === 0) {
     return [{
       id: 'full-review',
-      title: '复盘正文',
+      title: fallbackTitles.fullReview,
       content: markdown,
       icon: FileText,
     }];
@@ -117,7 +135,7 @@ const splitMarketReviewSections = (markdown: string): MarketReviewSection[] => {
   const sections: MarketReviewSection[] = intro
     ? [{
         id: 'overview',
-        title: '复盘概览',
+        title: fallbackTitles.overview,
         content: intro,
         icon: FileText,
       }]
@@ -173,8 +191,24 @@ const getPayloadSections = (payload?: MarketReviewPayload | null): MarketReviewS
 const hasRankingRows = (rankings?: MarketReviewPayload['sectors']): boolean =>
   Boolean(rankings?.top?.length || rankings?.bottom?.length);
 
+/** Issue #1584: optional enhanced structured fields (summary/rotation/catalysts/plan). */
+const hasEnhancedInsightData = (payload?: MarketReviewPayload | null): boolean =>
+  Boolean(
+    payload?.summary
+    || payload?.styleRotation
+    || payload?.catalysts?.length
+    || payload?.nextDayPlan
+    || payload?.crossMarketNote,
+  );
+
 const hasStructuredMarketData = (payload?: MarketReviewPayload | null): boolean =>
-  Boolean(payload?.breadth || payload?.indices?.length || hasRankingRows(payload?.sectors) || hasRankingRows(payload?.concepts));
+  Boolean(
+    payload?.breadth
+    || payload?.indices?.length
+    || hasRankingRows(payload?.sectors)
+    || hasRankingRows(payload?.concepts)
+    || hasEnhancedInsightData(payload),
+  );
 
 const getStructuredMarketData = (payload?: MarketReviewPayload | null): StructuredMarketData[] => {
   if (!payload) {
@@ -191,6 +225,11 @@ const getStructuredMarketData = (payload?: MarketReviewPayload | null): Structur
         indices: marketPayload.indices || [],
         sectors: marketPayload.sectors,
         concepts: marketPayload.concepts,
+        summary: marketPayload.summary,
+        styleRotation: marketPayload.styleRotation,
+        catalysts: marketPayload.catalysts,
+        nextDayPlan: marketPayload.nextDayPlan,
+        crossMarketNote: marketPayload.crossMarketNote,
       }));
   }
 
@@ -205,6 +244,11 @@ const getStructuredMarketData = (payload?: MarketReviewPayload | null): Structur
     indices: payload.indices || [],
     sectors: payload.sectors,
     concepts: payload.concepts,
+    summary: payload.summary,
+    styleRotation: payload.styleRotation,
+    catalysts: payload.catalysts,
+    nextDayPlan: payload.nextDayPlan,
+    crossMarketNote: payload.crossMarketNote,
   }];
 };
 
@@ -257,7 +301,21 @@ const formatMarketHighLow = (high: unknown, low: unknown): string => {
   return highText === '-' && lowText === '-' ? '-' : `${highText} / ${lowText}`;
 };
 
+type MarketReviewCatalystItem = NonNullable<MarketReviewPayload['catalysts']>[number];
+
+const formatCatalystDirection = (
+  direction: MarketReviewCatalystItem['direction'],
+  text: { catalystDirection: Record<string, string> },
+): string | null => {
+  if (!direction || typeof direction !== 'string') {
+    return null;
+  }
+  return text.catalystDirection[direction] || null;
+};
+
 const MARKET_REVIEW_TEXT: Record<ReportLanguage, {
+  fullReview: string;
+  overview: string;
   reviewSummary: string;
   noReviewSummary: string;
   noSentimentScore: string;
@@ -279,8 +337,25 @@ const MARKET_REVIEW_TEXT: Record<ReportLanguage, {
   conceptBoards: string;
   leading: string;
   lagging: string;
+  /** ---- Issue #1584 optional structured fields ---- */
+  temperature: string;
+  marketStatus: string;
+  positionAdvice: string;
+  coreConclusion: string;
+  divergenceDiagnosis: string;
+  styleRotation: string;
+  catalysts: string;
+  nextDayPlan: string;
+  invalidation: string;
+  notes: string;
+  crossMarketNote: string;
+  catalystDirection: Record<string, string>;
+  digestedLabel: string;
+  notDigestedLabel: string;
 }> = {
   zh: {
+    fullReview: '复盘正文',
+    overview: '复盘概览',
     reviewSummary: '复盘摘要',
     noReviewSummary: '暂无摘要',
     noSentimentScore: '暂无评分',
@@ -302,8 +377,24 @@ const MARKET_REVIEW_TEXT: Record<ReportLanguage, {
     conceptBoards: '概念板块',
     leading: '领涨',
     lagging: '领跌',
+    temperature: '市场温度',
+    marketStatus: '市场状态',
+    positionAdvice: '建议仓位',
+    coreConclusion: '核心结论',
+    divergenceDiagnosis: '宽度分化诊断',
+    styleRotation: '风格轮动',
+    catalysts: '消息催化',
+    nextDayPlan: '明日计划',
+    invalidation: '失效条件',
+    notes: '备注',
+    crossMarketNote: '跨市场参考',
+    catalystDirection: { bullish: '利好', bearish: '利空', neutral: '中性' },
+    digestedLabel: '已消化',
+    notDigestedLabel: '未消化',
   },
   en: {
+    fullReview: 'Review Body',
+    overview: 'Review Overview',
     reviewSummary: 'Review Summary',
     noReviewSummary: 'No review summary yet',
     noSentimentScore: 'No score yet',
@@ -325,8 +416,24 @@ const MARKET_REVIEW_TEXT: Record<ReportLanguage, {
     conceptBoards: 'Concept Themes',
     leading: 'Leading',
     lagging: 'Lagging',
+    temperature: 'Market Temperature',
+    marketStatus: 'Market Status',
+    positionAdvice: 'Position Advice',
+    coreConclusion: 'Core Conclusion',
+    divergenceDiagnosis: 'Breadth Divergence',
+    styleRotation: 'Style Rotation',
+    catalysts: 'News Catalysts',
+    nextDayPlan: 'Next-Day Plan',
+    invalidation: 'Invalidation',
+    notes: 'Notes',
+    crossMarketNote: 'Cross-Market Note',
+    catalystDirection: { bullish: 'Bullish', bearish: 'Bearish', neutral: 'Neutral' },
+    digestedLabel: 'Digested',
+    notDigestedLabel: 'Not digested',
   },
   ko: {
+    fullReview: '리뷰 본문',
+    overview: '리뷰 개요',
     reviewSummary: '리뷰 요약',
     noReviewSummary: '요약 없음',
     noSentimentScore: '점수 없음',
@@ -348,6 +455,20 @@ const MARKET_REVIEW_TEXT: Record<ReportLanguage, {
     conceptBoards: '테마 섹터',
     leading: '강세',
     lagging: '약세',
+    temperature: '시장 온도',
+    marketStatus: '시장 상태',
+    positionAdvice: '포지션 권고',
+    coreConclusion: '핵심 결론',
+    divergenceDiagnosis: '지수-개별주 괴리 진단',
+    styleRotation: '스타일 로테이션',
+    catalysts: '뉴스 촉매',
+    nextDayPlan: '익일 계획',
+    invalidation: '무효 조건',
+    notes: '메모',
+    crossMarketNote: '교차 시장 참고',
+    catalystDirection: { bullish: '강세', bearish: '약세', neutral: '중립' },
+    digestedLabel: '소화됨',
+    notDigestedLabel: '미소화',
   },
 };
 
@@ -375,7 +496,10 @@ export const MarketReviewReportView: React.FC<MarketReviewReportViewProps> = ({
   const marketReviewText = MARKET_REVIEW_TEXT[normalizedReportLanguage];
   const [loadedMarkdown, setLoadedMarkdown] = useState<LoadedMarkdown | null>(null);
   const [loadError, setLoadError] = useState<LoadError | null>(null);
-  const [copiedType, setCopiedType] = useState<CopyType | null>(null);
+  const [copyFeedback, setCopyFeedback] = useState<CopyFeedback | null>(null);
+  const mountedRef = useRef(true);
+  const copyTokenRef = useRef(0);
+  const copyResetTimerRef = useRef<number | null>(null);
   const summary = report?.summary;
   const meta = report?.meta;
   const contextPayload = report?.details?.contextSnapshot?.marketReviewPayload;
@@ -393,9 +517,11 @@ export const MarketReviewReportView: React.FC<MarketReviewReportViewProps> = ({
   const sections = useMemo(
     () => {
       const payloadSections = getPayloadSections(marketReviewPayload);
-      return payloadSections.length > 0 ? payloadSections : splitMarketReviewSections(structuredContent);
+      return payloadSections.length > 0
+        ? payloadSections
+        : splitMarketReviewSections(structuredContent, marketReviewText);
     },
-    [marketReviewPayload, structuredContent],
+    [marketReviewPayload, marketReviewText, structuredContent],
   );
   const structuredMarketData = useMemo(
     () => getStructuredMarketData(marketReviewPayload),
@@ -432,19 +558,100 @@ export const MarketReviewReportView: React.FC<MarketReviewReportViewProps> = ({
     };
   }, [hasStructuredContent, providedContent, recordId, text.loadReportFailed]);
 
+  const contentKey = `${recordId ?? ''}\u0000${content}`;
+  const [prevContentKey, setPrevContentKey] = useState(contentKey);
+  if (prevContentKey !== contentKey) {
+    setPrevContentKey(contentKey);
+    setCopyFeedback(null);
+  }
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      copyTokenRef.current += 1;
+      if (copyResetTimerRef.current !== null) {
+        window.clearTimeout(copyResetTimerRef.current);
+        copyResetTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    copyTokenRef.current += 1;
+    if (copyResetTimerRef.current !== null) {
+      window.clearTimeout(copyResetTimerRef.current);
+      copyResetTimerRef.current = null;
+    }
+  }, [contentKey]);
+
   const handleCopy = useCallback(async (type: CopyType) => {
     if (!content) {
       return;
     }
+    const token = ++copyTokenRef.current;
+    if (copyResetTimerRef.current !== null) {
+      window.clearTimeout(copyResetTimerRef.current);
+      copyResetTimerRef.current = null;
+    }
+    setCopyFeedback(null);
+
+    const isAttemptCurrent = () =>
+      mountedRef.current && copyTokenRef.current === token;
+
+    let ok = false;
     try {
       const value = type === 'markdown' ? content : markdownToPlainText(content);
-      await navigator.clipboard.writeText(value);
-      setCopiedType(type);
-      window.setTimeout(() => setCopiedType(null), 2000);
+      ok = await copyTextToClipboard(value, {
+        shouldFallback: isAttemptCurrent,
+      });
+      if (!ok && isAttemptCurrent()) {
+        console.error('Copy failed: clipboard unavailable');
+      }
     } catch (err) {
-      console.error('Copy failed:', err);
+      if (isAttemptCurrent()) {
+        console.error('Copy failed:', err);
+      }
+      ok = false;
     }
-  }, [content]);
+
+    if (!isAttemptCurrent()) {
+      return;
+    }
+
+    setCopyFeedback({
+      type,
+      status: ok ? 'copied' : 'failed',
+      contentKey,
+    });
+
+    copyResetTimerRef.current = window.setTimeout(() => {
+      copyResetTimerRef.current = null;
+      if (!mountedRef.current || copyTokenRef.current !== token) {
+        return;
+      }
+      setCopyFeedback(null);
+    }, 2000);
+  }, [content, contentKey]);
+
+  const activeCopyFeedback =
+    copyFeedback && copyFeedback.contentKey === contentKey ? copyFeedback : null;
+  const markdownCopyStatus =
+    activeCopyFeedback?.type === 'markdown' ? activeCopyFeedback.status : 'idle';
+  const plainTextCopyStatus =
+    activeCopyFeedback?.type === 'text' ? activeCopyFeedback.status : 'idle';
+  const markdownButtonLabel =
+    markdownCopyStatus === 'copied'
+      ? text.copied
+      : markdownCopyStatus === 'failed'
+        ? text.copyFailed
+        : text.copyMarkdownSource;
+  const plainTextButtonLabel =
+    plainTextCopyStatus === 'copied'
+      ? text.copied
+      : plainTextCopyStatus === 'failed'
+        ? text.copyFailed
+        : text.copyPlainText;
 
   const insightCards = useMemo(() => [
     {
@@ -511,38 +718,50 @@ export const MarketReviewReportView: React.FC<MarketReviewReportViewProps> = ({
                 </span>
               </Tooltip>
             ) : null}
-            <Tooltip content={text.copyMarkdownSource}>
+            <Tooltip content={markdownButtonLabel}>
               <span className="inline-flex">
                 <button
                   type="button"
                   onClick={() => void handleCopy('markdown')}
-                  disabled={isLoading || !content || copiedType !== null}
-                  className="home-surface-button flex h-10 w-10 items-center justify-center rounded-lg text-secondary-text hover:text-foreground disabled:opacity-50"
-                  aria-label={text.copyMarkdownSource}
+                  disabled={isLoading || !content}
+                  className={`home-surface-button flex h-10 w-10 items-center justify-center rounded-lg disabled:opacity-50 ${
+                    markdownCopyStatus === 'failed'
+                      ? 'text-danger hover:text-danger'
+                      : 'text-secondary-text hover:text-foreground'
+                  }`}
+                  aria-label={markdownButtonLabel}
                 >
-                  {copiedType === 'markdown' ? (
+                  {markdownCopyStatus === 'copied' ? (
                     <svg className="h-5 w-5 text-success" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
                     </svg>
+                  ) : markdownCopyStatus === 'failed' ? (
+                    <TriangleAlert className="h-5 w-5 text-danger" aria-hidden="true" />
                   ) : (
                     <Clipboard className="h-5 w-5" aria-hidden="true" />
                   )}
                 </button>
               </span>
             </Tooltip>
-            <Tooltip content={text.copyPlainText}>
+            <Tooltip content={plainTextButtonLabel}>
               <span className="inline-flex">
                 <button
                   type="button"
                   onClick={() => void handleCopy('text')}
-                  disabled={isLoading || !content || copiedType !== null}
-                  className="home-surface-button flex h-10 w-10 items-center justify-center rounded-lg text-secondary-text hover:text-foreground disabled:opacity-50"
-                  aria-label={text.copyPlainText}
+                  disabled={isLoading || !content}
+                  className={`home-surface-button flex h-10 w-10 items-center justify-center rounded-lg disabled:opacity-50 ${
+                    plainTextCopyStatus === 'failed'
+                      ? 'text-danger hover:text-danger'
+                      : 'text-secondary-text hover:text-foreground'
+                  }`}
+                  aria-label={plainTextButtonLabel}
                 >
-                  {copiedType === 'text' ? (
+                  {plainTextCopyStatus === 'copied' ? (
                     <svg className="h-5 w-5 text-success" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
                     </svg>
+                  ) : plainTextCopyStatus === 'failed' ? (
+                    <TriangleAlert className="h-5 w-5 text-danger" aria-hidden="true" />
                   ) : (
                     <FileText className="h-5 w-5" aria-hidden="true" />
                   )}
@@ -579,36 +798,67 @@ export const MarketReviewReportView: React.FC<MarketReviewReportViewProps> = ({
             </span>
             <h3 className="text-base font-semibold text-foreground">{marketReviewText.structuredMarketData}</h3>
           </div>
-          <div className="space-y-5">
+          <div className="space-y-4">
             {structuredMarketData.map((marketData) => (
               <div key={marketData.id} className="space-y-3">
                 {showStructuredMarketTitles ? (
                   <h4 className="text-sm font-semibold text-foreground">{marketData.title}</h4>
                 ) : null}
+                {(() => {
+                  // Issue #1584: optional market summary chips (all fields may be null).
+                  const summary = marketData.summary;
+                  if (!summary) {
+                    return null;
+                  }
+                  const summaryChips = [
+                    {
+                      label: marketReviewText.temperature,
+                      value: summary.temperature !== null && summary.temperature !== undefined
+                        ? String(summary.temperature)
+                        : null,
+                    },
+                    { label: marketReviewText.marketStatus, value: summary.marketStatus || null },
+                    { label: marketReviewText.positionAdvice, value: summary.positionAdvice || null },
+                    { label: marketReviewText.coreConclusion, value: summary.coreConclusion || null },
+                  ].filter((chip) => chip.value);
+                  if (summaryChips.length === 0) {
+                    return null;
+                  }
+                  return (
+                    <div className="grid grid-cols-2 gap-2 text-sm md:grid-cols-4">
+                      {summaryChips.map((chip) => (
+                        <div key={chip.label} className="rounded-lg border border-subtle px-3 py-2.5">
+                          <p className="label-uppercase">{chip.label}</p>
+                          <p className="mt-0.5 break-words font-semibold leading-5 text-foreground">{chip.value}</p>
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })()}
                 {marketData.breadth ? (
                   <div className="grid grid-cols-2 gap-2 text-sm md:grid-cols-4">
-                    <div className="rounded-lg border border-subtle p-3">
+                    <div className="rounded-lg border border-subtle px-3 py-2.5">
                       <p className="label-uppercase">{marketReviewText.advancers}</p>
-                      <p className="mt-1 font-semibold text-foreground">
+                      <p className="mt-0.5 font-semibold leading-5 text-foreground">
                         {formatMarketCount(marketData.breadth.upCount)}
                       </p>
                     </div>
-                    <div className="rounded-lg border border-subtle p-3">
+                    <div className="rounded-lg border border-subtle px-3 py-2.5">
                       <p className="label-uppercase">{marketReviewText.decliners}</p>
-                      <p className="mt-1 font-semibold text-foreground">
+                      <p className="mt-0.5 font-semibold leading-5 text-foreground">
                         {formatMarketCount(marketData.breadth.downCount)}
                       </p>
                     </div>
-                    <div className="rounded-lg border border-subtle p-3">
+                    <div className="rounded-lg border border-subtle px-3 py-2.5">
                       <p className="label-uppercase">{marketReviewText.limitUpDown}</p>
-                      <p className="mt-1 font-semibold text-foreground">
+                      <p className="mt-0.5 font-semibold leading-5 text-foreground">
                         {formatMarketCount(marketData.breadth.limitUpCount)} /{' '}
                         {formatMarketCount(marketData.breadth.limitDownCount)}
                       </p>
                     </div>
-                    <div className="rounded-lg border border-subtle p-3">
+                    <div className="rounded-lg border border-subtle px-3 py-2.5">
                       <p className="label-uppercase">{marketReviewText.turnover}</p>
-                      <p className="mt-1 font-semibold text-foreground">
+                      <p className="mt-0.5 font-semibold leading-5 text-foreground">
                         {formatMarketAmount(marketData.breadth.totalAmount, marketData.breadth.turnoverUnit)}
                       </p>
                     </div>
@@ -616,30 +866,47 @@ export const MarketReviewReportView: React.FC<MarketReviewReportViewProps> = ({
                 ) : (
                   <p className="text-sm text-secondary-text">{marketReviewText.noBreadthData}</p>
                 )}
-                {marketData.indices.length > 0 ? (
-                  <div className="overflow-x-auto">
-                    <table className="min-w-full text-sm">
-                      <thead className="text-left text-xs uppercase text-muted-text">
-                        <tr>
-                          <th className="px-2 py-2">{marketReviewText.index}</th>
-                          <th className="px-2 py-2">{marketReviewText.last}</th>
-                          <th className="px-2 py-2">{marketReviewText.change}</th>
-                          <th className="px-2 py-2">{marketReviewText.highLow}</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-subtle">
-                        {marketData.indices.map((index) => (
-                          <tr key={index.code || index.name}>
-                            <td className="px-2 py-2 font-medium text-foreground">{index.name}</td>
-                            <td className="px-2 py-2 text-secondary-text">{formatMarketNumber(index.current)}</td>
-                            <td className="px-2 py-2 text-secondary-text">{formatMarketPercent(index.changePct)}</td>
-                            <td className="px-2 py-2 text-secondary-text">{formatMarketHighLow(index.high, index.low)}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
+                {marketData.breadth?.divergenceDiagnosis ? (
+                  <p className="rounded-lg border border-subtle bg-primary/5 px-3 py-2.5 text-sm leading-5 text-secondary-text">
+                    <span className="font-semibold text-foreground">{marketReviewText.divergenceDiagnosis}</span>
+                    {': '}
+                    <span>{marketData.breadth.divergenceDiagnosis}</span>
+                  </p>
                 ) : null}
+                {(() => {
+                  if (marketData.indices.length === 0) {
+                    return null;
+                  }
+                  return (
+                    <div className="overflow-x-auto">
+                      <table className="min-w-full text-sm">
+                        <thead className="text-left text-xs uppercase text-muted-text">
+                          <tr>
+                            <th className="px-2 py-1.5">{marketReviewText.index}</th>
+                            <th className="px-2 py-1.5">{marketReviewText.last}</th>
+                            <th className="px-2 py-1.5">{marketReviewText.change}</th>
+                            <th className="px-2 py-1.5">{marketReviewText.highLow}</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-subtle">
+                          {marketData.indices.map((index) => (
+                            <tr key={index.code || index.name}>
+                              <td className="px-2 py-1.5">
+                                <div className="font-medium text-foreground">{index.name}</div>
+                                {index.comment ? (
+                                  <div className="mt-0.5 text-xs text-muted-text">{index.comment}</div>
+                                ) : null}
+                              </td>
+                              <td className="px-2 py-1.5 text-secondary-text">{formatMarketNumber(index.current)}</td>
+                              <td className="px-2 py-1.5 text-secondary-text">{formatMarketPercent(index.changePct)}</td>
+                              <td className="px-2 py-1.5 text-secondary-text">{formatMarketHighLow(index.high, index.low)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  );
+                })()}
                 {(() => {
                   const boardTypes = [{
                     key: 'sectors' as const,
@@ -702,6 +969,126 @@ export const MarketReviewReportView: React.FC<MarketReviewReportViewProps> = ({
                     </div>
                   );
                 })()}
+                {/* 叙述型板块：轮动/跨市场为通栏细条；催化与明日计划（两个高面板）并排，信息架构不变。 */}
+                {(() => {
+                  // Issue #1584: optional style rotation (slim bar, full width).
+                  const rotation = marketData.styleRotation;
+                  const rotationSignal = rotation?.signal || null;
+                  const rotationComment = rotation?.comment || null;
+                  if (!rotationSignal && !rotationComment) {
+                    return null;
+                  }
+                  return (
+                    <p className="break-words rounded-lg border border-subtle px-3 py-2.5 text-sm leading-5">
+                      <span className="font-semibold text-foreground">{marketReviewText.styleRotation}</span>
+                      {': '}
+                      {rotationSignal ? <span className="font-semibold text-foreground">{rotationSignal}</span> : null}
+                      {rotationSignal && rotationComment ? <span className="text-muted-text"> · </span> : null}
+                      {rotationComment ? <span className="text-secondary-text">{rotationComment}</span> : null}
+                    </p>
+                  );
+                })()}
+                {(() => {
+                  // Catalysts and the next-day plan are the two tall panels: side by side when both exist,
+                  // full width when only one of them does.
+                  const catalysts = (marketData.catalysts || []).filter((item) => item?.title);
+                  const plan = marketData.nextDayPlan;
+                  const watchlist = (plan?.watchlist || []).filter((item) => item);
+                  const hasCatalysts = catalysts.length > 0;
+                  const hasPlan = watchlist.length > 0 || Boolean(plan?.positionAdvice || plan?.invalidation || plan?.notes);
+                  if (!hasCatalysts && !hasPlan) {
+                    return null;
+                  }
+                  const panelClassName = [
+                    'rounded-lg border border-subtle p-3',
+                    hasCatalysts && hasPlan ? '' : 'md:col-span-2',
+                  ].filter(Boolean).join(' ');
+                  return (
+                    <div className="grid grid-cols-1 items-start gap-3 md:grid-cols-2">
+                      {hasCatalysts ? (
+                        <div className={panelClassName}>
+                          <p className="label-uppercase">{marketReviewText.catalysts}</p>
+                          <div className="mt-1.5 space-y-1.5">
+                            {catalysts.slice(0, 8).map((catalyst, index) => {
+                              const directionText = formatCatalystDirection(catalyst.direction, marketReviewText);
+                              const directionTone = catalyst.direction === 'bullish'
+                                ? 'text-success'
+                                : catalyst.direction === 'bearish'
+                                  ? 'text-danger'
+                                  : 'text-secondary-text';
+                              const catalystMeta = [catalyst.scope, catalyst.persistence].filter(Boolean).join(' · ');
+                              return (
+                                <div
+                                  key={`${catalyst.title}-${index}`}
+                                  className="flex items-start justify-between gap-3 text-sm"
+                                >
+                                  <div className="min-w-0">
+                                    <span className="font-medium text-foreground">{catalyst.title}</span>
+                                    {catalystMeta ? (
+                                      <span className="ml-2 text-xs text-muted-text">{catalystMeta}</span>
+                                    ) : null}
+                                  </div>
+                                  <div className="flex shrink-0 items-center gap-1.5 text-xs">
+                                    {directionText ? (
+                                      <span className={`font-medium ${directionTone}`}>{directionText}</span>
+                                    ) : null}
+                                    {catalyst.digested === true ? (
+                                      <span className="rounded bg-primary/10 px-1.5 py-0.5 text-secondary-text">
+                                        {marketReviewText.digestedLabel}
+                                      </span>
+                                    ) : null}
+                                    {catalyst.digested === false ? (
+                                      <span className="rounded bg-primary/10 px-1.5 py-0.5 text-muted-text">
+                                        {marketReviewText.notDigestedLabel}
+                                      </span>
+                                    ) : null}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      ) : null}
+                      {hasPlan && plan ? (
+                        <div className={`${panelClassName} text-sm`}>
+                          <p className="label-uppercase">{marketReviewText.nextDayPlan}</p>
+                          <div className="mt-1.5 space-y-1">
+                            {watchlist.map((item, index) => (
+                              <div key={`${item}-${index}`} className="flex items-start gap-2 text-secondary-text">
+                                <span className="text-primary">·</span>
+                                <span className="min-w-0 break-words">{item}</span>
+                              </div>
+                            ))}
+                            {plan.positionAdvice ? (
+                              <p className="break-words text-secondary-text">{plan.positionAdvice}</p>
+                            ) : null}
+                            {plan.invalidation ? (
+                              <p className="break-words text-xs text-muted-text">
+                                <span>{marketReviewText.invalidation}</span>
+                                <span>{': '}</span>
+                                <span>{plan.invalidation}</span>
+                              </p>
+                            ) : null}
+                            {plan.notes ? (
+                              <p className="break-words text-xs text-muted-text">
+                                <span>{marketReviewText.notes}</span>
+                                <span>{': '}</span>
+                                <span>{plan.notes}</span>
+                              </p>
+                            ) : null}
+                          </div>
+                        </div>
+                      ) : null}
+                    </div>
+                  );
+                })()}
+                {marketData.crossMarketNote ? (
+                  <p className="break-words rounded-lg border border-subtle px-3 py-2.5 text-sm leading-5 text-secondary-text">
+                    <span className="font-semibold text-foreground">{marketReviewText.crossMarketNote}</span>
+                    {': '}
+                    <span>{marketData.crossMarketNote}</span>
+                  </p>
+                ) : null}
               </div>
             ))}
           </div>

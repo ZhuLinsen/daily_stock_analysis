@@ -29,6 +29,9 @@
 
 </div>
 
+> [!TIP]
+> 🔎 **不知道选哪只股？** 开源选股 [AlphaSift](https://github.com/ZhuLinsen/alphasift) 每日选股+策略跟踪 → [**免安装在线看今日选股**](https://alphasift.zhulinsen.tech/?lang=zh&utm_source=dsa_readme)
+
 <details open>
 <summary><strong>💖 赞助商 (Sponsors)</strong></summary>
 <table>
@@ -46,9 +49,6 @@
   <sub>点击动图查看完整演示</sub>
 </p>
 
-> [!TIP]
-> 🚀 **作者配套开源项目**：[AlphaSift · 智能选股](https://github.com/ZhuLinsen/alphasift) ｜ [AlphaEvo · 策略回测与进化](https://github.com/ZhuLinsen/alphaevo)
-
 ## ✨ 功能特性
 
 | 能力 | 覆盖内容 |
@@ -56,7 +56,7 @@
 | AI 决策报告 | 核心结论、评分、趋势、买卖点位、风险警报、催化因素、操作检查清单 |
 | 多市场数据聚合 | 覆盖 A股、港股、美股、日股、韩股、台股和 ETF，支持行情、K 线、技术指标、新闻、公告、基本面与报告辅助数据；不同市场的数据源和能力边界见 [市场支持边界](docs/market-support.md) |
 | Web / 桌面工作台 | 手动分析、任务进度、历史报告、完整 Markdown、回测、持仓、配置管理、浅色 / 深色主题 |
-| Agent 策略问股 | 多轮追问，支持均线、缠论、波浪、趋势、热点、事件、成长、预期等 15 种内置策略，覆盖 Web/Bot/API |
+| Agent 策略问股 | 多轮追问，支持均线、缠论、波浪、趋势、量化因子、热点、事件、成长、预期等 20 种内置策略，覆盖 Web/Bot/API |
 | 智能导入与补全 | 图片、CSV/Excel、剪贴板导入；股票代码/名称/拼音/别名补全 |
 | 自动化与推送 | GitHub Actions、Docker、本地定时任务、FastAPI 服务和企业微信/飞书/Telegram/Discord/Slack/邮件推送 |
 
@@ -66,9 +66,9 @@
 
 | 类型 | 支持 |
 |------|------|
-| AI 模型 | [Modelflare](https://modelflare.dev/sign-up?utm_source=github&utm_campaign=daily_stock_analysis)、[x6.ai](https://console.x6pro.io/register?code=zJ2qSdns)、AIHubMix、Gemini、OpenAI 兼容、DeepSeek、通义千问、Claude、Ollama 本地模型等 |
+| AI 模型 | [Modelflare](https://modelflare.dev/sign-up?utm_source=github&utm_campaign=daily_stock_analysis)、[x6.ai](https://console.x6pro.io/register?code=zJ2qSdns)、Gemini、OpenAI 兼容、DeepSeek、通义千问、Claude、Ollama 本地模型等 |
 | 行情数据 | [TickPlus（推荐）](http://www.tickplus.org/register?reg=5433cf922395)、AkShare、Tushare、Pytdx、Baostock、YFinance、Longbridge |
-| 新闻搜索 | [SerpAPI](https://serpapi.com/github-daily-stock-analysis)、Anspire、Tavily、Bocha、Brave、MiniMax、SearXNG |
+| 新闻搜索 | [SerpAPI](https://serpapi.com/github-daily-stock-analysis)、Tavily、Bocha、Brave、MiniMax、SearXNG |
 | 社交舆情 | Stock Sentiment API（Reddit / X / Polymarket，仅美股，可选） |
 
 > 项目默认内置 AkShare、Baostock、YFinance 等免费行情源，可零配置运行；免费源受上游限流、接口变动和网络波动影响，稳定性不保证。长期定时、批量分析或更稳定行情建议配置 Tushare、Longbridge 等 token 型数据源，适用市场、Actions 映射和 fallback 规则见 [数据源配置](docs/full-guide.md#数据源配置)。
@@ -96,7 +96,6 @@
 |------------|------|:----:|
 | `MODELFLARE_KEY` | [Modelflare](https://modelflare.dev/sign-up?utm_source=github&utm_campaign=daily_stock_analysis) API Key，低成本接入全球热门大模型 | **推荐** |
 | `LLM_X6AI_API_KEY` | [x6.ai](https://console.x6pro.io/register?code=zJ2qSdns) API Key，低成本接入 Claude、GPT 等 100+ 模型 | **推荐** |
-| `AIHUBMIX_KEY` | AIHubMix API Key，一Key切换使用全系模型，无需科学上网，本项目可享 10% 优惠 | 可选 |
 | `GEMINI_API_KEY` | Google Gemini API Key | 可选 |
 | `ANTHROPIC_API_KEY` | Anthropic Claude API Key | 可选 |
 | `OPENAI_API_KEY` | OpenAI 兼容 API Key（支持 DeepSeek、通义千问等） | 可选 |
@@ -130,7 +129,6 @@
 | Secret 名称 | 说明 | 必填 |
 |------------|------|:----:|
 | `SERPAPI_API_KEYS` | [SerpAPI](https://serpapi.com/github-daily-stock-analysis)：搜索引擎结果补强，适合实时金融新闻 | **推荐** |
-| `ANSPIRE_API_KEYS` | Anspire 搜索 API Key，可与其模型网关共用 | 可选 |
 | `TAVILY_API_KEYS` | Tavily：通用新闻搜索 API | 可选 |
 | `BOCHA_API_KEYS` | 博查搜索：中文搜索优化，支持 AI 摘要 | 可选 |
 | `BRAVE_API_KEYS` | Brave Search：隐私优先，美股资讯补强 | 可选 |
@@ -165,6 +163,8 @@
 默认每个**工作日 18:00（北京时间）**自动执行，也可手动触发。默认非交易日（含 A/H/US 节假日）不执行；强制运行、交易日检查、断点续传等规则见 [完整指南](docs/full-guide.md#定时任务配置)。
 
 ### 方式二：[客户端配置教程](https://www.bilibili.com/video/BV11FEb66Eyr/) / 本地运行 / Docker 部署
+
+Windows 源码安装建议使用较短的项目路径（例如 `C:\dsa`）。遇到依赖路径过长的报错时，参见 [安装排障](docs/FAQ.md#windows-依赖安装路径过长)。
 
 ```bash
 # 克隆项目
