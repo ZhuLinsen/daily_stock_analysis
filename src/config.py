@@ -2924,20 +2924,22 @@ class Config:
                             str((model_ref or {}).get("display_model") or "")
                         )
                     else:
+                        explicit_model_provider = get_explicit_llm_channel_model_provider(str(model_name))
                         channel_protocol = resolve_llm_channel_protocol(
                             ch.get("protocol"),
                             base_url=ch.get("base_url"),
                             models=[str(model_name)],
                             channel_name=ch.get("name"),
                         )
+                        effective_protocol = (
+                            explicit_model_provider
+                            if explicit_model_provider and explicit_model_provider != channel_protocol
+                            else channel_protocol
+                        )
                         model_info: Dict[str, Any] = {}
-                        if channel_protocol:
-                            model_info["dsa_channel_protocol"] = channel_protocol
-                        if (
-                            channel_protocol == "openai"
-                            or api_surface == "responses"
-                            or get_explicit_llm_channel_model_provider(str(model_name)) == "openai"
-                        ):
+                        if effective_protocol:
+                            model_info["dsa_channel_protocol"] = effective_protocol
+                        if effective_protocol == "openai" or api_surface == "responses":
                             model_info["dsa_api_surface"] = api_surface
                         if model_info:
                             entry["model_info"] = model_info

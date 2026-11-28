@@ -1323,16 +1323,7 @@ class SystemConfigService:
             use_saved_secret=use_saved_secret,
             stage=generation_stage,
         )
-        for header_key, header_val in normalized_extra_headers.items():
-            if header_key.lower() in {
-                "authorization",
-                "proxy-authorization",
-                "x-api-key",
-                "api-key",
-                "x-goog-api-key",
-                "cookie",
-            }:
-                redaction_values.update(self._build_redaction_values(header_val))
+        redaction_values.update(self._build_extra_header_redaction_values(normalized_extra_headers))
         if resolved_secret is None:
             result = secret_error
             if requested_capabilities and "capability_results" not in result:
@@ -1346,6 +1337,30 @@ class SystemConfigService:
         api_key = resolved_secret
         redaction_values.update(self._build_redaction_values(api_key))
         if is_reserved_hermes_name(channel_name):
+            if normalized_extra_headers:
+                return self._build_llm_channel_result(
+                    success=False,
+                    message="Hermes does not support EXTRA_HEADERS in Phase 3",
+                    error="Hermes does not support EXTRA_HEADERS in Phase 3",
+                    stage=generation_stage,
+                    error_code="invalid_config",
+                    retryable=False,
+                    details={
+                        "issue_key": "test_channel_EXTRA_HEADERS",
+                        "issue_code": "unsupported_extra_headers",
+                        "reason": "unsupported_extra_headers",
+                    },
+                    resolved_protocol=None,
+                    resolved_model=None,
+                    latency_ms=None,
+                    capability_results=self._build_skipped_capability_results(
+                        requested_capabilities,
+                        "base_test_failed",
+                        "Skipped because the base channel test did not pass",
+                        redaction_values=redaction_values,
+                    ),
+                    redaction_values=redaction_values,
+                )
             secret_error = self._validate_hermes_submitted_secret(
                 api_key=api_key,
                 use_saved_secret=use_saved_secret,
@@ -1549,9 +1564,14 @@ class SystemConfigService:
                     base_url=base_url,
                     timeout_seconds=timeout_seconds,
                     capability_checks=requested_capabilities,
+                    redaction_values=redaction_values,
                     api_surface=effective_api_surface,
                     extra_headers=normalized_extra_headers or None,
                 )
+            sanitized_preview = self._sanitize_llm_error_text(
+                content,
+                redaction_values=redaction_values,
+            )[:80]
             return self._build_llm_channel_result(
                 success=True,
                 message="LLM channel test succeeded",
@@ -1559,7 +1579,7 @@ class SystemConfigService:
                 stage=generation_stage,
                 error_code=None,
                 retryable=False,
-                details={"response_preview": content[:80]},
+                details={"response_preview": sanitized_preview},
                 resolved_protocol=resolved_protocol or None,
                 resolved_model=resolved_model,
                 resolved_api_surface=resolved_api_surface,
@@ -1689,6 +1709,10 @@ class SystemConfigService:
                 except ValueError:
                     payload = None
                 if not isinstance(payload, dict) or payload.get("status") != "ok":
+                    sanitized_preview = cls._sanitize_llm_error_text(
+                        content,
+                        redaction_values=redaction_values,
+                    )[:80]
                     results[capability] = cls._build_llm_capability_result(
                         capability="json",
                         status="failed",
@@ -1696,7 +1720,7 @@ class SystemConfigService:
                         error_code="format_error",
                         retryable=False,
                         latency_ms=latency_ms,
-                        details={"reason": "non_json", "response_preview": content[:80]},
+                        details={"reason": "non_json", "response_preview": sanitized_preview},
                         redaction_values=redaction_values,
                     )
                     continue
@@ -1728,6 +1752,7 @@ class SystemConfigService:
         base_url: str,
         timeout_seconds: float,
         capability_checks: Sequence[str],
+        redaction_values: Optional[Set[str]] = None,
         api_surface: Optional[str] = None,
         extra_headers: Optional[Mapping[str, str]] = None,
     ) -> Dict[str, Dict[str, Any]]:
@@ -1740,6 +1765,7 @@ class SystemConfigService:
                     selected_api_key=selected_api_key,
                     base_url=base_url,
                     timeout_seconds=timeout_seconds,
+                    redaction_values=redaction_values,
                     api_surface=api_surface,
                     extra_headers=extra_headers,
                 )
@@ -1750,6 +1776,7 @@ class SystemConfigService:
                     selected_api_key=selected_api_key,
                     base_url=base_url,
                     timeout_seconds=timeout_seconds,
+                    redaction_values=redaction_values,
                     api_surface=api_surface,
                     extra_headers=extra_headers,
                 )
@@ -1760,6 +1787,7 @@ class SystemConfigService:
                     selected_api_key=selected_api_key,
                     base_url=base_url,
                     timeout_seconds=timeout_seconds,
+                    redaction_values=redaction_values,
                     api_surface=api_surface,
                     extra_headers=extra_headers,
                 )
@@ -1770,6 +1798,7 @@ class SystemConfigService:
                     selected_api_key=selected_api_key,
                     base_url=base_url,
                     timeout_seconds=timeout_seconds,
+                    redaction_values=redaction_values,
                     api_surface=api_surface,
                     extra_headers=extra_headers,
                 )
@@ -1784,6 +1813,7 @@ class SystemConfigService:
         selected_api_key: str,
         base_url: str,
         timeout_seconds: float,
+        redaction_values: Optional[Set[str]] = None,
         api_surface: Optional[str] = None,
         extra_headers: Optional[Mapping[str, str]] = None,
     ) -> Dict[str, Any]:
@@ -1814,10 +1844,15 @@ class SystemConfigService:
                     retryable=False,
                     latency_ms=latency_ms,
                     details={"reason": parse_reason, "response_error": parse_error},
+                    redaction_values=redaction_values,
                 )
             try:
                 payload = json.loads(content)
             except ValueError:
+                sanitized_preview = cls._sanitize_llm_error_text(
+                    content,
+                    redaction_values=redaction_values,
+                )[:80]
                 return cls._build_llm_capability_result(
                     capability="json",
                     status="failed",
@@ -1825,9 +1860,14 @@ class SystemConfigService:
                     error_code="format_error",
                     retryable=False,
                     latency_ms=latency_ms,
-                    details={"reason": "non_json", "response_preview": content[:80]},
+                    details={"reason": "non_json", "response_preview": sanitized_preview},
+                    redaction_values=redaction_values,
                 )
             if not isinstance(payload, dict) or payload.get("status") != "ok":
+                sanitized_preview = cls._sanitize_llm_error_text(
+                    content,
+                    redaction_values=redaction_values,
+                )[:80]
                 return cls._build_llm_capability_result(
                     capability="json",
                     status="failed",
@@ -1835,7 +1875,8 @@ class SystemConfigService:
                     error_code="format_error",
                     retryable=False,
                     latency_ms=latency_ms,
-                    details={"reason": "non_json", "response_preview": content[:80]},
+                    details={"reason": "non_json", "response_preview": sanitized_preview},
+                    redaction_values=redaction_values,
                 )
             return cls._build_llm_capability_result(
                 capability="json",
@@ -1843,10 +1884,16 @@ class SystemConfigService:
                 message="JSON output capability check passed",
                 latency_ms=latency_ms,
                 details={"reason": "json_valid"},
+                redaction_values=redaction_values,
             )
         except Exception as exc:
             diagnostic = cls._classify_llm_capability_exception(exc, "json")
-            return cls._build_llm_capability_result_from_diagnostic("json", diagnostic, str(exc))
+            return cls._build_llm_capability_result_from_diagnostic(
+                "json",
+                diagnostic,
+                str(exc),
+                redaction_values=redaction_values,
+            )
 
     @classmethod
     def _run_tools_capability_check(
@@ -1857,6 +1904,7 @@ class SystemConfigService:
         selected_api_key: str,
         base_url: str,
         timeout_seconds: float,
+        redaction_values: Optional[Set[str]] = None,
         api_surface: Optional[str] = None,
         extra_headers: Optional[Mapping[str, str]] = None,
     ) -> Dict[str, Any]:
@@ -1904,6 +1952,7 @@ class SystemConfigService:
                     retryable=False,
                     latency_ms=latency_ms,
                     details={"reason": "tool_calls_missing", "tool_calls": tool_names},
+                    redaction_values=redaction_values,
                 )
             return cls._build_llm_capability_result(
                 capability="tools",
@@ -1911,10 +1960,16 @@ class SystemConfigService:
                 message="Tool calling capability check passed",
                 latency_ms=latency_ms,
                 details={"reason": "tool_call_returned"},
+                redaction_values=redaction_values,
             )
         except Exception as exc:
             diagnostic = cls._classify_llm_capability_exception(exc, "tools")
-            return cls._build_llm_capability_result_from_diagnostic("tools", diagnostic, str(exc))
+            return cls._build_llm_capability_result_from_diagnostic(
+                "tools",
+                diagnostic,
+                str(exc),
+                redaction_values=redaction_values,
+            )
 
     @classmethod
     def _run_stream_capability_check(
@@ -1925,6 +1980,7 @@ class SystemConfigService:
         selected_api_key: str,
         base_url: str,
         timeout_seconds: float,
+        redaction_values: Optional[Set[str]] = None,
         api_surface: Optional[str] = None,
         extra_headers: Optional[Mapping[str, str]] = None,
     ) -> Dict[str, Any]:
@@ -1955,6 +2011,7 @@ class SystemConfigService:
                         message="Streaming capability check passed",
                         latency_ms=latency_ms,
                         details={"reason": "stream_chunk_received"},
+                        redaction_values=redaction_values,
                     )
                 if index + 1 >= cls._LLM_STREAM_CHUNK_LIMIT:
                     break
@@ -1967,10 +2024,16 @@ class SystemConfigService:
                 retryable=False,
                 latency_ms=latency_ms,
                 details={"reason": "stream_no_content"},
+                redaction_values=redaction_values,
             )
         except Exception as exc:
             diagnostic = cls._classify_llm_capability_exception(exc, "stream")
-            return cls._build_llm_capability_result_from_diagnostic("stream", diagnostic, str(exc))
+            return cls._build_llm_capability_result_from_diagnostic(
+                "stream",
+                diagnostic,
+                str(exc),
+                redaction_values=redaction_values,
+            )
         finally:
             close_stream = getattr(stream, "close", None)
             if callable(close_stream):
@@ -1988,6 +2051,7 @@ class SystemConfigService:
         selected_api_key: str,
         base_url: str,
         timeout_seconds: float,
+        redaction_values: Optional[Set[str]] = None,
         api_surface: Optional[str] = None,
         extra_headers: Optional[Mapping[str, str]] = None,
     ) -> Dict[str, Any]:
@@ -2025,17 +2089,28 @@ class SystemConfigService:
                     retryable=False,
                     latency_ms=latency_ms,
                     details={"reason": parse_reason, "response_error": parse_error},
+                    redaction_values=redaction_values,
                 )
+            sanitized_preview = cls._sanitize_llm_error_text(
+                content,
+                redaction_values=redaction_values,
+            )[:80]
             return cls._build_llm_capability_result(
                 capability="vision",
                 status="passed",
                 message="Vision capability check passed",
                 latency_ms=latency_ms,
-                details={"reason": "vision_response_received", "response_preview": content[:80]},
+                details={"reason": "vision_response_received", "response_preview": sanitized_preview},
+                redaction_values=redaction_values,
             )
         except Exception as exc:
             diagnostic = cls._classify_llm_capability_exception(exc, "vision")
-            return cls._build_llm_capability_result_from_diagnostic("vision", diagnostic, str(exc))
+            return cls._build_llm_capability_result_from_diagnostic(
+                "vision",
+                diagnostic,
+                str(exc),
+                redaction_values=redaction_values,
+            )
 
     @classmethod
     def _build_llm_capability_completion_kwargs(
@@ -4389,6 +4464,37 @@ class SystemConfigService:
             r"(?i)(?:authorization\s*[:=]\s*)?(?:bearer\s+)?"
             + r"\s*,\s*".join(re.escape(part) for part in parts)
         )
+
+    @classmethod
+    def _build_extra_header_redaction_values(cls, headers: Mapping[str, str]) -> Set[str]:
+        """Collect redaction tokens for custom headers including scheme-stripped auth secrets."""
+        redactions: Set[str] = set()
+        auth_scheme_pattern = re.compile(r"(?i)^\s*(?:bearer|token|basic|apikey|api-key)\s+(.+?)\s*$")
+        auth_name_markers = (
+            "auth",
+            "token",
+            "key",
+            "secret",
+            "cookie",
+            "pass",
+            "cred",
+            "sig",
+            "session",
+        )
+        for header_name, raw_value in headers.items():
+            value = str(raw_value or "").strip()
+            if not value:
+                continue
+            lower_name = str(header_name or "").strip().lower()
+            is_auth_header = any(marker in lower_name for marker in auth_name_markers)
+            if is_auth_header or len(value) >= 4:
+                redactions.update(cls._build_redaction_values(value))
+            scheme_match = auth_scheme_pattern.match(value)
+            if scheme_match:
+                bare_token = scheme_match.group(1).strip()
+                if bare_token:
+                    redactions.update(cls._build_redaction_values(bare_token))
+        return redactions
 
     @classmethod
     def _sanitize_llm_error_text(cls, text: Any, *, redaction_values: Optional[Set[str]] = None) -> str:

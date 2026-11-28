@@ -29,6 +29,7 @@ from src.llm.hermes import route_has_hermes
 from src.llm.transport import (
     create_litellm_compat_proxy,
     dispatch_completion,
+    find_unresolved_env_var,
     resolve_env_reference,
     resolve_litellm_params_env,
 )
@@ -305,7 +306,14 @@ def _call_litellm_vision(image_b64: str, mime_type: str, api_key: Optional[str] 
             if deployment is not None:
                 key = None
         if deployment is not None:
-            deployment_params = resolve_litellm_params_env(deployment.get("litellm_params") or {})
+            raw_deployment_params = deployment.get("litellm_params") or {}
+            for endpoint_key in ("base_url", "api_base"):
+                missing_var = find_unresolved_env_var(raw_deployment_params.get(endpoint_key))
+                if missing_var is not None:
+                    raise ValueError(
+                        f"Vision deployment {endpoint_key} environment variable '{missing_var}' is not set"
+                    )
+            deployment_params = resolve_litellm_params_env(raw_deployment_params)
             raw_info = deployment.get("model_info")
             if isinstance(raw_info, dict):
                 deployment_info = dict(raw_info)
@@ -343,9 +351,15 @@ def _call_litellm_vision(image_b64: str, mime_type: str, api_key: Optional[str] 
     effective_api_key = str(deployment_params.get("api_key") or key or "").strip()
     if effective_api_key:
         call_kwargs["api_key"] = effective_api_key
-    deployment_api_base = str(
-        deployment_params.get("api_base") or deployment_params.get("base_url") or ""
-    ).strip()
+    raw_resolved_base_url = str(deployment_params.get("base_url") or "").strip()
+    raw_resolved_api_base = str(deployment_params.get("api_base") or "").strip()
+    if (
+        raw_resolved_base_url
+        and raw_resolved_api_base
+        and raw_resolved_base_url.rstrip("/").lower() != raw_resolved_api_base.rstrip("/").lower()
+    ):
+        raise ValueError("Vision deployment has conflicting api_base and base_url values")
+    deployment_api_base = raw_resolved_base_url or raw_resolved_api_base
     if deployment_api_base:
         call_kwargs["api_base"] = deployment_api_base
     if resolved_api_surface:

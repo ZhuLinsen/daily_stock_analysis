@@ -583,7 +583,7 @@ def _call_llm(
 ) -> str:
     """Call LLM via configured transport with fallback models and channel configs."""
     if silent:
-        _silence_litellm_logs()
+        silence_litellm_logs()
 
     messages = [
         {"role": "system", "content": _RANKING_SYSTEM_INSTRUCTIONS},
@@ -1081,11 +1081,6 @@ def _call_screening_litellm_completion(
         )
 
 
-def _silence_litellm_logs(litellm=None) -> None:
-    del litellm
-    silence_litellm_logs()
-
-
 def _build_litellm_attempts(
     model: str,
     *,
@@ -1095,13 +1090,25 @@ def _build_litellm_attempts(
 ) -> list[dict[str, object]]:
     attempts = []
     matched_channel = False
+    outer_base_url = str(base_url or "").strip()
+    outer_api_key = str(api_key or "").strip()
     for channel in channels:
         if not _channel_matches_model(channel, model):
             continue
         matched_channel = True
-        api_keys = channel.get("api_keys", [])
-        if not isinstance(api_keys, list) or not api_keys:
-            api_keys = [api_key] if api_key else [""]
+        raw_channel_keys = channel.get("api_keys", [])
+        channel_keys = (
+            [str(k or "").strip() for k in raw_channel_keys if str(k or "").strip()]
+            if isinstance(raw_channel_keys, list)
+            else []
+        )
+        inherited_outer_key = (not channel_keys) and bool(outer_api_key)
+        api_keys = channel_keys if channel_keys else ([outer_api_key] if outer_api_key else [""])
+
+        channel_base_url = str(channel.get("base_url", "") or "").strip()
+        inherited_outer_base = (not channel_base_url) and bool(outer_base_url)
+        effective_base_url = channel_base_url or outer_base_url
+
         raw_api_surface = str(channel.get("api_surface", "") or "").strip()
         channel_api_surface = normalize_llm_channel_api_surface(raw_api_surface)
         wire_model = apply_litellm_api_surface(
@@ -1116,12 +1123,21 @@ def _build_litellm_attempts(
             else ""
         )
         raw_headers = channel.get("extra_headers")
-        extra_headers = dict(raw_headers) if isinstance(raw_headers, dict) and raw_headers else None
+        # Never bind a channel's private extra_headers onto an inherited outer
+        # base_url or outer api_key that this channel does not own.
+        extra_headers = (
+            dict(raw_headers)
+            if isinstance(raw_headers, dict)
+            and raw_headers
+            and not inherited_outer_base
+            and not inherited_outer_key
+            else None
+        )
         for channel_key in api_keys:
             attempts.append(_completion_kwargs(
                 wire_model,
                 api_key=str(channel_key or ""),
-                base_url=str(channel.get("base_url", "") or base_url or ""),
+                base_url=effective_base_url,
                 api_surface=effective_surface,
                 extra_headers=extra_headers,
             ))
@@ -1176,7 +1192,19 @@ def _unique_attempts(items: list[dict[str, object]]) -> list[dict[str, object]]:
     seen = set()
     result = []
     for item in items:
-        key = (item.get("model"), item.get("api_key"), item.get("api_base"), item.get("api_surface"))
+        raw_headers = item.get("extra_headers")
+        headers_key = (
+            tuple(sorted((str(k).strip().lower(), str(v)) for k, v in raw_headers.items()))
+            if isinstance(raw_headers, dict)
+            else ()
+        )
+        key = (
+            item.get("model"),
+            item.get("api_key"),
+            item.get("api_base"),
+            item.get("api_surface"),
+            headers_key,
+        )
         if key not in seen:
             seen.add(key)
             result.append(item)

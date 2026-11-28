@@ -3093,6 +3093,35 @@ def _normalize_screening_api_base(value: Any) -> str:
     return raw.rstrip("/").lower()
 
 
+def _resolve_canonical_screening_api_base(params: Dict[str, Any]) -> Tuple[str, bool]:
+    """Resolve one canonical base URL, flagging conflict if ``api_base`` and ``base_url`` disagree."""
+    from src.llm.transport import resolve_env_reference
+
+    norm_api_base = _normalize_screening_api_base(resolve_env_reference(params.get("api_base")))
+    norm_base_url = _normalize_screening_api_base(resolve_env_reference(params.get("base_url")))
+    if norm_api_base and norm_base_url and norm_api_base != norm_base_url:
+        return "", True
+    # Match LiteLLM 1.98.1 precedence when single or identical.
+    return norm_base_url or norm_api_base, False
+
+
+def _merge_screening_headers_case_insensitive(
+    injected_headers: Dict[str, Any],
+    existing_headers: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Merge injected headers with explicit caller headers without case-variant duplicates."""
+    merged: Dict[str, Any] = dict(injected_headers)
+    lower_to_key = {str(key).strip().lower(): key for key in merged}
+    for key, value in existing_headers.items():
+        lowered = str(key).strip().lower()
+        prior_key = lower_to_key.get(lowered)
+        if prior_key is not None and prior_key != key:
+            merged.pop(prior_key, None)
+        merged[key] = value
+        lower_to_key[lowered] = key
+    return merged
+
+
 class _ScreeningHeaderTransportProxy:
     """Context-scoped transport wrapper injecting DSA channel headers without global monkey-patching."""
 
@@ -3108,10 +3137,11 @@ class _ScreeningHeaderTransportProxy:
         if headers:
             existing_headers = kwargs.get("extra_headers")
             if isinstance(existing_headers, dict):
-                merged_headers = dict(headers)
-                merged_headers.update(existing_headers)
                 kwargs = dict(kwargs)
-                kwargs["extra_headers"] = merged_headers
+                kwargs["extra_headers"] = _merge_screening_headers_case_insensitive(
+                    headers,
+                    existing_headers,
+                )
             elif existing_headers in (None, ""):
                 kwargs = dict(kwargs)
                 kwargs["extra_headers"] = dict(headers)
@@ -3137,9 +3167,10 @@ class _ScreeningHeaderTransportProxy:
             if headers:
                 existing_headers = params.get("extra_headers")
                 if isinstance(existing_headers, dict):
-                    merged_headers = dict(headers)
-                    merged_headers.update(existing_headers)
-                    params["extra_headers"] = merged_headers
+                    params["extra_headers"] = _merge_screening_headers_case_insensitive(
+                        headers,
+                        existing_headers,
+                    )
                 elif existing_headers in (None, ""):
                     params["extra_headers"] = dict(headers)
             copied = dict(entry)
@@ -3150,14 +3181,20 @@ class _ScreeningHeaderTransportProxy:
 
 @contextmanager
 def _screening_litellm_headers(config: Config) -> Iterator[None]:
+    from src.llm.transport import get_transport, use_transport
+
     header_routes = _build_screening_litellm_header_routes(config)
+    active = get_transport()
+    base_transport = active._delegate if isinstance(active, _ScreeningHeaderTransportProxy) else active
     if not header_routes:
+        if isinstance(active, _ScreeningHeaderTransportProxy):
+            with use_transport(base_transport):
+                yield
+            return
         yield
         return
 
-    from src.llm.transport import get_transport, use_transport
-
-    proxy = _ScreeningHeaderTransportProxy(get_transport(), header_routes)
+    proxy = _ScreeningHeaderTransportProxy(base_transport, header_routes)
     with use_transport(proxy):
         yield
 
@@ -3213,11 +3250,14 @@ def _build_screening_litellm_header_routes(config: Config) -> List[Dict[str, Any
         ])
         if not model_names:
             continue
+        canonical_base, has_conflict = _resolve_canonical_screening_api_base(params)
+        if has_conflict:
+            continue
         routes.append(
             {
                 "models": model_names,
                 "api_key": _env_text(params.get("api_key")),
-                "api_base": _normalize_screening_api_base(params.get("api_base") or params.get("base_url")),
+                "api_base": canonical_base,
                 "extra_headers": dict(headers),
             }
         )
@@ -3242,9 +3282,12 @@ def _match_screening_litellm_headers(
         return {}
 
     api_key = _env_text(resolve_env_reference(kwargs.get("api_key")))
-    api_base = _normalize_screening_api_base(
-        resolve_env_reference(kwargs.get("api_base") or kwargs.get("base_url"))
-    )
+    api_base, has_conflict = _resolve_canonical_screening_api_base(kwargs)
+    if has_conflict:
+        return {}
+
+    matched_headers: List[Dict[str, Any]] = []
+    matched_signatures: set[Tuple[Tuple[str, str], ...]] = set()
     for route in routes:
         route_models = set(route.get("models") or [])
         if not candidate_models.intersection(route_models):
@@ -3256,8 +3299,15 @@ def _match_screening_litellm_headers(
         if route_api_base != api_base:
             continue
         headers = route.get("extra_headers")
-        return dict(headers) if isinstance(headers, dict) else {}
-    return {}
+        if isinstance(headers, dict) and headers:
+            signature = tuple(sorted((str(k).strip().lower(), str(v)) for k, v in headers.items()))
+            matched_signatures.add(signature)
+            matched_headers.append(dict(headers))
+
+    if len(matched_signatures) != 1:
+        # Decline ambiguous injection if multiple routes match with conflicting headers.
+        return {}
+    return matched_headers[0]
 
 
 def _resolve_dsa_llm_max_candidates(max_results: Optional[int]) -> int:

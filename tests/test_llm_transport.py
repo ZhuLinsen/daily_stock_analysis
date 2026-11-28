@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import importlib.abc
+import importlib.machinery
 import logging
 import math
 import os
@@ -12,7 +14,8 @@ from pathlib import Path
 import subprocess
 import sys
 import threading
-from types import SimpleNamespace
+import time
+from types import ModuleType, SimpleNamespace
 from typing import Any, Dict, List, Mapping, Optional
 from unittest.mock import MagicMock, patch
 
@@ -33,6 +36,7 @@ from src.llm.transport import (
     dispatch_completion,
     estimate_tokens,
     estimate_tokens_fallback,
+    find_unresolved_env_var,
     get_model_cost,
     get_model_providers,
     get_transport,
@@ -116,6 +120,8 @@ class _RecordingTransport:
         parent = self
 
         class _FakeRouter:
+            _dsa_accepts_transport_metadata = True
+
             def __init__(self) -> None:
                 self.model_list = model_list
 
@@ -156,8 +162,34 @@ class _RecordingTransport:
         return _RecordedTransportError
 
 
-def test_repo_wide_ast_guard_forbids_direct_litellm_imports_and_calls() -> None:
-    """AST guard preventing direct litellm imports/loads/SDK calls outside src/llm/transport.py."""
+def _is_litellm_name_constant(node: Optional[ast.AST]) -> bool:
+    return (
+        isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and (node.value == "litellm" or node.value.startswith("litellm."))
+    )
+
+
+def _call_target_module_arg(node: ast.Call) -> Optional[ast.AST]:
+    if node.args:
+        return node.args[0]
+    for kw in node.keywords:
+        if kw.arg == "name":
+            return kw.value
+    return None
+
+
+def _is_sys_modules_expr(node: ast.AST) -> bool:
+    return (
+        isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "sys"
+        and node.attr == "modules"
+    )
+
+
+def _find_litellm_boundary_violations(source: str, rel_path: str) -> List[str]:
+    """Inspect a Python module AST for direct LiteLLM coupling outside src/llm/transport.py."""
     forbidden_litellm_attrs = {
         "completion",
         "acompletion",
@@ -165,6 +197,78 @@ def test_repo_wide_ast_guard_forbids_direct_litellm_imports_and_calls() -> None:
         "register_model",
         "token_counter",
     }
+    tree = ast.parse(source, filename=rel_path)
+    violations: List[str] = []
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "litellm" or alias.name.startswith("litellm."):
+                    violations.append(f"{rel_path}:{node.lineno}: direct import {alias.name}")
+        elif isinstance(node, ast.ImportFrom):
+            module_name = node.module or ""
+            if module_name == "litellm" or module_name.startswith("litellm."):
+                violations.append(f"{rel_path}:{node.lineno}: direct from-import {module_name}")
+        elif isinstance(node, ast.Subscript):
+            if _is_sys_modules_expr(node.value) and _is_litellm_name_constant(node.slice):
+                violations.append(
+                    f"{rel_path}:{node.lineno}: direct sys.modules[{node.slice.value!r}] access"
+                )
+        elif isinstance(node, ast.Call):
+            func = node.func
+            first_or_name_arg = _call_target_module_arg(node)
+            if (
+                (
+                    (isinstance(func, ast.Attribute) and func.attr == "import_module")
+                    or (isinstance(func, ast.Name) and func.id == "import_module")
+                )
+                and _is_litellm_name_constant(first_or_name_arg)
+            ):
+                violations.append(
+                    f"{rel_path}:{node.lineno}: dynamic import_module({first_or_name_arg.value!r})"
+                )
+            elif (
+                isinstance(func, ast.Name)
+                and func.id == "__import__"
+                and _is_litellm_name_constant(first_or_name_arg)
+            ):
+                violations.append(
+                    f"{rel_path}:{node.lineno}: dynamic __import__({first_or_name_arg.value!r})"
+                )
+            elif (
+                isinstance(func, ast.Attribute)
+                and _is_sys_modules_expr(func.value)
+                and func.attr in {"get", "pop", "setdefault"}
+                and node.args
+                and _is_litellm_name_constant(node.args[0])
+            ):
+                violations.append(
+                    f"{rel_path}:{node.lineno}: direct sys.modules.{func.attr}({node.args[0].value!r})"
+                )
+            elif (
+                isinstance(func, ast.Attribute)
+                and isinstance(func.value, ast.Name)
+                and func.value.id == "litellm"
+                and func.attr in forbidden_litellm_attrs
+            ):
+                violations.append(f"{rel_path}:{node.lineno}: direct call litellm.{func.attr}()")
+            elif (
+                isinstance(func, ast.Name)
+                and func.id == "Router"
+                and rel_path
+                in {
+                    "src/analyzer.py",
+                    "src/agent/llm_adapter.py",
+                    "src/services/screening/ranker.py",
+                }
+            ):
+                violations.append(f"{rel_path}:{node.lineno}: direct Router() call")
+
+    return violations
+
+
+def test_repo_wide_ast_guard_forbids_direct_litellm_imports_and_calls() -> None:
+    """AST guard preventing direct litellm imports/loads/sys.modules/SDK calls outside src/llm/transport.py."""
     scan_roots = [
         REPO_ROOT / "src",
         REPO_ROOT / "api",
@@ -184,70 +288,35 @@ def test_repo_wide_ast_guard_forbids_direct_litellm_imports_and_calls() -> None:
 
     violations: List[str] = []
     for path in py_files:
-        resolved = path.resolve()
-        if resolved in exempt_files:
+        if path.resolve() in exempt_files:
             continue
-        source = path.read_text(encoding="utf-8")
-        tree = ast.parse(source, filename=str(path))
         rel = path.relative_to(REPO_ROOT).as_posix()
-
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                for alias in node.names:
-                    if alias.name == "litellm" or alias.name.startswith("litellm."):
-                        violations.append(f"{rel}:{node.lineno}: direct import {alias.name}")
-            elif isinstance(node, ast.ImportFrom):
-                module_name = node.module or ""
-                if module_name == "litellm" or module_name.startswith("litellm."):
-                    violations.append(f"{rel}:{node.lineno}: direct from-import {module_name}")
-            elif isinstance(node, ast.Call):
-                func = node.func
-                if (
-                    isinstance(func, ast.Attribute)
-                    and func.attr == "import_module"
-                    and node.args
-                    and isinstance(node.args[0], ast.Constant)
-                    and isinstance(node.args[0].value, str)
-                    and (
-                        node.args[0].value == "litellm"
-                        or node.args[0].value.startswith("litellm.")
-                    )
-                ):
-                    violations.append(
-                        f"{rel}:{node.lineno}: dynamic importlib.import_module({node.args[0].value!r})"
-                    )
-                elif (
-                    isinstance(func, ast.Name)
-                    and func.id == "__import__"
-                    and node.args
-                    and isinstance(node.args[0], ast.Constant)
-                    and isinstance(node.args[0].value, str)
-                    and (
-                        node.args[0].value == "litellm"
-                        or node.args[0].value.startswith("litellm.")
-                    )
-                ):
-                    violations.append(f"{rel}:{node.lineno}: dynamic __import__({node.args[0].value!r})")
-                elif (
-                    isinstance(func, ast.Attribute)
-                    and isinstance(func.value, ast.Name)
-                    and func.value.id == "litellm"
-                    and func.attr in forbidden_litellm_attrs
-                ):
-                    violations.append(f"{rel}:{node.lineno}: direct call litellm.{func.attr}()")
-                elif (
-                    isinstance(func, ast.Name)
-                    and func.id == "Router"
-                    and rel
-                    in {
-                        "src/analyzer.py",
-                        "src/agent/llm_adapter.py",
-                        "src/services/screening/ranker.py",
-                    }
-                ):
-                    violations.append(f"{rel}:{node.lineno}: direct Router() call")
+        violations.extend(_find_litellm_boundary_violations(path.read_text(encoding="utf-8"), rel))
 
     assert violations == []
+
+
+def test_ast_guard_catches_all_bypass_patterns_and_allows_clean_code() -> None:
+    """Positive and negative unit tests verifying AST guard catches indirect LiteLLM import bypasses."""
+    bad_snippets = [
+        "import litellm\n",
+        "from litellm.types.utils import LlmProviders\n",
+        "import importlib\nimportlib.import_module('litellm')\n",
+        "from importlib import import_module\nimport_module('litellm.types.utils')\n",
+        "from importlib import import_module\nimport_module(name='litellm')\n",
+        "__import__(name='litellm')\n",
+        "import sys\nmod = sys.modules['litellm']\n",
+        "import sys\nmod = sys.modules.get('litellm.types.utils')\n",
+        "litellm.completion(model='openai/gpt-4o')\n",
+    ]
+    for snippet in bad_snippets:
+        assert _find_litellm_boundary_violations(snippet, "src/example.py"), snippet
+
+    assert _find_litellm_boundary_violations("Router(model_list=[])\n", "src/analyzer.py")
+    assert _find_litellm_boundary_violations(
+        "from src.llm.transport import dispatch_completion\ndispatch_completion(model='openai/gpt-4o')\n",
+        "src/example.py",
+    ) == []
 
 
 def test_importing_runtime_modules_does_not_eagerly_import_litellm() -> None:
@@ -264,7 +333,7 @@ import src.services.image_stock_extractor
 import src.services.screening.ranker
 import src.services.screening_service
 import src.services.system_config_service
-assert "litellm" not in sys.modules, f"litellm eagerly imported: {list(sys.modules.get('litellm').__dict__.keys())[:5]}"
+assert "litellm" not in sys.modules, f"litellm eagerly imported"
 """
     env = dict(os.environ)
     env["PYTHONPATH"] = str(REPO_ROOT)
@@ -307,11 +376,82 @@ def test_load_litellm_sets_local_model_cost_map_default(monkeypatch: pytest.Monk
     assert os.environ.get("LITELLM_LOCAL_MODEL_COST_MAP") == "False"
 
 
-def test_litellm_transport_strips_internal_api_surface_and_dispatches_cleanly(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_load_litellm_is_thread_safe_during_slow_first_import(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Concurrent first _load_litellm() calls wait on Python's import lock instead of seeing half-init module."""
+    entered_exec = threading.Event()
+    allow_finish = threading.Event()
+    exec_count = 0
+
+    class _SlowFakeLoader(importlib.abc.Loader):
+        def create_module(self, spec: Any) -> Optional[ModuleType]:
+            return None
+
+        def exec_module(self, module: ModuleType) -> None:
+            nonlocal exec_count
+            exec_count += 1
+            entered_exec.set()
+            assert allow_finish.wait(timeout=5)
+            time.sleep(0.02)
+            module.completion = lambda **kw: kw  # type: ignore[attr-defined]
+            module.Router = object  # type: ignore[attr-defined]
+
+    class _SlowFakeFinder(importlib.abc.MetaPathFinder):
+        def find_spec(self, fullname: str, path: Any, target: Any = None) -> Any:
+            if fullname == "litellm":
+                return importlib.machinery.ModuleSpec("litellm", _SlowFakeLoader())
+            return None
+
+    saved_litellm = sys.modules.pop("litellm", None)
+    finder = _SlowFakeFinder()
+    sys.meta_path.insert(0, finder)
+    results: List[Any] = []
+    errors: List[BaseException] = []
+
+    def _worker() -> None:
+        try:
+            mod = LiteLLMTransport._load_litellm()
+            assert callable(getattr(mod, "completion", None))
+            assert getattr(mod, "Router", None) is object
+            results.append(mod)
+        except BaseException as exc:  # pragma: no cover - diagnostic capture
+            errors.append(exc)
+
+    try:
+        t1 = threading.Thread(target=_worker)
+        t2 = threading.Thread(target=_worker)
+        t1.start()
+        assert entered_exec.wait(timeout=5)
+        t2.start()
+        time.sleep(0.03)
+        allow_finish.set()
+        t1.join(timeout=5)
+        t2.join(timeout=5)
+    finally:
+        sys.meta_path.remove(finder)
+        sys.modules.pop("litellm", None)
+        if saved_litellm is not None:
+            sys.modules["litellm"] = saved_litellm
+
+    assert errors == []
+    assert exec_count == 1
+    assert len(results) == 2
+    assert results[0] is results[1]
+
+
+def test_litellm_transport_encodes_responses_and_strips_metadata_across_direct_and_router() -> None:
+    """LiteLLMTransport encodes Responses wire model and strips api_surface/wire_protocol everywhere."""
     captured: List[Dict[str, Any]] = []
-    router_cls = MagicMock(return_value="router-instance")
+    router_init_lists: List[List[Dict[str, Any]]] = []
+    router_comp_calls: List[Dict[str, Any]] = []
+
+    class _FakeSDKRouter:
+        def __init__(self, *, model_list: List[Dict[str, Any]], **kwargs: Any) -> None:
+            router_init_lists.append(model_list)
+            self.kwargs = kwargs
+
+        def completion(self, **kwargs: Any) -> str:
+            router_comp_calls.append(dict(kwargs))
+            return "from-sdk-router"
 
     def _fake_completion(**kwargs: Any) -> str:
         captured.append(dict(kwargs))
@@ -319,7 +459,7 @@ def test_litellm_transport_strips_internal_api_surface_and_dispatches_cleanly(
 
     fake_litellm = SimpleNamespace(
         completion=_fake_completion,
-        Router=router_cls,
+        Router=_FakeSDKRouter,
         register_model=MagicMock(),
         model_cost={"gpt-4o": {"input_cost_per_token": 0.1}},
         set_verbose=True,
@@ -331,32 +471,71 @@ def test_litellm_transport_strips_internal_api_surface_and_dispatches_cleanly(
     transport = LiteLLMTransport()
     assert isinstance(transport, LLMTransport)
     with patch.dict(sys.modules, {"litellm": fake_litellm}, clear=False):
-        result = transport.completion(
+        # Chat surface is stripped cleanly without altering wire model.
+        assert (
+            transport.completion(
+                model="openai/gpt-5",
+                messages=[{"role": "user", "content": "hi"}],
+                api_surface="chat_completions",
+                wire_protocol="openai_chat",
+                extra_headers={"X-Relay": "1"},
+            )
+            == "ok"
+        )
+        assert captured[0] == {
+            "model": "openai/gpt-5",
+            "messages": [{"role": "user", "content": "hi"}],
+            "extra_headers": {"X-Relay": "1"},
+        }
+
+        # Responses surface is encoded onto wire model before stripping internal keys.
+        transport.completion(
             model="openai/gpt-5",
             messages=[{"role": "user", "content": "hi"}],
-            api_surface="chat_completions",
-            extra_headers={"X-Relay": "1"},
+            api_surface="responses",
+            wire_protocol="openai_responses",
         )
-        assert result == "ok"
-        assert captured == [
-            {
-                "model": "openai/gpt-5",
-                "messages": [{"role": "user", "content": "hi"}],
-                "extra_headers": {"X-Relay": "1"},
-            }
-        ]
+        assert captured[1]["model"] == "openai/responses/gpt-5"
+        assert "api_surface" not in captured[1]
+        assert "wire_protocol" not in captured[1]
 
-        created = transport.create_router(
-            [{"model_name": "m", "litellm_params": {"model": "openai/m"}}],
+        # Router creation encodes both model_info.dsa_api_surface and litellm_params.api_surface.
+        router = transport.create_router(
+            [
+                {
+                    "model_name": "relay-resp",
+                    "litellm_params": {
+                        "model": "openai/gpt-5",
+                        "api_surface": "responses",
+                        "wire_protocol": "openai_responses",
+                    },
+                },
+                {
+                    "model_name": "yaml-resp",
+                    "litellm_params": {"model": "openai/gpt-5.6-sol"},
+                    "model_info": {"dsa_api_surface": "responses"},
+                },
+            ],
             routing_strategy="simple-shuffle",
             num_retries=2,
         )
-        assert created == "router-instance"
-        router_cls.assert_called_once_with(
-            model_list=[{"model_name": "m", "litellm_params": {"model": "openai/m"}}],
-            routing_strategy="simple-shuffle",
-            num_retries=2,
+        assert router_init_lists[0][0]["litellm_params"] == {"model": "openai/responses/gpt-5"}
+        assert router_init_lists[0][1]["litellm_params"] == {"model": "openai/responses/gpt-5.6-sol"}
+
+        # Prebuilt SDK router dispatch also strips internal api_surface/wire_protocol.
+        assert (
+            dispatch_completion(
+                router=router,
+                model="yaml-resp",
+                messages=[{"role": "user", "content": "hi"}],
+                api_surface="responses",
+                wire_protocol="openai_responses",
+            )
+            == "from-sdk-router"
         )
+        assert router_comp_calls == [
+            {"model": "yaml-resp", "messages": [{"role": "user", "content": "hi"}]}
+        ]
 
         assert transport.can_register_model() is True
         transport.register_model({"x": {"max_tokens": 100}})
@@ -371,8 +550,8 @@ def test_litellm_transport_strips_internal_api_surface_and_dispatches_cleanly(
         assert logging.getLogger("litellm").level == logging.WARNING
 
 
-def test_cjk_aware_token_estimation_fallback() -> None:
-    """Token fallback preserves ceil(len/3) for ASCII and avoids CJK underestimation."""
+def test_cjk_aware_token_estimation_and_zero_return_fallback() -> None:
+    """Token fallback preserves ceil(len/3) for ASCII, scales CJK, and catches 0-returning tokenizers."""
     assert estimate_tokens_fallback("") == 0
     assert estimate_tokens_fallback("abcdefg") == math.ceil(7 / 3)
     cjk_text = "贵州茅台业绩分析与风险评估"
@@ -384,6 +563,14 @@ def test_cjk_aware_token_estimation_fallback() -> None:
         token_counter=MagicMock(side_effect=RuntimeError("tokenizer offline"))
     )
     with patch.dict(sys.modules, {"litellm": broken_litellm}, clear=False):
+        assert estimate_tokens("", model="openai/gpt-4o") == 0
+        assert estimate_tokens(cjk_text, model="openai/gpt-4o") == cjk_est
+        assert estimate_tokens("abcdefg", model="openai/gpt-4o") == math.ceil(7 / 3)
+
+    # Disabled/stub tokenizer returning 0 for non-empty text must fall back to heuristic.
+    zero_litellm = SimpleNamespace(token_counter=MagicMock(return_value=0))
+    with patch.dict(sys.modules, {"litellm": zero_litellm}, clear=False):
+        assert estimate_tokens("", model="openai/gpt-4o") == 0
         assert estimate_tokens(cjk_text, model="openai/gpt-4o") == cjk_est
         assert estimate_tokens("abcdefg", model="openai/gpt-4o") == math.ceil(7 / 3)
 
@@ -424,6 +611,24 @@ def test_contextvar_transport_isolation_across_threads_and_async() -> None:
     assert asyncio.run(_run_async()) == {"a": "from-a", "b": "from-b"}
 
 
+def test_set_default_transport_invalidates_provider_and_pricing_caches() -> None:
+    """Changing the process-wide default transport clears provider and fallback pricing caches."""
+    custom = _RecordingTransport()
+    custom.providers = frozenset({"openai", "custom-default-provider"})
+    try:
+        set_default_transport(custom)
+        assert "custom-default-provider" in get_litellm_model_providers()
+
+        custom2 = _RecordingTransport()
+        custom2.providers = frozenset({"openai", "second-default-provider"})
+        set_default_transport(custom2)
+        providers2 = get_litellm_model_providers()
+        assert "second-default-provider" in providers2
+        assert "custom-default-provider" not in providers2
+    finally:
+        set_default_transport(None)
+
+
 def test_litellm_compat_proxy_backward_compatibility() -> None:
     """LiteLLMPatchProxy supports legacy module.litellm.<attr> test monkey-patching."""
     proxy = create_litellm_compat_proxy(disable_streaming_logging=True)
@@ -461,11 +666,19 @@ def test_litellm_compat_proxy_backward_compatibility() -> None:
         assert resp.choices[0].message.content == "override-wins"
 
 
-def test_deployment_spec_normalization_and_env_resolution(monkeypatch: pytest.MonkeyPatch) -> None:
-    """DeploymentSpec resolves os.environ/VAR centrally and preserves defaults with priority=0."""
+def test_deployment_spec_normalization_separation_single_pass_and_redacted_repr(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """DeploymentSpec separates protocols, filters non-generation defaults, resolves env once, and hides secrets in repr."""
     monkeypatch.setenv("TEST_RELAY_KEY", "sk-resolved-secret")
     monkeypatch.setenv("TEST_RELAY_BASE", "https://relay.example.com/v1")
-    monkeypatch.setenv("TEST_AUTH_HEADER", "Bearer custom-token")
+    # Value intentionally starts with os.environ/ to prove single-pass resolution.
+    monkeypatch.setenv("TEST_AUTH_HEADER", "os.environ/SHOULD_NOT_REEXPAND")
+    monkeypatch.setenv("SHOULD_NOT_REEXPAND", "CORRUPTED")
+    monkeypatch.delenv("TEST_MISSING_ENV", raising=False)
+
+    assert find_unresolved_env_var("os.environ/TEST_MISSING_ENV") == "TEST_MISSING_ENV"
+    assert find_unresolved_env_var("os.environ/TEST_RELAY_KEY") is None
 
     raw_entry = {
         "model_name": "relay-gpt5",
@@ -473,15 +686,27 @@ def test_deployment_spec_normalization_and_env_resolution(monkeypatch: pytest.Mo
             "model": "openai/gpt-5",
             "api_key": "os.environ/TEST_RELAY_KEY",
             "base_url": "os.environ/TEST_RELAY_BASE",
+            "wire_protocol": "openai_chat",
+            "custom_llm_provider": "openai",
             "extra_headers": {
                 "Authorization": "os.environ/TEST_AUTH_HEADER",
                 "X-Tenant": "dsa",
             },
-            "extra_body": {"reasoning_effort": "medium"},
+            "extra_body": {"nested": {"flag": True}},
             "temperature": 0.3,
             "max_tokens": 4096,
             "store": False,
             "timeout": "45.5",
+            "order": 2,
+            # Router-only & cloud IAM keys MUST NOT leak into request_defaults.
+            "rpm": 100,
+            "tpm": 100000,
+            "num_retries": 3,
+            "drop_params": True,
+            "api_version": "2025-01-01",
+            "aws_region_name": "us-east-1",
+            "vertex_project": "proj-1",
+            "azure_ad_token": "tok",
         },
         "model_info": {
             "dsa_api_surface": "chat_completions",
@@ -492,25 +717,37 @@ def test_deployment_spec_normalization_and_env_resolution(monkeypatch: pytest.Mo
     assert resolve_env_reference("os.environ/TEST_RELAY_KEY") == "sk-resolved-secret"
     resolved_params = resolve_litellm_params_env(raw_entry["litellm_params"])
     assert resolved_params["api_key"] == "sk-resolved-secret"
-    assert resolved_params["extra_headers"]["Authorization"] == "Bearer custom-token"
-    # Input dict is never mutated.
+    # Deep copy check: mutating nested extra_body must not mutate raw_entry.
+    resolved_params["extra_body"]["nested"]["flag"] = False
+    assert raw_entry["litellm_params"]["extra_body"]["nested"]["flag"] is True
     assert raw_entry["litellm_params"]["api_key"] == "os.environ/TEST_RELAY_KEY"
 
     spec = normalize_deployment_spec(raw_entry)
     assert isinstance(spec, DeploymentSpec)
     assert spec.alias == "relay-gpt5"
     assert spec.wire_model == "openai/gpt-5"
-    assert spec.protocol == "openai"
+    assert spec.channel_protocol == "openai"
+    assert spec.wire_protocol == "openai_chat"
+    assert spec.custom_llm_provider == "openai"
     assert spec.api_surface == "chat_completions"
     assert spec.api_base == "https://relay.example.com/v1"
     assert spec.api_key == "sk-resolved-secret"
-    assert spec.extra_headers == {"Authorization": "Bearer custom-token", "X-Tenant": "dsa"}
-    assert spec.extra_body == {"reasoning_effort": "medium"}
+    # Single-pass resolution preserved literal os.environ/ value without second expansion.
+    assert spec.extra_headers == {
+        "Authorization": "os.environ/SHOULD_NOT_REEXPAND",
+        "X-Tenant": "dsa",
+    }
     assert spec.request_defaults == {"temperature": 0.3, "max_tokens": 4096, "store": False}
-    assert spec.priority == 0
+    assert spec.priority == 2
     assert spec.timeout == 45.5
+    # Secret fields omitted from repr().
+    rendered = repr(spec)
+    assert "sk-resolved-secret" not in rendered
+    assert "SHOULD_NOT_REEXPAND" not in rendered
 
-    specs = normalize_deployment_specs([raw_entry, raw_entry])
+    # Default priority without explicit order/priority stays 0 across sibling entries.
+    plain_entry = {"model_name": "m", "litellm_params": {"model": "openai/m"}}
+    specs = normalize_deployment_specs([plain_entry, plain_entry])
     assert [item.priority for item in specs] == [0, 0]
 
     normalized_entries = normalize_model_list_entries([raw_entry])
@@ -518,11 +755,11 @@ def test_deployment_spec_normalization_and_env_resolution(monkeypatch: pytest.Mo
     assert normalized_entries[0]["model_info"]["dsa_api_surface"] == "chat_completions"
 
 
-def test_ranker_yaml_resolves_env_refs_and_preserves_dsa_api_surface(
+def test_ranker_yaml_and_direct_attempt_header_host_binding(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Screening ranker resolves os.environ/VAR in YAML litellm_params and preserves dsa_api_surface."""
+    """Ranker resolves YAML env refs, preserves surface, and refuses to bind channel headers to outer host/key."""
     monkeypatch.setenv("SCREENING_YAML_KEY", "sk-yaml-resolved-key")
     monkeypatch.setenv("SCREENING_YAML_BASE", "https://yaml-relay.example/v1")
     monkeypatch.setenv("SCREENING_YAML_HEADER", "Bearer yaml-hdr-token")
@@ -564,31 +801,82 @@ model_list:
     assert entry["litellm_params"]["extra_headers"]["Authorization"] == "Bearer yaml-hdr-token"
     assert entry["model_info"]["dsa_api_surface"] == "chat_completions"
 
-    # Direct channel call preserves explicit chat_completions api_surface for OpenAI channels.
-    fake2 = _RecordingTransport(response_text='{"ranked": []}')
-    with use_transport(fake2):
-        ranker._call_llm(
-            "rank stocks",
-            api_key="sk-channel",
-            model="openai/gpt-5",
-            base_url="",
-            json_mode=False,
-            channels=[
-                {
-                    "name": "relay",
-                    "protocol": "openai",
-                    "api_surface": "chat_completions",
-                    "api_keys": ["sk-channel"],
-                    "base_url": "https://relay.example/v1",
-                    "models": ["openai/gpt-5"],
-                }
-            ],
-        )
-    assert fake2.completion_calls[0]["api_surface"] == "chat_completions"
+    # P0-2: channel omitting base_url inherits outer base_url -> MUST NOT attach channel extra_headers!
+    attempts_outer_base = ranker._build_litellm_attempts(
+        "openai/gpt-5",
+        api_key="sk-outer",
+        base_url="https://outer-host.example/v1",
+        channels=[
+            {
+                "name": "header-channel",
+                "protocol": "openai",
+                "api_surface": "chat_completions",
+                "api_keys": ["sk-channel"],
+                "base_url": "",
+                "models": ["openai/gpt-5"],
+                "extra_headers": {"Authorization": "Bearer private-channel-secret"},
+            }
+        ],
+    )
+    assert len(attempts_outer_base) == 1
+    assert attempts_outer_base[0]["api_base"] == "https://outer-host.example/v1"
+    assert "extra_headers" not in attempts_outer_base[0]
+
+    # P0-2: channel omitting api_keys inherits outer api_key -> MUST NOT attach channel extra_headers!
+    attempts_outer_key = ranker._build_litellm_attempts(
+        "openai/gpt-5",
+        api_key="sk-outer",
+        base_url="",
+        channels=[
+            {
+                "name": "header-channel",
+                "protocol": "openai",
+                "api_surface": "chat_completions",
+                "api_keys": [],
+                "base_url": "https://channel-host.example/v1",
+                "models": ["openai/gpt-5"],
+                "extra_headers": {"Authorization": "Bearer private-channel-secret"},
+            }
+        ],
+    )
+    assert len(attempts_outer_key) == 1
+    assert attempts_outer_key[0]["api_key"] == "sk-outer"
+    assert "extra_headers" not in attempts_outer_key[0]
+
+    # When channel owns BOTH base_url and api_keys, headers and api_surface ARE preserved,
+    # and _unique_attempts distinguishes attempts with different extra_headers.
+    attempts_owned = ranker._build_litellm_attempts(
+        "openai/gpt-5",
+        api_key="",
+        base_url="",
+        channels=[
+            {
+                "name": "relay-1",
+                "protocol": "openai",
+                "api_surface": "chat_completions",
+                "api_keys": ["sk-shared"],
+                "base_url": "https://relay.example/v1",
+                "models": ["openai/gpt-5"],
+                "extra_headers": {"X-Route": "a"},
+            },
+            {
+                "name": "relay-2",
+                "protocol": "openai",
+                "api_surface": "chat_completions",
+                "api_keys": ["sk-shared"],
+                "base_url": "https://relay.example/v1",
+                "models": ["openai/gpt-5"],
+                "extra_headers": {"X-Route": "b"},
+            },
+        ],
+    )
+    assert len(attempts_owned) == 2
+    assert attempts_owned[0]["api_surface"] == "chat_completions"
+    assert [a["extra_headers"] for a in attempts_owned] == [{"X-Route": "a"}, {"X-Route": "b"}]
 
 
-def test_screening_header_proxy_prevents_cross_host_and_cross_key_leaks() -> None:
-    """Screening header proxy never leaks relay credentials when api_base or api_key differs/is omitted."""
+def test_screening_header_proxy_isolation_precedence_ambiguity_and_nesting() -> None:
+    """Screening header proxy closes cross-host, api_base/base_url conflict, case-dup, ambiguity, and nesting leaks."""
     cfg = Config(
         litellm_model="openai/gpt-4o-mini",
         llm_model_list=[
@@ -610,99 +898,112 @@ def test_screening_header_proxy_prevents_cross_host_and_cross_key_leaks() -> Non
     fake = _RecordingTransport(response_text="ok")
     with use_transport(fake):
         with screening_service._screening_litellm_headers(cfg):
-            # 1. Same model, omitted api_base (targets official host) -> MUST NOT inherit relay headers.
+            # 1. Omitted api_base -> MUST NOT inherit relay headers.
             dispatch_completion(model="openai/gpt-4o-mini", api_key="sk-relay-a", messages=[])
-            # 2. Same model, omitted api_key -> MUST NOT inherit relay headers.
+            # 2. Omitted api_key -> MUST NOT inherit relay headers.
             dispatch_completion(
                 model="openai/gpt-4o-mini",
                 api_base="https://relay-a.example/v1",
                 messages=[],
             )
-            # 3. Same model, different host -> MUST NOT inherit relay headers.
-            dispatch_completion(
-                model="openai/gpt-4o-mini",
-                api_key="sk-relay-a",
-                api_base="https://other-host.example/v1",
-                messages=[],
-            )
-            # 4. Exact host (ignoring trailing slash) + key match -> SHOULD inject headers.
+            # 3. P0-1: conflicting api_base vs base_url -> MUST NOT inject headers!
             dispatch_completion(
                 model="openai/gpt-4o-mini",
                 api_key="sk-relay-a",
                 api_base="https://relay-a.example/v1",
+                base_url="https://attacker.example/v1",
                 messages=[],
             )
-            # 5. Router entries: omitted api_base/api_key entry MUST NOT inherit relay headers.
-            create_router(
-                [
-                    {
-                        "model_name": "openai/gpt-4o-mini",
-                        "litellm_params": {"model": "openai/gpt-4o-mini"},
-                    },
+            # 4. Exact host + key match with lowercase existing "authorization" -> case-insensitive override without dup!
+            dispatch_completion(
+                model="openai/gpt-4o-mini",
+                api_key="sk-relay-a",
+                api_base="https://relay-a.example/v1",
+                extra_headers={"authorization": "Bearer caller-wins"},
+                messages=[],
+            )
+            # 5. P1-3: Nested empty-header config MUST NOT inherit outer scope headers!
+            empty_cfg = Config(litellm_model="openai/gpt-4o-mini", llm_model_list=[])
+            with screening_service._screening_litellm_headers(empty_cfg):
+                dispatch_completion(
+                    model="openai/gpt-4o-mini",
+                    api_key="sk-relay-a",
+                    api_base="https://relay-a.example/v1",
+                    messages=[],
+                )
+            # 6. P1-3: Nested distinct-header config replaces outer proxy without accumulating outer headers!
+            inner_cfg = Config(
+                litellm_model="openai/gpt-4o-mini",
+                llm_model_list=[
                     {
                         "model_name": "openai/gpt-4o-mini",
                         "litellm_params": {
                             "model": "openai/gpt-4o-mini",
                             "api_key": "sk-relay-a",
                             "api_base": "https://relay-a.example/v1",
+                            "extra_headers": {"X-Inner": "only"},
                         },
-                    },
-                ]
+                    }
+                ],
             )
+            with screening_service._screening_litellm_headers(inner_cfg):
+                dispatch_completion(
+                    model="openai/gpt-4o-mini",
+                    api_key="sk-relay-a",
+                    api_base="https://relay-a.example/v1",
+                    messages=[],
+                )
 
     assert "extra_headers" not in fake.completion_calls[0]
     assert "extra_headers" not in fake.completion_calls[1]
     assert "extra_headers" not in fake.completion_calls[2]
     assert fake.completion_calls[3]["extra_headers"] == {
-        "Authorization": "Bearer relay-a-secret",
         "X-Tenant": "relay-a",
+        "authorization": "Bearer caller-wins",
     }
+    assert "extra_headers" not in fake.completion_calls[4]
+    assert fake.completion_calls[5]["extra_headers"] == {"X-Inner": "only"}
 
-    router_entries = fake.router_calls[0]["model_list"]
-    assert "extra_headers" not in router_entries[0]["litellm_params"]
-    assert router_entries[1]["litellm_params"]["extra_headers"] == {
-        "Authorization": "Bearer relay-a-secret",
-        "X-Tenant": "relay-a",
-    }
-
-    # Official-host route (empty api_base) MUST NOT leak headers onto a custom api_base call.
-    official_cfg = Config(
-        litellm_model="gemini/gemini-2.5-flash",
+    # P1-2: Ambiguous same-host/same-key routes with conflicting headers decline injection.
+    ambiguous_cfg = Config(
+        litellm_model="openai/gpt-4o-mini",
         llm_model_list=[
             {
-                "model_name": "gemini/gemini-2.5-flash",
+                "model_name": "openai/gpt-4o-mini",
                 "litellm_params": {
-                    "model": "gemini/gemini-2.5-flash",
-                    "api_key": "sk-official-gemini",
-                    "extra_headers": {"Authorization": "Bearer official-only"},
+                    "model": "openai/gpt-4o-mini",
+                    "api_key": "sk-same",
+                    "api_base": "https://same.example/v1",
+                    "extra_headers": {"X-Tenant": "tenant-1"},
                 },
-            }
+            },
+            {
+                "model_name": "openai/gpt-4o-mini",
+                "litellm_params": {
+                    "model": "openai/gpt-4o-mini",
+                    "api_key": "sk-same",
+                    "api_base": "https://same.example/v1",
+                    "extra_headers": {"X-Tenant": "tenant-2"},
+                },
+            },
         ],
     )
-    fake_official = _RecordingTransport(response_text="ok")
-    with use_transport(fake_official):
-        with screening_service._screening_litellm_headers(official_cfg):
+    fake_amb = _RecordingTransport(response_text="ok")
+    with use_transport(fake_amb):
+        with screening_service._screening_litellm_headers(ambiguous_cfg):
             dispatch_completion(
-                model="gemini/gemini-2.5-flash",
-                api_key="sk-official-gemini",
-                api_base="https://third-party-proxy.example/v1",
+                model="openai/gpt-4o-mini",
+                api_key="sk-same",
+                api_base="https://same.example/v1",
                 messages=[],
             )
-            dispatch_completion(
-                model="gemini/gemini-2.5-flash",
-                api_key="sk-official-gemini",
-                messages=[],
-            )
-    assert "extra_headers" not in fake_official.completion_calls[0]
-    assert fake_official.completion_calls[1]["extra_headers"] == {
-        "Authorization": "Bearer official-only",
-    }
+    assert "extra_headers" not in fake_amb.completion_calls[0]
 
 
-def test_vision_extractor_honors_yaml_base_url_and_dsa_api_surface(
+def test_vision_extractor_honors_base_url_surface_and_fails_closed_on_missing_env_base(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Vision extractor honors YAML base_url fallback and preserves dsa_api_surface."""
+    """Vision honors YAML base_url + dsa_api_surface and fails closed if os.environ/ endpoint is unset."""
     cfg_chat = Config(
         vision_model="openai/gpt-5",
         llm_model_list=[
@@ -750,11 +1051,34 @@ def test_vision_extractor_honors_yaml_base_url_and_dsa_api_surface(
     assert fake_resp.completion_calls[0]["api_base"] == "http://127.0.0.1:8642/v1"
     assert fake_resp.completion_calls[0]["api_surface"] == "responses"
 
+    # P0-3: Unset os.environ/MISSING_VISION_BASE MUST fail closed without dispatching key/image!
+    monkeypatch.delenv("MISSING_VISION_BASE", raising=False)
+    cfg_missing_env = Config(
+        vision_model="openai/gpt-5",
+        llm_model_list=[
+            {
+                "model_name": "openai/gpt-5",
+                "litellm_params": {
+                    "model": "openai/gpt-5",
+                    "api_key": "sk-vision-secret-key",
+                    "api_base": "os.environ/MISSING_VISION_BASE",
+                    "extra_headers": {"Authorization": "Bearer relay-vision-secret"},
+                },
+            }
+        ],
+    )
+    fake_blocked = _RecordingTransport(response_text="[]")
+    monkeypatch.setattr(image_stock_extractor, "get_config", lambda: cfg_missing_env)
+    with use_transport(fake_blocked):
+        with pytest.raises(ValueError, match="MISSING_VISION_BASE"):
+            image_stock_extractor._call_litellm_vision("aGVsbG8=", "image/png")
+    assert fake_blocked.completion_calls == []
 
-def test_config_persists_dsa_api_surface_for_both_surfaces_and_preserves_relay_models() -> None:
-    """Config always persists dsa_api_surface on OpenAI channels and preserves opaque relay model IDs."""
+
+def test_config_persists_dsa_api_surface_protocol_and_preserves_relay_models() -> None:
+    """Config persists dsa_api_surface on OpenAI channels, avoids mislabeling explicit anthropic/, and keeps relay IDs."""
     env = {
-        "LLM_CHANNELS": "chat_relay,resp_relay,claude_direct",
+        "LLM_CHANNELS": "chat_relay,resp_relay,claude_direct,mixed_openai",
         "LLM_CHAT_RELAY_PROTOCOL": "openai",
         "LLM_CHAT_RELAY_API_SURFACE": "chat_completions",
         "LLM_CHAT_RELAY_BASE_URL": "https://api.siliconflow.cn/v1",
@@ -768,6 +1092,10 @@ def test_config_persists_dsa_api_surface_for_both_surfaces_and_preserves_relay_m
         "LLM_CLAUDE_DIRECT_PROTOCOL": "anthropic",
         "LLM_CLAUDE_DIRECT_API_KEY": "sk-ant-direct-1234",
         "LLM_CLAUDE_DIRECT_MODELS": "claude-sonnet-4-6",
+        "LLM_MIXED_OPENAI_PROTOCOL": "openai",
+        "LLM_MIXED_OPENAI_BASE_URL": "https://api.example.com/v1",
+        "LLM_MIXED_OPENAI_API_KEY": "sk-mixed-1234",
+        "LLM_MIXED_OPENAI_MODELS": "anthropic/claude-opus-4-6",
     }
     with (
         patch("src.config.setup_env"),
@@ -792,12 +1120,14 @@ def test_config_persists_dsa_api_surface_for_both_surfaces_and_preserves_relay_m
         "dsa_channel_protocol": "openai",
         "dsa_api_surface": "responses",
     }
-    # Non-OpenAI channel carries protocol without falsely setting OpenAI dsa_api_surface.
+    # Non-OpenAI direct channel and explicit anthropic/ on generic host do NOT claim OpenAI protocol/surface.
     assert by_alias["anthropic/claude-sonnet-4-6"]["model_info"] == {
         "dsa_channel_protocol": "anthropic",
     }
+    assert by_alias["anthropic/claude-opus-4-6"]["model_info"] == {
+        "dsa_channel_protocol": "anthropic",
+    }
 
-    # Relay model normalization checks (opaque org/model + gateway vendor/model + compat).
     assert (
         normalize_llm_channel_model("Qwen/Qwen3-235B-A22B", "openai", "https://api.siliconflow.cn/v1")
         == "openai/Qwen/Qwen3-235B-A22B"
@@ -820,8 +1150,8 @@ def test_config_persists_dsa_api_surface_for_both_surfaces_and_preserves_relay_m
     )
 
 
-def test_system_config_test_llm_channel_forwards_surface_headers_and_resets_cache() -> None:
-    """test_llm_channel forwards api_surface & extra_headers through transport and reload resets cache."""
+def test_system_config_test_llm_channel_redaction_hermes_guard_and_cache_reset() -> None:
+    """test_llm_channel forwards surface+headers, redacts bare/custom/truncated secrets, blocks Hermes headers, resets cache."""
     service = SystemConfigService()
     fake = _RecordingTransport(response_text='{"status":"ok"}')
 
@@ -848,23 +1178,59 @@ def test_system_config_test_llm_channel_forwards_surface_headers_and_resets_cach
         }
     assert all(res["status"] == "passed" for res in payload["capability_results"].values())
 
-    # Error payload redacts sensitive Authorization header values.
-    class _FailingTransport(_RecordingTransport):
+    # P0-4: Bare Bearer token, custom auth header, capability failure, and mid-secret [:80] truncation are all redacted!
+    class _SecretEchoTransport(_RecordingTransport):
         def completion(self, **kwargs: Any) -> Any:
-            raise RuntimeError("Upstream rejected Bearer super-secret-hdr-9999")
+            if kwargs.get("response_format"):
+                raise RuntimeError(
+                    "Capability failed: bare token bare-tok-9999 and relay-custom-secret-7777 rejected"
+                )
+            # Echo secret crossing the 80-char preview truncation boundary.
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(
+                            content=("A" * 72) + "bare-tok-9999-and-relay-custom-secret-7777",
+                            tool_calls=None,
+                        )
+                    )
+                ]
+            )
 
-    with use_transport(_FailingTransport()):
-        err_payload = service.test_llm_channel(
+    with use_transport(_SecretEchoTransport()):
+        echo_payload = service.test_llm_channel(
             name="relay",
             protocol="openai",
             api_surface="chat_completions",
             base_url="https://relay.example/v1",
             api_key="sk-test-channel-key",
             models=["gpt-5"],
-            extra_headers={"Authorization": "Bearer super-secret-hdr-9999"},
+            capability_checks=["json"],
+            extra_headers={
+                "Authorization": "Bearer bare-tok-9999",
+                "X-Relay-Token": "relay-custom-secret-7777",
+            },
         )
-    assert err_payload["success"] is False
-    assert "super-secret-hdr-9999" not in str(err_payload)
+    serialized = str(echo_payload)
+    assert "bare-tok" not in serialized
+    assert "relay-custom-secret" not in serialized
+
+    # P1-1: Reserved Hermes channel rejects non-empty extra_headers before opening any client.
+    fake_hermes = _RecordingTransport(response_text="OK")
+    with use_transport(fake_hermes):
+        hermes_payload = service.test_llm_channel(
+            name="hermes",
+            protocol="openai",
+            api_surface="chat_completions",
+            base_url="http://127.0.0.1:8642/v1",
+            api_key="sk-hermes-valid-key",
+            models=["hermes-agent"],
+            extra_headers={"X-Relay-Token": "secret-val"},
+        )
+    assert hermes_payload["success"] is False
+    assert hermes_payload["error_code"] == "invalid_config"
+    assert hermes_payload["details"]["issue_code"] == "unsupported_extra_headers"
+    assert fake_hermes.completion_calls == []
 
     # _reload_runtime_singletons() resets cached transport singleton.
     set_default_transport(None)

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from contextvars import ContextVar
+import copy
 from dataclasses import dataclass, field
 import importlib
 import logging
@@ -35,8 +36,9 @@ from typing import (
 
 logger = logging.getLogger(__name__)
 
-_STRUCTURAL_DEPLOYMENT_PARAM_KEYS: frozenset[str] = frozenset(
+_EXCLUDED_REQUEST_DEFAULT_KEYS: frozenset[str] = frozenset(
     {
+        # Structural deployment routing fields lifted onto DeploymentSpec
         "model",
         "api_key",
         "api_base",
@@ -46,10 +48,28 @@ _STRUCTURAL_DEPLOYMENT_PARAM_KEYS: frozenset[str] = frozenset(
         "wire_protocol",
         "extra_headers",
         "extra_body",
+        "headers",
+        "default_headers",
         "timeout",
         "priority",
+        "order",
+        # Router-only / SDK control fields
+        "rpm",
+        "tpm",
+        "num_retries",
+        "max_retries",
+        "cooldown_time",
+        "drop_params",
+        "client",
+        # Cloud IAM / account-scoped credential fields
+        "api_version",
+        "api_type",
+        "organization",
+        "region_name",
+        "deployment_id",
     }
 )
+_EXCLUDED_REQUEST_DEFAULT_PREFIXES: Tuple[str, ...] = ("aws_", "azure_", "vertex_")
 
 
 def _apply_disable_streaming_logging(module: Any) -> None:
@@ -60,6 +80,18 @@ def _apply_disable_streaming_logging(module: Any) -> None:
         setattr(module, "disable_streaming_logging", True)
     except (AttributeError, TypeError):
         pass
+
+
+def find_unresolved_env_var(value: Any) -> Optional[str]:
+    """Return the missing env var name if ``value`` is an unset ``os.environ/VAR`` ref."""
+    if not isinstance(value, str) or not value.startswith("os.environ/"):
+        return None
+    env_name = value.split("/", 1)[1].strip()
+    if not env_name:
+        return "<empty>"
+    if not os.getenv(env_name, "").strip():
+        return env_name
+    return None
 
 
 def resolve_env_reference(value: Any) -> Any:
@@ -96,8 +128,8 @@ def resolve_litellm_params_env(params: Optional[Mapping[str, Any]]) -> Dict[str,
             resolved[key] = resolve_headers_env(value)
         elif isinstance(value, str):
             resolved[key] = resolve_env_reference(value)
-        elif isinstance(value, Mapping):
-            resolved[key] = dict(value)
+        elif isinstance(value, (Mapping, list)):
+            resolved[key] = copy.deepcopy(value)
         else:
             resolved[key] = value
     return resolved
@@ -123,28 +155,48 @@ def normalize_model_list_entries(
             copied["litellm_params"] = resolve_litellm_params_env(raw_params)
         raw_info = entry.get("model_info")
         if isinstance(raw_info, Mapping):
-            copied["model_info"] = dict(raw_info)
+            copied["model_info"] = copy.deepcopy(dict(raw_info))
         normalized.append(copied)
     return normalized
+
+
+def _is_excluded_request_default_key(key: str) -> bool:
+    lowered = str(key).strip().lower()
+    if lowered in _EXCLUDED_REQUEST_DEFAULT_KEYS:
+        return True
+    return any(lowered.startswith(prefix) for prefix in _EXCLUDED_REQUEST_DEFAULT_PREFIXES)
+
+
+def _encode_litellm_responses_wire_model(model: Any, api_surface: Any) -> Any:
+    """Apply LiteLLM's ``openai/responses/<model>`` encoding when ``api_surface`` is responses."""
+    raw_surface = str(api_surface or "").strip().lower()
+    if raw_surface not in {"responses", "response", "responses_api"}:
+        return model
+    if not isinstance(model, str) or not model.strip():
+        return model
+    from src.config import apply_litellm_api_surface
+
+    return apply_litellm_api_surface(model.strip(), "responses")
 
 
 @dataclass(frozen=True)
 class DeploymentSpec:
     """Normalized single-deployment contract shared across transport engines.
 
-    This immutable contract decouples Router/YAML/channel parsing from transport
-    execution so Phase 2 native HTTPX engines and hybrid routers can consume
-    every deployment through one resolved seam.
+    This immutable contract separates channel protocol, explicit wire protocol,
+    and LiteLLM ``custom_llm_provider`` while lifting generation defaults and
+    routing priority cleanly for Phase 2 native HTTPX engines.
     """
 
     alias: str
     wire_model: str
-    protocol: str = ""
+    channel_protocol: str = ""
+    wire_protocol: str = ""
+    custom_llm_provider: str = ""
     api_surface: str = ""
     api_base: str = ""
-    api_key: str = ""
-    custom_llm_provider: str = ""
-    extra_headers: Dict[str, str] = field(default_factory=dict)
+    api_key: str = field(default="", repr=False)
+    extra_headers: Dict[str, str] = field(default_factory=dict, repr=False)
     extra_body: Dict[str, Any] = field(default_factory=dict)
     request_defaults: Dict[str, Any] = field(default_factory=dict)
     priority: int = 0
@@ -157,31 +209,35 @@ def normalize_deployment_spec(entry: Mapping[str, Any]) -> DeploymentSpec:
     raw_params = entry.get("litellm_params")
     params = resolve_litellm_params_env(raw_params if isinstance(raw_params, Mapping) else {})
     raw_info = entry.get("model_info")
-    model_info = dict(raw_info) if isinstance(raw_info, Mapping) else {}
+    model_info = copy.deepcopy(dict(raw_info)) if isinstance(raw_info, Mapping) else {}
 
     alias = str(entry.get("model_name") or params.get("model") or "").strip()
     wire_model = str(params.get("model") or alias).strip()
+    channel_protocol = str(model_info.get("dsa_channel_protocol") or "").strip()
+    wire_protocol = str(params.get("wire_protocol") or "").strip()
     custom_llm_provider = str(params.get("custom_llm_provider") or "").strip()
-    protocol = str(
-        model_info.get("dsa_channel_protocol")
-        or params.get("wire_protocol")
-        or custom_llm_provider
-        or ""
-    ).strip()
     api_surface = str(
         model_info.get("dsa_api_surface")
         or params.get("api_surface")
         or ""
     ).strip()
-    api_base = str(params.get("api_base") or params.get("base_url") or "").strip()
+    # Match LiteLLM precedence: explicit base_url takes priority when non-empty.
+    api_base = str(params.get("base_url") or params.get("api_base") or "").strip()
     api_key = str(params.get("api_key") or "").strip()
-    extra_headers = resolve_headers_env(
-        params.get("extra_headers") if isinstance(params.get("extra_headers"), Mapping) else None
+    # ``params`` already resolved ``extra_headers`` once; copy without re-resolving.
+    raw_resolved_headers = params.get("extra_headers")
+    extra_headers = (
+        dict(raw_resolved_headers)
+        if isinstance(raw_resolved_headers, Mapping)
+        else {}
     )
     raw_extra_body = params.get("extra_body")
-    extra_body = dict(raw_extra_body) if isinstance(raw_extra_body, Mapping) else {}
+    extra_body = copy.deepcopy(dict(raw_extra_body)) if isinstance(raw_extra_body, Mapping) else {}
 
-    raw_priority = model_info.get("priority", params.get("priority", 0))
+    raw_priority = model_info.get(
+        "priority",
+        params.get("priority", params.get("order", 0)),
+    )
     try:
         priority = int(raw_priority) if raw_priority is not None else 0
     except (TypeError, ValueError):
@@ -198,19 +254,20 @@ def normalize_deployment_spec(entry: Mapping[str, Any]) -> DeploymentSpec:
             timeout = None
 
     request_defaults = {
-        key: value
+        key: copy.deepcopy(value)
         for key, value in params.items()
-        if key not in _STRUCTURAL_DEPLOYMENT_PARAM_KEYS and value is not None
+        if not _is_excluded_request_default_key(key) and value is not None
     }
 
     return DeploymentSpec(
         alias=alias,
         wire_model=wire_model,
-        protocol=protocol,
+        channel_protocol=channel_protocol,
+        wire_protocol=wire_protocol,
+        custom_llm_provider=custom_llm_provider,
         api_surface=api_surface,
         api_base=api_base,
         api_key=api_key,
-        custom_llm_provider=custom_llm_provider,
         extra_headers=extra_headers,
         extra_body=extra_body,
         request_defaults=request_defaults,
@@ -329,21 +386,26 @@ class LiteLLMTransport:
 
     @staticmethod
     def _load_litellm() -> Any:
-        module = sys.modules.get("litellm")
-        if module is None:
+        if "litellm" not in sys.modules:
             # Prevent litellm.__init__ from fetching GitHub's model_prices JSON
             # during offline FastAPI/CLI/library lazy initialization.
             os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
-            module = importlib.import_module("litellm")
+        # Always go through importlib.import_module so concurrent first imports
+        # synchronize on Python's module import lock while still returning any
+        # test stub installed in sys.modules["litellm"].
+        module = importlib.import_module("litellm")
         _apply_disable_streaming_logging(module)
         return module
 
     def completion(self, **kwargs: Any) -> Any:
         payload = dict(kwargs)
-        # ``api_surface`` is internal transport metadata consumed by native
-        # transports; LiteLLM encodes Responses via the wire model prefix and
-        # rejects unknown top-level request kwargs on strict OpenAI endpoints.
-        payload.pop("api_surface", None)
+        # ``api_surface`` and ``wire_protocol`` are internal transport metadata:
+        # encode Responses onto the LiteLLM wire model before stripping them so
+        # strict OpenAI-compatible endpoints never reject unknown body params.
+        api_surface = payload.pop("api_surface", None)
+        payload.pop("wire_protocol", None)
+        if api_surface and "model" in payload:
+            payload["model"] = _encode_litellm_responses_wire_model(payload["model"], api_surface)
         return self._load_litellm().completion(**payload)
 
     def create_router(self, model_list: List[Dict[str, Any]], **kwargs: Any) -> Any:
@@ -356,14 +418,30 @@ class LiteLLMTransport:
         for entry in model_list:
             if isinstance(entry, dict):
                 params = entry.get("litellm_params")
-                if isinstance(params, dict) and "api_surface" in params:
-                    copied_params = dict(params)
-                    copied_params.pop("api_surface", None)
-                    copied_entry = dict(entry)
-                    copied_entry["litellm_params"] = copied_params
-                    sanitized_list.append(copied_entry)
-                    changed = True
-                    continue
+                model_info = entry.get("model_info")
+                if isinstance(params, dict):
+                    effective_surface = (
+                        model_info.get("dsa_api_surface")
+                        if isinstance(model_info, Mapping)
+                        else None
+                    ) or params.get("api_surface")
+                    has_internal_keys = "api_surface" in params or "wire_protocol" in params
+                    raw_wire_model = params.get("model") or entry.get("model_name")
+                    encoded_wire_model = _encode_litellm_responses_wire_model(
+                        raw_wire_model,
+                        effective_surface,
+                    )
+                    if has_internal_keys or encoded_wire_model != params.get("model"):
+                        copied_params = dict(params)
+                        copied_params.pop("api_surface", None)
+                        copied_params.pop("wire_protocol", None)
+                        if encoded_wire_model:
+                            copied_params["model"] = encoded_wire_model
+                        copied_entry = dict(entry)
+                        copied_entry["litellm_params"] = copied_params
+                        sanitized_list.append(copied_entry)
+                        changed = True
+                        continue
             sanitized_list.append(entry)
         return router_cls(model_list=sanitized_list if changed else model_list, **kwargs)
 
@@ -389,9 +467,17 @@ class LiteLLMTransport:
 
     def estimate_tokens(self, text: str, *, model: Optional[str] = None) -> int:
         normalized_text = str(text or "")
+        if not normalized_text:
+            return 0
         try:
             count = self._load_litellm().token_counter(model=model, text=normalized_text)
-            return max(0, int(count or 0))
+            parsed = int(count or 0)
+            if parsed > 0:
+                return parsed
+            logger.debug(
+                "Token counter returned non-positive count for non-empty text; using CJK-aware heuristic"
+            )
+            return estimate_tokens_fallback(normalized_text)
         except Exception as exc:
             logger.debug("Token counter failed; using CJK-aware character heuristic: %s", exc)
             return estimate_tokens_fallback(normalized_text)
@@ -463,6 +549,7 @@ def set_default_transport(transport: Optional[LLMTransport]) -> None:
     """Override the process-wide default LLM transport (pass ``None`` to clear)."""
     global _DEFAULT_TRANSPORT
     _DEFAULT_TRANSPORT = transport
+    reset_transport_cache()
 
 
 def reset_transport_cache() -> None:
@@ -514,6 +601,14 @@ def dispatch_completion(
 ) -> Any:
     """Dispatch a completion call through a router, active transport, or legacy mock."""
     if router is not None:
+        if (
+            ("api_surface" in kwargs or "wire_protocol" in kwargs)
+            and not getattr(router, "_dsa_accepts_transport_metadata", False)
+        ):
+            router_kwargs = dict(kwargs)
+            router_kwargs.pop("api_surface", None)
+            router_kwargs.pop("wire_protocol", None)
+            return router.completion(**router_kwargs)
         return router.completion(**kwargs)
     if transport is not None:
         return transport.completion(**kwargs)
@@ -595,9 +690,14 @@ def estimate_tokens(
 ) -> int:
     """Estimate tokens for ``text`` through the active transport with CJK-aware fallback."""
     normalized_text = str(text or "")
+    if not normalized_text:
+        return 0
     active = transport or get_transport()
     try:
-        return max(0, int(active.estimate_tokens(normalized_text, model=model) or 0))
+        parsed = int(active.estimate_tokens(normalized_text, model=model) or 0)
+        if parsed > 0:
+            return parsed
+        return estimate_tokens_fallback(normalized_text)
     except Exception as exc:
         logger.debug("Transport estimate_tokens failed; using CJK-aware heuristic: %s", exc)
         return estimate_tokens_fallback(normalized_text)
