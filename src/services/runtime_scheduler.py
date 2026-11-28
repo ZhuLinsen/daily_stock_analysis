@@ -28,6 +28,7 @@ RUNTIME_SCHEDULER_SUPPRESS_START_ENV = "DSA_RUNTIME_SCHEDULER_SUPPRESS_START"
 RUNTIME_SCHEDULER_ARGS_ENV = "DSA_RUNTIME_SCHEDULER_ARGS"
 RUNTIME_SCHEDULER_TIMEOUT_ENV = "DSA_RUNTIME_SCHEDULER_TIMEOUT_SECONDS"
 DEFAULT_RUNTIME_SCHEDULER_TIMEOUT_SECONDS = 45 * 60
+WORKER_EXIT_GRACE_SECONDS = 15.0
 _RUNTIME_ANALYSIS_LOCK = threading.Lock()
 SCHEDULE_ARGS_OVERRIDE_KEYS = {
     "no_notify",
@@ -81,10 +82,18 @@ def _run_scheduled_analysis_process(
         stock_codes,
         scheduled_for=datetime.fromisoformat(scheduled_for) if scheduled_for else None,
     )
-    result_queue.put({
-        "success": success, "error": service._last_error,
-        "skipped": service._last_skip_reason,
-    })
+    try:
+        result_queue.put({
+            "success": success, "error": service._last_error,
+            "skipped": service._last_skip_reason,
+        })
+    finally:
+        close_queue = getattr(result_queue, "close", None)
+        if callable(close_queue):
+            close_queue()
+        join_thread = getattr(result_queue, "join_thread", None)
+        if callable(join_thread):
+            join_thread()
 
 
 def _posix_descendant_process_ids(root_pid: int) -> Set[int]:
@@ -562,14 +571,15 @@ class RuntimeSchedulerService:
                     )
                 return
 
-            process.join(2)
+            process.join(WORKER_EXIT_GRACE_SECONDS)
             if process.is_alive():
-                _terminate_analysis_process_tree(process)
                 logger.warning(
-                    "Runtime scheduled analysis worker did not exit after reporting a result; "
-                    "cleaned up worker process (pid=%s)",
-                    process.pid,
+                    "Runtime scheduled analysis worker pid=%s did not exit within %.1fs "
+                    "after reporting result; terminating process tree",
+                    getattr(process, "pid", None),
+                    WORKER_EXIT_GRACE_SECONDS,
                 )
+                _terminate_analysis_process_tree(process)
 
             with self._analysis_process_lock:
                 if generation != self._analysis_generation:
