@@ -9,6 +9,7 @@ from datetime import date
 
 from src.services.portfolio_alerts import (
     PortfolioRiskAlert,
+    aggregate_dry_run_results,
     evaluate_portfolio_risk_alert,
     expand_symbol_targets,
     normalize_portfolio_alert_parameters,
@@ -234,6 +235,86 @@ class PortfolioAlertsTestCase(unittest.TestCase):
         self.assertTrue(config.refreshed)
         self.assertEqual([item.symbol for item in targets], ["000001", "HK00700"])
         self.assertEqual(overflow, 0)
+
+    def test_aggregate_dry_run_results_exposes_failed_count_when_truncated(self) -> None:
+        results = [
+            {
+                "target": f"600{idx:03d}",
+                "display_target": f"自选股 - 600{idx:03d}",
+                "status": "triggered",
+                "record_status": "triggered",
+                "triggered": True,
+                "observed_value": 20.0 + idx,
+                "threshold": 10.0,
+                "message": "triggered",
+            }
+            for idx in range(20)
+        ]
+        results.append(
+            {
+                "target": "600999",
+                "display_target": "自选股 - 600999",
+                "status": "evaluation_error",
+                "record_status": "failed",
+                "triggered": False,
+                "observed_value": None,
+                "threshold": 10.0,
+                "message": "quote backend failed",
+            }
+        )
+
+        aggregated = aggregate_dry_run_results(11, "watchlist", results)
+
+        self.assertEqual(aggregated["status"], "triggered")
+        self.assertTrue(aggregated["triggered"])
+        self.assertEqual(aggregated["evaluated_count"], 21)
+        self.assertEqual(aggregated["triggered_count"], 20)
+        self.assertEqual(aggregated["degraded_count"], 0)
+        self.assertEqual(aggregated["skipped_count"], 0)
+        self.assertEqual(aggregated["failed_count"], 1)
+        self.assertEqual(len(aggregated["target_results"]), 20)
+        self.assertTrue(all(item["triggered"] for item in aggregated["target_results"]))
+        self.assertIn("1 failed", aggregated["message"])
+
+    def test_aggregate_dry_run_results_counts_evaluation_error_without_failed_record_status(self) -> None:
+        aggregated = aggregate_dry_run_results(
+            12,
+            "watchlist",
+            [
+                {
+                    "target": "600519",
+                    "display_target": "自选股 - 600519",
+                    "status": "triggered",
+                    "record_status": "triggered",
+                    "triggered": True,
+                    "observed_value": 1805.0,
+                    "threshold": 1800.0,
+                    "message": "triggered",
+                },
+                {
+                    "target": "000001",
+                    "display_target": "自选股 - 000001",
+                    "status": "evaluation_error",
+                    "record_status": None,
+                    "triggered": False,
+                    "observed_value": None,
+                    "threshold": 10.0,
+                    "message": "unexpected error",
+                },
+            ],
+        )
+
+        self.assertEqual(aggregated["failed_count"], 1)
+        self.assertEqual(aggregated["evaluated_count"], 2)
+        self.assertEqual(aggregated["triggered_count"], 1)
+
+    def test_aggregate_dry_run_results_empty_sets_zero_failed_count(self) -> None:
+        aggregated = aggregate_dry_run_results(13, "watchlist", [])
+
+        self.assertEqual(aggregated["status"], "evaluation_error")
+        self.assertFalse(aggregated["triggered"])
+        self.assertEqual(aggregated["evaluated_count"], 0)
+        self.assertEqual(aggregated["failed_count"], 0)
 
 
 if __name__ == "__main__":

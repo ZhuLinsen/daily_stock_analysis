@@ -685,8 +685,45 @@ class AlertApiTestCase(unittest.TestCase):
         self.assertFalse(payload["triggered"])
         self.assertEqual(payload["evaluated_count"], 1)
         self.assertEqual(payload["skipped_count"], 1)
+        self.assertEqual(payload["failed_count"], 0)
         self.assertEqual(payload["target_results"][0]["record_status"], "skipped")
         self.assertIn("timed out", payload["target_results"][0]["message"])
+
+    def test_p6_watchlist_dry_run_truncated_batch_exposes_failed_count(self) -> None:
+        rule = self._create_rule({
+            "name": "Watchlist 21 targets",
+            "target_scope": "watchlist",
+            "target": "default",
+            "alert_type": "price_cross",
+            "parameters": {"direction": "above", "price": 10},
+        })
+        symbols = [f"600{idx:03d}" for idx in range(1, 22)]
+        failed_symbol = symbols[-1]
+        watchlist_config = SimpleNamespace(stock_list=symbols)
+
+        async def _quote(_monitor, stock_code):
+            if stock_code == failed_symbol:
+                raise RuntimeError("quote provider failed")
+            return SimpleNamespace(price=12.0)
+
+        with patch("src.config.get_config", return_value=watchlist_config), patch(
+            "src.agent.events.EventMonitor._get_realtime_quote",
+            new=_quote,
+        ):
+            resp = self.client.post(f"/api/v1/alerts/rules/{rule['id']}/test")
+
+        self.assertEqual(resp.status_code, 200, resp.text)
+        payload = resp.json()
+        self.assertEqual(payload["status"], "triggered")
+        self.assertTrue(payload["triggered"])
+        self.assertEqual(payload["evaluated_count"], 21)
+        self.assertEqual(payload["triggered_count"], 20)
+        self.assertEqual(payload["degraded_count"], 0)
+        self.assertEqual(payload["skipped_count"], 0)
+        self.assertEqual(payload["failed_count"], 1)
+        self.assertEqual(len(payload["target_results"]), 20)
+        self.assertTrue(all(item["triggered"] for item in payload["target_results"]))
+        self.assertIn("1 failed", payload["message"])
 
     def test_p6_portfolio_account_cooldown_summary_uses_effective_target(self) -> None:
         created = self._create_rule({
@@ -903,6 +940,9 @@ class AlertApiTestCase(unittest.TestCase):
         payload = resp.json()
         self.assertFalse(payload["triggered"])
         self.assertEqual(payload["status"], "evaluation_error")
+        self.assertEqual(payload["evaluated_count"], 1)
+        self.assertEqual(payload["failed_count"], 1)
+        self.assertEqual(payload["skipped_count"], 0)
         self.assertNotIn("secret-token", payload["message"])
         self.assertNotIn("example.com/webhook", payload["message"])
 
@@ -1046,8 +1086,18 @@ class AlertApiTestCase(unittest.TestCase):
             resp = self.client.post(f"/api/v1/alerts/rules/{rule['id']}/test")
 
         self.assertEqual(resp.status_code, 200)
-        self.assertEqual(resp.json()["status"], "not_triggered")
-        self.assertFalse(resp.json()["triggered"])
+        payload = resp.json()
+        self.assertEqual(payload["status"], "not_triggered")
+        self.assertFalse(payload["triggered"])
+        self.assertIsNone(payload["observed_value"])
+        self.assertEqual(payload["evaluated_count"], 1)
+        self.assertEqual(payload["skipped_count"], 1)
+        self.assertEqual(payload["degraded_count"], 0)
+        self.assertEqual(payload["failed_count"], 0)
+        self.assertEqual(payload["message"], "No realtime quote available")
+        self.assertEqual(len(payload["target_results"]), 1)
+        self.assertEqual(payload["target_results"][0]["record_status"], "skipped")
+        self.assertEqual(payload["target_results"][0]["message"], "No realtime quote available")
 
     def test_legacy_json_config_is_not_rewritten(self) -> None:
         before = self.env_path.read_text(encoding="utf-8")

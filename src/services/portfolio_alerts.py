@@ -285,7 +285,10 @@ def aggregate_dry_run_results(rule_id: int, target_scope: str, results: List[Dic
         results,
         key=lambda item: (
             0 if item.get("triggered") else 1,
-            0 if item.get("record_status") in {"degraded", "failed"} else 1,
+            0
+            if item.get("record_status") in {"degraded", "failed"}
+            or item.get("status") == "evaluation_error"
+            else 1,
             str(item.get("target") or ""),
         ),
     )
@@ -293,7 +296,11 @@ def aggregate_dry_run_results(rule_id: int, target_scope: str, results: List[Dic
     triggered_count = sum(1 for item in target_results if item.get("triggered"))
     degraded_count = sum(1 for item in target_results if item.get("record_status") == "degraded")
     skipped_count = sum(1 for item in target_results if item.get("record_status") == "skipped")
-    failed_count = sum(1 for item in target_results if item.get("record_status") == "failed")
+    failed_count = sum(
+        1
+        for item in target_results
+        if item.get("record_status") == "failed" or item.get("status") == "evaluation_error"
+    )
     successful_count = sum(
         1
         for item in target_results
@@ -333,6 +340,7 @@ def aggregate_dry_run_results(rule_id: int, target_scope: str, results: List[Dic
         "triggered_count": triggered_count,
         "degraded_count": degraded_count,
         "skipped_count": skipped_count,
+        "failed_count": failed_count,
         "target_results": visible_results,
     }
 

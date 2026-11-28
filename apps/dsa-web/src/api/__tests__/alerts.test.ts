@@ -260,6 +260,7 @@ describe('alertsApi', () => {
           triggered_count: 1,
           degraded_count: 1,
           skipped_count: 0,
+          failed_count: 0,
           target_results: [
             {
               target: '600519',
@@ -298,6 +299,7 @@ describe('alertsApi', () => {
     expect(created.parameters.mode).toBe('breach');
     expect(dryRun.evaluatedCount).toBe(2);
     expect(dryRun.degradedCount).toBe(1);
+    expect(dryRun.failedCount).toBe(0);
     expect(dryRun.targetResults?.[0].displayTarget).toBe('自选股 - 600519');
   });
 

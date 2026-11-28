@@ -308,7 +308,7 @@ P6 将可展示目标与可持久化目标分离：
 
 ### Dry-run 聚合
 
-- `POST /api/v1/alerts/rules/{rule_id}/test` 对批量规则返回聚合字段：`evaluated_count`、`triggered_count`、`degraded_count`、`skipped_count`、`target_results`。
+- `POST /api/v1/alerts/rules/{rule_id}/test` 对批量规则返回聚合字段：`evaluated_count`、`triggered_count`、`degraded_count`、`skipped_count`、`failed_count`、`target_results`。
 - 展开目标 soft cap 为 100；dry-run 中超过 soft cap 的目标记为 `degraded` 聚合结果并写日志。worker 运行时只评估前 100 个展开目标并写 warning，不为 overflow 本身写 `alert_triggers` 历史。
 - dry-run 使用受限并发评估，单目标超时 10 秒，总评估超时 30 秒；未完成目标记为 `skipped`。
 - 任一目标 triggered 时顶层 `status=triggered`；无触发但存在成功评估、skipped 或 degraded 时顶层 `status=not_triggered`；无法展开或全部失败时才返回 `evaluation_error`。

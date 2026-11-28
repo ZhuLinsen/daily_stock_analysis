@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { UiLanguageProvider } from '../../../contexts/UiLanguageContext';
 import { UI_LANGUAGE_STORAGE_KEY } from '../../../utils/uiLanguage';
@@ -319,5 +319,64 @@ describe('AlertRuleForm', () => {
     await waitFor(() => expect(onSubmit).toHaveBeenCalled());
     expect(screen.getByLabelText('标的代码')).toHaveValue('aapl');
     expect(screen.getByLabelText('价格阈值')).toHaveValue(200);
+  });
+
+  it('guards double-submit while onSubmit is pending and allows retry after rejection', async () => {
+    let rejectFirst!: (reason?: unknown) => void;
+    onSubmit
+      .mockImplementationOnce(() => new Promise((_resolve, reject) => {
+        rejectFirst = reject;
+      }))
+      .mockResolvedValueOnce(true);
+
+    render(<AlertRuleForm onSubmit={onSubmit} />);
+
+    fireEvent.change(screen.getByLabelText('标的代码'), { target: { value: '600519' } });
+    fireEvent.change(screen.getByLabelText('价格阈值'), { target: { value: '1800' } });
+
+    const submitButton = screen.getByRole('button', { name: '创建规则' });
+    fireEvent.click(submitButton);
+    fireEvent.click(submitButton);
+
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      rejectFirst(new Error('network error'));
+      await Promise.resolve();
+    });
+
+    expect(screen.getByLabelText('标的代码')).toHaveValue('600519');
+    fireEvent.click(submitButton);
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.getByLabelText('标的代码')).toHaveValue(''));
+  });
+
+  it('skips post-submit form reset cleanly after unmount', async () => {
+    let resolveSubmit!: (value: boolean) => void;
+    onSubmit.mockImplementationOnce(() => new Promise<boolean>((resolve) => {
+      resolveSubmit = resolve;
+    }));
+
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const { unmount } = render(<AlertRuleForm onSubmit={onSubmit} />);
+
+      fireEvent.change(screen.getByLabelText('标的代码'), { target: { value: 'aapl' } });
+      fireEvent.change(screen.getByLabelText('价格阈值'), { target: { value: '200' } });
+      fireEvent.click(screen.getByRole('button', { name: '创建规则' }));
+
+      await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+      unmount();
+
+      await act(async () => {
+        resolveSubmit(true);
+        await Promise.resolve();
+      });
+
+      expect(consoleErrorSpy).not.toHaveBeenCalled();
+    } finally {
+      consoleErrorSpy.mockRestore();
+    }
   });
 });
