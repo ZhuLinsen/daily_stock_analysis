@@ -137,28 +137,52 @@ class _WakeupChannel:
         except (BlockingIOError, InterruptedError, OSError):
             pass
 
-    def _wait_pipe_once(self, r_fd: int, remaining: float) -> bool:
-        """Wait for pipe readability without select()'s 1024 FD cap. Returns False to abort wait."""
-        if hasattr(select, "poll"):
+    @staticmethod
+    def _is_closed_target(target: Union[int, socket.socket]) -> bool:
+        if isinstance(target, int):
+            return target < 0
+        try:
+            return target.fileno() < 0
+        except OSError:
+            return True
+
+    def _wait_readable_once(
+        self,
+        target: Union[int, socket.socket],
+        wait_slice: float,
+        drain: Callable[[], None],
+    ) -> bool:
+        """Wait for descriptor readability without select()'s 1024 FD cap on POSIX.
+
+        Returns False only when the descriptor is closed/invalid so wait() can
+        abort when closed or fall back to bounded sleep instead of spinning.
+        """
+        if os.name != "nt" and hasattr(select, "poll"):
             poller = select.poll()
-            poller.register(r_fd, select.POLLIN)
-            timeout_ms = max(1, int(math.ceil(remaining * 1000)))
+            try:
+                poller.register(target, select.POLLIN)
+            except ValueError:
+                return False
+            timeout_ms = max(1, int(math.ceil(wait_slice * 1000)))
             events = poller.poll(timeout_ms)
+            poll_abort_mask = select.POLLERR | select.POLLNVAL | getattr(select, "POLLHUP", 0)
             for _, event in events:
-                if event & (select.POLLERR | select.POLLNVAL):
-                    return False
                 if event & select.POLLIN:
-                    self._drain_pipe(r_fd)
+                    drain()
+                if event & poll_abort_mask:
+                    return False
             return True
 
         try:
-            readable, _, _ = select.select([r_fd], [], [], remaining)
+            readable, _, _ = select.select([target], [], [], wait_slice)
         except ValueError:
+            if self._closed or self._is_closed_target(target):
+                return False
             # Fallback when select() cannot handle FDs >= FD_SETSIZE on platforms without poll().
-            time.sleep(min(0.1, remaining))
+            time.sleep(min(0.1, wait_slice))
             return True
         if readable:
-            self._drain_pipe(r_fd)
+            drain()
         return True
 
     def wait(self, timeout: float = 30.0) -> bool:
@@ -175,12 +199,19 @@ class _WakeupChannel:
                 if r_fd is None:
                     return self._signaled
                 try:
-                    if not self._wait_pipe_once(r_fd, remaining):
-                        return self._signaled
+                    ok = self._wait_readable_once(
+                        r_fd,
+                        remaining,
+                        lambda: self._drain_pipe(r_fd),
+                    )
                 except InterruptedError:
                     continue
                 except OSError:
-                    return self._signaled
+                    ok = False
+                if not ok:
+                    if self._closed or self._signaled:
+                        return self._signaled
+                    time.sleep(min(0.1, remaining))
             elif self._mode == "socketpair":
                 r_sock = self._r_sock
                 if r_sock is None:
@@ -189,13 +220,19 @@ class _WakeupChannel:
                 # so bound socketpair waits to 0.25s while stop() still wakes immediately.
                 wait_slice = min(0.25, remaining) if os.name == "nt" else remaining
                 try:
-                    readable, _, _ = select.select([r_sock], [], [], wait_slice)
+                    ok = self._wait_readable_once(
+                        r_sock,
+                        wait_slice,
+                        lambda: self._drain_socket(r_sock),
+                    )
                 except InterruptedError:
                     continue
-                except (OSError, ValueError):
-                    return self._signaled
-                if readable:
-                    self._drain_socket(r_sock)
+                except OSError:
+                    ok = False
+                if not ok:
+                    if self._closed or self._signaled:
+                        return self._signaled
+                    time.sleep(min(0.1, wait_slice))
             else:
                 time.sleep(min(0.1, remaining))
         return self._signaled

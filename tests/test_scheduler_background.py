@@ -577,6 +577,149 @@ class SchedulerBackgroundTaskTestCase(unittest.TestCase):
         finally:
             channel.close()
 
+    def test_wakeup_channel_high_fd_socketpair_fallback_uses_poll_without_busy_spin(self):
+        """OR-COR-076f0d13: POSIX socketpair fallback with FD >= 1024 must use poll() without spinning."""
+        try:
+            import fcntl
+            import resource
+        except ImportError:
+            self.skipTest("POSIX fcntl and resource modules required")
+
+        from src.scheduler import _WakeupChannel
+
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        raised_limit = False
+        if soft < 1200 and hard >= 1200:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (1200, hard))
+            raised_limit = True
+
+        channel = None
+        try:
+            with patch("src.scheduler.os.pipe", side_effect=OSError("ENFILE")):
+                channel = _WakeupChannel()
+
+            if channel._mode != "socketpair" or channel._r_sock is None or not hasattr(fcntl, "F_DUPFD"):
+                self.skipTest("POSIX socketpair fallback + F_DUPFD required")
+
+            orig_r_sock = channel._r_sock
+            try:
+                high_r_fd = fcntl.fcntl(orig_r_sock.fileno(), fcntl.F_DUPFD, 1050)
+            except OSError:
+                self.skipTest("FD limit below 1050 in test environment")
+
+            try:
+                high_r_sock = socket.socket(
+                    orig_r_sock.family,
+                    orig_r_sock.type,
+                    orig_r_sock.proto,
+                    fileno=high_r_fd,
+                )
+            except Exception:
+                os.close(high_r_fd)
+                raise
+
+            high_r_sock.setblocking(False)
+            channel._r_sock = high_r_sock
+            orig_r_sock.close()
+            self.assertGreaterEqual(high_r_sock.fileno(), 1024)
+
+            with patch("src.scheduler.select.select", side_effect=AssertionError("select.select must not be used")):
+                start = time.monotonic()
+                signaled = channel.wait(timeout=0.08)
+                elapsed = time.monotonic() - start
+                self.assertFalse(signaled)
+                self.assertGreaterEqual(elapsed, 0.05)
+
+                notifier = threading.Timer(0.02, channel.notify)
+                notifier.start()
+                try:
+                    start = time.monotonic()
+                    woken = channel.wait(timeout=1.0)
+                    woke_elapsed = time.monotonic() - start
+                finally:
+                    notifier.join(timeout=1.0)
+
+                self.assertTrue(woken)
+                self.assertLess(woke_elapsed, 0.5)
+        finally:
+            if channel is not None:
+                channel.close()
+            if raised_limit:
+                resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
+
+    def test_wakeup_channel_socketpair_poll_dispatch_and_select_value_error_backoff(self):
+        """OR-COR-076f0d13: socketpair uses poll() on POSIX and backs off instead of spinning on select() ValueError."""
+        from src.scheduler import _WakeupChannel
+
+        registered = []
+        poll_timeouts = []
+
+        class _FakePoller:
+            def register(self, fd, eventmask):
+                registered.append((fd, eventmask))
+
+            def poll(self, timeout_ms):
+                poll_timeouts.append(timeout_ms)
+                channel._signaled = True
+                return [(channel._r_sock, 1)]
+
+        class _FakePosixSelect:
+            POLLIN = 1
+            POLLERR = 8
+            POLLHUP = 16
+            POLLNVAL = 32
+
+            @staticmethod
+            def poll():
+                return _FakePoller()
+
+            @staticmethod
+            def select(*args, **kwargs):
+                raise AssertionError("select.select must not be used when POSIX poll() is available")
+
+        with patch("src.scheduler.os.name", "posix"), patch(
+            "src.scheduler.os.pipe",
+            side_effect=OSError("ENFILE"),
+        ):
+            channel = _WakeupChannel()
+
+        try:
+            self.assertEqual(channel._mode, "socketpair")
+            self.assertIsNotNone(channel._r_sock)
+            with patch("src.scheduler.os.name", "posix"), patch("src.scheduler.select", _FakePosixSelect):
+                result = channel.wait(timeout=1.5)
+            self.assertTrue(result)
+            self.assertEqual(registered, [(channel._r_sock, _FakePosixSelect.POLLIN)])
+            self.assertEqual(len(poll_timeouts), 1)
+            self.assertGreater(poll_timeouts[0], 0)
+
+            # When select.poll() is unavailable and select.select() raises ValueError on an open socket
+            # (e.g. FD >= FD_SETSIZE), wait() must sleep instead of returning immediately and spinning.
+            channel._signaled = False
+
+            class _FakeSelectOnly:
+                @staticmethod
+                def select(*args, **kwargs):
+                    raise ValueError("file descriptor out of range in select()")
+
+            with patch("src.scheduler.select", _FakeSelectOnly):
+                start = time.monotonic()
+                signaled = channel.wait(timeout=0.08)
+                elapsed = time.monotonic() - start
+            self.assertFalse(signaled)
+            self.assertGreaterEqual(elapsed, 0.05)
+
+            # Once closed, wait() must return immediately rather than sleeping.
+            channel.close()
+            with patch("src.scheduler.select", _FakeSelectOnly):
+                start = time.monotonic()
+                signaled = channel.wait(timeout=1.0)
+                elapsed = time.monotonic() - start
+            self.assertFalse(signaled)
+            self.assertLess(elapsed, 0.1)
+        finally:
+            channel.close()
+
     def test_pthread_kill_sigterm_wakes_scheduler_via_wakeup_fd(self):
         if os.name == "nt" or not hasattr(signal, "pthread_kill"):
             self.skipTest("POSIX signal.pthread_kill required")
@@ -694,28 +837,51 @@ class SchedulerBackgroundTaskTestCase(unittest.TestCase):
                         scheduler.close()
                         self.skipTest(f"Wakeup mode {expected_mode} unavailable")
 
+                    mode = scheduler._wakeup._mode
+                    r_sock = scheduler._wakeup._r_sock
+                    w_sock = scheduler._wakeup._w_sock
+                    pipe_fds = (scheduler._wakeup._r_fd, scheduler._wakeup._w_fd)
                     wakeup_fd = scheduler._wakeup.fileno()
-                    self.assertIsNotNone(wakeup_fd)
-                    self.assertIsNone(scheduler.shutdown_handler._installed_wakeup_fd)
-                    self.assertEqual(signal.set_wakeup_fd(-1), -1)
+                    try:
+                        self.assertIsNotNone(wakeup_fd)
+                        if mode == "socketpair":
+                            self.assertIsNotNone(r_sock)
+                            self.assertIsNotNone(w_sock)
+                            self.assertNotEqual(r_sock.fileno(), -1)
+                            self.assertNotEqual(w_sock.fileno(), -1)
+                        self.assertIsNone(scheduler.shutdown_handler._installed_wakeup_fd)
+                        self.assertEqual(signal.set_wakeup_fd(-1), -1)
 
-                    ref = weakref.ref(scheduler)
-                    scheduler.set_daily_task(lambda: None, run_immediately=False)
-                    worker = threading.Thread(target=scheduler.run, daemon=True)
-                    worker.start()
-                    time.sleep(0.05)
-                    scheduler.stop()
-                    # Drop the last main-thread reference without calling close().
-                    del scheduler
-                    worker.join(timeout=2.0)
-                    self.assertFalse(worker.is_alive())
-                    del worker
-                    gc.collect()
+                        ref = weakref.ref(scheduler)
+                        scheduler.set_daily_task(lambda: None, run_immediately=False)
+                        worker = threading.Thread(target=scheduler.run, daemon=True)
+                        worker.start()
+                        time.sleep(0.05)
+                        scheduler.stop()
+                        # Drop the last main-thread reference without calling close().
+                        del scheduler
+                        worker.join(timeout=2.0)
+                        self.assertFalse(worker.is_alive())
+                        del worker
+                        gc.collect()
 
-                    self.assertIsNone(ref())
-                    self.assertEqual(signal.set_wakeup_fd(-1), -1)
-                    with self.assertRaises(OSError):
-                        os.fstat(wakeup_fd)
+                        self.assertIsNone(ref())
+                        self.assertEqual(signal.set_wakeup_fd(-1), -1)
+                        if mode == "socketpair":
+                            self.assertEqual(r_sock.fileno(), -1)
+                            self.assertEqual(w_sock.fileno(), -1)
+                        else:
+                            for fd in pipe_fds:
+                                self.assertIsNotNone(fd)
+                                with self.assertRaises(OSError):
+                                    os.fstat(fd)
+                        if os.name != "nt":
+                            with self.assertRaises(OSError):
+                                os.fstat(wakeup_fd)
+                    finally:
+                        for sock in (r_sock, w_sock):
+                            if sock is not None:
+                                sock.close()
         finally:
             signal.set_wakeup_fd(prior_fd if prior_fd != -1 else -1)
             signal.signal(signal.SIGINT, prev_sigint)
