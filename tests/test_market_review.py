@@ -60,7 +60,7 @@ class MarketReviewLocalizationTestCase(unittest.TestCase):
         cases = [
             (None, ["cn"]),
             ("", ["cn"]),
-            ("both", ["cn", "hk", "us", "jp", "kr", "tw"]),
+            ("both", ["cn", "hk", "us", "jp", "kr", "tw", "au"]),
             (" CN,US,cn ", ["cn", "us"]),
             ("us,cn,us", ["cn", "us"]),
             ("jp", ["jp"]),
@@ -281,6 +281,8 @@ class MarketReviewLocalizationTestCase(unittest.TestCase):
             market_light_snapshot={"region": "kr", "trade_date": "2026-03-06", "score": 53},
         )
 
+        au_analyzer = MagicMock()
+        au_analyzer.run_daily_review_with_snapshot.return_value = SimpleNamespace(report="AU body", market_light_snapshot=None)
         tw_analyzer = MagicMock()
         tw_analyzer.run_daily_review_with_snapshot.return_value = SimpleNamespace(
             report="TW body", market_light_snapshot=None,
@@ -293,7 +295,7 @@ class MarketReviewLocalizationTestCase(unittest.TestCase):
         ), patch.object(
             market_review_module,
             "MarketAnalyzer",
-            side_effect=[cn_analyzer, hk_analyzer, us_analyzer, jp_analyzer, kr_analyzer, tw_analyzer],
+            side_effect=[cn_analyzer, hk_analyzer, us_analyzer, jp_analyzer, kr_analyzer, tw_analyzer, au_analyzer],
         ), patch.object(market_review_module, "_persist_market_review_history") as persist_history:
             result = run_market_review(notifier, send_notification=True)
 
@@ -303,6 +305,7 @@ class MarketReviewLocalizationTestCase(unittest.TestCase):
         self.assertIn("# US Market Recap\n\nUS body", result)
         self.assertIn("# Japan Market Recap\n\nJP body", result)
         self.assertIn("# Korea Market Recap\n\nKR body", result)
+        self.assertIn("# Australian ASX Market Recap\n\nAU body", result)
         self.assertIn("# Taiwan Market Recap\n\nTW body", result)
         saved_content = notifier.save_report_to_file.call_args.args[0]
         self.assertTrue(saved_content.startswith("# 🎯 Market Review\n\n"))

@@ -201,6 +201,8 @@ def is_code_like(value: str) -> bool:
     text = value.strip().upper()
     if not text:
         return False
+    if get_suffix_market(text) is not None:
+        return True
     if text.isdigit() and len(text) in (5, 6):
         return True
     explicit_parts = _split_explicit_exchange(text)
@@ -461,7 +463,7 @@ def resolve_daily_stock_identity(
                 candidates.append(yahoo_symbol)
         if suffix_base_lookup_allowed(normalized_code):
             candidates.append(normalized_code.rsplit(".", 1)[0])
-    if market not in {"jp", "kr", "tw"}:
+    if market not in {"jp", "kr", "tw", "au"}:
         for candidate in list(candidates):
             candidates.extend(
                 _build_market_code_variants(

@@ -874,10 +874,10 @@
                   "type": "null"
                 }
               ],
-              "description": "Optional market filter: cn/hk/us/jp/kr/tw",
+              "description": "Optional market filter: cn/hk/us/jp/kr/tw/au",
               "title": "Market"
             },
-            "description": "Optional market filter: cn/hk/us/jp/kr/tw"
+            "description": "Optional market filter: cn/hk/us/jp/kr/tw/au"
           },
           {
             "name": "stock_code",
@@ -1257,10 +1257,10 @@
                   "type": "null"
                 }
               ],
-              "description": "Optional market filter: cn/hk/us/jp/kr/tw",
+              "description": "Optional market filter: cn/hk/us/jp/kr/tw/au",
               "title": "Market"
             },
-            "description": "Optional market filter: cn/hk/us/jp/kr/tw"
+            "description": "Optional market filter: cn/hk/us/jp/kr/tw/au"
           },
           {
             "name": "limit",
@@ -4711,7 +4711,8 @@
               "us",
               "jp",
               "kr",
-              "tw"
+              "tw",
+              "au"
             ],
             "title": "Market"
           },
@@ -6615,7 +6616,8 @@
                   "us",
                   "jp",
                   "kr",
-                  "tw"
+                  "tw",
+                  "au"
                 ]
               },
               {
@@ -9120,7 +9122,8 @@
               "us",
               "jp",
               "kr",
-              "tw"
+              "tw",
+              "au"
             ],
             "title": "Market"
           },

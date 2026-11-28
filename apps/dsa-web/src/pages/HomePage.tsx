@@ -37,6 +37,7 @@ import { useWatchlist } from '../hooks/useWatchlist';
 import { useUiLanguage } from '../contexts/UiLanguageContext';
 import { localizeSkill } from '../locales/strategyText';
 import type { SetupStatusResponse } from '../types/systemConfig';
+import { localizeSetupStatus } from '../utils/systemConfigI18n';
 import { getSampleAnalysisReport } from '../data/sampleReport';
 import { normalizeReportLanguage } from '../utils/reportLanguage';
 import type {
@@ -612,7 +613,7 @@ const HomePage: React.FC = () => {
     if (!setupStatus) {
       return '';
     }
-    const requiredNeedsAction = setupStatus.checks
+    const requiredNeedsAction = localizeSetupStatus(setupStatus, uiLanguage)!.checks
       .filter((check) => check.required && check.status === 'needs_action')
       .map((check) => check.title);
     return requiredNeedsAction.slice(0, 3).join(uiLanguage === 'en' ? ', ' : '、');

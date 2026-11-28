@@ -34,6 +34,7 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 
 from .us_index_mapping import get_us_stock_yf_symbol
+from src.services.market_symbol_utils import normalize_suffix_market_symbol
 
 logger = logging.getLogger(__name__)
 
@@ -143,6 +144,9 @@ def _convert_to_yf_symbol(stock_code: str) -> str:
     yf_symbol = get_us_stock_yf_symbol(code)
     if yf_symbol:
         return yf_symbol
+    suffix_symbol = normalize_suffix_market_symbol(code)
+    if suffix_symbol:
+        return suffix_symbol
     if code.startswith("HK"):
         digits = code[2:].lstrip("0") or "0"
         return f"{digits.zfill(4)}.HK"

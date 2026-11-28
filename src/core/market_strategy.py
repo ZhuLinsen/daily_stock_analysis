@@ -258,8 +258,22 @@ TW_BLUEPRINT = MarketStrategyBlueprint(
 )
 
 
+AU_BLUEPRINT = MarketStrategyBlueprint(
+    region="au", title="Australian ASX index and news review",
+    positioning="Use Australian ASX evidence, AUD and Australia/Sydney session dates, not US or China market rules.",
+    principles=["Use only supplied, dated ASX index data and verified news.",
+                "Disclose missing news, market breadth, flows and sector rankings; never invent them.",
+                "Distinguish Australian-listed ETFs from operating companies."],
+    dimensions=[StrategyDimension(name="ASX market evidence", objective="Assess index direction and evidence quality.",
+                    checkpoints=["S&P/ASX 200 and All Ordinaries coverage", "RBA, AUD and sector exposure only when evidence is supplied"])],
+    action_framework=["Do not infer a buy, hold or sell signal from unavailable data."],
+)
+
+
 def get_market_strategy_blueprint(region: str) -> MarketStrategyBlueprint:
     """Return strategy blueprint by market region."""
+    if region == "au":
+        return AU_BLUEPRINT
     if region == "us":
         return US_BLUEPRINT
     if region == "hk":

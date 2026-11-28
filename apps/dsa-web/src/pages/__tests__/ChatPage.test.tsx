@@ -984,7 +984,10 @@ describe('ChatPage', () => {
         <ChatPage />
       </MemoryRouter>
     );
-    fireEvent.click(await screen.findByRole('button', { name: '用缠论分析茅台' }));
+    const shortcut = await screen.findByRole('button', { name: '用缠论分析茅台' });
+    // Shortcuts stay disabled until the agent status has loaded.
+    await waitFor(() => expect(shortcut).toBeEnabled());
+    fireEvent.click(shortcut);
 
     await waitFor(() => {
       expect(mockStartStream).toHaveBeenCalledWith(
@@ -1221,7 +1224,10 @@ describe('ChatPage', () => {
     );
 
     await screen.findByText('默认模型');
-    fireEvent.click(await screen.findByRole('button', { name: '用箱体震荡分析 A 股中芯国际 688981' }));
+    const shortcut = await screen.findByRole('button', { name: '用箱体震荡分析 A 股中芯国际 688981' });
+    // Shortcuts stay disabled until the agent status has loaded.
+    await waitFor(() => expect(shortcut).toBeEnabled());
+    fireEvent.click(shortcut);
 
     await waitFor(() => {
       expect(mockStartStream).toHaveBeenCalledWith(

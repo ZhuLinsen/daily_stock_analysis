@@ -94,6 +94,9 @@ export interface SetupStatusCheck {
   status: 'configured' | 'inherited' | 'optional' | 'needs_action';
   message: string;
   nextStep?: string | null;
+  titleEn?: string | null;
+  messageEn?: string | null;
+  nextStepEn?: string | null;
 }
 
 export interface SetupStatusResponse {

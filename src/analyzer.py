@@ -266,7 +266,7 @@ def _legacy_market_group(stock_code: Any) -> str:
     if not code or code.lower() == "unknown":
         return "unknown"
     market = detect_market(code)
-    return market if market in {"cn", "hk", "us"} else "unknown"
+    return market if market in {"cn", "hk", "us", "au"} else "unknown"
 
 
 def _legacy_audit_marker_specs(
@@ -4872,6 +4872,12 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
             volume_label = "实时成交量" if realtime_overlay_quote else "成交量"
             amount_label = "实时成交额" if realtime_overlay_quote else "成交额"
             open_label, high_label, low_label = "开盘价", "最高价", "最低价"
+        quote_metadata = context.get('realtime') or {}
+        quote_currency = str(quote_metadata.get('currency') or '').strip()
+        if quote_currency:
+            price_unit = f" {quote_currency}"
+        elif detect_market(code) == 'au':
+            price_unit = ""  # Missing quote currency is not a CNY/yuan quote.
         quote_rows = [
             f"| {close_price_label} | {today.get('close', 'N/A')}{price_unit} |",
         ]
@@ -4989,7 +4995,9 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
 ### Realtime Quote Details
 | Indicator | Value | Interpretation |
 |------|------|------|
-| Current Price | {rt.get('price', 'N/A')} | |
+| Quote Currency | {rt.get('currency', 'N/A')} | Provider metadata |
+| Instrument Type | {rt.get('quote_type', 'N/A')} | Provider metadata; do not infer from symbol |
+| Current Price | {rt.get('price', 'N/A')}{price_unit} | |
 | **Volume Ratio** | **{rt.get('volume_ratio', 'N/A')}** | {rt.get('volume_ratio_desc', '')} |
 | **Turnover Rate** | **{rt.get('turnover_rate', 'N/A')}%** | |
 | PE (TTM/dynamic) | {rt.get('pe_ratio', 'N/A')} | |
@@ -5004,7 +5012,9 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
 ### 实时行情增强数据
 | 指标 | 数值 | 解读 |
 |------|------|------|
-| 当前价格 | {rt.get('price', 'N/A')} 元 | |
+| 报价币种 | {rt.get('currency', 'N/A')} | 数据源元数据 |
+| 证券类型 | {rt.get('quote_type', 'N/A')} | 数据源元数据，不按代码猜测 |
+| 当前价格 | {rt.get('price', 'N/A')}{price_unit} | |
 | **量比** | **{rt.get('volume_ratio', 'N/A')}** | {rt.get('volume_ratio_desc', '')} |
 | **换手率** | **{rt.get('turnover_rate', 'N/A')}%** | |
 | 市盈率(动态) | {rt.get('pe_ratio', 'N/A')} | |
@@ -5049,6 +5059,8 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
 | Indicator | Value | Note |
 |------|------|------|
 | Latest Report Period | {report_date} | From structured financial report fields |
+| Financial Statement Currency | {financial_report.get('currency') or 'N/A'} | Applies to revenue, profit and operating cash flow; do not relabel as quote currency |
+| Dividend Currency | {dividend_metrics.get('currency') or 'N/A'} | Separate from financial statement currency |
 | Revenue | {financial_report.get('revenue', 'N/A')} | |
 | Net Profit Attributable to Parent | {financial_report.get('net_profit_parent', 'N/A')} | |
 | Operating Cash Flow | {financial_report.get('operating_cash_flow', 'N/A')} | |
@@ -5065,6 +5077,8 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
 | 指标 | 数值 | 说明 |
 |------|------|------|
 | 最近报告期 | {report_date} | 来自结构化财报字段 |
+| 财报币种 | {financial_report.get('currency') or 'N/A'} | 营收、利润、现金流币种；不可随报价币种重标 |
+| 分红币种 | {dividend_metrics.get('currency') or 'N/A'} | 与财报币种分别保留 |
 | 营业收入 | {financial_report.get('revenue', 'N/A')} | |
 | 归母净利润 | {financial_report.get('net_profit_parent', 'N/A')} | |
 | 经营现金流 | {financial_report.get('operating_cash_flow', 'N/A')} | |

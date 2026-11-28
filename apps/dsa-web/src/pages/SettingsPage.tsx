@@ -33,7 +33,7 @@ import {
 } from '../components/settings';
 import { formatWebBuildTime, WEB_BUILD_INFO } from '../utils/constants';
 import { parseStockListValue } from '../utils/stockList';
-import { getCategoryDescription, getCategoryTitle, getFieldDescriptionZh, getFieldTitleZh } from '../utils/systemConfigI18n';
+import { getCategoryDescription, getCategoryTitle, getFieldDescriptionZh, getFieldTitleZh, localizeSetupStatus } from '../utils/systemConfigI18n';
 import { getSettingsHelpContent } from '../locales/settingsHelp';
 import type {
   ConfigValidationIssue,
@@ -1584,7 +1584,7 @@ const SettingsPage: React.FC = () => {
             ) : null}
             {!trimmedSearchQuery && shouldShowFirstRunSetup ? (
               <FirstRunSetupCard
-                status={setupStatus}
+                status={localizeSetupStatus(setupStatus, uiLanguage)}
                 isLoading={isRefreshingSetupStatus}
                 error={setupStatusError}
                 firstStockCode={firstSetupStockCode}

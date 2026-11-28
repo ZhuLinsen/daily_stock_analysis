@@ -36,7 +36,7 @@ _MAX_ABS_NUMERIC = 1e15
 # fixed whitelist BEFORE interpolation, so nothing untrusted can appear
 # before the BEGIN_UNTRUSTED sentinel (mirrors the CrossAssetContext schema).
 _VALID_RISK_APPETITES = frozenset({"risk_on", "neutral", "risk_off", "unknown"})
-_VALID_PROMPT_MARKETS = frozenset({"cn", "hk", "us", "jp", "kr", "tw"})
+_VALID_PROMPT_MARKETS = frozenset({"cn", "hk", "us", "jp", "kr", "tw", "au"})
 _TRADE_DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 # Control characters (incl. \r\n\t and U+2028/U+2029) are collapsed so a
@@ -73,8 +73,8 @@ _RISK_APPETITE_LABELS_EN = {
     "unknown": "unknown (insufficient signal)",
 }
 
-_MARKET_LABELS_ZH = {"cn": "A股", "hk": "港股", "us": "美股", "jp": "日股", "kr": "韩股", "tw": "台股"}
-_MARKET_LABELS_EN = {"cn": "A-share", "hk": "HK", "us": "US", "jp": "Japan", "kr": "Korea", "tw": "Taiwan"}
+_MARKET_LABELS_ZH = {"cn": "A股", "hk": "港股", "us": "美股", "jp": "日股", "kr": "韩股", "tw": "台股", "au": "澳股"}
+_MARKET_LABELS_EN = {"cn": "A-share", "hk": "HK", "us": "US", "jp": "Japan", "kr": "Korea", "tw": "Taiwan", "au": "Australia ASX"}
 
 
 def format_cross_asset_context_prompt_section(

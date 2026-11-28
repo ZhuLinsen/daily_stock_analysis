@@ -2,6 +2,7 @@
 """Unit tests for system configuration service."""
 
 import os
+import re
 import json
 import logging
 import tempfile
@@ -1357,6 +1358,36 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertEqual(checks["llm_agent"]["status"], "inherited")
         self.assertEqual(checks["stock_list"]["status"], "configured")
         self.assertEqual(checks["notification"]["status"], "optional")
+
+    def test_get_setup_status_returns_english_texts_next_to_chinese(self) -> None:
+        cjk = re.compile(r"[一-鿿]")
+        for env in (
+            ("LITELLM_MODEL=gemini/gemini-3-flash-preview", "GEMINI_API_KEY=secret-key-value", "STOCK_LIST=600519"),
+            ("STOCK_LIST=",),
+        ):
+            self._rewrite_env(*env)
+            with patch.dict(os.environ, {}, clear=True):
+                status = self.service.get_setup_status()
+            for check in status["checks"]:
+                self.assertRegex(check["title"], cjk)
+                self.assertTrue(check["title_en"] and check["message_en"])
+                for field in ("title_en", "message_en", "next_step_en"):
+                    self.assertNotRegex(check[field] or "", cjk, f"{check['key']}.{field}")
+                self.assertEqual(check["next_step"] is None, check["next_step_en"] is None)
+
+        checks = {check["key"]: check for check in status["checks"]}
+        self.assertEqual(checks["stock_list"]["message_en"], "STOCK_LIST is empty.")
+        self.assertEqual(checks["llm_primary"]["message_en"], "No primary model configured yet.")
+
+    def test_setup_status_keeps_the_specific_reason_for_an_unusable_primary_model(self) -> None:
+        self._rewrite_env("LITELLM_MODEL=gemini/gemini-3-flash-preview", "STOCK_LIST=600519")
+        with patch.dict(os.environ, {}, clear=True):
+            status = self.service.get_setup_status()
+
+        check = {check["key"]: check for check in status["checks"]}["llm_primary"]
+        self.assertEqual(check["status"], "needs_action")
+        self.assertEqual(check["message"], "主模型缺少可用渠道或匹配的 API Key")
+        self.assertEqual(check["message_en"], "The primary model has no usable channel or matching API key.")
 
     def test_generation_backend_status_preview_uses_draft_backend(self) -> None:
         self._rewrite_env(
@@ -2839,7 +2870,7 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         market_review_schema = items["MARKET_REVIEW_REGION"]["schema"]
         self.assertEqual(
             market_review_schema["validation"]["allowed_values"],
-            ["cn", "hk", "us", "jp", "kr", "tw", "both"],
+            ["cn", "hk", "us", "jp", "kr", "tw", "au", "both"],
         )
         self.assertEqual(market_review_schema["validation"]["delimiter"], ",")
         self.assertEqual(

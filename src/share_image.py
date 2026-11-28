@@ -32,7 +32,7 @@ _MARKET_RE = re.compile(
     r"(?:大盘复盘|市场复盘|market\s+(?:review|recap)|시황\s*리뷰)", re.IGNORECASE
 )
 _MARKET_SCOPE_RE = re.compile(
-    r"(?:A股|港股|美股|日股|韩股|台股|中国\s*A주|미국|홍콩|일본|한국|대만|\b(?:cn|hk|us|jp|kr|tw)\b|a[-\s]?share|hong\s+kong|japan|korea|taiwan|u\.?s\.?)",
+    r"(?:A股|港股|美股|日股|韩股|台股|澳股|中国\s*A주|미국|홍콩|일본|한국|대만|호주|\b(?:cn|hk|us|jp|kr|tw|au|asx)\b|a[-\s]?share|hong\s+kong|japan|korea|taiwan|australian?|u\.?s\.?)",
     re.IGNORECASE,
 )
 _DASHBOARD_RE = re.compile(r"(?:决策仪表盘|decision\s+dashboard)", re.IGNORECASE)
@@ -151,6 +151,7 @@ _MARKET_LABEL_PATTERNS = (
     ("日股", re.compile(r"(?:日\s*股|japan|일본)", re.IGNORECASE)),
     ("韩股", re.compile(r"(?:韩\s*股|korea|한국)", re.IGNORECASE)),
     ("台股", re.compile(r"(?:台\s*股|臺\s*股|taiwan|대만)", re.IGNORECASE)),
+    ("澳股", re.compile(r"(?:澳\s*股|澳大利亚|澳洲|australia|\basx\b|호주)", re.IGNORECASE)),
 )
 
 
@@ -878,6 +879,7 @@ def _market_label_for_region(region: str) -> str:
         "jp": "日股",
         "kr": "韩股",
         "tw": "台股",
+        "au": "澳股",
     }.get((region or "").strip().lower(), "")
 
 
@@ -1966,6 +1968,7 @@ def _market_region_for_segment(segment: MarketSegment) -> str:
         "日股": "jp",
         "韩股": "kr",
         "台股": "tw",
+        "澳股": "au",
     }.get(label, "")
 
 
@@ -1978,7 +1981,7 @@ def _multi_market_body(
     markets = structured_payload.get("markets") if isinstance(structured_payload, Mapping) else None
     market_payloads = markets if isinstance(markets, Mapping) else {}
     unused_regions = [
-        region for region in ("cn", "hk", "us", "jp", "kr", "tw")
+        region for region in ("cn", "hk", "us", "jp", "kr", "tw", "au")
         if isinstance(market_payloads.get(region), Mapping)
     ]
     for segment in segments:

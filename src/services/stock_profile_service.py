@@ -79,11 +79,11 @@ class StockProfileService:
 
     @staticmethod
     def market_for_code(canonical_code: str) -> str:
-        if canonical_code.startswith("HK"):
-            return "hk"
         suffix_market = get_suffix_market(canonical_code)
         if suffix_market:
             return suffix_market
+        if canonical_code.startswith("HK"):
+            return "hk"
         if canonical_code.isdigit() and len(canonical_code) == 6:
             return "cn"
         return "us"

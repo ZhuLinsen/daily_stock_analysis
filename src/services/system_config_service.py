@@ -179,6 +179,14 @@ def check_database_path_usable(db_path_value: Optional[str]) -> bool:
         return False
 
 
+_SETUP_PRIMARY_MODEL_REASONS_EN = {
+    "主模型未出现在当前 LiteLLM YAML model_list 中": "The primary model is not in the current LiteLLM YAML model_list.",
+    "主模型未出现在当前启用渠道模型列表中": "The primary model is not in the model list of any enabled channel.",
+    "主模型缺少可用渠道或匹配的 API Key": "The primary model has no usable channel or matching API key.",
+    "尚未检测到主模型配置": "No primary model configured yet.",
+}
+
+
 class SystemConfigService:
     """Service layer for reading, validating, and updating runtime configuration."""
 
@@ -3587,21 +3595,25 @@ class SystemConfigService:
     @staticmethod
     def _setup_check(
         key: str,
-        title: str,
+        title: Tuple[str, str],
         category: str,
         required: bool,
         status: str,
-        message: str,
-        next_step: Optional[str] = None,
+        message: Tuple[str, str],
+        next_step: Optional[Tuple[str, str]] = None,
     ) -> Dict[str, Any]:
+        """Build one setup check; texts are (zh, en) pairs, kept as zh fields plus *_en fields."""
         return {
             "key": key,
-            "title": title,
+            "title": title[0],
+            "title_en": title[1],
             "category": category,
             "required": required,
             "status": status,
-            "message": message,
-            "next_step": next_step,
+            "message": message[0],
+            "message_en": message[1],
+            "next_step": next_step[0] if next_step else None,
+            "next_step_en": next_step[1] if next_step else None,
         }
 
     @staticmethod
@@ -3953,29 +3965,31 @@ class SystemConfigService:
             if shutil.which(preset.executable):
                 return self._setup_check(
                     "llm_primary",
-                    "LLM 主渠道",
+                    ("LLM 主渠道", "Primary LLM channel"),
                     "ai_model",
                     True,
                     "configured",
-                    f"已启用 {preset.display_name} 本地生成 Backend（experimental/limited）。",
+                    (f"已启用 {preset.display_name} 本地生成 Backend（experimental/limited）。", f"{preset.display_name} local generation backend is enabled (experimental/limited)."),
                 )
             return self._setup_check(
                 "llm_primary",
-                "LLM 主渠道",
+                ("LLM 主渠道", "Primary LLM channel"),
                 "ai_model",
                 True,
                 "needs_action",
                 (
-                    "已选择 codex_cli，但 DSA 后端进程当前 PATH 中找不到 codex 可执行文件。"
+                    ("已选择 codex_cli，但 DSA 后端进程当前 PATH 中找不到 codex 可执行文件。", "codex_cli is selected, but the codex executable is not on the DSA backend process PATH.")
                     if generation_backend == CODEX_CLI_BACKEND_ID
-                    else f"已选择 {generation_backend}，但未找到 {preset.executable} 可执行文件。"
+                    else (f"已选择 {generation_backend}，但未找到 {preset.executable} 可执行文件。", f"{generation_backend} is selected, but the {preset.executable} executable was not found.")
                 ),
                 (
-                    "请确认 Codex CLI 已安装到后端 PATH 可见目录；桌面端请完全退出并重开。"
+                    ("请确认 Codex CLI 已安装到后端 PATH 可见目录；桌面端请完全退出并重开。"
                     "打开 Codex CLI 交互窗口不会改变已运行后端的 PATH；若找到后仍失败，再检查 Codex CLI 登录态，"
-                    "或将 GENERATION_BACKEND 设回 litellm。"
+                    "或将 GENERATION_BACKEND 设回 litellm。", "Make sure Codex CLI is installed in a directory on the backend PATH; for the desktop app, quit fully and reopen it. "
+                    "Opening an interactive Codex CLI window does not change the PATH of a running backend; if it still fails once found, "
+                    "check the Codex CLI login, or set GENERATION_BACKEND back to litellm.")
                     if generation_backend == CODEX_CLI_BACKEND_ID
-                    else "请先安装并登录对应 CLI，或将 GENERATION_BACKEND 设回 litellm。"
+                    else ("请先安装并登录对应 CLI，或将 GENERATION_BACKEND 设回 litellm。", "Install and sign in to the CLI first, or set GENERATION_BACKEND back to litellm.")
                 ),
             )
 
@@ -3987,22 +4001,24 @@ class SystemConfigService:
                 "channel": "LLM 渠道",
                 "legacy": "legacy provider",
             }.get(source, source)
+            source_label_en = {"explicit": "explicit primary model", "channel": "LLM channel"}.get(source, source_label)
             return self._setup_check(
                 "llm_primary",
-                "LLM 主渠道",
+                ("LLM 主渠道", "Primary LLM channel"),
                 "ai_model",
                 True,
                 "configured",
-                f"已检测到 {source_label}: {model}",
+                (f"已检测到 {source_label}: {model}", f"Detected {source_label_en}: {model}"),
             )
         return self._setup_check(
             "llm_primary",
-            "LLM 主渠道",
+            ("LLM 主渠道", "Primary LLM channel"),
             "ai_model",
             True,
             "needs_action",
-            source,
-            "请配置 LITELLM_MODEL、LLM_CHANNELS、LITELLM_CONFIG 或 legacy provider API Key。",
+            # Keep the resolver's specific reason; it tells the user what to fix.
+            (source, _SETUP_PRIMARY_MODEL_REASONS_EN.get(source, source)),
+            ("请配置 LITELLM_MODEL、LLM_CHANNELS、LITELLM_CONFIG 或 legacy provider API Key。", "Configure LITELLM_MODEL, LLM_CHANNELS, LITELLM_CONFIG or a legacy provider API key."),
         )
 
     def _build_setup_agent_llm_check(
@@ -4021,12 +4037,12 @@ class SystemConfigService:
         if agent_backend in GENERATION_ONLY_BACKEND_IDS:
             return self._setup_check(
                 "llm_agent",
-                "Agent 渠道",
+                ("Agent 渠道", "Agent channel"),
                 "agent",
                 True,
                 "needs_action",
-                f"Agent 工具调用暂不支持 {agent_backend} text-only backend。",
-                "请将 AGENT_GENERATION_BACKEND 设为 auto 或 litellm，并配置 LiteLLM 工具调用渠道。",
+                (f"Agent 工具调用暂不支持 {agent_backend} text-only backend。", f"Agent tool calls do not support the {agent_backend} text-only backend yet."),
+                ("请将 AGENT_GENERATION_BACKEND 设为 auto 或 litellm，并配置 LiteLLM 工具调用渠道。", "Set AGENT_GENERATION_BACKEND to auto or litellm, and configure a LiteLLM tool-calling channel."),
             )
 
         agent_model_raw = (effective_map.get("AGENT_LITELLM_MODEL") or "").strip()
@@ -4039,70 +4055,72 @@ class SystemConfigService:
                     if litellm_model in hermes_routes and litellm_model not in non_hermes_routes:
                         return self._setup_check(
                             "llm_agent",
-                            "Agent 渠道",
+                            ("Agent 渠道", "Agent channel"),
                             "agent",
                             True,
                             "needs_action",
-                            "普通分析使用 Codex CLI；但当前 LiteLLM Agent 路径继承的是 Hermes-only 模型，"
-                            "Hermes Phase 3 不支持 Agent 工具调用。",
-                            "如需使用 Ask-Stock Agent，请配置非 Hermes 的 AGENT_LITELLM_MODEL，"
-                            "或配置包含非 Hermes deployment 的 mixed Agent route。",
+                            ("普通分析使用 Codex CLI；但当前 LiteLLM Agent 路径继承的是 Hermes-only 模型，"
+                            "Hermes Phase 3 不支持 Agent 工具调用。", "Regular analysis uses Codex CLI, but the LiteLLM Agent path inherits a Hermes-only model, "
+                            "and Hermes Phase 3 does not support Agent tool calls."),
+                            ("如需使用 Ask-Stock Agent，请配置非 Hermes 的 AGENT_LITELLM_MODEL，"
+                            "或配置包含非 Hermes deployment 的 mixed Agent route。", "To use the Ask-Stock Agent, configure a non-Hermes AGENT_LITELLM_MODEL, "
+                            "or a mixed Agent route that includes a non-Hermes deployment."),
                         )
                     return self._setup_check(
                         "llm_agent",
-                        "Agent 渠道",
+                        ("Agent 渠道", "Agent channel"),
                         "agent",
                         True,
                         "configured",
-                        f"普通分析使用 Codex CLI；Agent 工具调用仍使用 LiteLLM 主模型: {litellm_model}",
+                        (f"普通分析使用 Codex CLI；Agent 工具调用仍使用 LiteLLM 主模型: {litellm_model}", f"Regular analysis uses Codex CLI; Agent tool calls still use the LiteLLM primary model: {litellm_model}"),
                     )
                 if agent_backend == LITELLM_BACKEND_ID:
                     return self._setup_check(
                         "llm_agent",
-                        "Agent 渠道",
+                        ("Agent 渠道", "Agent channel"),
                         "agent",
                         True,
                         "needs_action",
-                        "AGENT_GENERATION_BACKEND 已选择 litellm，但未检测到可用 LiteLLM 模型配置。",
-                        "如需使用 Ask-Stock Agent，请配置 AGENT_LITELLM_MODEL、LITELLM_MODEL、LLM_CHANNELS 或 LITELLM_CONFIG。",
+                        ("AGENT_GENERATION_BACKEND 已选择 litellm，但未检测到可用 LiteLLM 模型配置。", "AGENT_GENERATION_BACKEND is set to litellm, but no usable LiteLLM model configuration was found."),
+                        ("如需使用 Ask-Stock Agent，请配置 AGENT_LITELLM_MODEL、LITELLM_MODEL、LLM_CHANNELS 或 LITELLM_CONFIG。", "To use the Ask-Stock Agent, configure AGENT_LITELLM_MODEL, LITELLM_MODEL, LLM_CHANNELS or LITELLM_CONFIG."),
                     )
                 return self._setup_check(
                     "llm_agent",
-                    "Agent 渠道",
+                    ("Agent 渠道", "Agent channel"),
                     "agent",
                     True,
                     "needs_action",
-                    "Agent 工具调用需要 LiteLLM 模型配置；local CLI 主生成方式不会被自动继承。",
-                    "如需使用 Ask-Stock Agent，请配置 LiteLLM 模型，或将 AGENT_GENERATION_BACKEND 固定为 litellm 后补齐模型配置。",
+                    ("Agent 工具调用需要 LiteLLM 模型配置；local CLI 主生成方式不会被自动继承。", "Agent tool calls need a LiteLLM model configuration; a local CLI primary backend is not inherited automatically."),
+                    ("如需使用 Ask-Stock Agent，请配置 LiteLLM 模型，或将 AGENT_GENERATION_BACKEND 固定为 litellm 后补齐模型配置。", "To use the Ask-Stock Agent, configure a LiteLLM model, or set AGENT_GENERATION_BACKEND to litellm and complete its model configuration."),
                 )
             if primary_check["status"] == "configured":
                 primary_model, _source = self._resolve_setup_primary_model(effective_map)
                 if primary_model in hermes_routes and primary_model not in non_hermes_routes:
                     return self._setup_check(
                         "llm_agent",
-                        "Agent 渠道",
+                        ("Agent 渠道", "Agent channel"),
                         "agent",
                         True,
                         "needs_action",
-                        "Hermes Phase 3 不支持 Agent 工具调用，且当前继承的主模型没有非 Hermes deployment。",
-                        "请选择非 Hermes Agent 模型，或配置包含非 Hermes deployment 的 mixed Agent route。",
+                        ("Hermes Phase 3 不支持 Agent 工具调用，且当前继承的主模型没有非 Hermes deployment。", "Hermes Phase 3 does not support Agent tool calls, and the inherited primary model has no non-Hermes deployment."),
+                        ("请选择非 Hermes Agent 模型，或配置包含非 Hermes deployment 的 mixed Agent route。", "Choose a non-Hermes Agent model, or configure a mixed Agent route that includes a non-Hermes deployment."),
                     )
                 return self._setup_check(
                     "llm_agent",
-                    "Agent 渠道",
+                    ("Agent 渠道", "Agent channel"),
                     "agent",
                     True,
                     "inherited",
-                    "未单独配置 Agent 主模型，将继承 LLM 主渠道。",
+                    ("未单独配置 Agent 主模型，将继承 LLM 主渠道。", "No separate Agent model is configured; it inherits the primary LLM channel."),
                 )
             return self._setup_check(
                 "llm_agent",
-                "Agent 渠道",
+                ("Agent 渠道", "Agent channel"),
                 "agent",
                 True,
                 "needs_action",
-                "Agent 未配置独立模型，且 LLM 主渠道尚不可用。",
-                "请先补齐 LLM 主渠道配置。",
+                ("Agent 未配置独立模型，且 LLM 主渠道尚不可用。", "The Agent has no separate model, and the primary LLM channel is not available yet."),
+                ("请先补齐 LLM 主渠道配置。", "Complete the primary LLM channel configuration first."),
             )
 
         configured_models = set(
@@ -4113,22 +4131,26 @@ class SystemConfigService:
         if agent_model in hermes_routes and agent_model not in non_hermes_routes:
             return self._setup_check(
                 "llm_agent",
-                "Agent 渠道",
+                ("Agent 渠道", "Agent channel"),
                 "agent",
                 True,
                 "needs_action",
-                f"Agent 主模型 {agent_model} 只有 Hermes deployment，Phase 3 不支持 Agent 工具调用。",
-                "请选择非 Hermes Agent 模型，或配置 mixed route 中的非 Hermes deployment。",
+                (f"Agent 主模型 {agent_model} 只有 Hermes deployment，Phase 3 不支持 Agent 工具调用。", f"Agent model {agent_model} only has a Hermes deployment; Phase 3 does not support Agent tool calls."),
+                ("请选择非 Hermes Agent 模型，或配置 mixed route 中的非 Hermes deployment。", "Choose a non-Hermes Agent model, or add a non-Hermes deployment to the mixed route."),
             )
-        configured_agent_message = f"已配置 Agent 主模型: {agent_model}"
+        configured_agent_message = (
+            f"已配置 Agent 主模型: {agent_model}",
+            f"Agent model configured: {agent_model}",
+        )
         if generation_backend == CODEX_CLI_BACKEND_ID:
             configured_agent_message = (
-                f"普通分析使用 Codex CLI；Agent 工具调用仍使用 LiteLLM 主模型: {agent_model}"
+                f"普通分析使用 Codex CLI；Agent 工具调用仍使用 LiteLLM 主模型: {agent_model}",
+                f"Regular analysis uses Codex CLI; Agent tool calls still use the LiteLLM primary model: {agent_model}",
             )
         if _uses_direct_env_provider(agent_model):
             return self._setup_check(
                 "llm_agent",
-                "Agent 渠道",
+                ("Agent 渠道", "Agent channel"),
                 "agent",
                 True,
                 "configured",
@@ -4140,7 +4162,7 @@ class SystemConfigService:
         ) or agent_model in configured_models:
             return self._setup_check(
                 "llm_agent",
-                "Agent 渠道",
+                ("Agent 渠道", "Agent channel"),
                 "agent",
                 True,
                 "configured",
@@ -4149,12 +4171,12 @@ class SystemConfigService:
 
         return self._setup_check(
             "llm_agent",
-            "Agent 渠道",
+            ("Agent 渠道", "Agent channel"),
             "agent",
             True,
             "needs_action",
-            f"Agent 主模型 {agent_model} 缺少可用渠道或匹配的 API Key。",
-            "请调整 AGENT_LITELLM_MODEL 或补齐对应渠道配置。",
+            (f"Agent 主模型 {agent_model} 缺少可用渠道或匹配的 API Key。", f"Agent model {agent_model} has no usable channel or matching API key."),
+            ("请调整 AGENT_LITELLM_MODEL 或补齐对应渠道配置。", "Adjust AGENT_LITELLM_MODEL or complete the matching channel configuration."),
         )
 
     def _build_setup_stock_list_check(self, effective_map: Dict[str, str]) -> Dict[str, Any]:
@@ -4162,20 +4184,20 @@ class SystemConfigService:
         if stocks:
             return self._setup_check(
                 "stock_list",
-                "自选股",
+                ("自选股", "Watchlist"),
                 "base",
                 True,
                 "configured",
-                f"已配置 {len(stocks)} 只股票。",
+                (f"已配置 {len(stocks)} 只股票。", f"{len(stocks)} stock(s) configured."),
             )
         return self._setup_check(
             "stock_list",
-            "自选股",
+            ("自选股", "Watchlist"),
             "base",
             True,
             "needs_action",
-            "当前 STOCK_LIST 为空。",
-            "请至少添加 1 只股票用于首次试跑。",
+            ("当前 STOCK_LIST 为空。", "STOCK_LIST is empty."),
+            ("请至少添加 1 只股票用于首次试跑。", "Add at least one stock for the first test run."),
         )
 
     def _build_setup_notification_check(self, effective_map: Dict[str, str]) -> Dict[str, Any]:
@@ -4223,20 +4245,20 @@ class SystemConfigService:
         if configured:
             return self._setup_check(
                 "notification",
-                "通知渠道",
+                ("通知渠道", "Notification channels"),
                 "notification",
                 False,
                 "configured",
-                "已检测到至少一个通知渠道配置。",
+                ("已检测到至少一个通知渠道配置。", "At least one notification channel is configured."),
             )
         return self._setup_check(
             "notification",
-            "通知渠道",
+            ("通知渠道", "Notification channels"),
             "notification",
             False,
             "optional",
-            "通知为可选项，未配置也不影响首次跑通。",
-            "需要推送时可稍后配置飞书、钉钉、Telegram、邮件或其他通知渠道。",
+            ("通知为可选项，未配置也不影响首次跑通。", "Notifications are optional; the first run works without them."),
+            ("需要推送时可稍后配置飞书、钉钉、Telegram、邮件或其他通知渠道。", "Configure Feishu, DingTalk, Telegram, email or another channel later when you want push notifications."),
         )
 
     def _build_setup_storage_check(self, effective_map: Dict[str, str]) -> Dict[str, Any]:
@@ -4248,51 +4270,51 @@ class SystemConfigService:
             if db_path.is_symlink() and not db_path.exists():
                 return self._setup_check(
                     "storage",
-                    "数据库 / 本地存储",
+                    ("数据库 / 本地存储", "Database / local storage"),
                     "system",
                     True,
                     "needs_action",
-                    f"数据库路径软链接无效: {db_path}",
-                    "请将 DATABASE_PATH 设置为可用的 SQLite 文件路径。",
+                    (f"数据库路径软链接无效: {db_path}", f"Database path is a broken symlink: {db_path}"),
+                    ("请将 DATABASE_PATH 设置为可用的 SQLite 文件路径。", "Set DATABASE_PATH to a usable SQLite file path."),
                 )
             if db_path.exists():
                 if db_path.is_dir() or not db_path.is_file():
                     return self._setup_check(
                         "storage",
-                        "数据库 / 本地存储",
+                        ("数据库 / 本地存储", "Database / local storage"),
                         "system",
                         True,
                         "needs_action",
-                        f"数据库路径指向目录或非常规文件: {db_path}",
-                        "请将 DATABASE_PATH 设置为具体 SQLite 文件路径（如 ./data/stock_analysis.db）。",
+                        (f"数据库路径指向目录或非常规文件: {db_path}", f"Database path points to a directory or a non-regular file: {db_path}"),
+                        ("请将 DATABASE_PATH 设置为具体 SQLite 文件路径（如 ./data/stock_analysis.db）。", "Set DATABASE_PATH to a SQLite file path (for example ./data/stock_analysis.db)."),
                     )
                 if not check_database_path_usable(str(db_path)):
                     return self._setup_check(
                         "storage",
-                        "数据库 / 本地存储",
+                        ("数据库 / 本地存储", "Database / local storage"),
                         "system",
                         True,
                         "needs_action",
-                        f"数据库文件或所在目录不可写: {db_path}",
-                        "请调整 DATABASE_PATH 或目录权限。",
+                        (f"数据库文件或所在目录不可写: {db_path}", f"The database file or its directory is not writable: {db_path}"),
+                        ("请调整 DATABASE_PATH 或目录权限。", "Adjust DATABASE_PATH or the directory permissions."),
                     )
                 return self._setup_check(
                     "storage",
-                    "数据库 / 本地存储",
+                    ("数据库 / 本地存储", "Database / local storage"),
                     "system",
                     True,
                     "configured",
-                    f"数据库路径可用: {db_path}",
+                    (f"数据库路径可用: {db_path}", f"Database path is usable: {db_path}"),
                 )
         except OSError as exc:
             return self._setup_check(
                 "storage",
-                "数据库 / 本地存储",
+                ("数据库 / 本地存储", "Database / local storage"),
                 "system",
                 True,
                 "needs_action",
-                f"数据库路径检查失败: {exc}",
-                "请检查 DATABASE_PATH 或上级目录权限。",
+                (f"数据库路径检查失败: {exc}", f"Database path check failed: {exc}"),
+                ("请检查 DATABASE_PATH 或上级目录权限。", "Check DATABASE_PATH or the parent directory permissions."),
             )
 
         writable, probe = _inspect_dir_writable(str(parent))
@@ -4300,27 +4322,27 @@ class SystemConfigService:
             if probe is not None and probe.exists() and probe.is_dir():
                 return self._setup_check(
                     "storage",
-                    "数据库 / 本地存储",
+                    ("数据库 / 本地存储", "Database / local storage"),
                     "system",
                     True,
                     "needs_action",
-                    f"数据库路径上级目录不可写: {probe}",
-                    "请调整 DATABASE_PATH 或目录权限。",
+                    (f"数据库路径上级目录不可写: {probe}", f"The database parent directory is not writable: {probe}"),
+                    ("请调整 DATABASE_PATH 或目录权限。", "Adjust DATABASE_PATH or the directory permissions."),
                 )
             return self._setup_check(
                 "storage",
-                "数据库 / 本地存储",
+                ("数据库 / 本地存储", "Database / local storage"),
                 "system",
                 True,
                 "needs_action",
-                f"数据库路径父目录不可用: {parent}",
-                "请检查 DATABASE_PATH 或上级目录权限。",
+                (f"数据库路径父目录不可用: {parent}", f"The database parent directory is not usable: {parent}"),
+                ("请检查 DATABASE_PATH 或上级目录权限。", "Check DATABASE_PATH or the parent directory permissions."),
             )
 
-        detail = f"数据库路径可用: {db_path}" if parent.exists() else f"数据库上级目录可创建: {parent}"
+        detail = (f"数据库路径可用: {db_path}", f"Database path is usable: {db_path}") if parent.exists() else (f"数据库上级目录可创建: {parent}", f"The database parent directory can be created: {parent}")
         return self._setup_check(
             "storage",
-            "数据库 / 本地存储",
+            ("数据库 / 本地存储", "Database / local storage"),
             "system",
             True,
             "configured",
