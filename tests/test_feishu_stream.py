@@ -143,6 +143,22 @@ def test_reply_text_uses_legacy_feishu_markdown_formatter():
     assert client.calls[0]["content"] == format_feishu_markdown(text)
 
 
+def test_send_to_chat_with_small_byte_budget_keeps_multibyte_characters(monkeypatch):
+    monkeypatch.setattr(feishu_stream.time, "sleep", lambda _: None)
+    client = DummyFeishuReplyClient(max_bytes=10)
+    text = "早盘走势\n午盘📈\n收盘"
+    assert client.send_to_chat("chat_123", text)
+    pages = [call["content"] for call in client.calls]
+    assert "".join(pages) == text
+    assert all(0 < len(page.encode("utf-8")) <= 10 for page in pages)
+
+
+def test_send_to_chat_rejects_character_larger_than_byte_budget():
+    client = DummyFeishuReplyClient(max_bytes=1)
+    assert not client.send_to_chat("chat_123", "中")
+    assert client.calls == []
+
+
 def test_send_to_chat_chunked_uses_chat_id(monkeypatch):
     sleep_calls = []
     monkeypatch.setattr(

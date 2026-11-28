@@ -355,29 +355,35 @@ class TestNotificationServiceSendToMethods(unittest.TestCase):
         mock_webhook.assert_not_called()
 
     @mock.patch("src.notification.get_config")
-    def test_send_feishu_stream_reply_strips_hidden_metadata_before_chunking(
-        self,
-        mock_get_config: mock.MagicMock,
-    ):
-        cfg = _make_config(
-            feishu_app_id="cli_test",
-            feishu_app_secret="app-secret",
-            feishu_max_bytes=10,
-        )
+    def test_feishu_context_formats_table_before_pagination(self, mock_get_config):
+        cfg = _make_config(feishu_app_id="cli_test", feishu_app_secret="app-secret", feishu_max_bytes=220)
         mock_get_config.return_value = cfg
-        service = NotificationService()
-        reply_client = mock.MagicMock()
-        content = "[dsa-market-region]: # (cn)\n\n# 市场复盘\n\n正文"
+        service = NotificationService(source_message=_make_feishu_message())
+        stocks = [f"Stock-{i:02d}" for i in range(24)]
+        content = "\n".join([
+            "[dsa-market-region]: # (us)",
+            "| Stock | Signal |",
+            "| --- | --- |",
+            *(f"| {stock} | Hold |" for stock in stocks),
+        ])
 
         with mock.patch("bot.platforms.feishu_stream.FEISHU_SDK_AVAILABLE", True), \
              mock.patch("src.config.get_config", return_value=cfg), \
-             mock.patch("bot.platforms.feishu_stream.FeishuReplyClient", return_value=reply_client), \
-             mock.patch.object(service, "_send_feishu_stream_chunked", return_value=True) as mock_chunked:
-            result = service._send_feishu_stream_reply("chat-1", content)
+             mock.patch("bot.platforms.feishu_stream.get_config", return_value=cfg), \
+             mock.patch("bot.platforms.feishu_stream.lark", create=True), \
+             mock.patch("bot.platforms.feishu_stream.time.sleep"), \
+             mock.patch("bot.platforms.feishu_stream.FeishuReplyClient._send_interactive_card", return_value=True) as send:
+            self.assertTrue(service.send_to_context(content))
 
-        self.assertTrue(result)
-        mock_chunked.assert_called_once_with(reply_client, "chat-1", "# 市场复盘\n\n正文", 10)
-        reply_client.send_to_chat.assert_not_called()
+        self.assertGreater(send.call_count, 1)
+        rows = []
+        for call in send.call_args_list:
+            page = call.args[0]
+            self.assertEqual(call.kwargs["chat_id"], "chat-1")
+            self.assertLessEqual(len(page.encode("utf-8")), cfg.feishu_max_bytes)
+            self.assertNotIn("dsa-market-region", page)
+            rows.extend(line for line in page.splitlines() if line.startswith("• "))
+        self.assertEqual(rows, [f"• Stock：{stock} | Signal：Hold" for stock in stocks])
 
     @mock.patch("src.notification.get_config")
     def test_feishu_context_failure_does_not_fallback_to_static_webhook(self, mock_get_config: mock.MagicMock):

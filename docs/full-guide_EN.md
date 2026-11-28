@@ -1063,6 +1063,8 @@ The notification channel matrix and `--check-notify` CLI details are documented 
 
 ### Feishu
 
+When a report is sent back to the Feishu or Lark chat that requested it, the Stream bot formats the entire table before splitting it across cards. Rows on later cards retain the original column labels.
+
 Webhook and App Bot interactive cards can include a button to the Web workspace. The sender reads `FEISHU_CARD_WEB_URL` first and uses `DSA_WEB_URL` when it is unset or empty. Use an `http://` or `https://` address reachable by recipients. Clear both values to remove the button. `FEISHU_MAX_BYTES` sets the content budget per page. Pagination also checks the full JSON request body against a budget of 20,000 bytes for Webhook and 30,000 bytes for App Bot. If the workspace URL leaves too little room to paginate, the sender omits the button. [Feishu custom bot guide](https://open.feishu.cn/document/client-docs/bot-v3/add-custom-bot) · [Lark message limits](https://open.larksuite.com/document/server-docs/im-v1/faq)
 
 > ⚠️ **Key distinction**: `FEISHU_WEBHOOK_SECRET` (webhook signing secret) and `FEISHU_APP_SECRET` (Feishu App Secret) are two completely different configuration variables and cannot be used interchangeably.
