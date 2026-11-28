@@ -380,7 +380,7 @@ OPENAI_MODEL=deepseek-flash
 
 ### Q15: macOS 提示“应用已损坏”或无法打开桌面端？
 
-**原因**：当前 macOS DMG 尚未使用 Apple Developer 证书签名和公证。从浏览器下载后，macOS Gatekeeper 可能给应用添加 quarantine（下载隔离）属性并阻止启动。
+**原因**：当前 macOS DMG 已在打包阶段由内向外补齐本地 ad-hoc 签名以支持 Apple Silicon（`arm64`），但尚未使用 Apple Developer 证书签名和公证。从浏览器下载后，macOS Gatekeeper 可能给应用添加 quarantine（下载隔离）属性并阻止启动。
 
 **解决方案**：
 
@@ -393,7 +393,15 @@ OPENAI_MODEL=deepseek-flash
    open "/Applications/Daily Stock Analysis.app"
    ```
 
-如果应用不在 `/Applications`，请替换为实际 `.app` 路径。不要对整个 `/Applications` 目录执行 `xattr`。该命令只是临时放行受信任的 unsigned 应用，不等同于签名或公证；完整排查说明见 [桌面端打包与发布](desktop-package.md#macos-提示应用已损坏无法打开)。
+4. 若使用 `v3.35.0` 等早期未补齐 ad-hoc 签名的 arm64 包且 Apple Silicon 移除 quarantine 后仍无反应，**建议优先升级到最新 Release DMG**；如需就地补签，因 `codesign --deep` 不会递归处理 `Contents/Resources/backend` 中的冻结后端，请按顺序执行：
+
+   ```bash
+   find "/Applications/Daily Stock Analysis.app/Contents/Resources/backend" -type f -exec sh -c 'file -b "$1" | grep -q "Mach-O" && codesign --force --sign - --timestamp=none "$1"' _ {} \;
+   codesign --force --deep --sign - --timestamp=none "/Applications/Daily Stock Analysis.app"
+   open "/Applications/Daily Stock Analysis.app"
+   ```
+
+如果应用不在 `/Applications`，请替换为实际 `.app` 路径。不要对整个 `/Applications` 目录执行 `xattr`。该命令只是临时放行受信任的未公证应用，不等同于开发者签名或公证；完整排查说明见 [桌面端打包与发布](desktop-package.md#macos-提示应用已损坏无法打开)。
 
 > 📌 相关 Issue: [#2113](https://github.com/ZhuLinsen/daily_stock_analysis/issues/2113)
 
