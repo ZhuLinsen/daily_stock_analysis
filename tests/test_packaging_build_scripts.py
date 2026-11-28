@@ -235,6 +235,8 @@ def test_macos_adhoc_packaging_contract_is_explicit() -> None:
     assert "verify_adhoc_signed_app" in desktop_script
     assert "verify_packaged_dmg" in desktop_script
     assert "verify_installed_dmg_app_launch" in desktop_script
+    assert "unset GITHUB_ACTIONS" in desktop_script
+    assert "DSA_SKIP_GUI_SMOKE" not in desktop_script
     assert "Signature=adhoc" in desktop_script
     assert "Authority=" in desktop_script
     assert "codesign --verify --deep --strict --verbose=4" in desktop_script
@@ -248,6 +250,7 @@ def test_macos_adhoc_packaging_contract_is_explicit() -> None:
     for doc_name in ("FAQ.md", "FAQ_EN.md", "desktop-package.md"):
         doc_text = _read_text(REPO_ROOT / "docs" / doc_name)
         assert "Contents/Resources/backend" in doc_text
+        assert '# find "/Applications/Daily Stock Analysis.app/Contents/Resources/backend"' not in doc_text
     assert "scripts/macos-signature-audit.sh" in workflow
     assert "scripts/build-desktop-macos.sh" in workflow
     assert "run: bash scripts/build-backend-macos.sh" in workflow

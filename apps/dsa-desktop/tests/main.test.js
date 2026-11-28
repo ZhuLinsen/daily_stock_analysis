@@ -372,6 +372,24 @@ test('buildBackendEnvironment pins WEBUI_PORT to the Electron-selected backend p
   assert.equal(env.WEBUI_HOST, '127.0.0.1');
 });
 
+test('buildBackendEnvironment strips GITHUB_ACTIONS so desktop backend starts API server', (t) => {
+  const mainModule = loadMainModule(t, { platform: 'darwin' });
+
+  const env = mainModule.buildBackendEnvironment({
+    envFile: '/tmp/dsa/.env',
+    dbPath: '/tmp/dsa/data.db',
+    logDir: '/tmp/dsa/logs',
+    port: 8000,
+    sourceEnv: {
+      PATH: '/usr/bin:/bin',
+      GITHUB_ACTIONS: 'true',
+    },
+  });
+
+  assert.equal(Object.prototype.hasOwnProperty.call(env, 'GITHUB_ACTIONS'), false);
+  assert.equal(env.DSA_DESKTOP_MODE, 'true');
+});
+
 test('resolveBackendBindHost reads WEBUI_HOST from env file', (t) => {
   const mainModule = loadMainModule(t, { platform: 'win32' });
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsa-desktop-host-'));

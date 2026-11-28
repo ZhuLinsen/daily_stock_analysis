@@ -361,13 +361,18 @@ Work through the following 5 checkpoints in order:
 
 1. Download only from the project's [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases), and select the package matching your Mac architecture. Do not bypass Gatekeeper for third-party copies or files from an untrusted source.
 2. Drag `Daily Stock Analysis` into Applications, then first try **System Settings → Privacy & Security → Open Anyway**.
-3. If it still does not start and you have verified that it came from the official project Release, remove quarantine only from this app and launch it (for earlier `v3.35.0` Apple Silicon builds that lacked ad-hoc signatures, **prefer upgrading to a newer Release DMG**, or re-sign the frozen backend Mach-O binaries under `Contents/Resources/backend` before re-signing the outer `.app` bundle):
+3. If it still does not start and you have verified that it came from the official project Release, remove quarantine only from this app and launch it:
 
    ```bash
    xattr -dr com.apple.quarantine "/Applications/Daily Stock Analysis.app"
-   # Only needed on earlier arm64 builds such as v3.35.0 without ad-hoc signatures (codesign --deep skips Contents/Resources/backend):
-   # find "/Applications/Daily Stock Analysis.app/Contents/Resources/backend" -type f -exec sh -c 'file -b "$1" | grep -q "Mach-O" && codesign --force --sign - --timestamp=none "$1"' _ {} \;
-   # codesign --force --deep --sign - --timestamp=none "/Applications/Daily Stock Analysis.app"
+   open "/Applications/Daily Stock Analysis.app"
+   ```
+
+4. For earlier `v3.35.0` Apple Silicon builds that lacked ad-hoc signatures and still fail to launch after clearing quarantine, **prefer upgrading to a newer Release DMG**; to re-sign in place, sign the frozen backend Mach-O binaries under `Contents/Resources/backend` before re-signing the outer `.app` bundle (`codesign --deep` skips `Contents/Resources/backend`):
+
+   ```bash
+   find "/Applications/Daily Stock Analysis.app/Contents/Resources/backend" -type f -exec sh -c 'file -b "$1" | grep -q "Mach-O" && codesign --force --sign - --timestamp=none "$1"' _ {} \;
+   codesign --force --deep --sign - --timestamp=none "/Applications/Daily Stock Analysis.app"
    open "/Applications/Daily Stock Analysis.app"
    ```
 

@@ -20,10 +20,6 @@ verify_installed_dmg_app_launch() {
     echo "Skipping installed DMG Electron launch smoke check for cross-arch build (host=$(uname -m), target=${DSA_MAC_ARCH:-})."
     return 0
   fi
-  if [[ "${DSA_SKIP_GUI_SMOKE:-0}" == "1" ]]; then
-    echo "Skipping installed DMG Electron launch smoke check (DSA_SKIP_GUI_SMOKE=1)."
-    return 0
-  fi
 
   local smoke_root=""
   local installed_app=""
@@ -71,8 +67,12 @@ verify_installed_dmg_app_launch() {
     exit 1
   fi
 
-  HOME="${smoke_home}" "${installed_app}/Contents/MacOS/Daily Stock Analysis" \
-    --user-data-dir="${smoke_userdata}" >"${smoke_stdout}" 2>&1 &
+  (
+    unset GITHUB_ACTIONS
+    export HOME="${smoke_home}"
+    exec "${installed_app}/Contents/MacOS/Daily Stock Analysis" \
+      --user-data-dir="${smoke_userdata}"
+  ) >"${smoke_stdout}" 2>&1 &
   app_pid=$!
 
   local elapsed=0
