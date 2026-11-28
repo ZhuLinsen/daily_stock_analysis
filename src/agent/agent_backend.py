@@ -100,7 +100,8 @@ class LiteLLMAgentBackend(AgentBackend):
     backend_id = "litellm"
     runtime_owns_loop = False
 
-    def __init__(self, tool_registry: ToolRegistry, llm_adapter: LLMToolAdapter) -> None:
+    def __init__(self, tool_registry: ToolRegistry, llm_adapter: LLMToolAdapter, *, backend_id: str = "litellm") -> None:
+        self.backend_id = backend_id
         self.tool_registry = tool_registry
         self.llm_adapter = llm_adapter
 

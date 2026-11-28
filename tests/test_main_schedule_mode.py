@@ -42,7 +42,7 @@ def _api_app_stub_modules():
 
     api_pkg = types.ModuleType("api")
     api_app_mod = types.ModuleType("api.app")
-    api_app_mod.app = SimpleNamespace()
+    api_app_mod.app = SimpleNamespace(state=SimpleNamespace())
     api_pkg.app = api_app_mod
     middlewares_pkg = types.ModuleType("api.middlewares")
     guard_mod = types.ModuleType("api.middlewares.security_guard")
@@ -288,7 +288,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
         config = self._make_config(webui_enabled=False, webui_host="127.0.0.1", webui_port=18000)
         observed_bind = []
 
-        def fake_start_api_server(host, port, config):
+        def fake_start_api_server(host, port, config, *, serve_only=False):
             observed_bind.append((host, port))
 
         with patch.dict(os.environ, {"GITHUB_ACTIONS": "false"}, clear=False), \
@@ -308,7 +308,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
         config = self._make_config(webui_enabled=False, webui_host="127.0.0.1", webui_port=18000)
         observed_bind = []
 
-        def fake_start_api_server(host, port, config):
+        def fake_start_api_server(host, port, config, *, serve_only=False):
             observed_bind.append((host, port))
 
         with patch.dict(os.environ, {"GITHUB_ACTIONS": "false"}, clear=False), \
@@ -1354,7 +1354,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
         run_immediately_seen_by_server = []
         runtime_args_seen_by_server = []
 
-        def fake_start_api_server(host, port, config):
+        def fake_start_api_server(host, port, config, *, serve_only=False):
             marker_seen_by_server.append(os.getenv(CLI_SCHEDULER_OWNER_ENV))
             run_immediately_seen_by_server.append(os.getenv(RUNTIME_SCHEDULER_RUN_IMMEDIATELY_ENV))
             runtime_args_seen_by_server.append(json.loads(os.getenv(RUNTIME_SCHEDULER_ARGS_ENV, "{}")))
@@ -1479,7 +1479,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
         run_immediately_seen_by_server = []
         runtime_args_seen_by_server = []
 
-        def fake_start_api_server(host, port, config):
+        def fake_start_api_server(host, port, config, *, serve_only=False):
             marker_seen_by_server.append(os.getenv(CLI_SCHEDULER_OWNER_ENV))
             force_enabled_seen_by_server.append(os.getenv(RUNTIME_SCHEDULER_FORCE_ENABLED_ENV))
             run_immediately_seen_by_server.append(os.getenv(RUNTIME_SCHEDULER_RUN_IMMEDIATELY_ENV))
@@ -1524,7 +1524,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
         config = self._make_config(webui_enabled=False, schedule_enabled=False)
         run_immediately_seen_by_server = []
 
-        def fake_start_api_server(host, port, config):
+        def fake_start_api_server(host, port, config, *, serve_only=False):
             run_immediately_seen_by_server.append(os.getenv(RUNTIME_SCHEDULER_RUN_IMMEDIATELY_ENV))
 
         with patch.dict(os.environ, {"GITHUB_ACTIONS": "false"}, clear=False), \
@@ -1554,7 +1554,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
         suppress_seen_by_server = []
         run_immediately_seen_by_server = []
 
-        def fake_start_api_server(host, port, config):
+        def fake_start_api_server(host, port, config, *, serve_only=False):
             marker_seen_by_server.append(os.getenv(CLI_SCHEDULER_OWNER_ENV))
             suppress_seen_by_server.append(os.getenv(RUNTIME_SCHEDULER_SUPPRESS_START_ENV))
             run_immediately_seen_by_server.append(os.getenv(RUNTIME_SCHEDULER_RUN_IMMEDIATELY_ENV))

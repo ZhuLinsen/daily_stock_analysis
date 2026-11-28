@@ -198,6 +198,7 @@ class OrchestratorResult:
     stats: Optional[AgentRunStats] = None
     runtime_facts: Optional[AgentRuntimeFacts] = None
     stage_trajectories: List[Dict[str, Any]] = field(default_factory=list)
+    answer_backend: str = ""
 
 
 @dataclass(frozen=True)
@@ -206,8 +207,8 @@ class PreparedOrchestratorChatTurn:
 
     session_id: str
     context: AgentContext
-    accepted_snapshot: Optional[Dict[str, Any]] = None
-    db_manager: Optional[DatabaseManager] = None
+    accepted_snapshot: Dict[str, Any]
+    db_manager: DatabaseManager
 
 
 class AgentOrchestrator:
@@ -299,9 +300,10 @@ class AgentOrchestrator:
 
         dashboard = None
         content = ""
+        answer_backend = ""
         if ctx is not None:
             self._prepare_partial_debate_result(ctx, stats)
-            dashboard, content = self._resolve_final_output(ctx, parse_dashboard=parse_dashboard)
+            dashboard, content, answer_backend = self._resolve_final_output(ctx, parse_dashboard=parse_dashboard)
             if parse_dashboard and dashboard is not None:
                 dashboard = self._mark_partial_dashboard(
                     dashboard,
@@ -312,6 +314,7 @@ class AgentOrchestrator:
 
         return OrchestratorResult(
             success=bool(content) if (not parse_dashboard or dashboard is not None) else False,
+            answer_backend=answer_backend,
             content=content,
             dashboard=dashboard,
             error=error,
@@ -344,9 +347,10 @@ class AgentOrchestrator:
         stats.models_used = list(dict.fromkeys(models_used))
         dashboard = None
         content = ""
+        answer_backend = ""
         if ctx is not None:
             self._prepare_partial_debate_result(ctx, stats)
-            dashboard, content = self._resolve_final_output(ctx, parse_dashboard=parse_dashboard)
+            dashboard, content, answer_backend = self._resolve_final_output(ctx, parse_dashboard=parse_dashboard)
             if parse_dashboard and dashboard is not None:
                 dashboard = self._mark_partial_dashboard(
                     dashboard,
@@ -357,6 +361,7 @@ class AgentOrchestrator:
 
         return OrchestratorResult(
             success=bool(content) if (not parse_dashboard or dashboard is not None) else False,
+            answer_backend=answer_backend,
             content=content,
             dashboard=dashboard,
             error=(
@@ -559,7 +564,6 @@ class AgentOrchestrator:
             ctx.meta["conversation_history"] = history
 
         # Persist user turn
-        accepted = None
         if resolved_turn is not None:
             accepted = session_service.commit_user_turn(resolved_turn)
         else:
@@ -590,23 +594,15 @@ class AgentOrchestrator:
             progress_callback=progress_callback,
         )
 
-        # Persist assistant response
-        if turn.accepted_snapshot is not None:
-            content = orch_result.content if orch_result.success else f"[分析失败] {orch_result.error or '未知错误'}"
-            conversation_manager.add_message(
-                turn.session_id, "assistant", content, accepted_turn=turn.accepted_snapshot,
-                db_manager=turn.db_manager,
-            )
-        elif orch_result.success:
-            conversation_manager.add_message(turn.session_id, "assistant", orch_result.content)
-        else:
-            conversation_manager.add_message(
-                turn.session_id, "assistant",
-                f"[分析失败] {orch_result.error or '未知错误'}",
-            )
+        content = orch_result.content if orch_result.success else f"[分析失败] {orch_result.error or '未知错误'}"
+        conversation_manager.add_message(
+            turn.session_id, "assistant", content, accepted_turn=turn.accepted_snapshot,
+            db_manager=turn.db_manager, backend=orch_result.answer_backend or None,
+        )
 
         return AgentResult(
             success=orch_result.success,
+            backend=orch_result.answer_backend,
             content=orch_result.content,
             dashboard=orch_result.dashboard,
             tool_calls_log=orch_result.tool_calls_log,
@@ -988,7 +984,7 @@ class AgentOrchestrator:
         stats.total_duration_s = total_duration
         stats.models_used = list(dict.fromkeys(models_used))
 
-        dashboard, content = self._resolve_final_output(ctx, parse_dashboard=parse_dashboard)
+        dashboard, content, answer_backend = self._resolve_final_output(ctx, parse_dashboard=parse_dashboard)
 
         model_str = ", ".join(dict.fromkeys(m for m in models_used if m))
         provider = stats.models_used[0] if stats.models_used else ""
@@ -1011,6 +1007,7 @@ class AgentOrchestrator:
 
         return OrchestratorResult(
             success=bool(content),
+            answer_backend=answer_backend,
             content=content,
             dashboard=dashboard,
             tool_calls_log=all_tool_calls,
@@ -1596,8 +1593,8 @@ class AgentOrchestrator:
         ctx: AgentContext,
         *,
         parse_dashboard: bool,
-    ) -> tuple[Optional[Dict[str, Any]], str]:
-        """Resolve the best available final output from context.
+    ) -> tuple[Optional[Dict[str, Any]], str, str]:
+        """Select the final dashboard/body and the backend responsible for verbatim chat text.
 
         For dashboard mode, prefer:
         1. Parsed/normalized decision dashboard
@@ -1613,30 +1610,30 @@ class AgentOrchestrator:
         if parse_dashboard:
             dashboard = self._resolve_dashboard_payload(ctx, final_dashboard, final_raw)
             if dashboard is not None:
-                return dashboard, json.dumps(dashboard, ensure_ascii=False, indent=2)
+                return dashboard, json.dumps(dashboard, ensure_ascii=False, indent=2), ""
             if ctx.opinions:
-                return None, self._fallback_summary(ctx)
-            return None, ""
+                return None, self._fallback_summary(ctx), ""
+            return None, "", ""
 
         if _risk_review_incomplete(ctx):
             language = normalize_report_language(ctx.meta.get("report_language"))
-            return None, _INCOMPLETE_RISK_REVIEW_NOTE[language]
+            return None, _INCOMPLETE_RISK_REVIEW_NOTE[language], ""
         if ctx.meta.get("risk_review_required") and self._risk_blocks_buy(ctx):
             # Free-form Chat replies can mix signals. Use the authoritative
             # review result before the reply is returned or saved to history.
             language = normalize_report_language(ctx.meta.get("report_language"))
-            return None, _BUY_BLOCKED_BY_RISK_REVIEW_NOTE[language]
+            return None, _BUY_BLOCKED_BY_RISK_REVIEW_NOTE[language], ""
         if chat_mode and isinstance(final_text, str) and final_text.strip():
-            return None, final_text.strip()
+            return None, final_text.strip(), "litellm"
         if isinstance(final_raw, str) and final_raw.strip():
-            return None, final_raw
+            return None, final_raw, "litellm"
         if isinstance(final_dashboard, dict):
             dashboard = self._finalize_dashboard_payload(final_dashboard, ctx)
             if dashboard is not None:
-                return dashboard, json.dumps(dashboard, ensure_ascii=False, indent=2)
+                return dashboard, json.dumps(dashboard, ensure_ascii=False, indent=2), ""
         if ctx.opinions:
-            return None, self._fallback_summary(ctx)
-        return None, ""
+            return None, self._fallback_summary(ctx), ""
+        return None, "", ""
 
     def _resolve_dashboard_payload(
         self,

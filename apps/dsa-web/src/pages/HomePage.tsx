@@ -1,3 +1,5 @@
+import { ModelSourceSelect } from '../components/chatgpt/ModelSourceSelect';
+import { currentChatGPTSource, useChatGPTStore } from '../stores/chatgptStore';
 import type React from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -254,6 +256,14 @@ async function getTodayAnalysisItems(dateKey: string): Promise<StockBarItem[]> {
 }
 
 const HomePage: React.FC = () => {
+  const [useChatGPT, setUseChatGPT] = useState(false);
+  const chatgptStatus = useChatGPTStore((state) => state.status);
+  const chatgptModel = useChatGPTStore((state) => state.model);
+  const refreshChatGPT = useChatGPTStore((state) => state.refresh);
+  const chatgptSource = useMemo(() => currentChatGPTSource(chatgptStatus, chatgptModel), [chatgptStatus, chatgptModel]);
+  const chatgptSourceUnavailable = useChatGPT && !chatgptSource;
+  useEffect(() => { void refreshChatGPT(); }, [refreshChatGPT]);
+
   const navigate = useNavigate();
   const location = useLocation();
   const { language: uiLanguage, t } = useUiLanguage();
@@ -850,23 +860,21 @@ const HomePage: React.FC = () => {
   }, [isDeletingStock, refreshMarketReviewHistory, refreshStockBar, refreshHistory]);
 
   const handleSubmitAnalysis = useCallback(
-    (
-      stockCode?: string,
-      stockName?: string,
-      selectionSource?: 'manual' | 'autocomplete' | 'import' | 'image',
-      analysisSkills?: string[],
-      originalQueryOverride?: string,
-    ) => {
+    (options: Parameters<typeof submitAnalysis>[0] = {}) => {
+      const selectionSource = options.selectionSource ?? 'manual';
+      const selected = useChatGPT && selectionSource !== 'import' && selectionSource !== 'image';
+      if (selected && chatgptSourceUnavailable) return;
       setSamplePreviewOpen(false);
       void submitAnalysis({
-        stockCode,
-        stockName,
-        originalQuery: originalQueryOverride ?? (query.trim() ? query : (stockCode ?? '')),
-        selectionSource: selectionSource ?? 'manual',
-        skills: analysisSkills ?? selectedAnalysisSkills,
+        ...options,
+        originalQuery: options.originalQuery ?? (query.trim() ? query : options.stockCode ?? ''),
+        selectionSource,
+        skills: options.skills ?? selectedAnalysisSkills,
+        modelSource: selected ? chatgptSource : undefined,
+        notify: selected ? false : options.notify,
       });
     },
-    [query, selectedAnalysisSkills, submitAnalysis],
+    [chatgptSource, chatgptSourceUnavailable, query, selectedAnalysisSkills, submitAnalysis, useChatGPT],
   );
 
   useEffect(() => {
@@ -881,7 +889,7 @@ const HomePage: React.FC = () => {
     setQuery(stockCode);
     navigate(location.pathname, { replace: true, state: null });
     if (state?.autoAnalyze) {
-      handleSubmitAnalysis(stockCode, stockName || undefined, 'import', state.skills);
+      handleSubmitAnalysis({ stockCode, stockName: stockName || undefined, selectionSource: 'import', skills: state.skills });
     }
   }, [handleSubmitAnalysis, location.pathname, location.search, location.state, navigate, setQuery]);
 
@@ -901,15 +909,13 @@ const HomePage: React.FC = () => {
       return;
     }
 
-    void submitAnalysis({
+    handleSubmitAnalysis({
       stockCode: selectedReport.meta.stockCode,
       stockName: selectedReport.meta.stockName,
       originalQuery: selectedReport.meta.stockCode,
-      selectionSource: 'manual',
       forceRefresh: true,
-      skills: selectedAnalysisSkills,
     });
-  }, [selectedAnalysisSkills, selectedReport, submitAnalysis]);
+  }, [handleSubmitAnalysis, selectedReport]);
 
   const openTaskRunFlow = useCallback((task: TaskInfo) => {
     const stock = task.stockName || task.stockCode || task.taskId;
@@ -1523,7 +1529,7 @@ const HomePage: React.FC = () => {
                   value={query}
                   onChange={setQuery}
                   onSubmit={(stockCode, stockName, selectionSource) => {
-                    handleSubmitAnalysis(stockCode, stockName, selectionSource);
+                    handleSubmitAnalysis({ stockCode, stockName, selectionSource });
                   }}
                   placeholder={t('home.placeholder')}
                   disabled={isAnalyzing}
@@ -1595,10 +1601,11 @@ const HomePage: React.FC = () => {
                 <BarChart3 className="h-4 w-4" aria-hidden="true" />
                 {t('home.marketReview')}
               </Button>
+              <ModelSourceSelect selected={useChatGPT} onChange={setUseChatGPT} />
               <button
                 type="button"
                 onClick={() => handleSubmitAnalysis()}
-                disabled={!query || isAnalyzing}
+                disabled={!query || isAnalyzing || chatgptSourceUnavailable}
                 className="btn-primary flex h-10 flex-1 items-center justify-center gap-1.5 whitespace-nowrap md:flex-none"
               >
                 {isAnalyzing ? (
@@ -1744,7 +1751,7 @@ const HomePage: React.FC = () => {
                       <Button
                         variant="home-action-ai"
                         size="sm"
-                        disabled={isAnalyzing || selectedReport.meta.id === undefined}
+                        disabled={isAnalyzing || selectedReport.meta.id === undefined || chatgptSourceUnavailable}
                         onClick={handleReanalyze}
                       >
                         <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1921,7 +1928,7 @@ const HomePage: React.FC = () => {
                             disabled={isAnalyzing}
                             onClick={() => {
                               setQuery(chip.code);
-                              handleSubmitAnalysis(chip.code, chip.label, 'manual', undefined, chip.code);
+                              handleSubmitAnalysis({ stockCode: chip.code, stockName: chip.label, originalQuery: chip.code });
                             }}
                             className="inline-flex items-center gap-1.5 rounded-full border border-subtle bg-surface/70 px-3 py-1 text-xs font-medium text-foreground transition-colors hover:border-primary/50 hover:bg-primary/10 hover:text-primary disabled:cursor-not-allowed disabled:opacity-50"
                           >

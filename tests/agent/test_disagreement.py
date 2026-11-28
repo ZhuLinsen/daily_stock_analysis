@@ -680,7 +680,12 @@ def test_chat_saves_the_reply_after_mandatory_risk_review(veto_buy, signal_adjus
     assert result.runtime_facts.risk_review_status == StageStatus.COMPLETED
     expected = "风控审查要求暂缓买入。" if blocked else "现在立即买入。"
     assert result.content == expected
-    add_message.assert_called_once_with("risk-chat", "assistant", expected, accepted_turn=snapshot, db_manager=db_manager)
+    expected_backend = "" if blocked else "litellm"
+    assert result.backend == expected_backend
+    add_message.assert_called_once_with(
+        "risk-chat", "assistant", expected, accepted_turn=snapshot, db_manager=db_manager,
+        backend=expected_backend or None,
+    )
 
 
 @pytest.mark.parametrize(

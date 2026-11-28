@@ -1,3 +1,4 @@
+import type { ChatGPTModelSource } from '../types/modelSource';
 import apiClient from './index';
 import { API_BASE_URL } from '../utils/constants';
 import { createApiError, createParsedApiError, isApiRequestError, parseApiError } from './error';
@@ -16,6 +17,8 @@ export function isAbortError(error: unknown): boolean {
 }
 
 export interface ChatRequest {
+  snapshot_id?: string;
+  model_source?: ChatGPTModelSource;
   message: string;
   skills?: string[];
 }
@@ -97,6 +100,7 @@ export function decodeChatState(payload: unknown, source: 'detail' | 'accepted' 
 }
 
 export interface ChatResponse extends ChatStateFields {
+  answer_backend?: string | null;
   success: boolean;
   content: string;
   session_id: string;
@@ -127,13 +131,23 @@ export interface ChatSessionItem {
 }
 
 export interface ChatSessionMessage {
+  backend?: string;
   id: string;
   role: 'user' | 'assistant';
   content: string;
   created_at: string | null;
 }
 
+export interface ChatGPTPreview {
+  snapshot_id: string;
+  connection_id: string;
+  account_label: string;
+  messages: { message_id: string; role: 'user' | 'assistant'; content: string }[];
+  stock: { stock_code: string; stock_name: string | null } | null;
+}
+
 export interface ChatSessionDetail extends ChatStateFields {
+  chatgpt_preview?: ChatGPTPreview | null;
   session_id: string;
   messages: ChatSessionMessage[];
   session_state: {
@@ -153,16 +167,19 @@ export const agentApi = {
     const response = await apiClient.get<SkillsResponse>('/api/v1/agent/skills');
     return response.data;
   },
-  async getStatus(): Promise<AgentStatusResponse> {
-    const response = await apiClient.get<Record<string, unknown>>('/api/v1/agent/status');
+  async getStatus(source?: ChatGPTModelSource): Promise<AgentStatusResponse> {
+    const response = source
+      ? await apiClient.get<Record<string, unknown>>('/api/v1/agent/status', { params: source })
+      : await apiClient.get<Record<string, unknown>>('/api/v1/agent/status');
     return toCamelCase<AgentStatusResponse>(response.data);
   },
   async getChatSessions(limit = 50): Promise<ChatSessionItem[]> {
     const response = await apiClient.get<{ sessions: ChatSessionItem[] }>('/api/v1/agent/chat/sessions', { params: { limit } });
     return response.data.sessions;
   },
-  async getChatSessionMessages(sessionId: string): Promise<ChatSessionDetail> {
-    const response = await apiClient.get<ChatSessionDetail>(`/api/v1/agent/chat/sessions/${sessionId}`);
+  async getChatSessionMessages(sessionId: string, preview?: { chatgpt_connection_id: string; stock_code?: string; stock_name?: string }): Promise<ChatSessionDetail> {
+    const url = `/api/v1/agent/chat/sessions/${sessionId}`;
+    const response = preview ? await apiClient.get<ChatSessionDetail>(url, { params: preview }) : await apiClient.get<ChatSessionDetail>(url);
     decodeChatState(response.data, 'detail');
     return response.data;
   },

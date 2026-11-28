@@ -88,7 +88,7 @@ import uuid
 from datetime import date, datetime, timezone, timedelta
 
 from src.webui_frontend import prepare_webui_frontend_assets
-from src.config import get_config, Config
+from src.config import get_config, Config, parse_env_bool
 from src.logging_config import setup_logging
 from src.brokers.futu.portfolio import FutuPortfolioError
 from src.core.analysis_run_marker import (
@@ -1474,7 +1474,7 @@ def _run_analysis_with_runtime_scheduler_lock(
     return bool(lock_acquired and task_result["ok"])
 
 
-def start_api_server(host: str, port: int, config: Config) -> None:
+def start_api_server(host: str, port: int, config: Config, *, serve_only: bool = False) -> None:
     """
     在后台线程启动 FastAPI 服务
 
@@ -1514,6 +1514,13 @@ def start_api_server(host: str, port: int, config: Config) -> None:
     from api.middlewares.security_guard import uvicorn_proxy_kwargs
 
     uvicorn_kwargs.update(uvicorn_proxy_kwargs())
+    fastapi_app.state.chatgpt_origin = None
+    if (
+        serve_only and sys.platform == "darwin" and not getattr(sys, "frozen", False)
+        and not parse_env_bool(os.getenv("DSA_DESKTOP_MODE"), default=False)
+        and host == "127.0.0.1" and port > 0
+    ):
+        fastapi_app.state.chatgpt_origin = f"http://{host}:{port}"
 
     try:
         uvicorn_config = uvicorn.Config(
@@ -1996,7 +2003,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 "(Web UI may be unavailable)"
             )
         try:
-            start_api_server(host=args.host, port=args.port, config=config)
+            start_api_server(host=args.host, port=args.port, config=config, serve_only=args.serve_only)
             bot_clients_started = True
         except Exception as e:
             logger.error(f"Failed to start FastAPI server: {e}")

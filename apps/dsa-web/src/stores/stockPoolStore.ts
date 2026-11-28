@@ -1,3 +1,5 @@
+import { useChatGPTStore } from './chatgptStore';
+import type { ChatGPTModelSource } from '../types/modelSource';
 import { create } from 'zustand';
 import { analysisApi, DuplicateTaskError } from '../api/analysis';
 import type { ParsedApiError } from '../api/error';
@@ -25,6 +27,7 @@ type FetchHistoryOptions = {
 };
 
 type SubmitAnalysisOptions = {
+  modelSource?: ChatGPTModelSource;
   stockCode?: string;
   stockName?: string;
   originalQuery?: string;
@@ -1013,6 +1016,7 @@ export const useStockPoolStore = create<StockPoolState>((set, get) => ({
         forceRefresh,
         skills,
         ...(options?.reportLanguage !== undefined && { reportLanguage: options.reportLanguage }),
+        ...(options?.modelSource && { modelSource: options.modelSource }),
       });
 
       if (requestId !== analyzeRequestSeq) {
@@ -1033,6 +1037,7 @@ export const useStockPoolStore = create<StockPoolState>((set, get) => ({
         return;
       }
 
+      if (options?.modelSource) void useChatGPTStore.getState().recheckStatus();
       set({ error: getParsedApiError(error, resolveActiveUiLanguage()) });
     } finally {
       if (requestId === analyzeRequestSeq) {
@@ -1066,6 +1071,7 @@ export const useStockPoolStore = create<StockPoolState>((set, get) => ({
   },
 
   syncTaskFailed: (task) => {
+    if (task.modelProvider === 'chatgpt_siwc') void useChatGPTStore.getState().recheckStatus();
     get().syncTaskUpdated(task);
     const error = task.error
       ? getParsedApiError(task.error)

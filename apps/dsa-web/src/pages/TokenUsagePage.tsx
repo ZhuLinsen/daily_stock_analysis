@@ -150,6 +150,7 @@ const TokenUsagePage: React.FC = () => {
           description={t('usage.description')}
           actions={(
             <div className="flex flex-wrap items-center gap-2">
+              <a href="https://chatgpt.com/settings/usage" target="_blank" rel="noreferrer" className="text-sm underline">ChatGPT Usage</a>
               <div className="inline-flex rounded-xl border border-border/70 bg-card/70 p-1">
                 {PERIOD_OPTIONS.map((option) => (
                   <button

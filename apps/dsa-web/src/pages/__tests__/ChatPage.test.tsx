@@ -5,6 +5,8 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createParsedApiError } from '../../api/error';
 import { UiLanguageProvider, useUiLanguage } from '../../contexts/UiLanguageContext';
 import { historyApi } from '../../api/history';
+import { chatgptApi } from '../../api/chatgpt';
+import { useChatGPTStore } from '../../stores/chatgptStore';
 import type { ActiveStockContext } from '../../api/agent';
 import type { Message, ProgressStep } from '../../stores/agentChatStore';
 import type { StockIndexItem } from '../../types/stockIndex';
@@ -117,6 +119,10 @@ vi.mock('../../api/agent', () => ({
   agentApi: {
     getSkills: mockGetSkills,
     getStatus: mockGetStatus,
+    getChatSessionMessages: async (session_id: string, opts: { chatgpt_connection_id: string }) => ({
+      session_id, chatgpt_preview: { connection_id: opts.chatgpt_connection_id, snapshot_id: 'preview-' + opts.chatgpt_connection_id,
+        account_label: 'Account ' + opts.chatgpt_connection_id, messages: [{ message_id: '61', role: 'assistant', content: '已收盘，成交量下降。' }], stock: null },
+    }),
     deleteChatSession: mockDeleteChatSession,
     sendChat: mockSendChat,
   },
@@ -176,6 +182,7 @@ vi.mock('../../stores/agentChatStore', () => {
 
   useAgentChatStore.getState = () => ({
     startNewChat: mockStartNewChat,
+    chatError: mockStoreState.chatError,
   });
 
   return { useAgentChatStore };
@@ -315,7 +322,7 @@ describe('ChatPage', () => {
       </StrictMode>,
     );
 
-    expect(await screen.findByPlaceholderText(/分析 600519/)).toBeEnabled();
+    await waitFor(() => expect(screen.getByPlaceholderText(/分析 600519/)).toBeEnabled());
     expect(screen.queryByText('正在确认问股运行环境')).not.toBeInTheDocument();
   });
 
@@ -371,8 +378,9 @@ describe('ChatPage', () => {
     render(<RouterProvider router={router} />);
 
     const input = await screen.findByPlaceholderText(/分析 600519/);
+    const settingsButton = await screen.findByRole('button', { name: '前往 Agent 设置' });
     expect(input).toBeDisabled();
-    fireEvent.click(screen.getByRole('button', { name: '前往 Agent 设置' }));
+    fireEvent.click(settingsButton);
     expect(await screen.findByText('Agent settings destination')).toBeInTheDocument();
     // React Router v7 applies navigations asynchronously; waitFor keeps the
     // assertion in an act-wrapped retry loop instead of reading a stale router state.
@@ -984,7 +992,9 @@ describe('ChatPage', () => {
         <ChatPage />
       </MemoryRouter>
     );
-    fireEvent.click(await screen.findByRole('button', { name: '用缠论分析茅台' }));
+    const shortcut = await screen.findByRole('button', { name: '用缠论分析茅台' });
+    await waitFor(() => expect(shortcut).toBeEnabled());
+    fireEvent.click(shortcut);
 
     await waitFor(() => {
       expect(mockStartStream).toHaveBeenCalledWith(
@@ -1178,6 +1188,110 @@ describe('ChatPage', () => {
       );
     });
     expect(mockStartStream.mock.calls.at(-1)?.[0]?.context).toEqual({ stock_code: '600519', stock_name: '贵州茅台' });
+  });
+
+  it('guards text and shortcut sends with the confirmed ChatGPT connection', async () => {
+    const account = { available: true, connected: true, connection_id: 'A', account_label: 'Account A' };
+    const status = vi.spyOn(chatgptApi, 'status').mockResolvedValue(account);
+    const catalog = [{ slug: 'model', display_name: 'Model' }];
+    const models = vi.spyOn(chatgptApi, 'models').mockResolvedValue(catalog);
+    try {
+      mockGetStatus.mockImplementation(async source => ({ backend: source?.provider ?? 'litellm', available: true }));
+      useChatGPTStore.setState({ status: account, models: catalog, model: 'model' });
+      mockGetSkills.mockResolvedValue({
+        skills: [{ id: 'chan_theory', name: '缠论', description: '结构分析' }],
+        default_skill_id: 'chan_theory',
+      });
+      const page = render(<MemoryRouter><ChatPage /></MemoryRouter>);
+      await act(async () => {
+        fireEvent.change(screen.getByRole('combobox', { name: '模型来源' }), { target: { value: 'chatgpt' } });
+      });
+      expect(await screen.findByText(/向 Account A 发送/)).toBeVisible();
+      await act(async () => {
+        useChatGPTStore.setState({ status: { ...account, connection_id: 'B', account_label: 'Account B' }, model: 'model' });
+      });
+      expect(await screen.findByText(/向 Account B 发送/)).toBeVisible();
+      expect(await screen.findByRole('heading', { level: 1 })).toHaveTextContent(/问股.*ChatGPT 授权/);
+      expect(screen.getByText(/已收盘，成交量下降/)).toBeVisible();
+      const input = screen.getByPlaceholderText(/分析 600519/);
+      const quickQuestion = screen.getByRole('button', { name: '用缠论分析茅台' });
+      await waitFor(() => expect(quickQuestion).toBeEnabled());
+      fireEvent.change(input, { target: { value: '怎么看' } });
+      fireEvent.click(quickQuestion);
+      expect(mockStartStream).not.toHaveBeenCalled();
+      await waitFor(() => expect(screen.getByRole('button', {name:'确认并发送'})).toBeEnabled());
+      fireEvent.keyDown(input, { key: 'Enter' });
+      await waitFor(() => expect(mockStartStream).toHaveBeenCalledWith(expect.objectContaining({
+        session_id: 'session-1',
+        model_source: { provider: 'chatgpt_siwc', connection_id: 'B', model: 'model' }, snapshot_id: 'preview-B',
+      }), expect.anything()));
+      mockStoreState.messages = [{ id: '61', role: 'assistant', content: '已有一条回复。' }];
+      page.rerender(<MemoryRouter><ChatPage /></MemoryRouter>);
+      expect(screen.getByRole('button', { name: '发送到已配置的通知机器人/邮箱' })).toHaveTextContent(/^发送$/);
+    } finally {
+      status.mockRestore();
+      models.mockRestore();
+      useChatGPTStore.setState({ status: null, model: '', models: [] });
+    }
+  });
+
+  it.each([
+    { code: 'chatgpt_target_changed', httpStatus: 409, statusReads: 1, catalogReads: 1, sessionReads: 0 },
+    { code: 'session_state_conflict', httpStatus: 409, statusReads: 0, catalogReads: 0, sessionReads: 1 },
+    { code: 'chatgpt_usage_limit_paused', httpStatus: 429, statusReads: 1, catalogReads: 0, sessionReads: 0 },
+  ])('reconciles the correct scope after $code', async ({ code, httpStatus, statusReads, catalogReads, sessionReads }) => {
+    const original = { available: true, connected: true, connection_id: 'A', account_label: 'Account A' };
+    const newCatalog = [{ slug: 'new-model', display_name: 'New model' }];
+    const status = vi.spyOn(chatgptApi, 'status').mockResolvedValue(original);
+    const models = vi.spyOn(chatgptApi, 'models').mockResolvedValue(newCatalog);
+    try {
+      useChatGPTStore.setState({ status: original, models: [{ slug: 'model', display_name: 'Model' }], model: 'model' });
+      await act(async () => { render(<MemoryRouter><ChatPage /></MemoryRouter>); });
+      await act(async () => {
+        fireEvent.change(screen.getByRole('combobox', { name: '模型来源' }), { target: { value: 'chatgpt' } });
+      });
+      const input = await screen.findByPlaceholderText(/分析 600519/);
+      fireEvent.change(input, { target: { value: '风险呢' } });
+      const send = screen.getByRole('button', { name: '确认并发送' });
+      await waitFor(() => expect(send).toBeEnabled());
+
+      status.mockClear();
+      models.mockClear();
+      if (code === 'chatgpt_target_changed') {
+        status.mockResolvedValue({ ...original, connection_id: 'B', account_label: 'Account B' });
+      } else if (code === 'chatgpt_usage_limit_paused') {
+        status.mockResolvedValue({ ...original, usage_pause_id: 'pause' });
+      }
+      mockStartStream.mockImplementationOnce(async () => {
+        mockStoreState.chatError = createParsedApiError({
+          title: 'Fixture error', message: code, category: 'http_error', code, status: httpStatus,
+        });
+      });
+      await act(async () => { fireEvent.click(send); });
+
+      expect(mockStartStream).toHaveBeenCalledTimes(1);
+      expect(input).toHaveValue('风险呢');
+      expect(status).toHaveBeenCalledTimes(statusReads);
+      expect(models).toHaveBeenCalledTimes(catalogReads);
+      expect(mockRefreshSession).toHaveBeenCalledTimes(sessionReads);
+      if (catalogReads) {
+        expect(models).toHaveBeenCalledWith('B', false);
+        expect(useChatGPTStore.getState()).toMatchObject({ models: newCatalog, model: '' });
+      }
+    } finally {
+      status.mockRestore();
+      models.mockRestore();
+      act(() => { useChatGPTStore.setState({ status: null, models: [], model: '' }); });
+    }
+  });
+
+  it('labels a ChatGPT assistant answer by its recorded source', async () => {
+    mockStoreState.messages = [{ id: 'fixture', role: 'assistant', content: '已保存回答', backend: 'chatgpt_siwc' }];
+    render(<MemoryRouter><ChatPage /></MemoryRouter>);
+    const answer = await screen.findByText('已保存回答');
+    const bubble = answer.closest('.group\\/message');
+    expect(bubble).toHaveTextContent('ChatGPT 授权');
+    expect(bubble).not.toHaveTextContent('默认模型');
   });
 
   it('keeps a quick question in the input until the server accepts it', async () => {

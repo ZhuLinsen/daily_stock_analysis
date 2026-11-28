@@ -20,6 +20,24 @@ If you are choosing a concrete provider, setting up GitHub Actions Secrets / Var
 
 ---
 
+## Sign in with ChatGPT
+
+On a personal Mac, start DSA from source with `python main.py --serve-only --host 127.0.0.1`. Open the port shown in the log at `127.0.0.1`. Enable administrator authentication, sign in to DSA, then connect ChatGPT and choose a model under **Settings → AI Model → ChatGPT**. Use a single backend process and keep the Web service local to the Mac.
+
+Choose ChatGPT as the model source for a single-stock report or a single-Agent chat. The existing report rules apply. `AGENT_MODE=true`, a request Skill or a specific global Skill enables Agent reports. Leaving `AGENT_MODE` unset allows both ordinary reports and single-Agent chat in the default configuration. Explicitly setting it to `false` disables chat. Usage records include completed report retries and completed calls whose output fails local validation. New chat answers retain their model source in history. ChatGPT reports have external notifications disabled and can be reopened from history. Disconnecting stops new requests on that connection. Saved reports and chats remain available. [Manage ChatGPT usage](https://chatgpt.com/settings/usage)
+
+When a ChatGPT plan usage limit is reached, DSA pauses report and chat requests for that registration and keeps the selected account and model. Open **Manage ChatGPT usage**, then return to Settings and choose **I checked usage. Try again**. This saves local state. Your next submission makes the next model request. New ChatGPT reports and chats return HTTP 429 and `chatgpt_usage_limit_paused` while paused.
+
+Disconnect first, then connect a new account or choose **Reauthorize** and sign in through the browser. DSA keeps credentials for one current account. If you sign in without granting plan access, choose **Grant plan access** to continue with that account or **Sign out of ChatGPT** to clear the local sign-in. After signing out or disconnecting, DSA keeps only the non-secret registration mapping and ChatGPT shows the account selector on the next sign-in. An expired authorization code can be retried in the same server process. After importing a legacy file, check authorizations in ChatGPT settings and authorize again.
+
+DSA records pending renewal and code exchange before sending the request. After a restart, interrupted operations are reported as unconfirmed and old tokens cannot dispatch requests. Check historical unconfirmed authorizations in ChatGPT settings. A successful revocation for another account resolves only its own operation. If the initial local disconnect write fails, fix storage and choose **Retry disconnect**. If DSA cannot verify whether a credential write succeeded, DSA pauses new authorizations and model requests. Fix local storage, then choose **Recheck connection** in Settings. If DSA reports it could not open storage at startup, restart DSA first. The check contacts only the local service and may save the reconciled state. Once connected, refresh the model list and select a model to use it. A stale target returns HTTP 409; read status again.
+
+For every single-Agent turn, the Web page shows the destination account, stock and up to 20 recent visible messages above the input. **Confirm and send** submits the displayed history and current question. Following up from a report carries the displayed stock only. If another tab changes the conversation or connection, review the refreshed preview before resending your draft.
+
+Explicit ChatGPT chat clients request the session detail with `chatgpt_connection_id` and submit its `snapshot_id` with the same `session_id`. Settings clients submit the targets returned in `actions`. Reload existing tabs after upgrading.
+
+The single-stock analysis and Chat APIs accept a `model_source` object with `provider: "chatgpt_siwc"`, `connection_id` and `model`. Single-stock analysis also requires `notify: false`. The backend stores credentials in the current macOS user's Application Support directory.
+
 ## Generation Backend (Phase 4)
 
 The generation backend is the outer runtime selector for regular stock analysis, market review, and `generate_text()`. The default remains `litellm` with zero regression. `codex_cli` / `claude_code_cli` / `opencode_cli` are explicit opt-in local CLI backends and are currently **experimental/limited**.

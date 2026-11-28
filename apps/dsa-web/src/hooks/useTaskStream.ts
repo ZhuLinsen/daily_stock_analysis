@@ -132,6 +132,7 @@ const toTaskInfo = (data: Record<string, unknown>): TaskInfo => {
     analysisPhase: data.analysis_phase as TaskInfo['analysisPhase'],
     skills: Array.isArray(data.skills) ? data.skills.map(String) : undefined,
     assetType: data.asset_type as TaskInfo['assetType'] | undefined,
+    modelProvider: data.model_provider as TaskInfo['modelProvider'],
   };
 
   if (typeof data.trace_id === 'string' && data.trace_id.trim()) {

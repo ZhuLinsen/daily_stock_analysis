@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [修复] ChatGPT 问股切换时统一提示词、工具和会话标的，套餐达限后暂停新请求并支持在设置中手动恢复。
+- [修复] ChatGPT 补授权时继续使用当前已验证账号，设置页可退出尚未开通套餐权限的本机登录。
+- [新功能] macOS 本机源码 Web 可连接 ChatGPT，在普通单股分析和单 Agent 问股中按次选用已授权的模型。
+- [修复] ChatGPT 按注册切换账号，断开和取消绑定到指定目标，修复目录乱序、已完成调用漏记和问股历史来源丢失。
+- [修复] ChatGPT 授权刷新兼容合法缺省字段，设置页能在断开响应丢失或授权失效后回读连接状态。
+- [修复] ChatGPT 授权重试复用已签发注册，缩权时处理最新令牌并保留撤销结果，问股发送前确认账号和可见历史。
+- [修复] ChatGPT 换码与刷新先持久化待定操作，未确认撤销按账号保留。凭据写入结果无法核实时暂停派发，可在设置页点「重新检查连接」核对本地状态；启动时存储不可用会提示重启。显式问股每轮确认历史快照，冲突时保留草稿。
 - [改进] 新增原生 4 协议 HTTPX + SSE 传输引擎与共享解析器（#2622 Phase 2，默认保持 `LLM_TRANSPORT_MODE=litellm` 零行为变化）：新增 `src/llm/native_resolve.py`、`src/llm/native_types.py`、`src/llm/sse.py`、`src/llm/native_pool.py`、`src/llm/native_engine.py` 及 OpenAI Chat/Responses、Anthropic Messages、Gemini REST 协议适配器，支持 `auto` 按别名混合路由（云 IAM 委托 LiteLLM、同组其余原生运行）与 `native` 零 `litellm` 导入严格模式；实现确定性 R1 协议优先级（移除 `gpt-5`/`o3` 自动劫持）、fail-closed 端点与同源凭据绑定、`urlsplit` 查询/分号安全归一化、HTTP 200 HTML/WAF 403/带内错误分级与双处脱敏、单调截止与可关闭流句柄、`max_tokens`/`stream_options` 一键恢复、Doctor 模式报告及全链路离线与 LiteLLM 对等回归测试。
 - [改进] 引入统一 LLM 传输门面 `src/llm/transport.py` 与 `DeploymentSpec` 归一化契约（#2622 Phase 1）：将全部运行时 `litellm` 直接调用与延迟加载收敛至门面并在进程首次加载 `litellm` 前默认设置 `LITELLM_LOCAL_MODEL_COST_MAP=True`（离线安全，未显式覆盖时新模型定价走本地价目表/零成本兜底），提供线程/协程隔离的 `ContextVar` 传输切换与 CJK 感知 token 估算兜底；统一选股请求头代理以消除全局 `litellm.completion` monkey-patch 并修复跨主机/多路由凭据头泄漏，补齐 YAML `os.environ/...` 解析、OpenAI 通道 `dsa_api_surface`/`dsa_channel_protocol` 持久化、Vision `base_url` 与 `dsa_api_surface` 对齐、`SystemConfigService.test_llm_channel` 服务层 `api_surface`/`extra_headers` 透传与脱敏、配置重载缓存清理，并新增全仓 AST 导入边界守卫测试。
 - [修复] 历史决策信号回填和重评估保存时，按报告生成当日的服务器时区偏移换算 UTC，修复跨夏令时回填导致的创建和到期时间偏移。

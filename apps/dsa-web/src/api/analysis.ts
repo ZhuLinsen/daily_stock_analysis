@@ -25,6 +25,7 @@ export const analysisApi = {
    */
   analyze: async (data: AnalysisRequest): Promise<AnalyzeResponse> => {
     const requestData = {
+      ...(data.modelSource && { model_source: data.modelSource }),
       stock_code: data.stockCode,
       stock_codes: data.stockCodes,
       report_type: data.reportType || 'detailed',
@@ -61,6 +62,7 @@ export const analysisApi = {
    */
   analyzeAsync: async (data: AnalysisRequest): Promise<AnalyzeAsyncResponse> => {
     const requestData = {
+      ...(data.modelSource && { model_source: data.modelSource }),
       stock_code: data.stockCode,
       stock_codes: data.stockCodes,
       report_type: data.reportType || 'detailed',

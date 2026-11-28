@@ -28,6 +28,7 @@ from src.llm.transport import (
     get_transport_engine_label,
 )
 
+from src.llm.model_source import ChatGPTModelSource
 from src.agent.llm_adapter import (
     apply_thinking_extra_body_to_model_list,
     get_thinking_extra_body,
@@ -2155,6 +2156,7 @@ class AnalysisResult:
     change_pct: Optional[float] = None     # 分析时的涨跌幅(%)
 
     # ========== 模型标记（Issue #528）==========
+    llm_provider: Optional[str] = None
     model_used: Optional[str] = None  # 分析使用的 LLM 模型（完整名，如 gemini/gemini-3.6-flash）
 
     # ========== 历史对比（Report Engine P0）==========
@@ -2205,6 +2207,7 @@ class AnalysisResult:
             'current_price': self.current_price,
             'change_pct': self.change_pct,
             'model_used': self.model_used,
+            **({'llm_provider': self.llm_provider} if self.llm_provider else {}),
             'market_structure_context': self.market_structure_context,
         }
 
@@ -2960,12 +2963,16 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
         skill_instructions: Optional[str] = None,
         default_skill_policy: Optional[str] = None,
         use_legacy_default_prompt: Optional[bool] = None,
+        generation_backend: Optional[GenerationBackend] = None,
+        generation_source: Optional[ChatGPTModelSource] = None,
     ):
         """Initialize LLM Analyzer via LiteLLM.
 
         Args:
             api_key: Ignored (kept for backward compatibility). Keys are loaded from config.
         """
+        self._generation_backend = generation_backend
+        self._generation_source = generation_source
         self._config_override = config
         self._requested_skills = list(skills) if skills is not None else None
         self._skill_instructions_override = skill_instructions
@@ -2976,6 +2983,8 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
         self._router_has_merged_extra_body = False
         self._legacy_router_model_list: List[Dict[str, Any]] = []
         self._litellm_available = False
+        if generation_backend is not None:
+            return
         self._init_litellm()
         if not self._litellm_available:
             try:
@@ -3282,6 +3291,8 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
 
     def is_available(self) -> bool:
         """Check whether the configured generation backend is available."""
+        if getattr(self, "_generation_backend", None) is not None:
+            return True
         backend_error = self.get_generation_backend_config_error()
         if backend_error is not None:
             return self._can_use_generation_fallback(backend_error)
@@ -3307,6 +3318,8 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
 
     def _resolve_generation_backend_config(self) -> Tuple[str, Optional[str]]:
         """Resolve and validate generation backend ids."""
+        if getattr(self, "_generation_backend", None) is not None:
+            return self._generation_backend.backend_id, None
         config = self._get_runtime_config()
         backend_id = resolve_generation_backend_id(config)
         fallback_backend_id = resolve_generation_fallback_backend_id(config)
@@ -3314,6 +3327,8 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
 
     def get_generation_backend_config_error(self) -> Optional[GenerationError]:
         """Return a structured backend config error, if the backend cannot run."""
+        if getattr(self, "_generation_backend", None) is not None:
+            return None
         try:
             backend_id, _fallback_backend_id = self._resolve_generation_backend_config()
             config = self._get_runtime_config()
@@ -3901,6 +3916,8 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
 
     def _get_generation_backend(self, backend_id: Optional[str] = None) -> GenerationBackend:
         """Return the configured generation backend."""
+        if getattr(self, "_generation_backend", None) is not None:
+            return self._generation_backend
         config = self._get_runtime_config()
         resolved_backend_id = backend_id or self._resolve_generation_backend_config()[0]
         return create_generation_backend(
@@ -4390,6 +4407,9 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
 
     def get_generation_backend_identity(self) -> Tuple[str, str]:
         """Return the configured primary backend identity for live diagnostics."""
+        source = getattr(self, "_generation_source", None)
+        if source is not None:
+            return source.provider, source.model
         backend_id, _fallback_backend_id = self._resolve_generation_backend_config()
         if backend_id in LOCAL_CLI_GENERATION_BACKEND_IDS:
             return backend_id, backend_id
@@ -4658,7 +4678,11 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
             
             config = self._get_runtime_config()
             backend_id, _fallback_backend_id = self._resolve_generation_backend_config()
-            model_name = config.litellm_model or "unknown"
+            source = getattr(self, "_generation_source", None)
+            model_name = source.model if source else config.litellm_model or "unknown"
+            if source:
+                legacy_audit_context["transport"] = source.provider
+                legacy_audit_context["stock_code"] = code
             if backend_id in LOCAL_CLI_GENERATION_BACKEND_IDS:
                 model_name = backend_id
                 legacy_audit_context["transport"] = backend_id
@@ -4668,12 +4692,12 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
             logger.info(f"[LLM Config] Includes news: {'Yes' if news_context else 'No'}")
 
             # 本地 CLI backend 是进程执行能力，不记录完整 prompt。
-            if backend_id in LOCAL_CLI_GENERATION_BACKEND_IDS:
+            if source is not None or backend_id in LOCAL_CLI_GENERATION_BACKEND_IDS:
                 prompt_preview = redact_diagnostic_text(prompt, limit=500)
             else:
                 prompt_preview = prompt[:500] + "..." if len(prompt) > 500 else prompt
             logger.info(f"[LLM Prompt Preview]\n{prompt_preview}")
-            if backend_id not in LOCAL_CLI_GENERATION_BACKEND_IDS:
+            if source is None and backend_id not in LOCAL_CLI_GENERATION_BACKEND_IDS:
                 logger.debug(f"=== Full Prompt ({len(prompt)} chars) ===\n{prompt}\n=== End Prompt ===")
 
             # 设置生成配置
@@ -4724,12 +4748,12 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                     f"[LLM Response] {result_model} succeeded, "
                     f"elapsed {elapsed:.2f}s, length {len(response_text)} chars"
                 )
-                if backend_id in LOCAL_CLI_GENERATION_BACKEND_IDS:
+                if source is not None or backend_id in LOCAL_CLI_GENERATION_BACKEND_IDS:
                     response_preview = redact_diagnostic_text(response_text, limit=300)
                 else:
                     response_preview = response_text[:300] + "..." if len(response_text) > 300 else response_text
                 logger.info(f"[LLM Response Preview]\n{response_preview}")
-                if backend_id not in LOCAL_CLI_GENERATION_BACKEND_IDS:
+                if source is None and backend_id not in LOCAL_CLI_GENERATION_BACKEND_IDS:
                     logger.debug(
                         f"=== {model_used or model_name} Full Response ({len(response_text)} chars) ===\n"
                         f"{response_text}\n=== End Response ==="
@@ -4744,6 +4768,8 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                 result.search_performed = bool(news_context)
                 result.market_snapshot = self._build_market_snapshot(context)
                 result.model_used = model_used
+                if source is not None:
+                    result.llm_provider = source.provider
                 result.report_language = report_language
                 normalize_chip_structure_availability(result, context.get("chip"))
 
@@ -4783,7 +4809,7 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                     )
                     break
 
-            if should_persist_usage_telemetry(llm_usage):
+            if source is None and should_persist_usage_telemetry(llm_usage):
                 persist_llm_usage(llm_usage, model_used, call_type="analysis", stock_code=code)
 
             logger.info(
@@ -4794,7 +4820,11 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
             return result
             
         except Exception as e:
-            safe_error = self._sanitize_hermes_exception_text(e)
+            safe_error = (
+                e.details.get("safe_error", e.message)[:600]
+                if isinstance(e, GenerationError) and getattr(self, "_generation_source", None) is not None
+                else self._sanitize_hermes_exception_text(e)
+            )
             logger.error("AI analysis %s(%s) failed: %s", log_name, code, safe_error)
             return AnalysisResult(
                 code=code,

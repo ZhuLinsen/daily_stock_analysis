@@ -19,6 +19,7 @@ from api.v1.endpoints import (
     analysis,
     auth,
     backtest,
+    chatgpt,
     data,
     decision_signals,
     health,
@@ -33,6 +34,8 @@ from api.v1.endpoints import (
 # 创建 v1 版本主路由。
 # /api/v1 前缀在 api.app 挂载，避免新版 FastAPI 误判子路由 "" 为 empty path。
 router = APIRouter()
+
+router.include_router(chatgpt.router, prefix="/chatgpt", tags=["ChatGPT"])
 
 router.include_router(
     auth.router,

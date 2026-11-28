@@ -27,6 +27,24 @@
 
 ---
 
+## ChatGPT 授权
+
+在个人 macOS 上运行 `python main.py --serve-only --host 127.0.0.1`，以启动日志中的端口打开 `127.0.0.1` Web 页面。启用管理员认证并登录，然后进入「设置 → AI 模型 → ChatGPT 授权」，完成 OAuth 并选择模型。使用单后端进程，并保持 Web 服务仅供本机使用。
+
+在首页单股分析或问股中，按次将「模型来源」切换为「ChatGPT 授权」。普通单股分析沿用现有模式规则：`AGENT_MODE=true`、请求指定 Skill 或全局配置特定 Skill 时会进入 Agent 报告。默认配置中，让 `AGENT_MODE` 保持未设置，普通报告和单 Agent 问股都可以使用 ChatGPT。显式 `AGENT_MODE=false` 会停用问股。用量按上游返回的每次已完成调用记录，包括报告补全和输出校验失败时已产生的用量。新问股回答的来源随消息保存。ChatGPT 普通报告关闭外发通知，生成后可在历史中查看。断开连接会停止该连接的新请求，已存报告和聊天仍可查看。 [管理 ChatGPT 用量](https://chatgpt.com/settings/usage)
+
+达到 ChatGPT 套餐用量上限时，DSA 暂停该注册的报告和问股请求，并保留账号和模型选择。点「管理 ChatGPT 用量」查看限制，确认后回设置页点「已查看，继续尝试」。恢复只保存本地状态，下一次主动提交才会再次访问模型。暂停期间新提交的 ChatGPT 报告与问股返回 HTTP 429 和 `chatgpt_usage_limit_paused`。
+
+断开当前连接后，可以连接新账号，或选择「重新授权」并在浏览器完成登录。DSA 仅保存当前账号的一套凭据。若已登录但尚未授予套餐权限，点「补充授权」继续使用当前账号，也可点「退出 ChatGPT 登录」清除本机登录。退出或断开后，DSA 仅保留用于回登的非凭据注册映射，回登时由 ChatGPT 展示账号选择。首次换码失败可在同一进程继续上次授权。升级旧凭据文件后，请核对 ChatGPT 设置中的授权，并重新授权当前账号。
+
+刷新和换码会在请求前记录待定操作。重启时，未完成操作进入未确认状态，旧令牌无法恢复推理资格。设置页按账号保留 DSA 无法证实的历史撤销结果，请到 ChatGPT 设置核对。其他账号的成功撤销只结束对应操作。普通断开首次保存失败时尚未发出撤销，修复存储后点击「重试断开」。若 DSA 无法核实凭据文件是否写入成功，新的授权和模型请求会暂停。修复本机存储后，在设置页点「重新检查连接」。若页面提示 DSA 启动时无法打开存储，请先重启 DSA。检查只访问本机，可能写回核实后的恢复结果。连接恢复后，如需使用模型，点「刷新模型」并重新选择。过时的连接或授权目标返回 409，客户端应回读设置状态。
+
+Web 单 Agent 问股每轮在输入框上方展示目标账号、标的和最近最多 20 条可见历史。点击「确认并发送」即同意发送这组历史和本轮问题。报告进入问股只承接页面显示的标的，不自动附上旧报告正文。其他页面改变会话或连接时，重新读取预览，再发送保留在输入框里的问题。
+
+显式 ChatGPT 聊天客户端从会话详情 GET 传入 `chatgpt_connection_id` 获取 `chatgpt_preview`，发送时携带该预览的 `snapshot_id` 和同一 `session_id`。设置客户端使用状态返回的 `actions` 目标发起授权、取消和断开。更新后请刷新旧标签页。
+
+API 可在普通单股分析和问股请求中附加 `model_source`，包含 `provider: "chatgpt_siwc"`、`connection_id` 和 `model`。单股分析还须传 `notify: false`。凭据由后端保存在当前 macOS 用户的 Application Support 目录。
+
 ## Generation Backend（Phase 4）
 
 Generation backend 是普通分析、大盘复盘和 `generate_text()` 的外层运行时选择。默认仍是 `litellm`，零配置路径与历史行为保持一致；`codex_cli` / `claude_code_cli` / `opencode_cli` 是显式 opt-in 的本地 CLI backend，当前标记为 **experimental/limited**。

@@ -14,6 +14,7 @@ from typing import Optional, List, Any, Literal
 from enum import Enum
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
+from src.llm.model_source import ChatGPTModelSourceInput
 from src.utils.analysis_metadata import SELECTION_SOURCE_PATTERN
 from src.utils.market_review_region import normalize_market_review_region_strict
 
@@ -33,6 +34,8 @@ AnalysisPhase = Literal["auto", "premarket", "intraday", "postmarket"]
 
 class AnalyzeRequest(BaseModel):
     """Analysis request parameters"""
+
+    model_source: ChatGPTModelSourceInput
     
     stock_code: Optional[str] = Field(
         None, 
