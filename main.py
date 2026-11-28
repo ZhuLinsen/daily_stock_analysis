@@ -550,8 +550,16 @@ def _compute_trading_day_filter(
             # per-stock 交易日契约。对市场未知的 code 用 parse_analysis_target
             # 判型，已登记指数按 market=cn 参与 CN 交易日过滤；仍未知的非指数
             # code 继续 fail-open 保留。
+            # STOCK_LIST keeps exchange-marked A-shares (600519.SH / SH600519 /
+            # sz000001) as typed; only targets the strict parser accepts as
+            # SH/SZ/BJ stocks map to market=cn. Invalid markers such as
+            # 00700.SH or 600519.BJ parse as unsupported and stay fail-open,
+            # so the daily-data validation still reports them.
             target = parse_analysis_target(code)
-            if target.asset_type == ParseStatus.INDEX:
+            if target.asset_type == ParseStatus.INDEX or (
+                target.asset_type == ParseStatus.STOCK
+                and target.exchange in ("SH", "SZ", "BJ")
+            ):
                 mkt = "cn"
         if mkt in open_markets or mkt is None:
             filtered_codes.append(code)
@@ -687,7 +695,7 @@ def _resolve_gate_expected_stock_codes(
     args: argparse.Namespace,
     *,
     stock_codes: Optional[List[str]] = None,
-) -> Tuple[Optional[List[str]], Optional[str]]:
+) -> Tuple[Optional[List[str]], bool, Optional[str]]:
     """Resolve the startup dedup gate's expected list like the run entry.
 
     Mirrors ``run_full_analysis``' real target resolution (Futu portfolio
@@ -703,7 +711,11 @@ def _resolve_gate_expected_stock_codes(
     run that would cover more than recorded (fail-open), and the residual
     race window is a single task invocation.
 
-    Returns ``(expected_codes, fail_open_reason)``:
+    Returns ``(expected_codes, market_review_due, fail_open_reason)``.
+    ``market_review_due`` is True when this startup's run would perform a
+    market review (enabled, not ``--no-market-review``, and the trading-day
+    filter left a review region open), so the gate can tell whether the
+    marker run covered it.
 
     - Portfolio mode: the trading-day-filtered live position codes. An
       empty filtered list (no positions / no open market) can never prove
@@ -718,14 +730,18 @@ def _resolve_gate_expected_stock_codes(
       re-run.
     """
     try:
+        review_requested = bool(
+            getattr(config, "market_review_enabled", False)
+            and not getattr(args, "no_market_review", False)
+        )
         portfolio_stock_codes = _resolve_portfolio_stock_codes(args)
         if portfolio_stock_codes is not None:
-            filtered_codes, _, _ = _compute_trading_day_filter(
+            filtered_codes, effective_region, _ = _compute_trading_day_filter(
                 config, args, portfolio_stock_codes
             )
             if not filtered_codes:
-                return (None, "portfolio mode resolved no tradable targets")
-            return (filtered_codes, None)
+                return (None, False, "portfolio mode resolved no tradable targets")
+            return (filtered_codes, review_requested and effective_region != "", None)
 
         # Issue #529: keep this condition verbatim-identical to
         # run_full_analysis — hot-reload STOCK_LIST from .env before a
@@ -738,12 +754,12 @@ def _resolve_gate_expected_stock_codes(
             if stock_codes is not None
             else getattr(config, "stock_list", None) or []
         )
-        filtered_codes, _, _ = _compute_trading_day_filter(
+        filtered_codes, effective_region, _ = _compute_trading_day_filter(
             config, args, effective_codes
         )
-        return (filtered_codes, None)
+        return (filtered_codes, review_requested and effective_region != "", None)
     except Exception as exc:  # noqa: BLE001 - the gate must never block a run
-        return (None, f"target resolution failed: {exc}")
+        return (None, False, f"target resolution failed: {exc}")
 
 
 def _prime_daily_market_context(
@@ -2154,7 +2170,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                     # failure or an empty portfolio resolution comes back
                     # as a fail-open reason instead of an expected list —
                     # the gate then never skips.
-                    expected_codes, fail_open_reason = (
+                    expected_codes, market_review_due, fail_open_reason = (
                         _resolve_gate_expected_stock_codes(
                             runtime_config,
                             args,
@@ -2170,6 +2186,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                         decision = should_skip_startup_immediate_run(
                             runtime_config,
                             expected_stock_codes=expected_codes,
+                            market_review_due=market_review_due,
                         )
                         if decision.skip:
                             logger.info(

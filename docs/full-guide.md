@@ -794,7 +794,7 @@ python main.py --stocks sh000016 --dry-run
 
 指数目标在 Pipeline 内以 `market=cn` 统一处理市场阶段、日线目标日期、断点续传日期、历史窗口与 `DecisionSignal`；筹码分布、基本面、板块归属、资金流、龙虎榜与公司事件等个股专属模块会被集中跳过。未登记的 `.CSI` 输入（如 `930956.CSI`）会在任何行情数据 provider 请求前明确拒绝：CLI `--stocks` 与 Actions 每日工作流对含未登记目标的整批拒绝本轮运行（不执行同批任何目标），Web/API 则为异步批量中仅该目标进入 `rejected`、同步/单股返回 4xx。搜索与报告使用注册表中文指数名称，不携带机器码。
 
-指数与 A 股共享交易日语义：启用交易日检查时，已登记指数（`sh`/`sz` 前缀或 `.CSI` alias）按 `market=cn` 参与 A 股休市过滤，A 股休市日指数会被跳过；市场仍无法识别的非指数 code 保持既有 fail-open 行为。`--force-run` 可强制在非交易日执行。
+指数与 A 股共享交易日语义：启用交易日检查时，已登记指数（`sh`/`sz` 前缀或 `.CSI` alias）按 `market=cn` 参与 A 股休市过滤，A 股休市日指数会被跳过；带沪深京交易所标记的 A 股（如 `600519.SH`、`SH600519`、`000001.SZ`、`BJ920748`）同样按 `market=cn` 过滤；交易所标记无效的代码（如 `00700.SH`、`600519.BJ`）与市场仍无法识别的非指数 code 保持既有 fail-open 行为。`--force-run` 可强制在非交易日执行。
 
 指数实时行情使用独立固定链：腾讯 → 新浪 → 东财单股接口 → TickFlow；SH/SZ 指数按 `sh000016`/`sz399001` 显式符号请求，CSI 指数仅由东财单股接口提供（`2.{code}` secid）。显式指数身份全程保留，不会退化为同码股票行情。
 
@@ -952,7 +952,7 @@ python main.py --schedule --no-run-immediately
 | `DSA_RUNTIME_SCHEDULER_TIMEOUT_SECONDS` | Web/API runtime scheduler 单次分析硬超时（秒，最小 60 秒） | `2700` | `3600` |
 | `DSA_TIMEOUT_PARTIAL_NOTIFY` | **默认开启（行为变化）**：硬超时后是否推送已落库个股的部分完成通知；此前超时不推送 | `true` | `false` |
 | `SCHEDULE_RUN_IMMEDIATELY` | 定时模式启动时是否立即运行一次；未显式设置时沿用 `RUN_IMMEDIATELY` 的运行时覆盖语义 | `true` | `false` |
-| `SCHEDULE_STARTUP_DEDUP` | 定时模式启动立即执行的当日去重：当天已有成功且覆盖当前应分析清单的全量分析记录（日期 + scope=full + 覆盖面子集判定；标记位于 `DATABASE_PATH` 所在目录，默认 `data/analysis_run_state.json`）时跳过本次启动补跑；每日定时任务与手动/API/GitHub Actions 触发永不去重；标记缺失、损坏、schema 未知或覆盖不全一律放行执行（fail-open），v1 旧标记同样放行一次以完成升级；股票清单指纹仅作观测、不参与判定；大盘复盘完成度仅记录、不参与判定 | `true` | `false` |
+| `SCHEDULE_STARTUP_DEDUP` | 定时模式启动立即执行的当日去重：当天已有成功且覆盖当前应分析清单的全量分析记录（日期 + scope=full + 覆盖面子集判定；标记位于 `DATABASE_PATH` 所在目录，默认 `data/analysis_run_state.json`）时跳过本次启动补跑；每日定时任务与手动/API/GitHub Actions 触发永不去重；标记缺失、损坏、schema 未知或覆盖不全一律放行执行（fail-open），v1 旧标记同样放行一次以完成升级；股票清单指纹仅作观测、不参与判定；大盘复盘完成度仅记录、不参与判定，但本次启动需执行大盘复盘而当日标记的运行未请求复盘（如 `--no-market-review`）时放行执行 | `true` | `false` |
 | `RUN_IMMEDIATELY` | 非定时模式启动时是否立即运行一次；同时作为未显式设置 `SCHEDULE_RUN_IMMEDIATELY` 时的 legacy 回退 | `true` | `false` |
 | `TRADING_DAY_CHECK_ENABLED` | 交易日检查：非交易日跳过执行；设为 `false` 可强制执行 | `true` | `false` |
 
