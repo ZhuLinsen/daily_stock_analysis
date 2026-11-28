@@ -37,7 +37,7 @@ AkShare 的业绩预告、快报是按 `date=YYYYMMDD` 查询的全市场表，�
 | 港股 | Futu、Longbridge、YFinance、AkShare、Tushare | 配置 `FUTU_OPEND_HOST` 后 Futu 作为实时与基本面主源，按 `FUTU_HK_REALTIME_SOURCE_PRIORITY` 顺序尝试 | Futu 失败时回退 Longbridge / AkShare / YFinance；Longbridge 冷却或失败时继续回退 YFinance / 其他可用源 |
 | 美股 | Longbridge、YFinance、AkShare、Tushare、Finnhub、AlphaVantage、Stooq | 配置 Longbridge 凭证后参与美股日线/实时主链；YFinance 保持实时基础 fallback；Finnhub/AlphaVantage 可补充已有报价字段并参与日线链 | Longbridge 冷却或失败时实时主链回退 YFinance；两者都失败时不把补充源伪装成可独立返回报价的 fallback |
 
-Stooq 兜底报价使用报价日期之前最近一条日线的收盘价计算涨跌额、涨跌幅和振幅。如果报价日期缺失或无法取得有效昨收，仍返回最新价格，这些衍生字段留空。
+Stooq 兜底报价使用报价日期之前最近一条日线的收盘价计算涨跌额、涨跌幅和振幅。如果报价日期缺失或无法取得有效昨收，Stooq 仍返回最新价格，其自身的衍生字段留空。行情管理器随后可能从已配置的其他美股行情源补充振幅。
 
 ## 统一数据能力只读契约
 

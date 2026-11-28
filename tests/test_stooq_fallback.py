@@ -63,6 +63,7 @@ class TestStooqFallback(unittest.TestCase):
         cases = [
             ("lagging history", "AAPL.US,20260310,160000", ["2026-03-06,120", "2026-03-09,100"], 100),
             ("single prior bar", quote, ["2026-03-09,100"], 100),
+            ("date-first headerless", "2026-03-10,16:00:00", ["2026-03-09,100", "2026-03-10,110"], 100),
             (
                 "date-first header", "Date,Time,Open,High,Low,Close,Volume\n2026-03-10,16:00:00",
                 ["2026-03-09,100"], 100,

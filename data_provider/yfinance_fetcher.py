@@ -609,15 +609,16 @@ class YfinanceFetcher(BaseFetcher):
             logger.warning(f"[Stooq] No quote data available for {symbol}")
             return None
 
-        def _fetch_prev_close(quote_date_text: str) -> Optional[float]:
+        def _parse_quote_date(quote_date_text: str) -> Optional[date]:
             # The quote CSV can use either YYYYMMDD or YYYY-MM-DD.
             if len(quote_date_text) == 8 and quote_date_text.isdigit():
                 quote_date_text = f"{quote_date_text[:4]}-{quote_date_text[4:6]}-{quote_date_text[6:]}"
             try:
-                quote_date = date.fromisoformat(quote_date_text)
+                return date.fromisoformat(quote_date_text)
             except ValueError:
                 return None
 
+        def _fetch_prev_close(quote_date: date) -> Optional[float]:
             history_url = f"https://stooq.com/q/d/l/?s={stooq_symbol}&i=d"
             history_request = Request(
                 history_url,
@@ -701,7 +702,11 @@ class YfinanceFetcher(BaseFetcher):
             quote_date_text = (
                 dict(zip(header_tokens, normalized_row)).get("date", "") if has_header else normalized_row[1]
             )
-            prev_close = _fetch_prev_close(quote_date_text)
+            quote_date = _parse_quote_date(quote_date_text)
+            if quote_date is None and not has_header and len(normalized_row) == 7:
+                # Seven-column quotes may start with Date,Time instead of Symbol,Date.
+                quote_date = _parse_quote_date(normalized_row[0])
+            prev_close = _fetch_prev_close(quote_date) if quote_date is not None else None
             change_amount = None
             change_pct = None
             amplitude = None
