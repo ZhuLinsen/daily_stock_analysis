@@ -252,7 +252,7 @@ const scheduleDeferredReconnect = (delay: number) => {
   }, effectiveDelay);
 };
 
-const scheduleSharedReconnect = () => {
+const scheduleSharedReconnect = (disconnectedAt?: number) => {
   if (sharedEventSource || sharedReconnectTimeout || subscribers.size === 0) {
     return;
   }
@@ -263,16 +263,16 @@ const scheduleSharedReconnect = () => {
     return;
   }
   const now = getMonotonicNow();
+  const errorAt = disconnectedAt ?? now;
   let effectiveDelay = reconnectDelay;
   if (preemptedReconnectDeadlineMs !== null) {
     const remaining = preemptedReconnectDeadlineMs - now;
     const connectedAfterPreempt = preemptedReconnectConnected;
+    const disconnectedBeforeDeadline = errorAt < preemptedReconnectDeadlineMs;
     preemptedReconnectDeadlineMs = null;
     preemptedReconnectConnected = false;
-    if (remaining > 0) {
-      effectiveDelay = Math.min(reconnectDelay, remaining);
-    } else if (!connectedAfterPreempt) {
-      effectiveDelay = 0;
+    if (!connectedAfterPreempt || disconnectedBeforeDeadline) {
+      effectiveDelay = remaining > 0 ? Math.min(reconnectDelay, remaining) : 0;
     }
   }
   sharedReconnectKind = 'auto';
@@ -306,6 +306,7 @@ function connectSharedStream() {
   try {
     eventSource = new window.EventSource(url, { withCredentials: true });
   } catch {
+    const errorAt = getMonotonicNow();
     notifyConnectionState(false);
     isDispatchingConnectError = true;
     try {
@@ -313,7 +314,7 @@ function connectSharedStream() {
     } finally {
       isDispatchingConnectError = false;
     }
-    scheduleSharedReconnect();
+    scheduleSharedReconnect(errorAt);
     return;
   }
   sharedEventSource = eventSource;
@@ -395,6 +396,7 @@ function connectSharedStream() {
     if (sharedEventSource !== eventSource) {
       return;
     }
+    const errorAt = getMonotonicNow();
     sharedEventSource = null;
     eventSource.onerror = null;
     eventSource.close();
@@ -402,7 +404,7 @@ function connectSharedStream() {
     try {
       forEachSubscriber((callbacks) => callbacks.onError?.(error));
     } finally {
-      scheduleSharedReconnect();
+      scheduleSharedReconnect(errorAt);
     }
   };
 }

@@ -738,4 +738,54 @@ describe('useTaskStream', () => {
       dateNowSpy.mockRestore();
     }
   });
+
+  it('retries immediately when onerror starts before preserved deadline but subscriber onError crosses it (OR-COR-d6ca81e9)', async () => {
+    vi.useFakeTimers();
+
+    const primary = renderHook(() => useTaskStream({ enabled: true, autoReconnect: true, reconnectDelay: 3000 }));
+    await vi.runOnlyPendingTimersAsync();
+    expect(eventSourceInstances).toHaveLength(1);
+
+    // t=0: primary disconnects and schedules retry at t=3000.
+    const disconnectOrigin = performance.now();
+    act(() => {
+      eventSourceInstance.onerror?.(new Event('error'));
+    });
+
+    // t=1000: drawer mounts and triggers an early connect attempt that receives `connected`.
+    await vi.advanceTimersByTimeAsync(1000);
+    const drawerOnError = vi.fn(() => {
+      // Simulate synchronous subscriber work pushing the clock past t=3000 (2999ms -> 3004ms).
+      vi.advanceTimersByTime(5);
+    });
+    const drawer = renderHook(() =>
+      useTaskStream({ enabled: true, autoReconnect: false, onError: drawerOnError }),
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    expect(eventSourceInstances).toHaveLength(2);
+
+    await vi.advanceTimersByTimeAsync(10);
+    act(() => {
+      eventSourceInstance.listeners.connected?.(new MessageEvent('connected'));
+    });
+
+    // t=2999: early connect drops 1ms before the preserved deadline; subscriber onError advances clock to t=3004.
+    await vi.advanceTimersByTimeAsync(1989);
+    expect(performance.now() - disconnectOrigin).toBe(2999);
+    act(() => {
+      eventSourceInstance.onerror?.(new Event('error'));
+    });
+
+    expect(drawerOnError).toHaveBeenCalledTimes(1);
+    expect(performance.now() - disconnectOrigin).toBe(3004);
+    expect(eventSourceInstances).toHaveLength(2);
+
+    // Preserved deadline is already due at t=3004: reconnect must fire immediately (0ms), not wait until t=6004.
+    await vi.advanceTimersByTimeAsync(0);
+    expect(eventSourceInstances).toHaveLength(3);
+    expect(performance.now() - disconnectOrigin).toBe(3004);
+
+    drawer.unmount();
+    primary.unmount();
+  });
 });
