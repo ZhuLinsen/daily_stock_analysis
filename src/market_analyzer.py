@@ -954,6 +954,35 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             )
             raise backend_error
 
+        transport_cfg_err = (
+            getattr(self.analyzer, "_transport_config_error", None)
+            if self.analyzer is not None
+            else None
+        )
+        if (
+            transport_cfg_err is not None
+            and getattr(transport_cfg_err, "error_code", None) == "litellm_optional_dependency_missing"
+            and not self.analyzer.is_available()
+        ):
+            provider, model = self._get_analyzer_generation_backend_identity()
+            remediation_msg = (
+                f"litellm_optional_dependency_missing (pip install -r requirements-litellm.txt): {transport_cfg_err}"
+            )
+            record_llm_run(
+                success=False,
+                provider=provider,
+                model=model,
+                call_type="market_review",
+                error_type="OptionalDependencyMissing",
+                error_message=remediation_msg,
+            )
+            logger.warning(
+                "[Market] %s action=generate_review status=fallback_template reason=litellm_optional_dependency_missing detail=%s",
+                self._log_context(),
+                transport_cfg_err,
+            )
+            return self._with_tw_index_coverage(self._generate_template_review(overview, news), overview)
+
         if not self.analyzer or not self.analyzer.is_available():
             logger.warning(
                 "[Market] %s action=generate_review status=fallback_template reason=no_analyzer",
@@ -1026,7 +1055,16 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             recorded_error_message: Any = None
         elif missing_optional_litellm:
             recorded_error_type = "OptionalDependencyMissing"
-            recorded_error_message = generation_diagnostics
+            diag_msg = (
+                str(generation_diagnostics.get("message") or "").strip()
+                if isinstance(generation_diagnostics, dict)
+                else ""
+            )
+            recorded_error_message = (
+                f"litellm_optional_dependency_missing (pip install -r requirements-litellm.txt): {diag_msg}"
+                if diag_msg
+                else "litellm_optional_dependency_missing (pip install -r requirements-litellm.txt)"
+            )
         elif failed_all_models:
             recorded_error_type = "AllModelsFailed"
             recorded_error_message = generation_diagnostics

@@ -652,11 +652,13 @@ raise SystemExit(main.main(["--doctor", "--json"]))
                 replicate_report["checks"]["config"]["errors"],
             )
 
-            # P1-5: Direct relay VISION_MODEL=Qwen/Qwen-VL + OPENAI_BASE_URL aligns with Vision runtime -> native, no error!
+            # P1-5 & P1-6: Direct relay VISION_MODEL=Qwen/Qwen-VL + OPENAI_BASE_URL aligns with Vision runtime -> native,
+            # AND shadowed legacy OPENAI_VISION_MODEL=bedrock/... is ignored because VISION_MODEL takes precedence!
             relay_vision_cfg = Config(
                 stock_list=["600519"],
                 litellm_model="openai/gpt-4o-mini",
                 vision_model="Qwen/Qwen-VL",
+                openai_vision_model="bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0",
                 openai_api_keys=["sk-relay-vision-1234"],
                 openai_base_url="https://relay.example/v1",
                 llm_model_list=[

@@ -304,10 +304,12 @@ def _find_routes_requiring_litellm(config: Config) -> List[str]:
         val = str(getattr(config, attr, "") or "").strip()
         if val:
             direct_candidates.append((val, False))
-    for attr in ("vision_model", "openai_vision_model"):
-        vision_val = str(getattr(config, attr, "") or "").strip()
-        if vision_val:
-            direct_candidates.append((vision_val, True))
+    effective_vision_model = (
+        str(getattr(config, "vision_model", "") or "").strip()
+        or str(getattr(config, "openai_vision_model", "") or "").strip()
+    )
+    if effective_vision_model:
+        direct_candidates.append((effective_vision_model, True))
     for val in getattr(config, "litellm_fallback_models", None) or []:
         cleaned = str(val or "").strip()
         if cleaned:

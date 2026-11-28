@@ -319,21 +319,52 @@ _HANDLED_VISION_DEPLOYMENT_KEYS: frozenset[str] = frozenset(
         "custom_llm_provider",
         "dsa_channel_protocol",
         "messages",
+        "input",
+        "contents",
+        "system",
         "max_tokens",
+        "max_completion_tokens",
+        "max_output_tokens",
         "timeout",
         "stream",
     }
 )
 
 
-def _is_direct_gemini_or_anthropic_model(model: str) -> bool:
-    """Return True for prefixed or bare Gemini/Anthropic model identifiers."""
+_EXTRACTOR_OWNED_EXTRA_BODY_KEYS: frozenset[str] = frozenset(
+    {
+        "model",
+        "messages",
+        "input",
+        "contents",
+        "system",
+        "stream",
+        "max_tokens",
+        "max_completion_tokens",
+        "max_output_tokens",
+        "timeout",
+    }
+)
+
+
+def _uses_bare_native_pool(model: str, cfg: Config) -> Optional[str]:
+    """Return 'gemini' or 'anthropic' when a bare model should use its native key pool.
+
+    When a bare (unprefixed) ``gemini*`` or ``claude*`` model has no native key
+    configured AND an explicit ``OPENAI_BASE_URL`` relay is set, return ``None``
+    so it routes through the OpenAI-compatible relay instead of failing.
+    """
     lower = (model or "").strip().lower()
-    if not lower:
-        return False
-    if "/" in lower:
-        return lower.split("/", 1)[0].strip() in {"gemini", "anthropic"}
-    return lower.startswith("gemini") or lower.startswith("claude")
+    if not lower or "/" in lower:
+        return None
+    has_openai_relay = bool(str(getattr(cfg, "openai_base_url", "") or "").strip())
+    if lower.startswith("gemini"):
+        has_native_key = any(k and len(k) >= 8 for k in (cfg.gemini_api_keys or []))
+        return "gemini" if (has_native_key or not has_openai_relay) else None
+    if lower.startswith("claude"):
+        has_native_key = any(k and len(k) >= 8 for k in (cfg.anthropic_api_keys or []))
+        return "anthropic" if (has_native_key or not has_openai_relay) else None
+    return None
 
 
 def _get_api_keys_for_model(model: str, cfg: Config) -> List[str]:
@@ -349,9 +380,10 @@ def _get_api_keys_for_model(model: str, cfg: Config) -> List[str]:
     prefix = lower.split("/", 1)[0].strip() if "/" in lower else ""
     if prefix in _VISION_IAM_KEYLESS_PROVIDERS:
         return []
-    if prefix == "gemini" or ("/" not in lower and lower.startswith("gemini")):
+    bare_native = _uses_bare_native_pool(model, cfg)
+    if prefix == "gemini" or bare_native == "gemini":
         return [k for k in cfg.gemini_api_keys if k and len(k) >= 8]
-    if prefix == "anthropic" or ("/" not in lower and lower.startswith("claude")):
+    if prefix == "anthropic" or bare_native == "anthropic":
         return [k for k in cfg.anthropic_api_keys if k and len(k) >= 8]
     return [k for k in cfg.openai_api_keys if k and len(k) >= 8]
 
@@ -363,7 +395,10 @@ def build_direct_vision_litellm_params(model: str, cfg: Config) -> Dict[str, Any
     if not normalized:
         return params
     prefix = normalized.split("/", 1)[0].strip().lower() if "/" in normalized else ""
-    if not _is_direct_gemini_or_anthropic_model(normalized) and prefix not in _VISION_IAM_KEYLESS_PROVIDERS:
+    is_native_gemini_or_anthropic = prefix in {"gemini", "anthropic"} or (
+        _uses_bare_native_pool(normalized, cfg) is not None
+    )
+    if not is_native_gemini_or_anthropic and prefix not in _VISION_IAM_KEYLESS_PROVIDERS:
         if cfg.openai_base_url:
             params["api_base"] = cfg.openai_base_url
         if cfg.openai_base_url and "aihubmix.com" in cfg.openai_base_url:
@@ -379,8 +414,20 @@ def _deployment_allows_empty_api_key(deployment: Dict[str, Any]) -> bool:
     params = resolve_litellm_params_env(deployment.get("litellm_params") or {})
     if str(params.get("api_key") or "").strip():
         return False
+    raw_info = deployment.get("model_info")
+    info = raw_info if isinstance(raw_info, dict) else {}
+    custom_provider = str(params.get("custom_llm_provider") or "").strip().lower()
+    channel_protocol = str(
+        info.get("dsa_channel_protocol") or params.get("dsa_channel_protocol") or ""
+    ).strip().lower()
+    if custom_provider in _VISION_IAM_KEYLESS_PROVIDERS or channel_protocol in _VISION_IAM_KEYLESS_PROVIDERS:
+        return True
     wire_model = str(params.get("model") or "").strip()
-    protocol = wire_model.split("/", 1)[0].strip().lower() if "/" in wire_model else None
+    protocol = (
+        wire_model.split("/", 1)[0].strip().lower()
+        if "/" in wire_model
+        else (custom_provider or channel_protocol or None)
+    )
     if protocol in _VISION_IAM_KEYLESS_PROVIDERS:
         return True
     if "base_url" in params and params.get("base_url") is not None:
@@ -434,7 +481,7 @@ def _call_litellm_vision(image_b64: str, mime_type: str, api_key: Optional[str] 
                 deployment_info = dict(raw_info)
         else:
             # Fail closed instead of falling back to legacy OpenAI routing when
-            # any matching deployment has an unset endpoint env var or URL conflict.
+            # deployments matched this alias but none was usable.
             for item in deployments:
                 unresolved = _find_deployment_unresolved_endpoint_env(item)
                 if unresolved is not None:
@@ -444,6 +491,7 @@ def _call_litellm_vision(image_b64: str, mime_type: str, api_key: Optional[str] 
                     )
                 if _has_deployment_endpoint_conflict(item):
                     raise ValueError("Vision deployment has conflicting api_base and base_url values")
+            raise ValueError(f"No API key found for vision model {model}")
     model_prefix = model.split("/", 1)[0].strip().lower() if "/" in model else ""
     if key is None and not deployment_params and model_prefix not in _VISION_IAM_KEYLESS_PROVIDERS:
         raise ValueError(f"No API key found for vision model {model}")
@@ -519,6 +567,16 @@ def _call_litellm_vision(image_b64: str, mime_type: str, api_key: Optional[str] 
     for param_key, param_val in deployment_params.items():
         key_str = str(param_key)
         if key_str in _HANDLED_VISION_DEPLOYMENT_KEYS or key_str.startswith("_dsa_"):
+            continue
+        if key_str == "extra_body":
+            if isinstance(param_val, dict):
+                sanitized_extra = {
+                    eb_k: eb_v
+                    for eb_k, eb_v in param_val.items()
+                    if str(eb_k).strip().lower() not in _EXTRACTOR_OWNED_EXTRA_BODY_KEYS
+                }
+                if sanitized_extra:
+                    call_kwargs["extra_body"] = sanitized_extra
             continue
         if param_val is not None:
             call_kwargs.setdefault(key_str, param_val)

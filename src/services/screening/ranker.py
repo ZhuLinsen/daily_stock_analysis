@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from src.config import apply_litellm_api_surface, normalize_llm_channel_api_surface
 from src.llm.errors import call_litellm_with_param_recovery
 from src.llm.generation_params import apply_litellm_generation_params
+from src.llm.native_resolve import resolve_deployment
+from src.llm.native_types import DeploymentSpec
 from src.llm.transport import (
     NativeConfigError,
     create_router,
@@ -730,28 +732,23 @@ def _coerce_completion_content(value: object) -> str:
     return "".join(parts)
 
 
-def _entry_targets_native_anthropic(
-    model_ref: str,
-    *,
-    api_base: str = "",
-    wire_protocol: str = "",
-    channel_protocol: str = "",
-) -> bool:
-    """Return True when a deployment/call targets the native Anthropic Messages protocol."""
-    wp = str(wire_protocol or "").strip().lower()
-    if wp:
-        return wp == "anthropic"
-    wire_lower = str(model_ref or "").strip().lower()
-    if wire_lower.startswith("anthropic/"):
-        return True
-    if "/" in wire_lower:
-        return False
-    cp = str(channel_protocol or "").strip().lower()
-    if cp == "anthropic":
-        return True
-    if cp:
-        return False
-    return wire_lower.startswith("claude") and not str(api_base or "").strip()
+def _probe_deployment_is_native_anthropic(entry: dict[str, object]) -> bool:
+    """Return True iff the shared native resolver routes this deployment to native Anthropic."""
+    params = entry.get("litellm_params")
+    probe_params = dict(params) if isinstance(params, dict) else {}
+    probe_params.pop("response_format", None)
+    probe_params.pop("messages", None)
+    # Missing api_key alone must not obscure the resolved wire protocol during the probe.
+    if not str(probe_params.get("api_key") or "").strip():
+        probe_params["api_key"] = "sk-probe-placeholder"
+    probe_entry: dict[str, object] = {
+        "model_name": entry.get("model_name") or probe_params.get("model") or "",
+        "litellm_params": probe_params,
+    }
+    if isinstance(entry.get("model_info"), dict):
+        probe_entry["model_info"] = dict(entry["model_info"])
+    resolved = resolve_deployment(probe_entry, deployment_id="ranker-json-mode-probe")
+    return isinstance(resolved, DeploymentSpec) and resolved.protocol == "anthropic"
 
 
 def _should_omit_json_object_response_format(
@@ -762,45 +759,39 @@ def _should_omit_json_object_response_format(
 ) -> bool:
     """Omit ranker-generated response_format={"type":"json_object"} on native Anthropic routes.
 
-    Anthropic's native Messages API does not accept OpenAI's ``json_object`` mode
-    (and native transport delegates ``json_object`` on Anthropic to optional LiteLLM).
-    The screening prompt already enforces strict JSON output without ``response_format``.
+    Delegates protocol resolution directly to ``resolve_deployment()`` (without
+    ``response_format``) so direct calls, custom Anthropic endpoints, OpenAI-compatible
+    relays serving ``anthropic/...``, and YAML router aliases all share one source of truth.
     """
     if model_list:
         target = str(model or "").strip()
-        matched_any = False
-        for entry in model_list:
-            if not isinstance(entry, dict):
-                continue
-            params = entry.get("litellm_params")
-            params_dict = params if isinstance(params, dict) else {}
-            entry_alias = str(entry.get("model_name") or "").strip()
-            entry_model = str(params_dict.get("model") or "").strip()
-            if target and entry_alias != target and entry_model != target:
-                continue
-            matched_any = True
-            info = entry.get("model_info")
-            info_dict = info if isinstance(info, dict) else {}
-            if _entry_targets_native_anthropic(
-                entry_model or entry_alias,
-                api_base=str(params_dict.get("base_url") or params_dict.get("api_base") or ""),
-                wire_protocol=str(params_dict.get("wire_protocol") or ""),
-                channel_protocol=str(
-                    info_dict.get("dsa_channel_protocol")
-                    or params_dict.get("dsa_channel_protocol")
-                    or ""
-                ),
-            ):
-                return True
-        if matched_any:
-            return False
+        exact_alias_matches = [
+            entry
+            for entry in model_list
+            if isinstance(entry, dict)
+            and target
+            and str(entry.get("model_name") or "").strip() == target
+        ]
+        matched_entries = exact_alias_matches or [
+            entry
+            for entry in model_list
+            if isinstance(entry, dict)
+            and (
+                not target
+                or (
+                    isinstance(entry.get("litellm_params"), dict)
+                    and str(entry["litellm_params"].get("model") or "").strip() == target
+                )
+            )
+        ]
+        if matched_entries:
+            return any(_probe_deployment_is_native_anthropic(entry) for entry in matched_entries)
 
-    kwargs = call_kwargs or {}
-    return _entry_targets_native_anthropic(
-        str(kwargs.get("model") or model or ""),
-        api_base=str(kwargs.get("base_url") or kwargs.get("api_base") or ""),
-        wire_protocol=str(kwargs.get("wire_protocol") or ""),
-        channel_protocol=str(kwargs.get("dsa_channel_protocol") or ""),
+    probe_params: dict[str, object] = dict(call_kwargs or {})
+    if not str(probe_params.get("model") or "").strip():
+        probe_params["model"] = model
+    return _probe_deployment_is_native_anthropic(
+        {"model_name": model, "litellm_params": probe_params}
     )
 
 
@@ -1257,6 +1248,7 @@ def _build_litellm_attempts(
             and not inherited_outer_key
             else None
         )
+        raw_channel_protocol = str(channel.get("protocol", "") or "").strip().lower()
         for channel_key in api_keys:
             attempts.append(_completion_kwargs(
                 wire_model,
@@ -1264,6 +1256,7 @@ def _build_litellm_attempts(
                 base_url=effective_base_url,
                 api_surface=effective_surface,
                 extra_headers=extra_headers,
+                channel_protocol=raw_channel_protocol,
             ))
 
     if not matched_channel:
@@ -1278,6 +1271,7 @@ def _completion_kwargs(
     base_url: str,
     api_surface: str = "",
     extra_headers: dict[str, object] | None = None,
+    channel_protocol: str = "",
 ) -> dict[str, object]:
     kwargs: dict[str, object] = {"model": model}
     if api_key:
@@ -1286,6 +1280,8 @@ def _completion_kwargs(
         kwargs["api_base"] = base_url
     if api_surface:
         kwargs["api_surface"] = api_surface
+    if channel_protocol:
+        kwargs["dsa_channel_protocol"] = channel_protocol
     if extra_headers:
         kwargs["extra_headers"] = dict(extra_headers)
     return kwargs
@@ -1329,6 +1325,7 @@ def _unique_attempts(items: list[dict[str, object]]) -> list[dict[str, object]]:
             item.get("api_key"),
             item.get("api_base"),
             item.get("api_surface"),
+            item.get("dsa_channel_protocol"),
             headers_key,
         )
         if key not in seen:

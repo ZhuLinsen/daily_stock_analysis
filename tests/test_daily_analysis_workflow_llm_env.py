@@ -280,7 +280,9 @@ def test_daily_analysis_conditionally_installs_optional_litellm_extra(tmp_path: 
             check=False,
         )
         assert res.returncode == 0, f"Probe failed: rc={res.returncode} stderr={res.stderr}"
-        parts = res.stdout.strip().splitlines()[-1].split()
+        output_lines = [line for line in res.stdout.splitlines() if line.strip()]
+        assert len(output_lines) == 1, f"Expected single-line probe output for Bash read, got: {res.stdout!r}"
+        parts = output_lines[0].split()
         assert len(parts) == 3, f"Unexpected probe output: {res.stdout!r}"
         return parts[0], parts[1], parts[2]
 
@@ -293,12 +295,14 @@ def test_daily_analysis_conditionally_installs_optional_litellm_extra(tmp_path: 
         "LLM_CUSTOM_MODELS": "gpt-4o-mini",
     }) == ("1", "auto", "0")
 
-    # P1-5: Direct relay VISION_MODEL=Qwen/Qwen-VL + OPENAI_BASE_URL stays native -> needs_litellm=0.
+    # P1-5 & P1-6: Direct relay VISION_MODEL=Qwen/Qwen-VL + OPENAI_BASE_URL stays native
+    # even when a shadowed legacy OPENAI_VISION_MODEL=bedrock/example is also set -> needs_litellm=0.
     assert _run_real_probe({
         "OPENAI_API_KEY": "sk-vision-relay-1234",
         "OPENAI_BASE_URL": "https://relay.example/v1",
         "OPENAI_MODEL": "Qwen/Qwen-VL",
         "VISION_MODEL": "Qwen/Qwen-VL",
+        "OPENAI_VISION_MODEL": "bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0",
     }) == ("1", "auto", "0")
 
     # Explicit rollback LLM_TRANSPORT_MODE=litellm -> needs_litellm=1.

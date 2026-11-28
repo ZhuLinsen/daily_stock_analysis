@@ -25,7 +25,9 @@ from src.llm.transport import (
     create_litellm_compat_proxy,
     create_router,
     dispatch_completion,
+    find_unresolved_env_var,
     get_transport_engine_label,
+    resolve_litellm_params_env,
 )
 
 from src.agent.llm_adapter import (
@@ -3485,7 +3487,26 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
             raise RuntimeError("Hermes/non-Hermes mixed generation route is not supported without deployment-level no-proxy client support")
         if origins.is_hermes_only:
             deployment = origins.hermes_deployments[0]
-            params = dict(deployment.get("litellm_params") or {})
+            raw_info = deployment.get("model_info")
+            if isinstance(raw_info, dict):
+                unresolved_marker = str(raw_info.get("_dsa_unresolved_endpoint_env") or "").strip()
+                if unresolved_marker:
+                    if ":" in unresolved_marker:
+                        endpoint_key, missing_var = unresolved_marker.split(":", 1)
+                        raise RuntimeError(
+                            f"Hermes deployment {endpoint_key.strip() or 'api_base'} environment variable '{missing_var.strip()}' is not set"
+                        )
+                    raise RuntimeError(
+                        f"Hermes deployment endpoint environment variable '{unresolved_marker}' is not set"
+                    )
+            raw_params = dict(deployment.get("litellm_params") or {})
+            for endpoint_key in ("base_url", "api_base"):
+                missing_var = find_unresolved_env_var(raw_params.get(endpoint_key))
+                if missing_var is not None:
+                    raise RuntimeError(
+                        f"Hermes deployment {endpoint_key} environment variable '{missing_var}' is not set"
+                    )
+            params = resolve_litellm_params_env(raw_params)
             api_key = str(params.get("api_key") or "").strip()
             has_explicit_base_url = "base_url" in params and params.get("base_url") is not None
             raw_base_url = str(params.get("base_url")).strip() if has_explicit_base_url else ""
