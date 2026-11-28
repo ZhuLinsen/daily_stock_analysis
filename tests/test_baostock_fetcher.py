@@ -652,6 +652,476 @@ class TestBaostockFetcher(unittest.TestCase):
             df_short = fetcher._fetch_raw_data("600519", "2026-03-16", "2026-03-18")
         self.assertEqual(len(df_short), 1)
 
+    def test_short_page_cursor_succeeds_when_inspect_getsource_raises_oserror_in_frozen_build(self) -> None:
+        """OR-COR-cc9cb4e5: frozen PyInstaller bytecode without .py source files handles short pages cleanly."""
+        import sys
+        import baostock.common.contants as bs_cons
+        from baostock.data.resultset import ResultData
+        import data_provider.baostock_fetcher as baostock_fetcher
+        from tenacity import RetryError
+
+        def _make_short_rs(fields: list[str], row: list[str]) -> ResultData:
+            rs = ResultData()
+            rs.msg_type = "20"
+            rs.msg_body = bs_cons.MESSAGE_SPLIT.join(["uid", "1", "1", "sh.600519"])
+            rs.error_code = "0"
+            rs.error_msg = "success"
+            rs.cur_page_num = "1"
+            rs.fields = fields
+            rs.data = [row]
+            rs.cur_row_num = 0
+            return rs
+
+        fetcher = BaostockFetcher()
+        fake_bs = types.SimpleNamespace(
+            login=lambda: types.SimpleNamespace(error_code="0", error_msg="ok"),
+            logout=lambda: types.SimpleNamespace(error_code="0", error_msg="ok"),
+            query_history_k_data_plus=lambda *a, **kw: _make_short_rs(
+                ["date", "open", "high", "low", "close", "volume", "amount", "pctChg"],
+                ["2026-03-16", "10.0", "10.2", "9.9", "10.1", "100", "1010", "1.0"],
+            ),
+        )
+        fake_bs_screening = types.SimpleNamespace(
+            login=lambda: types.SimpleNamespace(error_code="0", error_msg="ok"),
+            logout=lambda: types.SimpleNamespace(error_code="0", error_msg="ok"),
+            query_history_k_data_plus=lambda *a, **kw: _make_short_rs(
+                ["date", "open", "high", "low", "close", "volume", "amount"],
+                ["2026-03-16", "10.0", "10.2", "9.9", "10.1", "100", "1010"],
+            ),
+        )
+
+        # Case 1: real ResultData with inspect.getsource raising OSError (PyInstaller bytecode-only)
+        baostock_fetcher._BAOSTOCK_RESULT_SKIPS_NON_FULL_PAGE.clear()
+        with patch("inspect.getsource", side_effect=OSError("source code not available")), patch.object(
+            bs_cons, "BAOSTOCK_PER_PAGE_COUNT", 500
+        ), patch.object(fetcher, "_get_baostock", return_value=fake_bs), patch.dict(
+            sys.modules, {"baostock": fake_bs_screening}
+        ):
+            df_fetcher = fetcher._fetch_raw_data("600519", "2026-03-16", "2026-03-18")
+            df_screening = screening_daily._fetch_daily_baostock("600519", lookback_days=30)
+
+        self.assertEqual(len(df_fetcher), 1)
+        self.assertEqual(len(df_screening), 1)
+
+        # Case 2: bytecode-only compiled classes (genuinely no source file on disk)
+        ns: dict[str, object] = {"bs_cons": bs_cons}
+        exec(
+            compile(
+                (
+                    "class FrozenShortPageCursor:\n"
+                    "    def __init__(self, rows):\n"
+                    "        self.error_code = '0'\n"
+                    "        self.error_msg = 'success'\n"
+                    "        self.fields = ['date', 'open', 'high', 'low', 'close', 'volume', 'amount', 'pctChg']\n"
+                    "        self.data = rows\n"
+                    "        self.cur_row_num = 0\n"
+                    "    def next(self):\n"
+                    "        if len(self.data) == 0:\n"
+                    "            return False\n"
+                    "        if self.cur_row_num < len(self.data):\n"
+                    "            return True\n"
+                    "        if len(self.data) < bs_cons.BAOSTOCK_PER_PAGE_COUNT:\n"
+                    "            return False\n"
+                    "        return False\n"
+                    "    def get_row_data(self):\n"
+                    "        row = self.data[self.cur_row_num]\n"
+                    "        self.cur_row_num += 1\n"
+                    "        return row\n"
+                    "\n"
+                    "class FrozenLegacyCursor:\n"
+                    "    def __init__(self, rows):\n"
+                    "        self.error_code = '0'\n"
+                    "        self.error_msg = 'success'\n"
+                    "        self.fields = ['date', 'open', 'high', 'low', 'close', 'volume', 'amount', 'pctChg']\n"
+                    "        self.data = rows\n"
+                    "        self.cur_row_num = 0\n"
+                    "    def next(self):\n"
+                    "        if len(self.data) == 0:\n"
+                    "            return False\n"
+                    "        if self.cur_row_num < len(self.data):\n"
+                    "            return True\n"
+                    "        return False\n"
+                    "    def get_row_data(self):\n"
+                    "        row = self.data[self.cur_row_num]\n"
+                    "        self.cur_row_num += 1\n"
+                    "        return row\n"
+                ),
+                "<frozen baostock.data.resultset>",
+                "exec",
+            ),
+            ns,
+        )
+        frozen_short_cls = ns["FrozenShortPageCursor"]
+        frozen_legacy_cls = ns["FrozenLegacyCursor"]
+        sample_row = ["2026-03-16", "10.0", "10.2", "9.9", "10.1", "100", "1010", "1.0"]
+
+        fake_bs_frozen_short = types.SimpleNamespace(
+            login=lambda: types.SimpleNamespace(error_code="0", error_msg="ok"),
+            logout=lambda: types.SimpleNamespace(error_code="0", error_msg="ok"),
+            query_history_k_data_plus=lambda *a, **kw: frozen_short_cls([sample_row]),
+        )
+        with patch.object(bs_cons, "BAOSTOCK_PER_PAGE_COUNT", 500), patch.object(
+            fetcher, "_get_baostock", return_value=fake_bs_frozen_short
+        ):
+            df_frozen = fetcher._fetch_raw_data("600519", "2026-03-16", "2026-03-18")
+        self.assertEqual(len(df_frozen), 1)
+
+        # Full-page drop on frozen short-page cursor and legacy 0.8.9 drop must still raise ConnectionError
+        with patch.object(bs_cons, "BAOSTOCK_PER_PAGE_COUNT", 1), patch.object(
+            fetcher, "_get_baostock", return_value=fake_bs_frozen_short
+        ), patch.object(
+            BaostockFetcher._fetch_raw_data.retry, "sleep", side_effect=lambda _s: None
+        ):
+            with self.assertRaises(RetryError) as full_drop_ctx:
+                fetcher._fetch_raw_data("600519", "2026-03-16", "2026-03-18")
+        self.assertIsInstance(full_drop_ctx.exception.last_attempt.exception(), ConnectionError)
+
+        fake_bs_frozen_legacy = types.SimpleNamespace(
+            login=lambda: types.SimpleNamespace(error_code="0", error_msg="ok"),
+            logout=lambda: types.SimpleNamespace(error_code="0", error_msg="ok"),
+            query_history_k_data_plus=lambda *a, **kw: frozen_legacy_cls([sample_row]),
+        )
+        with patch.object(bs_cons, "BAOSTOCK_PER_PAGE_COUNT", 500), patch.object(
+            fetcher, "_get_baostock", return_value=fake_bs_frozen_legacy
+        ), patch.object(
+            BaostockFetcher._fetch_raw_data.retry, "sleep", side_effect=lambda _s: None
+        ):
+            with self.assertRaises(RetryError) as legacy_drop_ctx:
+                fetcher._fetch_raw_data("600519", "2026-03-16", "2026-03-18")
+        self.assertIsInstance(legacy_drop_ctx.exception.last_attempt.exception(), ConnectionError)
+
+    def test_screening_transient_10002007_does_not_permanently_poison_baostock(self) -> None:
+        """OR-COR-7abae19d: transient pagination/initial 10002007 errors remain retryable and recoverable."""
+        import json
+        import sys
+        import baostock.common.contants as bs_cons
+        import baostock.util.socketutil as bs_sock
+        from baostock.data.resultset import ResultData
+
+        def _encode_page(error_code: str, error_msg: str, page: int, rows: list[list[str]]) -> str:
+            payload = json.dumps({"record": rows}) if rows else ""
+            body = bs_cons.MESSAGE_SPLIT.join(
+                [error_code, error_msg, "query_history_k_data_plus", "uid", str(page), "1", payload]
+            )
+            header = bs_cons.MESSAGE_SPLIT.join(
+                [bs_cons.BAOSTOCK_CLIENT_VERSION, "20", str(len(body)).zfill(10)]
+            )
+            return f"{header}{body}\n"
+
+        def _make_page_rs(error_code: str = "0", error_msg: str = "success", row_date: str = "2026-03-16") -> ResultData:
+            rs = ResultData()
+            rs.msg_type = "20"
+            rs.msg_body = bs_cons.MESSAGE_SPLIT.join(["uid", "1", "1", "sh.600519"])
+            rs.error_code = error_code
+            rs.error_msg = error_msg
+            rs.cur_page_num = "1"
+            rs.fields = ["date", "open", "high", "low", "close", "volume", "amount"]
+            rs.data = (
+                [[row_date, "10.0", "10.2", "9.9", "10.1", "100", "1010"]]
+                if error_code == "0"
+                else []
+            )
+            rs.cur_row_num = 0
+            return rs
+
+        saved_health = dict(screening_daily._SOURCE_HEALTH)
+        try:
+            screening_daily._SOURCE_HEALTH.clear()
+
+            # Case 1: transient pagination 10002007 on attempt 1 recovers on retry attempt 2
+            send_responses = [
+                _encode_page("10002007", "网络接收错误", 2, []),
+                _encode_page("0", "success", 2, []),
+            ]
+            fake_bs_retry = types.SimpleNamespace(
+                login=lambda: types.SimpleNamespace(error_code="0", error_msg="ok"),
+                logout=lambda: types.SimpleNamespace(error_code="0", error_msg="ok"),
+                query_history_k_data_plus=lambda *a, **kw: _make_page_rs(),
+            )
+            with patch.object(bs_cons, "BAOSTOCK_PER_PAGE_COUNT", 1), patch.dict(
+                sys.modules, {"baostock": fake_bs_retry}
+            ), patch.object(
+                bs_sock, "send_msg", side_effect=lambda _msg: send_responses.pop(0)
+            ), patch.object(
+                screening_daily.time, "sleep", side_effect=lambda _s: None
+            ), patch.object(
+                screening_daily, "daily_history_is_stale", return_value=False
+            ):
+                df_recovered = screening_daily.fetch_daily_history(
+                    "600519",
+                    lookback_days=30,
+                    source="baostock",
+                    retries=1,
+                )
+            self.assertEqual(len(df_recovered), 1)
+            self.assertEqual(send_responses, [])
+
+            # Case 2: exhausted pagination 10002007 + initial-page 10002007 do not permanently block later stocks
+            screening_daily._SOURCE_HEALTH.clear()
+            query_plan = [
+                _make_page_rs("0", "success", "2026-03-16"),
+                _make_page_rs("10002007", "网络接收错误"),
+                _make_page_rs("0", "success", "2026-03-17"),
+            ]
+            page2_plan = [
+                _encode_page("10002007", "网络接收错误", 2, []),
+                _encode_page("0", "success", 2, []),
+            ]
+            fake_bs_multi = types.SimpleNamespace(
+                login=lambda: types.SimpleNamespace(error_code="0", error_msg="ok"),
+                logout=lambda: types.SimpleNamespace(error_code="0", error_msg="ok"),
+                query_history_k_data_plus=lambda *a, **kw: query_plan.pop(0),
+            )
+            with patch.object(bs_cons, "BAOSTOCK_PER_PAGE_COUNT", 1), patch.dict(
+                sys.modules, {"baostock": fake_bs_multi}
+            ), patch.object(
+                bs_sock, "send_msg", side_effect=lambda _msg: page2_plan.pop(0)
+            ), patch.object(
+                screening_daily, "daily_history_is_stale", return_value=False
+            ):
+                with self.assertRaises(RuntimeError) as pag_err:
+                    screening_daily.fetch_daily_history("600519", lookback_days=30, source="baostock", retries=0)
+                self.assertIn("10002007", str(pag_err.exception))
+
+                with self.assertRaises(RuntimeError) as init_err:
+                    screening_daily.fetch_daily_history("600000", lookback_days=30, source="baostock", retries=0)
+                self.assertIn("10002007", str(init_err.exception))
+
+                df_next_stock = screening_daily.fetch_daily_history(
+                    "000001", lookback_days=30, source="baostock", retries=0
+                )
+            self.assertEqual(len(df_next_stock), 1)
+            self.assertEqual(df_next_stock.iloc[0]["date"], "2026-03-17")
+            self.assertFalse(hasattr(screening_daily, "_BAOSTOCK_OUTAGE_ERROR"))
+        finally:
+            screening_daily._SOURCE_HEALTH.clear()
+            screening_daily._SOURCE_HEALTH.update(saved_health)
+
+    def test_real_send_msg_peer_eof_breaks_infinite_recv_loop_and_releases_shared_lock(self) -> None:
+        """OR-COR-53ac80e6: real ResultData.next()/send_msg breaks immediately on peer EOF b'' and frees lock."""
+        import os
+        import sys
+        import baostock.common.contants as bs_cons
+        import baostock.common.context as bs_context
+        from baostock.data.resultset import ResultData
+        from tenacity import RetryError
+
+        class _FakeEOFSocket:
+            def __init__(self) -> None:
+                self.sent: list[bytes] = []
+                self.recv_calls = 0
+                self.closed = False
+
+            def send(self, data: bytes) -> int:
+                self.sent.append(data)
+                return len(data)
+
+            def recv(self, _bufsize: int) -> bytes:
+                self.recv_calls += 1
+                return b""
+
+            def close(self) -> None:
+                self.closed = True
+
+        def _make_first_page_rs(fields: list[str], row: list[str]) -> ResultData:
+            rs = ResultData()
+            rs.msg_type = "20"
+            rs.msg_body = bs_cons.MESSAGE_SPLIT.join(["uid", "1", "1", "sh.600519"])
+            rs.error_code = "0"
+            rs.error_msg = "success"
+            rs.cur_page_num = "1"
+            rs.fields = fields
+            rs.data = [row]
+            rs.cur_row_num = 0
+            return rs
+
+        # Case 1: screening call hits real ResultData.next() -> real send_msg() -> fake socket returning b""
+        eof_sock = _FakeEOFSocket()
+        fake_bs_screening = types.SimpleNamespace(
+            login=lambda: types.SimpleNamespace(error_code="0", error_msg="ok"),
+            logout=lambda: types.SimpleNamespace(error_code="0", error_msg="ok"),
+            query_history_k_data_plus=lambda *a, **kw: _make_first_page_rs(
+                ["date", "open", "high", "low", "close", "volume", "amount"],
+                ["2026-03-16", "10.0", "10.2", "9.9", "10.1", "100", "1010"],
+            ),
+        )
+        with patch.object(bs_cons, "BAOSTOCK_PER_PAGE_COUNT", 1), patch.object(
+            bs_context, "default_socket", eof_sock, create=True
+        ), patch.dict(sys.modules, {"baostock": fake_bs_screening}), patch.dict(
+            os.environ, {"SCREENING_DAILY_CALL_TIMEOUT_SEC": "2.0"}
+        ):
+            started = time.monotonic()
+            with self.assertRaises(RuntimeError) as screen_err:
+                screening_daily._call_daily_wrapper(
+                    screening_daily._fetch_daily_baostock,
+                    "baostock",
+                    "600519",
+                    lookback_days=30,
+                )
+            elapsed = time.monotonic() - started
+
+        self.assertLess(elapsed, 1.0)
+        self.assertEqual(eof_sock.recv_calls, 1)
+        self.assertTrue(eof_sock.closed)
+        self.assertIn("EOF", str(screen_err.exception))
+
+        # Regular BaostockFetcher caller without a cancel token acquires shared lock cleanly afterwards
+        fetcher = BaostockFetcher()
+        ok_rs = _make_first_page_rs(
+            ["date", "open", "high", "low", "close", "volume", "amount", "pctChg"],
+            ["2026-03-16", "10.0", "10.2", "9.9", "10.1", "100", "1010", "1.0"],
+        )
+        fake_bs_ok = types.SimpleNamespace(
+            login=lambda: types.SimpleNamespace(error_code="0", error_msg="ok"),
+            logout=lambda: types.SimpleNamespace(error_code="0", error_msg="ok"),
+            query_history_k_data_plus=lambda *a, **kw: ok_rs,
+        )
+        with patch.object(bs_cons, "BAOSTOCK_PER_PAGE_COUNT", 500), patch.object(
+            fetcher, "_get_baostock", return_value=fake_bs_ok
+        ):
+            df_ok = fetcher._fetch_raw_data("600519", "2026-03-16", "2026-03-18")
+        self.assertEqual(len(df_ok), 1)
+
+        # Case 2: BaostockFetcher itself also breaks out of real send_msg EOF loop and retries cleanly
+        fetcher_eof_socks: list[_FakeEOFSocket] = []
+
+        def _fresh_eof_login():
+            sock = _FakeEOFSocket()
+            fetcher_eof_socks.append(sock)
+            setattr(bs_context, "default_socket", sock)
+            return types.SimpleNamespace(error_code="0", error_msg="ok")
+
+        fake_bs_eof = types.SimpleNamespace(
+            login=_fresh_eof_login,
+            logout=lambda: types.SimpleNamespace(error_code="0", error_msg="ok"),
+            query_history_k_data_plus=lambda *a, **kw: _make_first_page_rs(
+                ["date", "open", "high", "low", "close", "volume", "amount", "pctChg"],
+                ["2026-03-16", "10.0", "10.2", "9.9", "10.1", "100", "1010", "1.0"],
+            ),
+        )
+        with patch.object(bs_cons, "BAOSTOCK_PER_PAGE_COUNT", 1), patch.object(
+            bs_context, "default_socket", None, create=True
+        ), patch.object(fetcher, "_get_baostock", return_value=fake_bs_eof), patch.object(
+            BaostockFetcher._fetch_raw_data.retry, "sleep", side_effect=lambda _s: None
+        ):
+            with self.assertRaises(RetryError) as fetch_eof_ctx:
+                fetcher._fetch_raw_data("600519", "2026-03-16", "2026-03-18")
+
+        self.assertIsInstance(fetch_eof_ctx.exception.last_attempt.exception(), ConnectionError)
+        self.assertEqual(len(fetcher_eof_socks), 3)
+        self.assertTrue(all(s.recv_calls == 1 and s.closed for s in fetcher_eof_socks))
+
+    def test_source_guard_timeout_force_closes_blocking_socket_and_frees_shared_lock(self) -> None:
+        """OR-COR-53ac80e6: source_guard timeout closes blocked Baostock socket so lock is released."""
+        import os
+        import sys
+        import baostock.common.contants as bs_cons
+        import baostock.common.context as bs_context
+        from baostock.data.resultset import ResultData
+        from src.services.screening.source_guard import SourceCallTimeout
+
+        class _FakeBlockingSocket:
+            def __init__(self) -> None:
+                self.entered_recv = threading.Event()
+                self.closed_event = threading.Event()
+
+            def send(self, data: bytes) -> int:
+                return len(data)
+
+            def recv(self, _bufsize: int) -> bytes:
+                self.entered_recv.set()
+                self.closed_event.wait(timeout=5.0)
+                return b""
+
+            def close(self) -> None:
+                self.closed_event.set()
+
+        blocking_sock = _FakeBlockingSocket()
+
+        def _make_first_page_rs() -> ResultData:
+            rs = ResultData()
+            rs.msg_type = "20"
+            rs.msg_body = bs_cons.MESSAGE_SPLIT.join(["uid", "1", "1", "sh.600519"])
+            rs.error_code = "0"
+            rs.error_msg = "success"
+            rs.cur_page_num = "1"
+            rs.fields = ["date", "open", "high", "low", "close", "volume", "amount"]
+            rs.data = [["2026-03-16", "10.0", "10.2", "9.9", "10.1", "100", "1010"]]
+            rs.cur_row_num = 0
+            return rs
+
+        fake_bs = types.SimpleNamespace(
+            login=lambda: types.SimpleNamespace(error_code="0", error_msg="ok"),
+            logout=lambda: types.SimpleNamespace(error_code="0", error_msg="ok"),
+            query_history_k_data_plus=lambda *a, **kw: _make_first_page_rs(),
+        )
+        with patch.object(bs_cons, "BAOSTOCK_PER_PAGE_COUNT", 1), patch.object(
+            bs_context, "default_socket", blocking_sock, create=True
+        ), patch.dict(sys.modules, {"baostock": fake_bs}), patch.dict(
+            os.environ, {"SCREENING_DAILY_CALL_TIMEOUT_SEC": "0.08"}
+        ):
+            with self.assertRaises(SourceCallTimeout):
+                screening_daily._call_daily_wrapper(
+                    screening_daily._fetch_daily_baostock,
+                    "baostock",
+                    "600519",
+                    lookback_days=30,
+                )
+
+        self.assertTrue(blocking_sock.entered_recv.is_set())
+        self.assertTrue(blocking_sock.closed_event.is_set())
+
+        # Shared lock must become available quickly for a regular caller without a cancel token
+        acquired = BAOSTOCK_SESSION_LOCK.acquire(timeout=1.0)
+        try:
+            self.assertTrue(acquired)
+        finally:
+            if acquired:
+                BAOSTOCK_SESSION_LOCK.release()
+
+    def test_regular_baostock_caller_without_cancel_token_times_out_if_lock_stuck(self) -> None:
+        """OR-COR-53ac80e6: non-cancelled caller raises TimeoutError instead of hanging forever on lock."""
+        import data_provider.baostock_fetcher as baostock_fetcher
+
+        fetcher = BaostockFetcher()
+        login_calls = 0
+        holder_acquired = threading.Event()
+        release_holder = threading.Event()
+
+        def fake_login():
+            nonlocal login_calls
+            login_calls += 1
+            return types.SimpleNamespace(error_code="0", error_msg="ok")
+
+        fake_bs = types.SimpleNamespace(
+            login=fake_login,
+            logout=lambda: types.SimpleNamespace(error_code="0", error_msg="ok"),
+        )
+
+        def holder():
+            with BAOSTOCK_SESSION_LOCK:
+                holder_acquired.set()
+                release_holder.wait(timeout=2.0)
+
+        holder_thread = threading.Thread(target=holder)
+        holder_thread.start()
+        try:
+            self.assertTrue(holder_acquired.wait(timeout=1.0))
+            with patch.object(baostock_fetcher, "_BAOSTOCK_LOCK_TIMEOUT_SECONDS", 0.08), patch.object(
+                fetcher, "_get_baostock", return_value=fake_bs
+            ):
+                started = time.monotonic()
+                with self.assertRaises(TimeoutError):
+                    with fetcher._baostock_session():
+                        pass
+                elapsed = time.monotonic() - started
+        finally:
+            release_holder.set()
+            holder_thread.join(timeout=2.0)
+
+        self.assertLess(elapsed, 0.8)
+        self.assertEqual(login_calls, 0)
+
 
 if __name__ == "__main__":
     unittest.main()
