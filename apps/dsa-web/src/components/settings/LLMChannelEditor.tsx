@@ -18,7 +18,6 @@ import {
   getProviderTemplateLabel,
   getProviderTemplateOfficialSources,
   getProviderTemplateRegistration,
-  isKnownProviderTemplate,
 } from './llmProviderTemplates';
 import { LLM_CHANNEL_EDITOR_TEXT, type LlmChannelEditorLocale } from './llmChannelEditorText';
 import { SettingsHelpButton } from './SettingsHelpButton';
@@ -421,8 +420,10 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
 }) => {
   const { language } = useUiLanguage();
   const text = LLM_CHANNEL_EDITOR_TEXT[language];
-  const preset = getProviderTemplate(channel.name);
-  const showProviderTemplateDetails = isKnownProviderTemplate(channel.name);
+  const preset = channel.name === 'azure' && channel.protocol !== 'azure'
+    ? undefined
+    : getProviderTemplate(channel.name);
+  const showProviderTemplateDetails = Boolean(preset && preset.channelId !== 'custom');
   const displayName = preset ? getProviderTemplateLabel(preset, language) : channel.name;
   const providerCapabilities = showProviderTemplateDetails ? (preset?.capabilities || []) : [];
   const providerSources = showProviderTemplateDetails && preset ? getProviderTemplateOfficialSources(preset, language) : [];
@@ -954,7 +955,7 @@ function normalizeProtocol(value: string): ChannelProtocol {
   return 'openai';
 }
 
-function inferProtocol(protocol: string, baseUrl: string, models: string[], channelName: string): ChannelProtocol {
+function inferProtocol(protocol: string, baseUrl: string, models: string[]): ChannelProtocol {
   const explicit = normalizeProtocol(protocol);
   if (protocol.trim()) {
     return explicit;
@@ -967,10 +968,6 @@ function inferProtocol(protocol: string, baseUrl: string, models: string[], chan
   const firstPrefixedModel = models.find((model) => model.includes('/'));
   if (firstPrefixedModel) {
     return normalizeProtocol(firstPrefixedModel.split('/', 1)[0]);
-  }
-
-  if (channelName === 'azure') {
-    return 'azure';
   }
 
   if (baseUrl.includes('127.0.0.1') || baseUrl.includes('localhost')) {
@@ -1502,7 +1499,7 @@ function parseChannelsFromItems(
     return {
       id: `parsed:${index}:${upperName}`,
       name: name.toLowerCase(),
-      protocol: inferProtocol(itemMap.get(`LLM_${upperName}_PROTOCOL`) || '', baseUrl, models, name),
+      protocol: inferProtocol(itemMap.get(`LLM_${upperName}_PROTOCOL`) || '', baseUrl, models),
       apiSurface: normalizeApiSurface(itemMap.get(`LLM_${upperName}_API_SURFACE`)),
       baseUrl,
       apiKey: resolveInitialChannelApiKeyValue(name, itemMap, itemSourceByKey),
@@ -2015,7 +2012,7 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
       if (rowIndex !== index) return channel;
       const updated = { ...channel, [field]: value };
 
-      if (field === 'name' && typeof value === 'string') {
+      if (field === 'name' && typeof value === 'string' && value !== 'azure') {
         const newPreset = getProviderTemplate(value);
         if (newPreset) {
           const oldPreset = getProviderTemplate(channel.name);

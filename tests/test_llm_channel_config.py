@@ -36,16 +36,41 @@ from src.llm.generation_params import (
 )
 from src.services.system_config_service import SystemConfigService
 from src.services.generation_backend_status_service import GenerationBackendStatusService
+from src.services.screening.config import _parse_llm_channels_env
 
 
 _AZURE_ENV = {
     "LLM_CHANNELS": "azure",
+    "LLM_AZURE_PROTOCOL": "azure",
     "LLM_AZURE_BASE_URL": "https://test.openai.azure.com",
     "LLM_AZURE_MODELS": "my-deployment",
 }
 
 
 class LLMChannelConfigTestCase(unittest.TestCase):
+    def test_existing_channel_named_azure_keeps_its_openai_compatible_route(self) -> None:
+        for endpoint in ("https://gateway.example/v1", "https://test.openai.azure.com"):
+            env = {
+                "LLM_CHANNELS": "azure",
+                "LLM_AZURE_BASE_URL": endpoint,
+                "LLM_AZURE_API_KEY": "gateway-key",
+                "LLM_AZURE_MODELS": "model-a",
+            }
+            with self.subTest(endpoint=endpoint), patch.dict(os.environ, env, clear=True):
+                channels, runtime_issues, _, _ = Config._parse_llm_channels_with_issues("azure")
+                self.assertEqual(runtime_issues, [])
+                self.assertEqual(channels[0]["protocol"], "openai")
+                routes = Config._channels_to_model_list(channels)
+                self.assertEqual(routes, GenerationBackendStatusService._build_litellm_model_list(env))
+                self.assertEqual(routes[0]["model_name"], "openai/model-a")
+                self.assertEqual(routes[0]["litellm_params"]["api_base"], endpoint)
+                self.assertEqual(routes[0]["litellm_params"]["api_key"], "gateway-key")
+                self.assertNotIn("azure_ad_token_provider", routes[0]["litellm_params"])
+                self.assertEqual(SystemConfigService._validate_llm_channel_map(env, set(env)), [])
+                screening_channels = _parse_llm_channels_env()
+                self.assertEqual(screening_channels[0]["protocol"], "openai")
+                self.assertEqual(screening_channels[0]["models"], ["openai/model-a"])
+
     def test_azure_channel_builds_lazy_credential_route_and_preserves_explicit_keys(self) -> None:
         self.addCleanup(_get_azure_token_provider.cache_clear)
         credential = Mock(spec=["get_token"])
@@ -90,7 +115,7 @@ class LLMChannelConfigTestCase(unittest.TestCase):
             ("MODELS", "openai/gpt-4o", "invalid_azure_deployment"),
         ):
             key = f"LLM_AZURE_{field}"
-            env = {**_AZURE_ENV, "LLM_AZURE_PROTOCOL": "azure", key: value}
+            env = {**_AZURE_ENV, key: value}
             with self.subTest(key=key, value=value), patch.dict(os.environ, env, clear=True):
                 channels, runtime_issues, _, _ = Config._parse_llm_channels_with_issues("azure")
                 save_issues = SystemConfigService._validate_llm_channel_map(env, set(env))

@@ -147,14 +147,55 @@ describe('LLMChannelEditor', () => {
     });
   });
 
-  it('tests an Azure deployment without an API key or model discovery', async () => {
+  it('keeps an existing OpenAI-compatible channel named azure compatible after saving', async () => {
+    update.mockResolvedValue({ warnings: [] });
+    render(
+      <LLMChannelEditor
+        items={[
+          { key: 'LLM_CHANNELS', value: 'azure' },
+          { key: 'LLM_AZURE_BASE_URL', value: 'https://gateway.example/v1' },
+          { key: 'LLM_AZURE_API_KEY', value: 'gateway-key' },
+          { key: 'LLM_AZURE_MODELS', value: 'model-a' },
+        ]}
+        configVersion="v1"
+        maskToken="******"
+        onSaved={() => {}}
+      />
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /azure/i }));
+    expect(await screen.findByLabelText('协议')).toHaveValue('openai');
+    expect(screen.queryByText('Microsoft Entra ID')).not.toBeInTheDocument();
+    expect(screen.queryByText(/填写 Azure OpenAI 资源的 HTTPS 根地址/)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '获取模型' })).toBeVisible();
+    expect(selectOptionValues('主模型')).toContain('openai/model-a');
+    const channelName = screen.getByLabelText('渠道名称');
+    fireEvent.change(channelName, { target: { value: 'gateway' } });
+    fireEvent.change(channelName, { target: { value: 'azure' } });
+    expect(screen.getByLabelText('协议')).toHaveValue('openai');
+    fireEvent.change(screen.getByLabelText('Base URL'), { target: { value: 'https://gateway.example/api/v1' } });
+    fireEvent.click(screen.getByRole('button', { name: '保存 AI 配置' }));
+
+    await waitFor(() => expect(update).toHaveBeenCalledWith(expect.objectContaining({
+      items: expect.arrayContaining([
+        { key: 'LLM_AZURE_PROTOCOL', value: 'openai' },
+        { key: 'LLM_AZURE_BASE_URL', value: 'https://gateway.example/api/v1' },
+      ]),
+    })));
+  });
+
+  it.each([
+    ['explicit protocol', 'azure', 'my-deployment'],
+    ['Azure model prefix', '', 'azure/my-deployment'],
+  ])('tests an Azure deployment via %s without an API key or model discovery', async (_mode, protocol, model) => {
     testLLMChannel.mockResolvedValue({ success: true });
     render(
       <LLMChannelEditor
         items={[
           { key: 'LLM_CHANNELS', value: 'azure' },
+          { key: 'LLM_AZURE_PROTOCOL', value: protocol },
           { key: 'LLM_AZURE_BASE_URL', value: 'https://test.openai.azure.com' },
-          { key: 'LLM_AZURE_MODELS', value: 'my-deployment' },
+          { key: 'LLM_AZURE_MODELS', value: model },
         ]}
         configVersion="v1"
         maskToken="******"
@@ -174,7 +215,7 @@ describe('LLMChannelEditor', () => {
       protocol: 'azure',
       baseUrl: 'https://test.openai.azure.com',
       apiKey: '',
-      models: ['my-deployment'],
+      models: [model],
     })));
   });
 

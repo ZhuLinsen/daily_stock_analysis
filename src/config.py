@@ -607,10 +607,10 @@ def resolve_llm_channel_protocol(
         if prefix in SUPPORTED_LLM_CHANNEL_PROTOCOLS:
             return prefix
 
-    # Infer from channel name (e.g. "deepseek" -> deepseek, "gemini" -> gemini)
+    # Azure was a valid custom channel name before it became a protocol.
     if channel_name:
         name_protocol = canonicalize_llm_channel_protocol(channel_name)
-        if name_protocol in SUPPORTED_LLM_CHANNEL_PROTOCOLS:
+        if name_protocol != "azure" and name_protocol in SUPPORTED_LLM_CHANNEL_PROTOCOLS:
             return name_protocol
 
     if base_url:
