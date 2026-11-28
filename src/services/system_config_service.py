@@ -1127,6 +1127,10 @@ class SystemConfigService:
         request_headers = {"Accept": "application/json"}
         if selected_api_key:
             request_headers["Authorization"] = f"Bearer {selected_api_key}"
+        if "aihubmix.com" in base_url.lower() and not any(
+            k.lower() == "app-code" for k in request_headers
+        ):
+            request_headers["APP-Code"] = "GPIJ3886"
 
         try:
             models_url = self._build_llm_models_url(base_url)
@@ -1462,8 +1466,13 @@ class SystemConfigService:
             call_kwargs["api_key"] = selected_api_key
         if base_url.strip():
             call_kwargs["api_base"] = base_url.strip()
-        if normalized_extra_headers:
-            call_kwargs["extra_headers"] = dict(normalized_extra_headers)
+        effective_extra_headers = dict(normalized_extra_headers)
+        if "aihubmix.com" in base_url.lower() and not any(
+            k.lower() == "app-code" for k in effective_extra_headers
+        ):
+            effective_extra_headers["APP-Code"] = "GPIJ3886"
+        if effective_extra_headers:
+            call_kwargs["extra_headers"] = effective_extra_headers
         call_kwargs = apply_litellm_generation_params(
             call_kwargs,
             wire_model,
@@ -4830,6 +4839,31 @@ class SystemConfigService:
                 True,
                 "LLM request was rejected by quota or rate limiting",
                 "rate_limit",
+            )
+        if getattr(exc, "is_waf_blocked", False) or (
+            getattr(exc, "error_code", None) == "provider_blocked"
+        ):
+            return _LLMDiagnostic(
+                "request_blocked",
+                False,
+                "Blocked by Cloudflare/WAF, not invalid API key",
+                "provider_blocked",
+            )
+        if getattr(exc, "error_code", None) == "non_json_html" or (
+            "text/html" in text and "base url" in text
+        ):
+            return _LLMDiagnostic(
+                "format_error",
+                False,
+                "Endpoint returned HTML instead of JSON; missing /v1 in Base URL?",
+                "non_json_html",
+            )
+        if getattr(exc, "status_code", None) == 404 and "/responses" in text and "model" not in text:
+            return _LLMDiagnostic(
+                "network_error",
+                False,
+                "Relay lacks /responses; use Chat Completions",
+                "endpoint_not_found",
             )
         if SystemConfigService._has_provider_prefix_mismatch_signal(text):
             return _LLMDiagnostic(

@@ -14,6 +14,7 @@ from src.llm.generation_params import apply_litellm_generation_params
 from src.llm.transport import (
     create_router,
     dispatch_completion,
+    find_unresolved_env_var,
     normalize_model_list_entries,
     silence_litellm_logs,
 )
@@ -991,6 +992,18 @@ def _call_litellm_router(
         raw_model_list = data.get("model_list")
         if not isinstance(raw_model_list, list) or not raw_model_list:
             return None
+        for raw_entry in raw_model_list:
+            if not isinstance(raw_entry, dict):
+                continue
+            raw_params = raw_entry.get("litellm_params")
+            if not isinstance(raw_params, dict):
+                continue
+            for endpoint_key in ("base_url", "api_base"):
+                missing_var = find_unresolved_env_var(raw_params.get(endpoint_key))
+                if missing_var is not None:
+                    raise ValueError(
+                        f"Screening YAML deployment {endpoint_key} environment variable '{missing_var}' is not set"
+                    )
         model_list = normalize_model_list_entries(raw_model_list)
         if not model_list:
             return None
@@ -1024,7 +1037,9 @@ def _call_litellm_router(
             except Exception:
                 raise
     except Exception as exc:
-        if _is_timeout_error(exc):
+        if _is_timeout_error(exc) or (
+            isinstance(exc, ValueError) and "environment variable" in str(exc) and "is not set" in str(exc)
+        ):
             raise
         logger.warning("LiteLLM router config failed, falling back to direct calls: %s", exc)
     return None

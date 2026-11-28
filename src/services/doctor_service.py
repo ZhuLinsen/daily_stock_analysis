@@ -18,6 +18,7 @@ from src.llm.local_cli_backend import (
     redact_diagnostic_text,
     resolve_local_cli_preset,
 )
+from src.llm.transport import resolve_llm_transport_mode
 from src.services.notification_diagnostics import (
     CHANNEL_SPECS,
     run_notification_diagnostics,
@@ -305,6 +306,7 @@ def run_doctor_diagnostics(config: Config) -> Dict[str, Any]:
         else "invalid"
     )
     configured_models = get_configured_llm_models(getattr(config, "llm_model_list", []) or [])
+    llm_transport_mode = resolve_llm_transport_mode(config=config)
     llm_ready = not has_llm_config_error
 
     if generation_backend_raw in LOCAL_CLI_GENERATION_BACKEND_IDS:
@@ -486,6 +488,7 @@ def run_doctor_diagnostics(config: Config) -> Dict[str, Any]:
             "llm": {
                 "status": llm_status,
                 "generation_backend": generation_backend,
+                "llm_transport_mode": llm_transport_mode,
                 "configured_models_count": len(configured_models),
                 "ready": llm_ready,
             },
@@ -523,6 +526,7 @@ def format_doctor_report(report: Dict[str, Any]) -> str:
     llm = checks.get("llm", {})
     lines.append(
         f"[llm] status={llm.get('status')} backend={llm.get('generation_backend')} "
+        f"transport={llm.get('llm_transport_mode', 'litellm')} "
         f"models={llm.get('configured_models_count')} ready={llm.get('ready')}"
     )
 

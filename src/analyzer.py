@@ -21,9 +21,11 @@ from typing import Optional, Dict, Any, List, Tuple, Callable, Union
 from json_repair import repair_json
 
 from src.llm.transport import (
+    NativeConfigError,
     create_litellm_compat_proxy,
     create_router,
     dispatch_completion,
+    get_transport_engine_label,
 )
 
 from src.agent.llm_adapter import (
@@ -3192,11 +3194,19 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                     routing_strategy="simple-shuffle",
                     num_retries=2,
                     router_factory=Router if Router is not create_router else None,
+                    config=config,
                 )
             except TypeError:
                 logger.debug("Analyzer LLM: Router constructor signature not compatible; fallback to direct mode")
                 self._router = None
                 self._router_has_merged_extra_body = False
+            except NativeConfigError as exc:
+                logger.error("Analyzer LLM: native transport rejected channel/YAML router config: %s", exc)
+                self._router = None
+                self._router_has_merged_extra_body = False
+                self._transport_config_error = exc
+                self._litellm_available = False
+                return
             else:
                 self._router_has_merged_extra_body = True
                 unique_models = list(dict.fromkeys(
@@ -3241,11 +3251,19 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                     routing_strategy="simple-shuffle",
                     num_retries=2,
                     router_factory=Router if Router is not create_router else None,
+                    config=config,
                 )
             except TypeError:
                 logger.debug("Analyzer LLM: Legacy Router constructor signature not compatible; using legacy model_list fallback")
                 self._router = None
                 self._router_has_merged_extra_body = False
+            except NativeConfigError as exc:
+                logger.error("Analyzer LLM: native transport rejected legacy router config: %s", exc)
+                self._router = None
+                self._router_has_merged_extra_body = False
+                self._transport_config_error = exc
+                self._litellm_available = False
+                return
             else:
                 self._router_has_merged_extra_body = True
                 logger.info(
@@ -3483,21 +3501,23 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                 hermes_kwargs["extra_body"] = merged_hermes_extra
             with open_hermes_no_proxy_client(api_key=api_key, base_url=base_url, timeout=timeout) as client:
                 hermes_kwargs["client"] = client
-                return dispatch_completion(compat_proxy=litellm, **hermes_kwargs)
+                return dispatch_completion(compat_proxy=litellm, config=config, **hermes_kwargs)
 
+        if getattr(self, "_transport_config_error", None) is not None and self._router is None:
+            raise self._transport_config_error
         wire_models = resolve_fallback_litellm_wire_models(model, config.llm_model_list)
         register_fallback_model_pricing(wire_models)
         effective_kwargs = dict(call_kwargs)
         if use_channel_router and self._router and model in router_model_names:
-            return dispatch_completion(router=self._router, **effective_kwargs)
+            return dispatch_completion(router=self._router, config=config, **effective_kwargs)
         if self._router and model == config.litellm_model and not use_channel_router:
-            return dispatch_completion(router=self._router, **effective_kwargs)
+            return dispatch_completion(router=self._router, config=config, **effective_kwargs)
 
         keys = get_api_keys_for_model(model, config)
         if keys:
             effective_kwargs["api_key"] = keys[0]
         effective_kwargs.update(extra_litellm_params(model, config))
-        return dispatch_completion(compat_proxy=litellm, **effective_kwargs)
+        return dispatch_completion(compat_proxy=litellm, config=config, **effective_kwargs)
 
     def _normalize_usage(
         self,
@@ -3855,6 +3875,13 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                 f"{model} stream interrupted: {exc}",
                 partial_received=chars_received > 0,
             ) from exc
+        finally:
+            close_fn = getattr(stream_response, "close", None)
+            if callable(close_fn):
+                try:
+                    close_fn()
+                except Exception:
+                    pass
 
         response_text = strip_leading_think_wrapper("".join(chunks))
         if not response_text:
@@ -4073,6 +4100,8 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                 def _attach_usage_audit(
                     usage: Dict[str, Any],
                     messages: List[Dict[str, Any]],
+                    *,
+                    transport_engine: Optional[str] = None,
                 ) -> Dict[str, Any]:
                     if audit_context is None:
                         return filter_prompt_cache_telemetry(
@@ -4084,7 +4113,9 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                         usage.get("provider") or usage_provider
                     )
                     effective_audit_context["transport"] = (
-                        effective_audit_context.get("transport") or "litellm"
+                        effective_audit_context.get("transport")
+                        or transport_engine
+                        or get_transport_engine_label(config=config)
                     )
                     return filter_prompt_cache_telemetry(
                         attach_legacy_message_stability_audit(
@@ -4150,6 +4181,7 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
 
                 _stream_text: Optional[str] = None
                 _stream_usage: Dict[str, Any] = {}
+                _stream_transport_engine: Optional[str] = None
 
                 if model_stream:
                     try:
@@ -4166,6 +4198,10 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                             model_list=recovery_model_list,
                             cache_recovery=False,
                             logger=logger,
+                        )
+                        _stream_transport_engine = get_transport_engine_label(
+                            stream_response,
+                            config=config,
                         )
                         _stream_text, _stream_usage = self._consume_litellm_stream(
                             stream_response,
@@ -4205,7 +4241,11 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                         last_provider = _stream_usage["provider"]
                     if usage_provider:
                         _stream_usage.setdefault("provider", usage_provider)
-                    _stream_usage = _attach_usage_audit(_stream_usage, call_kwargs["messages"])
+                    _stream_usage = _attach_usage_audit(
+                        _stream_usage,
+                        call_kwargs["messages"],
+                        transport_engine=_stream_transport_engine,
+                    )
                     if usage_provider:
                         _stream_usage.setdefault("provider", usage_provider)
                     _stream_usage["route_model"] = model
@@ -4251,7 +4291,11 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                     if response_provider or usage_provider:
                         usage["provider"] = response_provider or usage_provider
                     if audit_context is not None:
-                        usage = _attach_usage_audit(usage, call_kwargs["messages"])
+                        usage = _attach_usage_audit(
+                            usage,
+                            call_kwargs["messages"],
+                            transport_engine=get_transport_engine_label(response, config=config),
+                        )
                     if response_model:
                         usage.setdefault("response_model", response_model)
                     if response_provider or usage_provider:

@@ -3078,19 +3078,13 @@ def _build_screening_context(
 
 
 def _normalize_screening_api_base(value: Any) -> str:
-    """Normalize an endpoint base URL for strict same-host screening header matching."""
+    """Normalize an endpoint base URL via ``urlsplit`` for strict same-host screening header matching."""
+    from src.llm.native_resolve import normalize_endpoint_url
+
     raw = _env_text(value)
     if not raw:
         return ""
-    try:
-        parsed = urlparse(raw)
-    except ValueError:
-        return raw.rstrip("/").lower()
-    if parsed.scheme and parsed.netloc:
-        normalized_path = parsed.path.rstrip("/")
-        query = f"?{parsed.query}" if parsed.query else ""
-        return f"{parsed.scheme.lower()}://{parsed.netloc.lower()}{normalized_path}{query}"
-    return raw.rstrip("/").lower()
+    return normalize_endpoint_url(raw)
 
 
 def _resolve_canonical_screening_api_base(

@@ -38,6 +38,7 @@ class GenerationParamRecovery:
 
     omit_params: Tuple[str, ...] = ()
     set_params: Mapping[str, Any] = field(default_factory=dict)
+    rename_params: Mapping[str, str] = field(default_factory=dict)
     reason: str = ""
 
 
@@ -359,6 +360,9 @@ def apply_litellm_param_recovery(
 ) -> Dict[str, Any]:
     """Return kwargs with a learned parameter recovery applied."""
     updated = dict(call_kwargs)
+    for old_param, new_param in recovery.rename_params.items():
+        if old_param in updated and new_param not in updated:
+            updated[new_param] = updated.pop(old_param)
     for param in recovery.omit_params:
         updated.pop(param, None)
     for param, value in recovery.set_params.items():

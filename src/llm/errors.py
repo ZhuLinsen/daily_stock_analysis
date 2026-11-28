@@ -104,6 +104,58 @@ def classify_litellm_generation_param_error(
                 reason="temperature_unsupported",
             )
 
+    if "max_tokens" in text and "max_completion_tokens" in text:
+        if (
+            "use 'max_completion_tokens'" in text
+            or 'use "max_completion_tokens"' in text
+            or "use max_completion_tokens" in text
+            or ("max_tokens" in text and any(marker in text for marker in _UNSUPPORTED_PARAM_MARKERS))
+        ):
+            if "max_completion_tokens" in text and "use 'max_tokens'" not in text and 'use "max_tokens"' not in text:
+                if (
+                    "max_completion_tokens" in text
+                    and any(
+                        phrase in text
+                        for phrase in (
+                            "max_completion_tokens is not supported",
+                            "max_completion_tokens' is not supported",
+                            "unsupported parameter: 'max_completion_tokens'",
+                            'unsupported parameter: "max_completion_tokens"',
+                            "unrecognized request argument supplied: max_completion_tokens",
+                            "unknown parameter: 'max_completion_tokens'",
+                        )
+                    )
+                ):
+                    return GenerationParamRecovery(
+                        rename_params={"max_completion_tokens": "max_tokens"},
+                        reason="max_completion_tokens_use_max_tokens",
+                    )
+                return GenerationParamRecovery(
+                    rename_params={"max_tokens": "max_completion_tokens"},
+                    reason="max_tokens_use_max_completion_tokens",
+                )
+        if "use 'max_tokens'" in text or 'use "max_tokens"' in text or "use max_tokens" in text:
+            return GenerationParamRecovery(
+                rename_params={"max_completion_tokens": "max_tokens"},
+                reason="max_completion_tokens_use_max_tokens",
+            )
+    elif "max_completion_tokens" in text and any(marker in text for marker in _UNSUPPORTED_PARAM_MARKERS):
+        return GenerationParamRecovery(
+            rename_params={"max_completion_tokens": "max_tokens"},
+            reason="max_completion_tokens_use_max_tokens",
+        )
+    elif "max_tokens" in text and any(marker in text for marker in _UNSUPPORTED_PARAM_MARKERS):
+        return GenerationParamRecovery(
+            rename_params={"max_tokens": "max_completion_tokens"},
+            reason="max_tokens_use_max_completion_tokens",
+        )
+
+    if "stream_options" in text and any(marker in text for marker in _UNSUPPORTED_PARAM_MARKERS):
+        return GenerationParamRecovery(
+            omit_params=("stream_options",),
+            reason="stream_options_unsupported",
+        )
+
     for param in ("top_p", "presence_penalty", "frequency_penalty", "seed"):
         if param in text and any(marker in text for marker in _UNSUPPORTED_PARAM_MARKERS):
             return GenerationParamRecovery(

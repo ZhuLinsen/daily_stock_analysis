@@ -17,7 +17,6 @@ import random
 import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import urlparse
 
 from src.config import (
     Config,
@@ -27,6 +26,7 @@ from src.config import (
     normalize_llm_channel_api_surface,
 )
 from src.llm.hermes import route_has_hermes
+from src.llm.native_resolve import normalize_endpoint_url
 from src.llm.transport import (
     create_litellm_compat_proxy,
     dispatch_completion,
@@ -248,19 +248,23 @@ def _matching_vision_deployments(model: str, cfg: Config) -> List[Dict[str, Any]
 
 
 def _normalize_vision_endpoint_url(url: str) -> str:
-    """Normalize scheme/host case and trailing slash while preserving path/query case."""
-    raw = str(url or "").strip()
-    if not raw:
-        return ""
-    try:
-        parsed = urlparse(raw)
-    except ValueError:
-        return raw.rstrip("/")
-    if parsed.scheme and parsed.netloc:
-        normalized_path = parsed.path.rstrip("/")
-        query = f"?{parsed.query}" if parsed.query else ""
-        return f"{parsed.scheme.lower()}://{parsed.netloc.lower()}{normalized_path}{query}"
-    return raw.rstrip("/")
+    """Normalize scheme/host case and trailing slash via ``urlsplit``, preserving semicolon params & query."""
+    return normalize_endpoint_url(url)
+
+
+def _has_deployment_endpoint_conflict(deployment: Dict[str, Any]) -> bool:
+    """Return True when a vision deployment specifies conflicting ``api_base`` and ``base_url``."""
+    raw_params = resolve_litellm_params_env(deployment.get("litellm_params") or {})
+    has_explicit_base_url = "base_url" in raw_params and raw_params.get("base_url") is not None
+    if not has_explicit_base_url:
+        return False
+    raw_resolved_base_url = str(raw_params.get("base_url")).strip()
+    raw_resolved_api_base = str(raw_params.get("api_base") or "").strip()
+    if not raw_resolved_api_base:
+        return False
+    return _normalize_vision_endpoint_url(raw_resolved_base_url) != _normalize_vision_endpoint_url(
+        raw_resolved_api_base
+    )
 
 
 def _find_deployment_unresolved_endpoint_env(
@@ -365,7 +369,7 @@ def _call_litellm_vision(image_b64: str, mime_type: str, api_key: Optional[str] 
                 deployment_info = dict(raw_info)
         else:
             # Fail closed instead of falling back to legacy OpenAI routing when
-            # a matching deployment failed endpoint env expansion.
+            # any matching deployment has an unset endpoint env var or URL conflict.
             for item in deployments:
                 unresolved = _find_deployment_unresolved_endpoint_env(item)
                 if unresolved is not None:
@@ -373,6 +377,8 @@ def _call_litellm_vision(image_b64: str, mime_type: str, api_key: Optional[str] 
                     raise ValueError(
                         f"Vision deployment {endpoint_key} environment variable '{missing_var}' is not set"
                     )
+                if _has_deployment_endpoint_conflict(item):
+                    raise ValueError("Vision deployment has conflicting api_base and base_url values")
     if key is None and not deployment_params:
         raise ValueError(f"No API key found for vision model {model}")
     wire_model = str(deployment_params.get("model") or model).strip()
@@ -437,7 +443,7 @@ def _call_litellm_vision(image_b64: str, mime_type: str, api_key: Optional[str] 
         if cfg.openai_base_url and "aihubmix.com" in cfg.openai_base_url:
             call_kwargs["extra_headers"] = {"APP-Code": "GPIJ3886"}
 
-    response = dispatch_completion(compat_proxy=litellm, **call_kwargs)
+    response = dispatch_completion(compat_proxy=litellm, config=cfg, **call_kwargs)
     if response and response.choices and response.choices[0].message.content:
         return response.choices[0].message.content
     raise ValueError("LiteLLM vision returned empty response")
