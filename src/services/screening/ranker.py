@@ -10,6 +10,7 @@ import os
 from dataclasses import dataclass
 
 from src.config import apply_litellm_api_surface
+from src.llm.azure_openai import azure_openai_auth_params
 from src.llm.errors import call_litellm_with_param_recovery
 from src.llm.generation_params import apply_litellm_generation_params
 from src.services.screening.models import Pick
@@ -1099,18 +1100,24 @@ def _build_litellm_attempts(
             continue
         matched_channel = True
         api_keys = channel.get("api_keys", [])
+        is_azure = channel.get("protocol") == "azure"
         if not isinstance(api_keys, list) or not api_keys:
-            api_keys = [api_key] if api_key else [""]
+            api_keys = ["" if is_azure else api_key]
         wire_model = apply_litellm_api_surface(
             model,
             str(channel.get("api_surface", "") or ""),
         )
         for channel_key in api_keys:
-            attempts.append(_completion_kwargs(
+            channel_base = str(channel.get("base_url") or ("" if is_azure else base_url) or "")
+            selected_key = str(channel_key or "")
+            kwargs = _completion_kwargs(
                 wire_model,
-                api_key=str(channel_key or ""),
-                base_url=str(channel.get("base_url", "") or base_url or ""),
-            ))
+                api_key=selected_key,
+                base_url=channel_base,
+            )
+            if is_azure:
+                kwargs.update(azure_openai_auth_params(wire_model, channel_base, selected_key))
+            attempts.append(kwargs)
 
     if not matched_channel:
         attempts.append(_completion_kwargs(model, api_key=api_key, base_url=base_url))
@@ -1131,6 +1138,8 @@ def _channel_matches_model(channel: dict[str, object], model: str) -> bool:
     if not isinstance(models, list) or not models:
         return False
     normalized = {_normalize_model_name(str(item), str(channel.get("protocol", "openai"))) for item in models}
+    if model.startswith("azure/") or channel.get("protocol") == "azure":
+        return model in normalized
     return model in normalized or model.split("/", 1)[-1] in {item.split("/", 1)[-1] for item in normalized}
 
 
@@ -1144,6 +1153,8 @@ def _normalize_model_name(model: str, protocol: str) -> str:
         return f"gemini/{model}"
     if protocol == "deepseek":
         return f"deepseek/{model}"
+    if protocol == "azure":
+        return f"azure/{model}"
     return f"openai/{model}"
 
 

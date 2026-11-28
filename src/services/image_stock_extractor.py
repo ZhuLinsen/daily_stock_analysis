@@ -20,6 +20,7 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from src.config import Config, channel_allows_empty_api_key, get_config
+from src.llm.azure_openai import normalize_azure_openai_token_limit
 from src.llm.hermes import route_has_hermes
 
 logger = logging.getLogger(__name__)
@@ -319,11 +320,15 @@ def _call_litellm_vision(image_b64: str, mime_type: str, api_key: Optional[str] 
         "max_tokens": 1024,
         "timeout": VISION_API_TIMEOUT,
     }
+    normalize_azure_openai_token_limit(call_kwargs, wire_model)
     effective_api_key = str(deployment_params.get("api_key") or key or "").strip()
     if effective_api_key:
         call_kwargs["api_key"] = effective_api_key
     if deployment_params.get("api_base"):
         call_kwargs["api_base"] = deployment_params["api_base"]
+    for azure_param in ("api_version", "azure_ad_token_provider", "azure_ad_token"):
+        if wire_model.startswith("azure/") and azure_param in deployment_params:
+            call_kwargs[azure_param] = deployment_params[azure_param]
     if deployment_params.get("extra_headers"):
         call_kwargs["extra_headers"] = dict(deployment_params["extra_headers"])
     # Add api_base and custom headers for OpenAI-compatible providers

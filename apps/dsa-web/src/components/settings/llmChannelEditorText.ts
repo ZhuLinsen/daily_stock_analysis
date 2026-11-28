@@ -27,6 +27,10 @@ export interface LlmChannelEditorLocale {
   capabilityReferenceDisclaimer: string;
   apiKeyLabel: string;
   apiKeyOllamaPlaceholder: string;
+  azureApiKeyPlaceholder: string;
+  azureDeploymentPlaceholder: string;
+  azureDeploymentHint: string;
+  azureInvalidConfigHint: string;
   apiKeyMultiPlaceholder: string;
   fetchModelsLoading: string;
   fetchModelsButton: string;
@@ -165,6 +169,10 @@ export const LLM_CHANNEL_EDITOR_TEXT: Record<UiLanguage, LlmChannelEditorLocale>
     capabilityReferenceDisclaimer: '能力标签仅用于配置参考，不代表运行时能力已验证通过。',
     apiKeyLabel: 'API Key',
     apiKeyOllamaPlaceholder: '本地 Ollama 可留空',
+    azureApiKeyPlaceholder: '留空使用 DefaultAzureCredential',
+    azureDeploymentPlaceholder: 'Azure 部署名称',
+    azureDeploymentHint: '请手动输入 Azure 门户中的部署名称，不是基础模型名称。',
+    azureInvalidConfigHint: '请检查 HTTPS 资源根地址和部署名称。使用 Microsoft Entra ID 时，API Key 可留空。',
     apiKeyMultiPlaceholder: '支持多个 Key 逗号分隔',
     fetchModelsLoading: '获取中...',
     fetchModelsButton: '获取模型',
@@ -349,6 +357,10 @@ export const LLM_CHANNEL_EDITOR_TEXT: Record<UiLanguage, LlmChannelEditorLocale>
     capabilityReferenceDisclaimer: 'Capability badges are for configuration reference only and do not guarantee runtime support.',
     apiKeyLabel: 'API Key',
     apiKeyOllamaPlaceholder: 'Leave blank for local Ollama',
+    azureApiKeyPlaceholder: 'Leave blank to use DefaultAzureCredential',
+    azureDeploymentPlaceholder: 'Azure deployment name',
+    azureDeploymentHint: 'Enter the deployment name from the Azure portal, not the base model name.',
+    azureInvalidConfigHint: 'Check the HTTPS resource URL and deployment name. Leave the API Key blank when using Microsoft Entra ID.',
     apiKeyMultiPlaceholder: 'Comma-separated for multiple keys',
     fetchModelsLoading: 'Fetching...',
     fetchModelsButton: 'Fetch Models',

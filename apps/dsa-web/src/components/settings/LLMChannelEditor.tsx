@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type React from 'react';
-import { getParsedApiError } from '../../api/error';
+import { getAzureChannelValidationMessage, getParsedApiError } from '../../api/error';
 import { systemConfigApi } from '../../api/systemConfig';
 import { useUiLanguage } from '../../contexts/UiLanguageContext';
 import type { UiLanguage } from '../../i18n/uiText';
@@ -30,6 +30,7 @@ const PROTOCOL_OPTIONS: Array<{ value: ChannelProtocol; label: string }> = [
   { value: 'anthropic', label: 'Anthropic' },
   { value: 'vertex_ai', label: 'Vertex AI' },
   { value: 'ollama', label: 'Ollama' },
+  { value: 'azure', label: 'Azure OpenAI' },
 ];
 
 const CHANNEL_FIELD_SUFFIXES = ['PROTOCOL', 'API_SURFACE', 'BASE_URL', 'API_KEY', 'API_KEYS', 'MODELS', 'EXTRA_HEADERS', 'ENABLED'] as const;
@@ -438,6 +439,7 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
   );
   const modelCount = selectedModels.length;
   const hasKey = channel.apiKey.length > 0;
+  const isAzure = channel.protocol === 'azure';
   const statusVariant = testState?.status === 'success'
     ? 'success'
     : testState?.status === 'error'
@@ -526,7 +528,8 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
               </span>
             </Tooltip>
           ) : null}
-          {!hasKey && channel.protocol !== 'ollama' ? <Badge variant="warning">{text.missingKeyBadge}</Badge> : null}
+          {!hasKey && isAzure ? <Badge variant="default">Microsoft Entra ID</Badge> : null}
+          {!hasKey && !isAzure && channel.protocol !== 'ollama' ? <Badge variant="warning">{text.missingKeyBadge}</Badge> : null}
           {testState?.status !== 'idle' ? (
             <Badge variant={statusVariant}>
               {testState?.status === 'success'
@@ -626,9 +629,11 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
             disabled={busy}
             onChange={(e) => onUpdate(index, 'baseUrl', e.target.value)}
             placeholder={
-              channel.protocol === 'gemini' || channel.protocol === 'anthropic'
-                ? text.baseUrlOfficialPlaceholder
-                : preset?.baseUrl || 'https://api.example.com/v1'
+              isAzure
+                ? 'https://example.openai.azure.com'
+                : channel.protocol === 'gemini' || channel.protocol === 'anthropic'
+                  ? text.baseUrlOfficialPlaceholder
+                  : preset?.baseUrl || 'https://api.example.com/v1'
             }
           />
           </div>
@@ -693,13 +698,15 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
             value={channel.apiKey}
             disabled={busy}
             onChange={(e) => onUpdate(index, 'apiKey', e.target.value)}
-            placeholder={channel.protocol === 'ollama' ? text.apiKeyOllamaPlaceholder : text.apiKeyMultiPlaceholder}
+            placeholder={isAzure
+              ? text.azureApiKeyPlaceholder
+              : channel.protocol === 'ollama' ? text.apiKeyOllamaPlaceholder : text.apiKeyMultiPlaceholder}
           />
           </div>
 
           <div className="space-y-3 rounded-xl border border-[var(--settings-border)] bg-[var(--settings-surface-hover)] p-3">
             <div className="flex flex-wrap items-center gap-2">
-              <Button
+              {!isAzure ? <Button
                 type="button"
                 variant="settings-secondary"
                 size="sm"
@@ -708,7 +715,7 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
                 onClick={() => onDiscoverModels(channel)}
               >
                 {discoveryState?.status === 'loading' ? text.fetchModelsLoading : text.fetchModelsButton}
-              </Button>
+              </Button> : null}
               <span className={`text-xs ${
                 discoveryState?.status === 'success'
                   ? 'text-success'
@@ -717,7 +724,7 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
                     : 'text-muted-text'
               }`}
               >
-                {discoveryText || text.discoveryDefaultHint}
+                {isAzure ? text.azureDeploymentHint : discoveryText || text.discoveryDefaultHint}
               </span>
             </div>
             {discoveryHint ? (
@@ -770,11 +777,15 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
               value={channel.models}
               disabled={busy}
               onChange={(e) => onUpdate(index, 'models', e.target.value)}
-              placeholder={preset?.placeholderModels || MODEL_PLACEHOLDERS_BY_PROTOCOL[channel.protocol]}
+              placeholder={channel.protocol === 'azure'
+                ? text.azureDeploymentPlaceholder
+                : preset?.placeholderModels || MODEL_PLACEHOLDERS_BY_PROTOCOL[channel.protocol]}
               hint={
-                discoveredModels.length > 0
-                  ? text.manualModelsHintWithDiscovery
-                  : text.manualModelsHintDefault
+                isAzure
+                  ? undefined
+                  : discoveredModels.length > 0
+                    ? text.manualModelsHintWithDiscovery
+                    : text.manualModelsHintDefault
               }
             />
             </div>
@@ -937,10 +948,13 @@ function normalizeProtocol(value: string): ChannelProtocol {
   if (normalized === 'ollama') {
     return 'ollama';
   }
+  if (normalized === 'azure') {
+    return 'azure';
+  }
   return 'openai';
 }
 
-function inferProtocol(protocol: string, baseUrl: string, models: string[]): ChannelProtocol {
+function inferProtocol(protocol: string, baseUrl: string, models: string[], channelName: string): ChannelProtocol {
   const explicit = normalizeProtocol(protocol);
   if (protocol.trim()) {
     return explicit;
@@ -953,6 +967,10 @@ function inferProtocol(protocol: string, baseUrl: string, models: string[]): Cha
   const firstPrefixedModel = models.find((model) => model.includes('/'));
   if (firstPrefixedModel) {
     return normalizeProtocol(firstPrefixedModel.split('/', 1)[0]);
+  }
+
+  if (channelName === 'azure') {
+    return 'azure';
   }
 
   if (baseUrl.includes('127.0.0.1') || baseUrl.includes('localhost')) {
@@ -1219,6 +1237,7 @@ function buildLlmTestHint(
     resolvedModel?: string | null;
   },
   text: LlmChannelEditorLocale,
+  protocol: ChannelProtocol,
 ): string | undefined {
   const reason = typeof result.details?.reason === 'string' ? result.details.reason : '';
   const detailsModel = typeof result.details?.model === 'string' ? result.details.model : '';
@@ -1231,7 +1250,9 @@ function buildLlmTestHint(
   const modelActionHint = shouldSuggestModelListChange
     ? text.testModelActionHint
     : '';
-  const troubleshootingHint = getLlmTroubleshootingHint(result.errorCode, result.stage, text, 'test', result.details);
+  const troubleshootingHint = protocol === 'azure' && result.errorCode === 'invalid_config'
+    ? text.azureInvalidConfigHint
+    : getLlmTroubleshootingHint(result.errorCode, result.stage, text, 'test', result.details);
   return [modelHint, scopeInfo, modelActionHint, troubleshootingHint].filter(Boolean).join(' ') || undefined;
 }
 
@@ -1241,10 +1262,16 @@ function buildLlmFailureText(
     error?: string | null;
     stage?: string | null;
     errorCode?: string | null;
+    details?: Record<string, unknown>;
   },
   text: LlmChannelEditorLocale,
+  language: UiLanguage,
 ): string {
   const prefix = `${getLlmStageLabel(result.stage, text)} · ${getLlmErrorCodeLabel(result.errorCode, text)}`;
+  const validationMessage = getAzureChannelValidationMessage(result.details?.issueCode, language);
+  if (validationMessage) {
+    return text.failureSummary(prefix, validationMessage);
+  }
   const summary = result.message || text.defaultFailureSummary;
   if (result.error && result.error !== result.message) {
     return text.failureSummaryWithError(prefix, summary, result.error);
@@ -1475,7 +1502,7 @@ function parseChannelsFromItems(
     return {
       id: `parsed:${index}:${upperName}`,
       name: name.toLowerCase(),
-      protocol: inferProtocol(itemMap.get(`LLM_${upperName}_PROTOCOL`) || '', baseUrl, models),
+      protocol: inferProtocol(itemMap.get(`LLM_${upperName}_PROTOCOL`) || '', baseUrl, models, name),
       apiSurface: normalizeApiSurface(itemMap.get(`LLM_${upperName}_API_SURFACE`)),
       baseUrl,
       apiKey: resolveInitialChannelApiKeyValue(name, itemMap, itemSourceByKey),
@@ -2269,14 +2296,14 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
         ...previous,
         [channel.id]: {
           status: result.success ? 'success' : 'error',
-          resolveText: (locale) => (
+          resolveText: (locale, lang) => (
             result.success
               ? locale.testSuccessText(result.resolvedModel, result.latencyMs)
-              : buildLlmFailureText(result, locale)
+              : buildLlmFailureText(result, locale, lang)
           ),
           resolveHint: result.success
             ? undefined
-            : (locale) => buildLlmTestHint(result, locale),
+            : (locale) => buildLlmTestHint(result, locale, channel.protocol),
         },
       }));
     } catch (error: unknown) {
@@ -2340,10 +2367,10 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
         ...previous,
         [channel.id]: {
           status: result.success ? 'success' : 'error',
-          resolveText: (locale) => (
+          resolveText: (locale, lang) => (
             result.success
               ? locale.discoverySuccessText(result.models.length, result.latencyMs)
-              : buildLlmFailureText(result, locale)
+              : buildLlmFailureText(result, locale, lang)
           ),
           resolveHint: result.success
             ? undefined
@@ -2446,16 +2473,18 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
         [channel.id]: {
           selected,
           status: hasFailure || hasSkipped || !result.success ? 'error' : 'success',
-          resolveText: (locale) => (
-            Object.keys(capabilityResults).length > 0
-              ? summarizeCapabilityResults(capabilityResults, locale)
-              : result.success
-                ? locale.capabilityNoResultsText
-                : buildLlmFailureText(result, locale)
+          resolveText: (locale, lang) => (
+            !result.success && channel.protocol === 'azure' && result.errorCode === 'invalid_config'
+              ? buildLlmFailureText(result, locale, lang)
+              : Object.keys(capabilityResults).length > 0
+                ? summarizeCapabilityResults(capabilityResults, locale)
+                : result.success
+                  ? locale.capabilityNoResultsText
+                  : buildLlmFailureText(result, locale, lang)
           ),
           resolveHint: (locale) => (
             getFirstCapabilityHint(capabilityResults, locale)
-            || (!result.success ? buildLlmTestHint(result, locale) : undefined)
+            || (!result.success ? buildLlmTestHint(result, locale, channel.protocol) : undefined)
           ),
           results: capabilityResults,
         },

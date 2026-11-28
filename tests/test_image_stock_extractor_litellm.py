@@ -155,6 +155,28 @@ class TestGetApiKeysForModel:
 # ---------------------------------------------------------------------------
 
 class TestCallLitellmVision:
+    def test_azure_passwordless_deployment_keeps_its_authentication(self):
+        token_provider = MagicMock()
+        endpoint = "https://test.openai.azure.com"
+        model = "azure/vision-deployment"
+        cfg = _cfg(vision_model=model, openai_api_keys=[_OPENAI_KEY], llm_model_list=[{
+            "model_name": model,
+            "litellm_params": {
+                "model": model, "api_base": endpoint, "azure_ad_token_provider": token_provider,
+            },
+        }])
+        with patch("src.services.image_stock_extractor.get_config", return_value=cfg), patch(
+            "src.services.image_stock_extractor.litellm"
+        ) as litellm:
+            litellm.completion.return_value = self._good_response()
+            assert _call_litellm_vision("image-data", "image/jpeg") == '["600519"]'
+        kwargs = litellm.completion.call_args.kwargs
+        assert kwargs["api_base"] == endpoint
+        assert kwargs["azure_ad_token_provider"] is token_provider
+        assert kwargs["max_completion_tokens"] == 1024
+        assert "max_tokens" not in kwargs
+        assert "api_key" not in kwargs
+
     def _good_response(self):
         msg = MagicMock()
         msg.content = '["600519"]'

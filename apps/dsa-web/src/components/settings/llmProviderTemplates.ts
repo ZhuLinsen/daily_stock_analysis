@@ -1,6 +1,6 @@
 import type { UiLanguage } from '../../i18n/uiText';
 
-export type ChannelProtocol = 'openai' | 'deepseek' | 'gemini' | 'anthropic' | 'vertex_ai' | 'ollama';
+export type ChannelProtocol = 'openai' | 'deepseek' | 'gemini' | 'anthropic' | 'vertex_ai' | 'azure' | 'ollama';
 export type LLMProviderCapability =
   | 'openai-compatible'
   | 'aggregator'
@@ -230,6 +230,18 @@ export const LLM_PROVIDER_TEMPLATES: LLMProviderTemplate[] = [
     officialSources: [{ label: 'OpenAI Models', url: 'https://platform.openai.com/docs/models' }],
   },
   {
+    channelId: 'azure',
+    label: 'Azure OpenAI',
+    protocol: 'azure',
+    baseUrl: '',
+    placeholderModels: '',
+    capabilities: ['official-api'],
+    configHint: '填写 Azure OpenAI 资源的 HTTPS 根地址和部署名称。API Key 留空时，后端使用 DefaultAzureCredential 登录 Microsoft Entra ID。',
+    officialSources: [
+      { label: 'Azure OpenAI API', url: 'https://learn.microsoft.com/azure/foundry/openai/reference' },
+    ],
+  },
+  {
     channelId: 'ollama',
     label: 'Ollama（本地）',
     protocol: 'ollama',
@@ -291,7 +303,7 @@ export function isKnownProviderTemplate(channelId: string): boolean {
   return channelId !== 'custom' && Boolean(getProviderTemplate(channelId));
 }
 
-export const MODEL_PLACEHOLDERS_BY_PROTOCOL: Record<ChannelProtocol, string> = {
+export const MODEL_PLACEHOLDERS_BY_PROTOCOL: Record<Exclude<ChannelProtocol, 'azure'>, string> = {
   openai: 'gpt-6.1-sol,qwen3.6-plus',
   deepseek: 'deepseek-flash,deepseek-v4-pro',
   gemini: 'gemini-3.6-flash,gemini-3.5-flash-lite',
@@ -358,6 +370,7 @@ const EN_TEMPLATE_CONFIG_HINTS: Record<string, string> = {
   siliconflow: 'Model list and model visibility depend on account permissions and your API Key.',
   openrouter: 'Model list and model visibility depend on account permissions and your API Key.',
   requesty: 'Model list and model visibility depend on account permissions and your API Key; for the EU region, set Base URL to https://router.eu.requesty.ai/v1.',
+  azure: 'Enter the HTTPS root URL of your Azure OpenAI resource and the deployment name. Leave the API Key blank to use DefaultAzureCredential with Microsoft Entra ID.',
   ollama: 'Requires the local machine, Docker container, or self-hosted runner to reach the Ollama service.',
   anspire:
     'The same ANSPIRE_API_KEYS can be reused for both search and LLM channels. These models and gateway are configuration examples; verify availability against your account permissions and console, and click "Test Connection" first.',

@@ -3,6 +3,7 @@
 # Licensed under Apache-2.0 and modified for daily_stock_analysis.
 """Configuration."""
 
+import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -19,8 +20,11 @@ from src.config import (
     resolve_llm_channel_names,
     resolve_llm_channel_protocol,
     parse_env_int,
+    validate_azure_openai_channel,
 )
 from src.llm.hermes import is_reserved_hermes_name
+
+logger = logging.getLogger(__name__)
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 _PACKAGE_DIR = Path(__file__).resolve().parent
@@ -459,6 +463,12 @@ def _parse_llm_channels_env() -> list[dict[str, object]]:
             normalize_llm_channel_model(model, effective_protocol, base_url)
             for model in models
         ]
+        if enabled and effective_protocol == "azure":
+            issues = validate_azure_openai_channel(base_url, normalized_models, f"LLM_{key}")
+            if issues:
+                for issue in issues:
+                    logger.warning("Screening LLM channel '%s': %s; channel skipped", name, issue.message)
+                continue
         channels.append({
             "name": name.lower(),
             "protocol": effective_protocol,

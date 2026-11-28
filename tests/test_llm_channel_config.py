@@ -4,9 +4,12 @@
 import os
 import json
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
+
+from azure.core.credentials import AccessToken
 
 from tests.litellm_stub import ensure_litellm_stub
 
@@ -25,15 +28,94 @@ from src.config import (
     resolve_llm_channel_names,
 )
 from src.llm.backend_registry import GENERATION_ONLY_BACKEND_IDS
+from src.llm.azure_openai import _get_azure_token_provider
 from src.llm.hermes import open_hermes_no_proxy_client, parse_hermes_channel, route_has_hermes
 from src.llm.generation_params import (
     apply_litellm_generation_params,
     resolve_litellm_temperature_directive,
 )
 from src.services.system_config_service import SystemConfigService
+from src.services.generation_backend_status_service import GenerationBackendStatusService
+
+
+_AZURE_ENV = {
+    "LLM_CHANNELS": "azure",
+    "LLM_AZURE_BASE_URL": "https://test.openai.azure.com",
+    "LLM_AZURE_MODELS": "my-deployment",
+}
 
 
 class LLMChannelConfigTestCase(unittest.TestCase):
+    def test_azure_channel_builds_lazy_credential_route_and_preserves_explicit_keys(self) -> None:
+        self.addCleanup(_get_azure_token_provider.cache_clear)
+        credential = Mock(spec=["get_token"])
+        now = int(time.time())
+        credential.get_token.side_effect = [
+            AccessToken("first-token", now + 30),
+            AccessToken("renewed-token", now + 3600),
+        ]
+        for keys in ("", "key-one,key-two"):
+            env = {**_AZURE_ENV, "LLM_AZURE_API_KEYS": keys}
+            with self.subTest(keys=keys), patch.dict(os.environ, env, clear=True), patch(
+                "azure.identity.DefaultAzureCredential", return_value=credential
+            ) as credential_factory:
+                runtime_routes = Config._channels_to_model_list(Config._parse_llm_channels("azure"))
+                status_routes = GenerationBackendStatusService._build_litellm_model_list(env)
+                self.assertEqual(runtime_routes, status_routes)
+                self.assertEqual(runtime_routes[0]["model_name"], "azure/my-deployment")
+                credential_factory.assert_not_called()
+                if keys:
+                    self.assertEqual(
+                        [route["litellm_params"]["api_key"] for route in runtime_routes], keys.split(",")
+                    )
+                    self.assertNotIn("azure_ad_token_provider", runtime_routes[0]["litellm_params"])
+                else:
+                    params = runtime_routes[0]["litellm_params"]
+                    self.assertNotIn("api_key", params)
+                    self.assertEqual(params["api_base"], _AZURE_ENV["LLM_AZURE_BASE_URL"])
+                    self.assertEqual(params["azure_ad_token_provider"](), "first-token")
+                    self.assertEqual(params["azure_ad_token_provider"](), "renewed-token")
+                    credential_factory.assert_called_once_with()
+                    self.assertEqual(
+                        [call.args for call in credential.get_token.call_args_list],
+                        [("https://cognitiveservices.azure.com/.default",)] * 2,
+                    )
+
+    def test_azure_channel_rejects_invalid_endpoints_and_non_azure_models(self) -> None:
+        for field, value, code in (
+            ("BASE_URL", "", "invalid_azure_endpoint"),
+            ("BASE_URL", "http://test.openai.azure.com", "invalid_azure_endpoint"),
+            ("BASE_URL", "https://test.openai.azure.com.example.org", "invalid_azure_endpoint"),
+            ("BASE_URL", "https://test.openai.azure.com/openai/v1", "invalid_azure_endpoint"),
+            ("MODELS", "openai/gpt-4o", "invalid_azure_deployment"),
+        ):
+            key = f"LLM_AZURE_{field}"
+            env = {**_AZURE_ENV, "LLM_AZURE_PROTOCOL": "azure", key: value}
+            with self.subTest(key=key, value=value), patch.dict(os.environ, env, clear=True):
+                channels, runtime_issues, _, _ = Config._parse_llm_channels_with_issues("azure")
+                save_issues = SystemConfigService._validate_llm_channel_map(env, set(env))
+                self.assertEqual(channels, [])
+                self.assertIn((key, code), {(issue.field, issue.code) for issue in runtime_issues})
+                self.assertIn((key, code), {(issue["key"], issue["code"]) for issue in save_issues})
+
+    def test_azure_connection_and_capability_test_share_passwordless_auth(self) -> None:
+        service = SystemConfigService(manager=Mock())
+        response = {"choices": [{"message": {"content": '{"status":"ok"}'}}]}
+        with patch("litellm.completion", return_value=response) as completion:
+            result = service.test_llm_channel(
+                name="azure", protocol="azure", base_url=_AZURE_ENV["LLM_AZURE_BASE_URL"],
+                api_key="", models=["my-deployment"], capability_checks=["json"],
+            )
+        self.assertTrue(result["success"], result)
+        self.assertEqual(result["capability_results"]["json"]["status"], "passed")
+        self.assertEqual(completion.call_count, 2)
+        for call in completion.call_args_list:
+            self.assertEqual(call.kwargs["model"], "azure/my-deployment")
+            self.assertIn("max_completion_tokens", call.kwargs)
+            self.assertNotIn("max_tokens", call.kwargs)
+            self.assertNotIn("api_key", call.kwargs)
+            self.assertTrue(callable(call.kwargs["azure_ad_token_provider"]))
+
     @patch("src.config.setup_env")
     @patch.object(Config, "_parse_litellm_yaml", return_value=[])
     def test_modelflare_inherits_existing_primary_and_openai_fallback_routes(self, _yaml, _setup) -> None:

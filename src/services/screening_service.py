@@ -3288,11 +3288,14 @@ def _normalize_dsa_llm_channels(config: Config) -> List[Dict[str, Any]]:
         if not isinstance(raw, dict):
             continue
         name = _env_text(raw.get("name")) or f"channel{index + 1}"
+        protocol = _env_text(raw.get("protocol"))
         api_keys = _dedupe_strings(raw.get("api_keys") if isinstance(raw.get("api_keys"), list) else [])
+        if protocol == "azure" and not api_keys:
+            api_keys = [""]
         models = _dedupe_strings(raw.get("models") if isinstance(raw.get("models"), list) else [])
         channel = {
             "name": name,
-            "protocol": _env_text(raw.get("protocol")),
+            "protocol": protocol,
             "api_surface": normalize_llm_channel_api_surface(raw.get("api_surface")),
             "base_url": _env_text(raw.get("base_url")),
             "api_keys": api_keys,
