@@ -2031,9 +2031,14 @@ const PortfolioPage: React.FC = () => {
             ) : null}
             {csvCommitResult ? (
               <InlineAlert
-                variant={getCsvCommitVariant(csvCommitResult, csvDryRun)}
-                title={csvDryRun ? 'CSV 预演结果' : 'CSV 提交结果'}
-                message={`${csvDryRun ? '预演检查' : '实际写入'}：写入 ${csvCommitResult.insertedCount} 条，重复 ${csvCommitResult.duplicateCount} 条，失败 ${csvCommitResult.failedCount} 条。`}
+                variant={getCsvCommitVariant(csvCommitResult)}
+                title={csvCommitResult.dryRun ? 'CSV 预演结果' : 'CSV 提交结果'}
+                message={<>
+                  {csvCommitResult.dryRun ? '预演检查' : '实际写入'}：写入 {csvCommitResult.insertedCount} 条，
+                  重复 {csvCommitResult.duplicateCount} 条，
+                  {csvCommitResult.skippedCount != null && <>跳过 {csvCommitResult.skippedCount} 条，</>}
+                  失败 {csvCommitResult.failedCount} 条。
+                </>}
                 className="rounded-lg px-3 py-2 text-xs shadow-none"
               />
             ) : null}

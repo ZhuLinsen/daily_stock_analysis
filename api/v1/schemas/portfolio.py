@@ -244,6 +244,7 @@ class PortfolioImportParseResponse(BaseModel):
 class PortfolioImportCommitResponse(BaseModel):
     account_id: int
     record_count: int
+    skipped_count: int
     inserted_count: int
     duplicate_count: int
     failed_count: int

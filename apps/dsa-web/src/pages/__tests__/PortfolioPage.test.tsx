@@ -336,6 +336,24 @@ describe('PortfolioPage FX refresh', () => {
     getLatestDecisionSignals.mockResolvedValue({ items: [], total: 0, page: 1, pageSize: 1 });
   });
 
+  it('reports skipped rows when submitting a CSV without a preview', async () => {
+    commitCsvImport.mockResolvedValue({
+      accountId: 1, recordCount: 1, insertedCount: 1, skippedCount: 1,
+      duplicateCount: 0, failedCount: 0, dryRun: false, errors: [],
+    });
+    render(<PortfolioPage />);
+    await waitForInitialLoad();
+    fireEvent.change(screen.getAllByRole('combobox')[0], { target: { value: '1' } });
+    const file = new File(['example'], 'trades.csv', { type: 'text/csv' });
+    fireEvent.change(screen.getByLabelText('选择 CSV'), { target: { files: [file] } });
+    fireEvent.click(screen.getByLabelText('仅预演（不写入）'));
+    fireEvent.click(screen.getByRole('button', { name: '提交导入' }));
+
+    const result = await screen.findByText('CSV 提交结果');
+    expect(result.closest('[role="alert"]')).toHaveTextContent(/跳过 1 条/);
+    expect(parseCsvImport).not.toHaveBeenCalled();
+  });
+
   function renderEnglishPage() {
     window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'en');
     render(

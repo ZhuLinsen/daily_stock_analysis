@@ -312,6 +312,7 @@ export interface PortfolioImportParseResponse {
 export interface PortfolioImportCommitResponse {
   accountId: number;
   recordCount: number;
+  skippedCount?: number;
   insertedCount: number;
   duplicateCount: number;
   failedCount: number;

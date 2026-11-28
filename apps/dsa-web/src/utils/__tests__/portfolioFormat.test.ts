@@ -60,7 +60,10 @@ describe('portfolioFormat', () => {
     expect(formatBrokerLabel('huatai')).toBe('huatai（华泰）');
     expect(formatBrokerLabel('custom', ' 自定义 ')).toBe('custom（自定义）');
     expect(getCsvParseVariant({ broker: 'huatai', recordCount: 1, skippedCount: 1, errorCount: 0, records: [], errors: [] })).toBe('warning');
-    expect(getCsvCommitVariant({ accountId: 1, recordCount: 1, insertedCount: 1, duplicateCount: 0, failedCount: 0, dryRun: false, errors: [] }, false)).toBe('success');
+    const committed = { accountId: 1, recordCount: 1, insertedCount: 1, duplicateCount: 0, failedCount: 0, dryRun: false, errors: [] };
+    expect(getCsvCommitVariant(committed)).toBe('success');
+    expect(getCsvCommitVariant({ ...committed, skippedCount: 1 })).toBe('warning');
+    expect(getCsvCommitVariant({ ...committed, skippedCount: 1, dryRun: true })).toBe('warning');
   });
 
   it('builds FX refresh feedback from refresh outcomes', () => {
