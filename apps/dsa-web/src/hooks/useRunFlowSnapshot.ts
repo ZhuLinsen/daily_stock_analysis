@@ -189,6 +189,59 @@ const refreshIncomingEdgeStatus = (
 
 const ACTIVE_NODE_STATUSES = new Set(['pending', 'running', 'cancel_requested']);
 
+const FALLBACK_SOURCE_PROVIDER_FAMILIES: Record<string, string> = {
+  akshare_em: 'akshare',
+  akshare_sina: 'akshare',
+  akshare_qq: 'akshare',
+  akshare_hk: 'akshare',
+  tencent: 'akshare',
+};
+
+const normalizeProviderKey = (value?: string | null): string => {
+  if (!value) {
+    return '';
+  }
+  return value.trim().toLowerCase().replace(/[^a-z0-9_]+/g, '_').replace(/^_+|_+$/g, '');
+};
+
+const normalizeProviderToken = (value?: string | null): string => {
+  const key = normalizeProviderKey(value);
+  if (!key) {
+    return '';
+  }
+  if (key.endsWith('_fetcher') && key.length > '_fetcher'.length) {
+    return key.slice(0, -'_fetcher'.length);
+  }
+  if (key.endsWith('fetcher') && key.length > 'fetcher'.length) {
+    return key.slice(0, -'fetcher'.length);
+  }
+  return key;
+};
+
+const providerMatchesFallbackTarget = (
+  provider?: string | null,
+  fallbackTo?: string | null,
+): boolean => {
+  const targetKey = normalizeProviderKey(fallbackTo);
+  const providerKey = normalizeProviderKey(provider);
+  if (!targetKey || !providerKey) {
+    return false;
+  }
+  if (providerKey === targetKey) {
+    return true;
+  }
+  const providerBase = normalizeProviderToken(providerKey);
+  const targetBase = normalizeProviderToken(targetKey);
+  if (providerBase === targetBase) {
+    return true;
+  }
+  if (targetKey.startsWith(`${providerBase}_`) || providerKey.startsWith(`${targetBase}_`)) {
+    return true;
+  }
+  const mappedTargetFamily = FALLBACK_SOURCE_PROVIDER_FAMILIES[targetKey];
+  return Boolean(mappedTargetFamily && providerBase === mappedTargetFamily);
+};
+
 const providerTransitionKind = (
   previous: { provider: string | null; success: boolean; fallbackTo: string | null },
   current: { provider: string | null; success: boolean; fallbackFrom: string | null },
@@ -211,8 +264,14 @@ const providerRunFromEvent = (
 ): { provider: string | null; success: boolean; fallbackFrom: string | null; fallbackTo: string | null } => ({
   provider: metadataString(event.metadata, 'provider') || node?.provider || null,
   success: event.severity === 'success' || node?.status === 'success' || node?.status === 'fallback',
-  fallbackFrom: metadataString(event.metadata, 'fallbackFrom', 'fallback_from'),
-  fallbackTo: metadataString(event.metadata, 'fallbackTo', 'fallback_to'),
+  fallbackFrom: (
+    metadataString(event.metadata, 'fallbackFrom', 'fallback_from')
+    || metadataString(node?.metadata, 'fallbackFrom', 'fallback_from')
+  ),
+  fallbackTo: (
+    metadataString(event.metadata, 'fallbackTo', 'fallback_to')
+    || metadataString(node?.metadata, 'fallbackTo', 'fallback_to')
+  ),
 });
 
 const appendDerivedEdge = (
@@ -234,7 +293,9 @@ const appendDerivedEdge = (
   if (displayEvent.type === 'provider_run' || displayEvent.type === 'provider_run_started') {
     const dataType = dataTypeFromEvent(displayEvent, node);
     const currentIndex = findEventIndex(events, displayEvent);
-    const currentFallbackFrom = metadataString(displayEvent.metadata, 'fallbackFrom', 'fallback_from');
+    const currentRun = providerRunFromEvent(displayEvent, node);
+    const currentProvider = currentRun.provider;
+    const currentFallbackFrom = currentRun.fallbackFrom;
     const hasOutgoingFallbackOrRetry = (fromId: string) => edges.some(
       (edge) => edge.from === fromId && (edge.kind === 'fallback' || edge.kind === 'retry'),
     );
@@ -243,47 +304,81 @@ const appendDerivedEdge = (
       || Boolean(currentFallbackFrom)
       || node.status !== 'success'
     );
-    const precedingProviderEvents = events.filter((event, index) => {
+    const precedingByNodeId = new Map<string, RunFlowEvent>();
+    events.forEach((event, index) => {
       if (
         !isPrecedingEvent(event, index, displayEvent, currentIndex)
         || (event.type !== 'provider_run' && event.type !== 'provider_run_started')
         || !event.nodeId
         || event.nodeId === nodeId
       ) {
-        return false;
+        return;
       }
       const eventNode = nodeById.get(event.nodeId);
-      return Boolean(eventNode && dataTypeFromEvent(event, eventNode) === dataType);
+      if (!eventNode || dataTypeFromEvent(event, eventNode) !== dataType) {
+        return;
+      }
+      precedingByNodeId.set(event.nodeId, event);
     });
+    const precedingProviderEvents = Array.from(precedingByNodeId.values());
+
+    const explicitFallbackCandidates = canFollowFallbackOrRetry
+      ? precedingProviderEvents.filter((event) => {
+        const eventNode = nodeById.get(event.nodeId!)!;
+        const fallbackTo = providerRunFromEvent(event, eventNode).fallbackTo;
+        if (!fallbackTo || hasOutgoingFallbackOrRetry(event.nodeId!)) {
+          return false;
+        }
+        return Boolean(currentFallbackFrom) || providerMatchesFallbackTarget(currentProvider, fallbackTo);
+      })
+      : [];
+
+    const matchedExplicitFallback = currentFallbackFrom
+      ? explicitFallbackCandidates.filter((event) => {
+        const eventNode = nodeById.get(event.nodeId!)!;
+        const prevRun = providerRunFromEvent(event, eventNode);
+        return (
+          providerMatchesFallbackTarget(prevRun.provider, currentFallbackFrom)
+          || providerMatchesFallbackTarget(currentProvider, prevRun.fallbackTo)
+        );
+      })
+      : explicitFallbackCandidates;
+
+    const fallbackFromCandidates = currentFallbackFrom
+      ? precedingProviderEvents.filter((event) => {
+        const eventNode = nodeById.get(event.nodeId!)!;
+        const prevRun = providerRunFromEvent(event, eventNode);
+        return (
+          !hasOutgoingFallbackOrRetry(event.nodeId!)
+          && !ACTIVE_NODE_STATUSES.has(eventNode.status)
+          && (eventNode.status === 'failed' || eventNode.status === 'timeout' || Boolean(prevRun.fallbackTo))
+        );
+      })
+      : [];
+
+    const matchedFallbackFrom = currentFallbackFrom
+      ? fallbackFromCandidates.filter((event) => {
+        const eventNode = nodeById.get(event.nodeId!)!;
+        const prevRun = providerRunFromEvent(event, eventNode);
+        return providerMatchesFallbackTarget(prevRun.provider, currentFallbackFrom);
+      })
+      : [];
 
     const previousEvent = (
-      (canFollowFallbackOrRetry
-        ? precedingProviderEvents.filter((event) => (
-          Boolean(metadataString(event.metadata, 'fallbackTo', 'fallback_to'))
-          && !hasOutgoingFallbackOrRetry(event.nodeId!)
-        )).at(-1)
-        : undefined)
-      ?? (currentFallbackFrom
-        ? precedingProviderEvents.filter((event) => {
-          const eventNode = nodeById.get(event.nodeId!)!;
-          const hasExplicitFallback = Boolean(metadataString(event.metadata, 'fallbackTo', 'fallback_to'));
-          return (
-            !hasOutgoingFallbackOrRetry(event.nodeId!)
-            && !ACTIVE_NODE_STATUSES.has(eventNode.status)
-            && (eventNode.status === 'failed' || eventNode.status === 'timeout' || hasExplicitFallback)
-          );
-        }).at(-1)
-        : undefined)
+      (matchedExplicitFallback.at(-1) ?? explicitFallbackCandidates.at(-1))
+      ?? (matchedFallbackFrom.at(-1) ?? fallbackFromCandidates.at(-1))
       ?? precedingProviderEvents.filter((event) => {
         const eventNode = nodeById.get(event.nodeId!)!;
         if (ACTIVE_NODE_STATUSES.has(eventNode.status)) {
           return false;
         }
-        if (!canFollowFallbackOrRetry) {
-          const hasExplicitFallback = Boolean(metadataString(event.metadata, 'fallbackTo', 'fallback_to'));
-          if (hasExplicitFallback || eventNode.status === 'failed' || eventNode.status === 'timeout') {
-            return false;
-          }
+        const prevRun = providerRunFromEvent(event, eventNode);
+        if (prevRun.fallbackTo) {
+          return false;
+        }
+        const prevFailed = eventNode.status === 'failed' || eventNode.status === 'timeout';
+        if (prevFailed && (!canFollowFallbackOrRetry || hasOutgoingFallbackOrRetry(event.nodeId!))) {
+          return false;
         }
         return true;
       }).at(-1)
@@ -301,7 +396,7 @@ const appendDerivedEdge = (
     }
     const transitionKind = providerTransitionKind(
       providerRunFromEvent(previousEvent, previousNode),
-      providerRunFromEvent(displayEvent, node),
+      currentRun,
     );
     const label = transitionKind === 'fallback'
       ? '降级'

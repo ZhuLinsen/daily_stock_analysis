@@ -15,7 +15,7 @@ from collections.abc import Mapping
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -156,6 +156,9 @@ class ProviderRun:
     cache_hit: Optional[bool] = None
     stale_seconds: Optional[int] = None
     record_count: Optional[int] = None
+    started_at: Optional[str] = None
+    start_seq: Optional[int] = None
+    end_seq: Optional[int] = None
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
 
     def to_dict(self) -> Dict[str, Any]:
@@ -173,6 +176,9 @@ class ProviderRun:
             "cache_hit": self.cache_hit,
             "stale_seconds": self.stale_seconds,
             "record_count": self.record_count,
+            "started_at": self.started_at,
+            "start_seq": self.start_seq,
+            "end_seq": self.end_seq,
             "created_at": self.created_at,
         }
         return {key: value for key, value in payload.items() if value is not None}
@@ -329,14 +335,17 @@ class RunDiagnosticContext:
     history_runs: List[HistoryRun] = field(default_factory=list)
     event_sink: Optional[Callable[[Dict[str, Any]], None]] = None
     flow_event_index: int = 0
+    provider_event_seq: int = 0
     provider_attempt_index_by_type: Dict[str, int] = field(default_factory=dict)
     provider_pending_attempt_index_by_key: Dict[str, List[int]] = field(default_factory=dict)
+    provider_pending_meta_by_key: Dict[str, List[Tuple[str, int]]] = field(default_factory=dict)
     llm_attempt_index_by_type: Dict[str, int] = field(default_factory=dict)
     llm_pending_attempt_index_by_key: Dict[str, List[int]] = field(default_factory=dict)
     llm_pending_attempt_index_by_call_type: Dict[str, List[int]] = field(default_factory=dict)
 
     def record_provider_run(self, provider_run: ProviderRun) -> None:
-        self.provider_runs.append(provider_run)
+        self.provider_event_seq += 1
+        end_seq = self.provider_event_seq
         data_type_key = _safe_event_key(provider_run.data_type) or "provider"
         pending_key = _provider_pending_key(
             provider_run.data_type,
@@ -344,15 +353,29 @@ class RunDiagnosticContext:
             provider_run.operation,
         )
         pending_indexes = self.provider_pending_attempt_index_by_key.get(pending_key) or []
+        pending_meta = self.provider_pending_meta_by_key.get(pending_key) or []
         if pending_indexes:
             attempt_index = pending_indexes.pop(0)
             if pending_indexes:
                 self.provider_pending_attempt_index_by_key[pending_key] = pending_indexes
             else:
                 self.provider_pending_attempt_index_by_key.pop(pending_key, None)
+            if pending_meta:
+                started_at, start_seq = pending_meta.pop(0)
+                if pending_meta:
+                    self.provider_pending_meta_by_key[pending_key] = pending_meta
+                else:
+                    self.provider_pending_meta_by_key.pop(pending_key, None)
+                if provider_run.started_at is None:
+                    provider_run.started_at = started_at
+                if provider_run.start_seq is None:
+                    provider_run.start_seq = start_seq
         else:
             attempt_index = self.provider_attempt_index_by_type.get(data_type_key, 0) + 1
             self.provider_attempt_index_by_type[data_type_key] = attempt_index
+        if provider_run.end_seq is None:
+            provider_run.end_seq = end_seq
+        self.provider_runs.append(provider_run)
         self._emit_flow_event(_provider_flow_event(self, provider_run, attempt_index))
 
     def record_provider_run_started(
@@ -362,6 +385,9 @@ class RunDiagnosticContext:
         provider: str,
         operation: str,
     ) -> None:
+        started_at = datetime.now().isoformat()
+        self.provider_event_seq += 1
+        start_seq = self.provider_event_seq
         data_type_key = _safe_event_key(data_type) or "provider"
         attempt_index = self.provider_attempt_index_by_type.get(data_type_key, 0) + 1
         self.provider_attempt_index_by_type[data_type_key] = attempt_index
@@ -369,6 +395,9 @@ class RunDiagnosticContext:
         pending_indexes = self.provider_pending_attempt_index_by_key.get(pending_key) or []
         pending_indexes.append(attempt_index)
         self.provider_pending_attempt_index_by_key[pending_key] = pending_indexes
+        pending_meta = self.provider_pending_meta_by_key.get(pending_key) or []
+        pending_meta.append((started_at, start_seq))
+        self.provider_pending_meta_by_key[pending_key] = pending_meta
         self._emit_flow_event(
             _provider_started_flow_event(
                 self,
@@ -376,6 +405,7 @@ class RunDiagnosticContext:
                 provider=provider,
                 operation=operation,
                 index=attempt_index,
+                started_at=started_at,
             )
         )
 
@@ -606,12 +636,13 @@ def _provider_started_flow_event(
     provider: str,
     operation: str,
     index: int,
+    started_at: Optional[str] = None,
 ) -> Dict[str, Any]:
     data_type_key = _safe_event_key(data_type) or "provider"
     provider_key = _safe_event_key(provider) or "unknown"
     label = _DATA_TYPE_LABELS.get(data_type_key, data_type_key)
     node_id = f"provider_{data_type_key}_{provider_key}_{index}"
-    timestamp = datetime.now().isoformat()
+    timestamp = started_at or datetime.now().isoformat()
     message = f"{label} {provider} 调用中"
     return {
         "timestamp": timestamp,
@@ -653,7 +684,7 @@ def _provider_flow_event(
     fallback = bool(run.fallback_from or run.fallback_to)
     status = _flow_status_for_success(run.success, fallback=fallback)
     node_id = f"provider_{data_type}_{provider_key}_{index}"
-    started_at = _started_at_from_end_and_duration(run.created_at, run.latency_ms)
+    started_at = run.started_at or _started_at_from_end_and_duration(run.created_at, run.latency_ms)
     message = (
         f"{label} {run.provider} 成功"
         if run.success

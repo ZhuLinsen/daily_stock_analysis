@@ -1369,4 +1369,394 @@ describe('useRunFlowSnapshot', () => {
       }),
     ]));
   });
+
+  it('does not let an independent provider start event steal an explicit fallbackTo edge from the real fallback provider (OR-COR-a73671b9)', async () => {
+    const initialDeferred = createDeferred<RunFlowSnapshot>();
+    const replayDeferred = createDeferred<RunFlowSnapshot>();
+    vi.mocked(analysisApi.getTaskFlow)
+      .mockReturnValueOnce(initialDeferred.promise)
+      .mockReturnValueOnce(replayDeferred.promise);
+
+    const { result } = renderHook(() => useRunFlowSnapshot({
+      source: { type: 'task', taskId: 'task-1' },
+      enabled: true,
+    }));
+
+    act(() => {
+      initialDeferred.resolve(snapshot);
+    });
+    await waitFor(() => expect(result.current.snapshot).not.toBeNull());
+
+    const quoteTask = {
+      taskId: 'task-1',
+      stockCode: '600519',
+      status: 'processing' as const,
+      progress: 40,
+      reportType: 'detailed',
+      createdAt: '2026-06-08T08:00:00Z',
+    };
+
+    const startPrimaryA: RunFlowEvent = {
+      id: 'steal-start-tencent-1',
+      timestamp: '2026-06-08T08:00:00.100000Z',
+      severity: 'info',
+      type: 'provider_run_started',
+      nodeId: 'provider_realtime_quote_tencent_1',
+      title: '主源开始',
+      metadata: {
+        provider: 'tencent',
+        dataType: 'realtime_quote',
+        node: {
+          id: 'provider_realtime_quote_tencent_1',
+          lane: 'data_source',
+          kind: 'data_source',
+          label: '实时行情 · tencent',
+          status: 'running',
+          provider: 'tencent',
+          metadata: { dataType: 'realtime_quote' },
+        },
+      },
+    };
+    const failPrimaryA: RunFlowEvent = {
+      id: 'steal-fail-tencent-1',
+      timestamp: '2026-06-08T08:00:00.200000Z',
+      severity: 'warning',
+      type: 'provider_run',
+      nodeId: 'provider_realtime_quote_tencent_1',
+      title: '主源失败',
+      metadata: {
+        provider: 'tencent',
+        dataType: 'realtime_quote',
+        fallbackTo: 'akshare_sina',
+        node: {
+          id: 'provider_realtime_quote_tencent_1',
+          lane: 'data_source',
+          kind: 'data_source',
+          label: '实时行情 · tencent',
+          status: 'failed',
+          provider: 'tencent',
+          metadata: { dataType: 'realtime_quote', fallbackTo: 'akshare_sina' },
+        },
+      },
+    };
+    const startIndependentB: RunFlowEvent = {
+      id: 'steal-start-tencent-2',
+      timestamp: '2026-06-08T08:00:00.250000Z',
+      severity: 'info',
+      type: 'provider_run_started',
+      nodeId: 'provider_realtime_quote_tencent_2',
+      title: '独立调用开始',
+      metadata: {
+        provider: 'tencent',
+        dataType: 'realtime_quote',
+        node: {
+          id: 'provider_realtime_quote_tencent_2',
+          lane: 'data_source',
+          kind: 'data_source',
+          label: '实时行情 · tencent #2',
+          status: 'running',
+          provider: 'tencent',
+          metadata: { dataType: 'realtime_quote' },
+        },
+      },
+    };
+    const finishIndependentB: RunFlowEvent = {
+      id: 'steal-ok-tencent-2',
+      timestamp: '2026-06-08T08:00:00.300000Z',
+      severity: 'success',
+      type: 'provider_run',
+      nodeId: 'provider_realtime_quote_tencent_2',
+      title: '独立调用成功',
+      metadata: {
+        provider: 'tencent',
+        dataType: 'realtime_quote',
+        node: {
+          id: 'provider_realtime_quote_tencent_2',
+          lane: 'data_source',
+          kind: 'data_source',
+          label: '实时行情 · tencent #2',
+          status: 'success',
+          provider: 'tencent',
+          metadata: { dataType: 'realtime_quote' },
+        },
+      },
+    };
+    const startFallbackA: RunFlowEvent = {
+      id: 'steal-start-sina-3',
+      timestamp: '2026-06-08T08:00:00.350000Z',
+      severity: 'info',
+      type: 'provider_run_started',
+      nodeId: 'provider_realtime_quote_akshare_sina_3',
+      title: '备源开始',
+      metadata: {
+        provider: 'akshare_sina',
+        dataType: 'realtime_quote',
+        node: {
+          id: 'provider_realtime_quote_akshare_sina_3',
+          lane: 'data_source',
+          kind: 'data_source',
+          label: '实时行情 · akshare_sina',
+          status: 'running',
+          provider: 'akshare_sina',
+          metadata: { dataType: 'realtime_quote' },
+        },
+      },
+    };
+    const finishFallbackA: RunFlowEvent = {
+      id: 'steal-ok-sina-3',
+      timestamp: '2026-06-08T08:00:00.400000Z',
+      severity: 'success',
+      type: 'provider_run',
+      nodeId: 'provider_realtime_quote_akshare_sina_3',
+      title: '备源成功',
+      metadata: {
+        provider: 'akshare_sina',
+        dataType: 'realtime_quote',
+        node: {
+          id: 'provider_realtime_quote_akshare_sina_3',
+          lane: 'data_source',
+          kind: 'data_source',
+          label: '实时行情 · akshare_sina',
+          status: 'success',
+          provider: 'akshare_sina',
+          metadata: { dataType: 'realtime_quote' },
+        },
+      },
+    };
+
+    act(() => {
+      taskStreamCalls.at(-1)?.onTaskFlowEvent?.(quoteTask, startPrimaryA);
+      taskStreamCalls.at(-1)?.onTaskFlowEvent?.(quoteTask, failPrimaryA);
+      taskStreamCalls.at(-1)?.onTaskFlowEvent?.(quoteTask, startIndependentB);
+      taskStreamCalls.at(-1)?.onTaskFlowEvent?.(quoteTask, finishIndependentB);
+      taskStreamCalls.at(-1)?.onTaskFlowEvent?.(quoteTask, startFallbackA);
+      taskStreamCalls.at(-1)?.onTaskFlowEvent?.(quoteTask, finishFallbackA);
+    });
+
+    const assertExpectedFallbackTopology = () => {
+      expect(result.current.snapshot?.summary.fallbackCount).toBe(1);
+      expect(result.current.snapshot?.edges).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          from: 'task_queue',
+          to: 'provider_realtime_quote_tencent_2',
+          kind: 'control',
+          status: 'success',
+        }),
+        expect.objectContaining({
+          from: 'provider_realtime_quote_tencent_1',
+          to: 'provider_realtime_quote_akshare_sina_3',
+          kind: 'fallback',
+          status: 'success',
+        }),
+      ]));
+      expect(result.current.snapshot?.edges).not.toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          from: 'provider_realtime_quote_tencent_1',
+          to: 'provider_realtime_quote_tencent_2',
+        }),
+      ]));
+    };
+
+    assertExpectedFallbackTopology();
+
+    // Buffered replay onto a skeleton snapshot must preserve the exact same edge topology.
+    act(() => {
+      void result.current.refetch();
+    });
+    act(() => {
+      replayDeferred.resolve({ ...snapshot, status: 'running' });
+    });
+
+    await waitFor(() => expect(result.current.snapshot?.nodes).toHaveLength(4));
+    assertExpectedFallbackTopology();
+  });
+
+  it('keeps retry count at 0 for concurrent same-provider fail-then-succeed calls across live stream and completed history refetch (OR-COR-f0c1b782)', async () => {
+    const initialDeferred = createDeferred<RunFlowSnapshot>();
+    const completedDeferred = createDeferred<RunFlowSnapshot>();
+    vi.mocked(analysisApi.getTaskFlow)
+      .mockReturnValueOnce(initialDeferred.promise)
+      .mockReturnValueOnce(completedDeferred.promise);
+
+    const { result } = renderHook(() => useRunFlowSnapshot({
+      source: { type: 'task', taskId: 'task-1' },
+      enabled: true,
+    }));
+
+    act(() => {
+      initialDeferred.resolve(snapshot);
+    });
+    await waitFor(() => expect(result.current.snapshot).not.toBeNull());
+
+    const quoteTask = {
+      taskId: 'task-1',
+      stockCode: '600519',
+      status: 'processing' as const,
+      progress: 45,
+      reportType: 'detailed',
+      createdAt: '2026-06-08T08:00:00Z',
+    };
+
+    const start1: RunFlowEvent = {
+      id: 'conc-fail-start-1',
+      timestamp: '2026-06-08T08:00:00.100000Z',
+      severity: 'info',
+      type: 'provider_run_started',
+      nodeId: 'provider_realtime_quote_aksharefetcher_1',
+      title: '实时行情开始 1',
+      metadata: {
+        provider: 'AkshareFetcher',
+        dataType: 'realtime_quote',
+        node: {
+          id: 'provider_realtime_quote_aksharefetcher_1',
+          lane: 'data_source',
+          kind: 'data_source',
+          label: '实时行情 · AkshareFetcher',
+          status: 'running',
+          provider: 'AkshareFetcher',
+          metadata: { dataType: 'realtime_quote' },
+        },
+      },
+    };
+    const start2: RunFlowEvent = {
+      id: 'conc-fail-start-2',
+      timestamp: '2026-06-08T08:00:00.150000Z',
+      severity: 'info',
+      type: 'provider_run_started',
+      nodeId: 'provider_realtime_quote_aksharefetcher_2',
+      title: '实时行情开始 2',
+      metadata: {
+        provider: 'AkshareFetcher',
+        dataType: 'realtime_quote',
+        node: {
+          id: 'provider_realtime_quote_aksharefetcher_2',
+          lane: 'data_source',
+          kind: 'data_source',
+          label: '实时行情 · AkshareFetcher',
+          status: 'running',
+          provider: 'AkshareFetcher',
+          metadata: { dataType: 'realtime_quote' },
+        },
+      },
+    };
+    const fail1: RunFlowEvent = {
+      id: 'conc-fail-finish-1',
+      timestamp: '2026-06-08T08:00:00.300000Z',
+      severity: 'warning',
+      type: 'provider_run',
+      nodeId: 'provider_realtime_quote_aksharefetcher_1',
+      title: '实时行情失败 1',
+      metadata: {
+        provider: 'AkshareFetcher',
+        dataType: 'realtime_quote',
+        node: {
+          id: 'provider_realtime_quote_aksharefetcher_1',
+          lane: 'data_source',
+          kind: 'data_source',
+          label: '实时行情 · AkshareFetcher',
+          status: 'failed',
+          provider: 'AkshareFetcher',
+          metadata: { dataType: 'realtime_quote' },
+        },
+      },
+    };
+    const succeed2: RunFlowEvent = {
+      id: 'conc-fail-finish-2',
+      timestamp: '2026-06-08T08:00:00.400000Z',
+      severity: 'success',
+      type: 'provider_run',
+      nodeId: 'provider_realtime_quote_aksharefetcher_2',
+      title: '实时行情成功 2',
+      metadata: {
+        provider: 'AkshareFetcher',
+        dataType: 'realtime_quote',
+        node: {
+          id: 'provider_realtime_quote_aksharefetcher_2',
+          lane: 'data_source',
+          kind: 'data_source',
+          label: '实时行情 · AkshareFetcher',
+          status: 'success',
+          provider: 'AkshareFetcher',
+          metadata: { dataType: 'realtime_quote' },
+        },
+      },
+    };
+
+    act(() => {
+      taskStreamCalls.at(-1)?.onTaskFlowEvent?.(quoteTask, start1);
+      taskStreamCalls.at(-1)?.onTaskFlowEvent?.(quoteTask, start2);
+      taskStreamCalls.at(-1)?.onTaskFlowEvent?.(quoteTask, fail1);
+      taskStreamCalls.at(-1)?.onTaskFlowEvent?.(quoteTask, succeed2);
+    });
+
+    expect(result.current.snapshot?.summary.fallbackCount).toBe(0);
+    expect(result.current.snapshot?.edges.some((edge) => edge.kind === 'retry' || edge.kind === 'fallback')).toBe(false);
+
+    act(() => {
+      taskStreamCalls.at(-1)?.onTaskCompleted?.({
+        ...quoteTask,
+        status: 'completed',
+        progress: 100,
+      });
+    });
+
+    await waitFor(() => expect(analysisApi.getTaskFlow).toHaveBeenCalledTimes(2));
+
+    act(() => {
+      completedDeferred.resolve({
+        ...snapshot,
+        status: 'degraded',
+        summary: {
+          ...snapshot.summary,
+          failedAttempts: 1,
+          fallbackCount: 0,
+          dataSourceCount: 2,
+          eventCount: 3,
+        },
+        nodes: [
+          ...snapshot.nodes,
+          {
+            id: 'provider_realtime_quote_aksharefetcher_1',
+            lane: 'data_source',
+            kind: 'data_source',
+            label: '实时行情 · AkshareFetcher',
+            status: 'failed',
+            provider: 'AkshareFetcher',
+            metadata: { dataType: 'realtime_quote' },
+          },
+          {
+            id: 'provider_realtime_quote_aksharefetcher_2',
+            lane: 'data_source',
+            kind: 'data_source',
+            label: '实时行情 · AkshareFetcher',
+            status: 'success',
+            provider: 'AkshareFetcher',
+            metadata: { dataType: 'realtime_quote' },
+          },
+        ],
+        edges: [
+          {
+            id: 'task_queue_to_provider_realtime_quote_aksharefetcher_1_control',
+            from: 'task_queue',
+            to: 'provider_realtime_quote_aksharefetcher_1',
+            kind: 'control',
+            status: 'failed',
+            label: '调用',
+          },
+          {
+            id: 'task_queue_to_provider_realtime_quote_aksharefetcher_2_control',
+            from: 'task_queue',
+            to: 'provider_realtime_quote_aksharefetcher_2',
+            kind: 'control',
+            status: 'success',
+            label: '调用',
+          },
+        ],
+      });
+    });
+
+    await waitFor(() => expect(result.current.snapshot?.status).toBe('degraded'));
+    expect(result.current.snapshot?.summary.fallbackCount).toBe(0);
+    expect(result.current.snapshot?.edges.some((edge) => edge.kind === 'retry' || edge.kind === 'fallback')).toBe(false);
+  });
 });
