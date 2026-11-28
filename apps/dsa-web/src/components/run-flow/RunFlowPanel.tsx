@@ -149,6 +149,15 @@ export const RunFlowPanel: React.FC<RunFlowPanelProps> = ({ source, title }) => 
         </Button>
       </div>
 
+      {error ? (
+        <InlineAlert
+          variant="danger"
+          title={error.title || t('runFlow.errorTitle')}
+          message={error.message}
+          className="rounded-xl px-3 py-2 text-sm shadow-none"
+        />
+      ) : null}
+
       <RunFlowSummaryBar snapshot={snapshot} />
 
       {!hasDetails ? (
