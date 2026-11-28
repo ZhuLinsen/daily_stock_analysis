@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import unittest
+from io import BytesIO
 from unittest.mock import patch, MagicMock, PropertyMock
 
 from data_provider.yfinance_fetcher import YfinanceFetcher
@@ -55,6 +56,37 @@ class TestStooqFallback(unittest.TestCase):
         self.assertAlmostEqual(quote.change_amount, 5.45, places=2)
         self.assertAlmostEqual(quote.change_pct, 3.04, places=2)
         self.assertAlmostEqual(quote.amplitude, 3.02, places=2)
+
+    @patch("data_provider.yfinance_fetcher.urlopen")
+    def test_stooq_previous_close_is_relative_to_quote_date(self, mock_urlopen):
+        quote = "AAPL.US,2026-03-10"
+        cases = [
+            ("lagging history", "AAPL.US,20260310,160000", ["2026-03-06,120", "2026-03-09,100"], 100),
+            ("single prior bar", quote, ["2026-03-09,100"], 100),
+            ("date-first headerless", "2026-03-10,16:00:00", ["2026-03-09,100", "2026-03-10,110"], 100),
+            (
+                "date-first header", "Date,Time,Open,High,Low,Close,Volume\n2026-03-10,16:00:00",
+                ["2026-03-09,100"], 100,
+            ),
+            ("newer history", quote, ["2026-03-11,115", "2026-03-09,100", "2026-03-10,110"], 100),
+            ("no earlier bar", quote, ["2026-03-10,110", "2026-03-11,115"], None),
+            ("invalid prior close", quote, ["2026-03-05,118", "2026-03-06,120", "2026-03-09,N/D"], None),
+            ("nonfinite prior close", quote, ["2026-03-09,inf"], None),
+            ("unknown quote date", "AAPL.US,N/D", ["2026-03-06,120", "2026-03-09,100"], None),
+        ]
+        for case, quote_prefix, history_rows, expected_close in cases:
+            with self.subTest(case=case):
+                quote_csv = f"{quote_prefix},100,115,95,110,1000\n"
+                history_csv = "\n".join(["Date,Close", *history_rows])
+                mock_urlopen.side_effect = [
+                    BytesIO(quote_csv.encode()),
+                    BytesIO(history_csv.encode()),
+                ]
+                result = self.fetcher._get_us_stock_quote_from_stooq("AAPL")
+                self.assertEqual(result.price, 110)
+                self.assertEqual(result.pre_close, expected_close)
+                changes = (result.change_amount, result.change_pct, result.amplitude)
+                self.assertEqual(changes, (10, 10, 20) if expected_close is not None else (None, None, None))
 
     @unittest.skipUnless(HAS_YFINANCE, "yfinance is required for this test")
     @patch('yfinance.Ticker')
