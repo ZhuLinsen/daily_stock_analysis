@@ -177,6 +177,20 @@ function extractErrorCode(data: unknown): string | null {
   return pickString(data.error, data.code);
 }
 
+export function getAzureChannelValidationMessage(code: unknown, language: UiLanguage): string | undefined {
+  if (code === 'invalid_azure_endpoint') {
+    return language === 'en'
+      ? 'Enter an Azure OpenAI resource URL such as https://<resource>.openai.azure.com without an API path.'
+      : '请填写 Azure OpenAI 资源根地址，例如 https://<resource>.openai.azure.com，不要附加 API 路径。';
+  }
+  if (code === 'invalid_azure_deployment') {
+    return language === 'en'
+      ? 'Enter the Azure deployment name or an azure/<deployment> route.'
+      : '请填写 Azure 部署名称，或使用 azure/<deployment> 格式。';
+  }
+  return undefined;
+}
+
 function extractConfigValidationIssues(data: unknown, language: UiLanguage): string | null {
   if (!isRecord(data)) return null;
   const payload = isRecord(data.detail) ? data.detail : data;
@@ -185,7 +199,7 @@ function extractConfigValidationIssues(data: unknown, language: UiLanguage): str
   const separator = isEnglish ? ': ' : '：';
   const messages = payload.issues.filter(isRecord).map((issue) => {
     const key = pickString(issue.key);
-    let message = pickString(issue.message);
+    let message = getAzureChannelValidationMessage(issue.code, language) ?? pickString(issue.message);
     if (issue.code === 'missing_api_key') {
       message = isEnglish ? 'Please enter an API Key for this channel.' : '请填写此渠道的 API Key。';
     }

@@ -20,6 +20,7 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from src.config import Config, channel_allows_empty_api_key, get_config
+from src.llm.azure_openai import normalize_azure_openai_token_limit
 from src.llm.hermes import route_has_hermes
 
 logger = logging.getLogger(__name__)
@@ -319,6 +320,7 @@ def _call_litellm_vision(image_b64: str, mime_type: str, api_key: Optional[str] 
         "max_tokens": 1024,
         "timeout": VISION_API_TIMEOUT,
     }
+    normalize_azure_openai_token_limit(call_kwargs, wire_model)
     effective_api_key = str(deployment_params.get("api_key") or key or "").strip()
     if effective_api_key:
         call_kwargs["api_key"] = effective_api_key

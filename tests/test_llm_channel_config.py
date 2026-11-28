@@ -111,6 +111,8 @@ class LLMChannelConfigTestCase(unittest.TestCase):
         self.assertEqual(completion.call_count, 2)
         for call in completion.call_args_list:
             self.assertEqual(call.kwargs["model"], "azure/my-deployment")
+            self.assertIn("max_completion_tokens", call.kwargs)
+            self.assertNotIn("max_tokens", call.kwargs)
             self.assertNotIn("api_key", call.kwargs)
             self.assertTrue(callable(call.kwargs["azure_ad_token_provider"]))
 

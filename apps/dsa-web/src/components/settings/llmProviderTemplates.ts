@@ -303,13 +303,12 @@ export function isKnownProviderTemplate(channelId: string): boolean {
   return channelId !== 'custom' && Boolean(getProviderTemplate(channelId));
 }
 
-export const MODEL_PLACEHOLDERS_BY_PROTOCOL: Record<ChannelProtocol, string> = {
+export const MODEL_PLACEHOLDERS_BY_PROTOCOL: Record<Exclude<ChannelProtocol, 'azure'>, string> = {
   openai: 'gpt-6.1-sol,qwen3.6-plus',
   deepseek: 'deepseek-flash,deepseek-v4-pro',
   gemini: 'gemini-3.6-flash,gemini-3.5-flash-lite',
   anthropic: 'claude-sonnet-4-6,claude-opus-4-7',
   vertex_ai: 'gemini-3.6-flash',
-  azure: 'Azure 部署名称',
   ollama: 'llama3.2,qwen2.5',
 };
 
@@ -371,6 +370,7 @@ const EN_TEMPLATE_CONFIG_HINTS: Record<string, string> = {
   siliconflow: 'Model list and model visibility depend on account permissions and your API Key.',
   openrouter: 'Model list and model visibility depend on account permissions and your API Key.',
   requesty: 'Model list and model visibility depend on account permissions and your API Key; for the EU region, set Base URL to https://router.eu.requesty.ai/v1.',
+  azure: 'Enter the HTTPS root URL of your Azure OpenAI resource and the deployment name. Leave the API Key blank to use DefaultAzureCredential with Microsoft Entra ID.',
   ollama: 'Requires the local machine, Docker container, or self-hosted runner to reach the Ollama service.',
   anspire:
     'The same ANSPIRE_API_KEYS can be reused for both search and LLM channels. These models and gateway are configuration examples; verify availability against your account permissions and console, and click "Test Connection" first.',

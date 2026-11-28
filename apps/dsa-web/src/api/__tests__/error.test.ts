@@ -179,17 +179,25 @@ describe('API error and stocksApi localization', () => {
       data: {
         detail: {
           error: 'validation_failed',
-          issues: [{ key: 'LITELLM_MODEL', code: 'unknown_model' }],
+          issues: [
+            { key: 'LITELLM_MODEL', code: 'unknown_model' },
+            { key: 'LLM_AZURE_BASE_URL', code: 'invalid_azure_endpoint', message: 'Invalid endpoint' },
+            { key: 'LLM_AZURE_MODELS', code: 'invalid_azure_deployment', message: 'Invalid deployment' },
+          ],
         },
       },
     };
     const attachedValidationZh = attachParsedApiError(emptyMsgErr);
     expect(attachedValidationZh.title).toBe('配置需要调整');
     expect(attachedValidationZh.message).toContain('请选择当前启用渠道中的模型');
+    expect(attachedValidationZh.message).toContain('LLM_AZURE_BASE_URL：请填写 Azure OpenAI 资源根地址');
+    expect(attachedValidationZh.message).toContain('LLM_AZURE_MODELS：请填写 Azure 部署名称');
 
     const validationEn = localizeParsedApiError(attachedValidationZh, 'en');
     expect(validationEn.title).toBe('Configuration Needs Attention');
     expect(validationEn.message).toContain('LITELLM_MODEL: Please choose a model from an enabled channel');
+    expect(validationEn.message).toContain('LLM_AZURE_BASE_URL: Enter an Azure OpenAI resource URL');
+    expect(validationEn.message).toContain('LLM_AZURE_MODELS: Enter the Azure deployment name');
     expect(validationEn.message).not.toMatch(/[\u4e00-\u9fff]/);
 
     const validationZhAgain = getParsedApiError(emptyMsgErr, 'zh');

@@ -86,6 +86,8 @@ def test_screening_ranker_azure_channel_does_not_inherit_openai_key_or_base_url(
         ) == "OK"
 
     assert completion.call_args.kwargs["api_base"] == endpoint
+    assert completion.call_args.kwargs["max_completion_tokens"] == 2048
+    assert "max_tokens" not in completion.call_args.kwargs
     assert "api_key" not in completion.call_args.kwargs
     assert callable(completion.call_args.kwargs["azure_ad_token_provider"])
 

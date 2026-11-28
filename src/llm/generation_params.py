@@ -8,6 +8,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
+from src.llm.azure_openai import normalize_azure_openai_token_limit
+
 
 # Kimi K2.6 is consumed through Moonshot's OpenAI-compatible API in this
 # repository. Official references:
@@ -417,6 +419,7 @@ def apply_litellm_generation_params(
 ) -> Dict[str, Any]:
     """Return kwargs with model-compatible generation parameters applied."""
     updated = dict(call_kwargs)
+    normalize_azure_openai_token_limit(updated, resolve_litellm_wire_model(model, model_list))
     effective_overrides = request_overrides if request_overrides is not None else updated
     directive = resolve_litellm_temperature_directive(
         model,

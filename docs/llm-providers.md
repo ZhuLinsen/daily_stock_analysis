@@ -58,6 +58,7 @@ LITELLM_MODEL=azure/my-deployment
 - **无密钥认证**：将 `LLM_AZURE_API_KEY` 和 `LLM_AZURE_API_KEYS` 留空。为运行后端的身份在 Azure OpenAI 资源上授予 `Cognitive Services OpenAI User`，本地可先运行 `az login`。后端的 `DefaultAzureCredential` 按需获取并刷新令牌，不需要把令牌写入配置。不要同时设置原生 SDK 的全局 Azure Key（如 `AZURE_API_KEY`、`AZURE_OPENAI_API_KEY`）或静态 Azure 令牌。
 - **部署**：凭据必须在后端进程可用，宿主机 `az login` 不会自动传入 Docker。Azure 托管环境建议使用托管标识，并用 `AZURE_TOKEN_CREDENTIALS=ManagedIdentityCredential` 将凭据链限制为托管标识。每日分析工作流透传 `LLM_AZURE_*`；默认 GitHub-hosted runner 不会自动登录 Azure。未单独配置 runner 身份时，可将 `LLM_AZURE_API_KEY` 或 `LLM_AZURE_API_KEYS` 存为 GitHub Secrets。
 - **API Key 认证**：在本渠道填写一个或多个资源 Key 即使用 Key，不启用该渠道的 `DefaultAzureCredential`。保存前可用「测试连接」确认部署和权限。
+- **兼容性验证**：Azure Chat Completions 使用 `max_completion_tokens` 限制输出，不依赖 LiteLLM 根据部署名称识别底层模型。若要验证无密钥的分析、选股排序和图片识股链路，在环境变量或 `.env` 中设置资源根地址和支持图片的部署，将 `RUN_AZURE_OPENAI_SMOKE` 设为 `1`，再单独运行 `python -m pytest -q -s tests/test_azure_openai_live.py`。测试不使用渠道 Key，只提交合成数据，可能产生费用。
 
 ### Modelflare
 

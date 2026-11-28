@@ -173,6 +173,8 @@ class TestCallLitellmVision:
         kwargs = litellm.completion.call_args.kwargs
         assert kwargs["api_base"] == endpoint
         assert kwargs["azure_ad_token_provider"] is token_provider
+        assert kwargs["max_completion_tokens"] == 1024
+        assert "max_tokens" not in kwargs
         assert "api_key" not in kwargs
 
     def _good_response(self):
