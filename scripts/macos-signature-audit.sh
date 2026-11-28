@@ -47,6 +47,11 @@ is_signable_bundle_dir() {
   esac
 }
 
+is_adhoc_signature() {
+  local details="$1"
+  [[ "${details}" == *"Signature=adhoc"* ]] && [[ "${details}" != *"Authority="* ]]
+}
+
 ad_hoc_sign_candidate() {
   local candidate="$1"
   local reason="$2"
@@ -56,8 +61,13 @@ ad_hoc_sign_candidate() {
   codesign --force --sign - --timestamp=none "${candidate}"
   resigned_count=$((resigned_count + 1))
 
-  if ! signature_details="$(codesign -d "${candidate}" 2>&1)"; then
+  if ! signature_details="$(codesign -d --verbose=4 "${candidate}" 2>&1)"; then
     echo "ERROR: failed to read ad-hoc signature after signing: ${candidate}" >&2
+    echo "${signature_details}" >&2
+    exit 1
+  fi
+  if ! is_adhoc_signature "${signature_details}"; then
+    echo "ERROR: artifact signature is not ad-hoc after signing: ${candidate}" >&2
     echo "${signature_details}" >&2
     exit 1
   fi
@@ -73,7 +83,7 @@ audit_candidate() {
   local signature_details=""
 
   checked_count=$((checked_count + 1))
-  if ! signature_details="$(codesign -d "${candidate}" 2>&1)"; then
+  if ! signature_details="$(codesign -d --verbose=4 "${candidate}" 2>&1)"; then
     if [[ "${signature_details}" == *"code object is not signed at all"* ]]; then
       if [[ "${mode}" == "normalize" ]]; then
         ad_hoc_sign_candidate "${candidate}" "unsigned"
@@ -95,8 +105,18 @@ audit_candidate() {
   fi
 
   if codesign --verify --strict --verbose=4 "${candidate}" >/dev/null 2>&1; then
-    signed_count=$((signed_count + 1))
-    return 0
+    if is_adhoc_signature "${signature_details}"; then
+      signed_count=$((signed_count + 1))
+      return 0
+    fi
+    if [[ "${mode}" == "normalize" ]]; then
+      ad_hoc_sign_candidate "${candidate}" "non-adhoc signature"
+      signed_count=$((signed_count + 1))
+      return 0
+    fi
+    echo "ERROR: non-adhoc signature in macOS artifact (expected uniform ad-hoc signature): ${candidate}" >&2
+    echo "${signature_details}" >&2
+    exit 1
   fi
 
   if [[ "${mode}" == "normalize" ]]; then

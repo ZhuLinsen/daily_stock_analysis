@@ -386,12 +386,13 @@ OPENAI_MODEL=deepseek-v4-flash
 
 1. 只从项目的 [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) 下载附件，并确认安装包架构与 Mac 一致。不要对第三方转载或来源不明的应用绕过 Gatekeeper。
 2. 将 `Daily Stock Analysis` 拖入“应用程序”，先在“系统设置 → 隐私与安全性”中尝试“仍要打开”。
-3. 如果仍无法启动，并且已经确认文件来自项目官方 Release，可在终端只针对该应用移除 quarantine 属性并启动；若使用 `v3.35.0` 等早期包且 Apple Silicon 仍无反应，可补跑一次 ad-hoc 重签：
+3. 如果仍无法启动，并且已经确认文件来自项目官方 Release，可在终端只针对该应用移除 quarantine 属性并启动；若使用 `v3.35.0` 等早期未补齐 ad-hoc 签名的 arm64 包且 Apple Silicon 仍无反应，**建议优先升级到最新 Release DMG**，或按下面命令先补签 `Contents/Resources/backend` 中的冻结后端，再重签外层 `.app`：
 
    ```bash
    xattr -dr com.apple.quarantine "/Applications/Daily Stock Analysis.app"
-   # 仅 v3.35.0 等早期未补齐 ad-hoc 签名的 arm64 包需要额外执行下一行：
-   # codesign --force --deep --sign - "/Applications/Daily Stock Analysis.app"
+   # 仅 v3.35.0 等早期未补齐 ad-hoc 签名的 arm64 包需要额外执行下面两行（codesign --deep 不会递归处理 Contents/Resources 内的后端）：
+   # find "/Applications/Daily Stock Analysis.app/Contents/Resources/backend" -type f -exec sh -c 'file -b "$1" | grep -q "Mach-O" && codesign --force --sign - --timestamp=none "$1"' _ {} \;
+   # codesign --force --deep --sign - --timestamp=none "/Applications/Daily Stock Analysis.app"
    open "/Applications/Daily Stock Analysis.app"
    ```
 

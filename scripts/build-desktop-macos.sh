@@ -7,11 +7,132 @@ ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 export CSC_IDENTITY_AUTO_DISCOVERY="false"
 export ELECTRON_BUILDER_CACHE="${ROOT_DIR}/.electron-builder-cache"
 
+is_native_host_arch() {
+  local host_arch target_arch
+  host_arch="$(uname -m)"
+  target_arch="${DSA_MAC_ARCH:-}"
+  [[ -z "${target_arch}" ]] || [[ "${target_arch}" == "arm64" && "${host_arch}" == "arm64" ]] || [[ "${target_arch}" == "x64" && "${host_arch}" == "x86_64" ]]
+}
+
+verify_installed_dmg_app_launch() {
+  local mounted_app="$1"
+  if ! is_native_host_arch; then
+    echo "Skipping installed DMG Electron launch smoke check for cross-arch build (host=$(uname -m), target=${DSA_MAC_ARCH:-})."
+    return 0
+  fi
+  if [[ "${DSA_SKIP_GUI_SMOKE:-0}" == "1" ]]; then
+    echo "Skipping installed DMG Electron launch smoke check (DSA_SKIP_GUI_SMOKE=1)."
+    return 0
+  fi
+
+  local smoke_root=""
+  local installed_app=""
+  local smoke_home=""
+  local smoke_userdata=""
+  local smoke_stdout=""
+  local desktop_log=""
+  local app_pid=""
+  local status=1
+
+  smoke_root="$(mktemp -d "${TMPDIR:-/tmp}/dsa-macos-launch-smoke.XXXXXX")"
+  installed_app="${smoke_root}/Daily Stock Analysis.app"
+  smoke_home="${smoke_root}/home"
+  smoke_userdata="${smoke_root}/user-data"
+  smoke_stdout="${smoke_root}/electron-stdout.log"
+  desktop_log="${smoke_userdata}/logs/desktop.log"
+  mkdir -p "${smoke_home}" "${smoke_userdata}"
+
+  cleanup_launch_smoke() {
+    if [[ -n "${app_pid}" ]] && kill -0 "${app_pid}" 2>/dev/null; then
+      kill "${app_pid}" 2>/dev/null || true
+      for _ in 1 2 3 4 5 6; do
+        if ! kill -0 "${app_pid}" 2>/dev/null; then
+          break
+        fi
+        sleep 0.5
+      done
+      if kill -0 "${app_pid}" 2>/dev/null; then
+        kill -9 "${app_pid}" 2>/dev/null || true
+      fi
+      wait "${app_pid}" 2>/dev/null || true
+    fi
+    if [[ -n "${installed_app}" ]]; then
+      pkill -9 -f "${installed_app}/Contents/" 2>/dev/null || true
+    fi
+    if [[ -n "${smoke_root}" ]] && [[ -d "${smoke_root}" ]]; then
+      rm -rf "${smoke_root}" 2>/dev/null || true
+    fi
+  }
+
+  echo "Installing mounted DMG app to temporary directory for end-to-end launch smoke check..."
+  if ! ditto "${mounted_app}" "${installed_app}"; then
+    echo "ERROR: failed to copy mounted DMG app for launch smoke check: ${mounted_app}" >&2
+    cleanup_launch_smoke
+    exit 1
+  fi
+
+  HOME="${smoke_home}" "${installed_app}/Contents/MacOS/Daily Stock Analysis" \
+    --user-data-dir="${smoke_userdata}" >"${smoke_stdout}" 2>&1 &
+  app_pid=$!
+
+  local elapsed=0
+  local max_wait_tenths=150
+  while (( elapsed < max_wait_tenths )); do
+    local combined=""
+    if [[ -f "${smoke_stdout}" ]]; then
+      combined+="$(cat "${smoke_stdout}" 2>/dev/null || true)"
+    fi
+    if [[ -f "${desktop_log}" ]]; then
+      combined+=$'\n'"$(cat "${desktop_log}" 2>/dev/null || true)"
+    fi
+
+    if [[ "${combined}" == *"Backend ready in "* ]] && [[ "${combined}" == *"Main UI loaded in "* ]]; then
+      echo "Installed DMG Electron launch smoke check passed (window + helpers + packaged backend health + main UI loaded)."
+      status=0
+      break
+    fi
+
+    if [[ "${combined}" == *"Startup failed while waiting for health:"* ]] || [[ "${combined}" == *"Backend launch failed:"* ]]; then
+      echo "ERROR: packaged Electron app failed during backend startup/health check." >&2
+      printf '%s\n' "${combined}" >&2
+      cleanup_launch_smoke
+      exit 1
+    fi
+
+    if ! kill -0 "${app_pid}" 2>/dev/null; then
+      echo "ERROR: packaged Electron app exited prematurely before Main UI loaded." >&2
+      printf '%s\n' "${combined}" >&2
+      cleanup_launch_smoke
+      exit 1
+    fi
+
+    sleep 0.5
+    elapsed=$((elapsed + 1))
+  done
+
+  if [[ "${status}" -ne 0 ]]; then
+    echo "ERROR: packaged Electron app did not complete backend health + Main UI load within 75s." >&2
+    if [[ -f "${smoke_stdout}" ]]; then
+      echo "--- electron stdout/stderr ---" >&2
+      cat "${smoke_stdout}" >&2 || true
+    fi
+    if [[ -f "${desktop_log}" ]]; then
+      echo "--- desktop.log ---" >&2
+      cat "${desktop_log}" >&2 || true
+    fi
+    cleanup_launch_smoke
+    exit 1
+  fi
+
+  cleanup_launch_smoke
+}
+
 verify_adhoc_signed_app() {
   local app_path="$1"
   local signature_details=""
   local assessment_output=""
   local smoke_output=""
+  local backend_bin=""
 
   bash "${SCRIPT_DIR}/macos-signature-audit.sh" check "${app_path}"
 
@@ -25,24 +146,37 @@ verify_adhoc_signed_app() {
     echo "${signature_details}" >&2
     exit 1
   fi
+  if [[ "${signature_details}" != *"Signature=adhoc"* ]] || [[ "${signature_details}" == *"Authority="* ]]; then
+    echo "ERROR: expected a uniform ad-hoc signed application bundle, but found non-adhoc signature: ${app_path}" >&2
+    echo "${signature_details}" >&2
+    exit 1
+  fi
 
   if ! codesign --verify --deep --strict --verbose=4 "${app_path}" 2>&1; then
     echo "ERROR: application bundle failed deep strict code-signature verification: ${app_path}" >&2
     exit 1
   fi
 
-  local host_arch target_arch
-  host_arch="$(uname -m)"
-  target_arch="${DSA_MAC_ARCH:-}"
-  if [[ -z "${target_arch}" ]] || [[ "${target_arch}" == "arm64" && "${host_arch}" == "arm64" ]] || [[ "${target_arch}" == "x64" && "${host_arch}" == "x86_64" ]]; then
+  if is_native_host_arch; then
     if ! smoke_output="$(ELECTRON_RUN_AS_NODE=1 "${app_path}/Contents/MacOS/Daily Stock Analysis" -e "console.log('desktop-smoke:' + process.platform + ':' + process.arch)" 2>&1)"; then
       echo "ERROR: packaged Electron executable failed headless launch smoke check: ${app_path}" >&2
       echo "${smoke_output}" >&2
       exit 1
     fi
     echo "${smoke_output}"
+
+    backend_bin="${app_path}/Contents/Resources/backend/stock_analysis/stock_analysis"
+    if [[ ! -x "${backend_bin}" ]]; then
+      echo "ERROR: packaged backend executable missing inside app bundle: ${backend_bin}" >&2
+      exit 1
+    fi
+    if ! "${backend_bin}" --help >/dev/null 2>&1; then
+      echo "ERROR: packaged backend executable inside app bundle failed --help smoke check: ${backend_bin}" >&2
+      "${backend_bin}" --help || true
+      exit 1
+    fi
   else
-    echo "Skipping headless Electron launch smoke check for cross-arch build (host=${host_arch}, target=${target_arch})."
+    echo "Skipping native launch smoke checks for cross-arch build (host=$(uname -m), target=${DSA_MAC_ARCH:-})."
   fi
 
   if assessment_output="$(spctl --assess --type execute --verbose=4 "${app_path}" 2>&1)"; then
@@ -83,6 +217,7 @@ verify_packaged_dmg() {
   fi
 
   verify_adhoc_signed_app "${mounted_app}"
+  verify_installed_dmg_app_launch "${mounted_app}"
 
   hdiutil detach "${mount_dir}" >/dev/null
   mounted=false

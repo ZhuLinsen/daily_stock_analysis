@@ -80,7 +80,7 @@ powershell -ExecutionPolicy Bypass -File scripts\build-all.ps1
 
 ### macOS 提示“应用已损坏，无法打开”
 
-当前 macOS DMG 尚未使用 Apple Developer 证书签名和公证。由于 Apple Silicon（arm64）强制要求 Mach-O 可执行文件具备有效代码签名（否则会被内核直接终止，点击图标无反应），构建配置会在禁用外部开发者证书的前提下（`identity: null`、`hardenedRuntime: false`），在 PyInstaller 冻结后端完成后、以及 electron-builder `afterPack` hook 创建 DMG 前，通过 `scripts/macos-signature-audit.sh normalize` 由内向外补齐统一有效的 **ad-hoc 签名（`codesign --force --sign - --timestamp=none`）**；CI 还会审计 Electron 原始 `.app`、DMG 挂载后的 `.app` 以及 Electron 可执行文件无头冒烟启动，阻止再次发布未签名或带有 `code has no resources but signature indicates they must be present` 等损坏签名的产物。该处理可解决无签名与残缺签名导致的启动失败，但**不会让应用获得 Apple 公证信任**；通过浏览器下载后，macOS Gatekeeper 仍可能提示“无法验证开发者”、阻止启动，或要求用户人工确认。
+当前 macOS DMG 尚未使用 Apple Developer 证书签名和公证。由于 Apple Silicon（arm64）强制要求 Mach-O 可执行文件具备有效代码签名（否则会被内核直接终止，点击图标无反应），构建配置会在禁用外部开发者证书的前提下（`identity: null`、`hardenedRuntime: false`），在 PyInstaller 冻结后端完成后、以及 electron-builder `afterPack` hook 创建 DMG 前，通过 `scripts/macos-signature-audit.sh normalize` 由内向外统一补齐一致的 **ad-hoc 签名（`codesign --force --sign - --timestamp=none`）**（包括重签遗留的第三方非 ad-hoc 证书签名，避免混合签名）；CI 还会审计 Electron 原始 `.app`、DMG 挂载后的 `.app`（要求全部 Mach-O 与 bundle 均为统一 `Signature=adhoc` 且通过 `codesign --verify --deep --strict`），并在本机架构上模拟从 DMG 安装后实际启动桌面端直到内置后端通过 `/api/health` 且主界面加载完成。该处理可解决无签名与残缺/混合签名导致的启动失败，但**不会让应用获得 Apple 公证信任**；通过浏览器下载后，macOS Gatekeeper 仍会给 `.dmg`/`.app` 添加 `com.apple.quarantine` 隔离属性，用户首次打开仍需在“隐私与安全性”点击“仍要打开”或执行一次 `xattr -dr com.apple.quarantine` 放行。
 
 请按以下顺序排查：
 
@@ -93,10 +93,11 @@ xattr -dr com.apple.quarantine "/Applications/Daily Stock Analysis.app"
 open "/Applications/Daily Stock Analysis.app"
 ```
 
-如果仍使用未补齐 ad-hoc 签名的历史版本（如 `v3.35.0` 的 Apple Silicon arm64 打包产物）且清除了 quarantine 后点击依然无反应，可在确认来源官方后额外执行一次本地 ad-hoc 重签再启动，或升级到已包含 `macos-signature-audit.sh` ad-hoc 签名修复的新版本：
+如果仍使用未补齐 ad-hoc 签名的历史版本（如 `v3.35.0` 的 Apple Silicon arm64 打包产物）且清除了 quarantine 后点击依然无反应，**建议优先升级到已包含 `macos-signature-audit.sh` ad-hoc 签名修复的新版本 DMG**；如需就地临时修复，因 `codesign --deep` 不会递归处理放在 `Contents/Resources/backend` 中的冻结后端，须先补签后端 Mach-O 再重签外层 `.app`：
 
 ```bash
-codesign --force --deep --sign - "/Applications/Daily Stock Analysis.app"
+find "/Applications/Daily Stock Analysis.app/Contents/Resources/backend" -type f -exec sh -c 'file -b "$1" | grep -q "Mach-O" && codesign --force --sign - --timestamp=none "$1"' _ {} \;
+codesign --force --deep --sign - --timestamp=none "/Applications/Daily Stock Analysis.app"
 open "/Applications/Daily Stock Analysis.app"
 ```
 
