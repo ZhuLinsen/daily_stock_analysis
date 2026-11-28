@@ -13,7 +13,7 @@
 import logging
 import math
 import traceback
-from typing import Callable
+from typing import Any, Callable
 
 from fastapi import Request, Response
 from fastapi.encoders import jsonable_encoder
@@ -69,6 +69,53 @@ class ErrorHandlerMiddleware(BaseHTTPMiddleware):
             )
 
 
+_SENSITIVE_VALIDATION_FIELD_MARKERS = (
+    "api_key",
+    "api_keys",
+    "extra_headers",
+    "headers",
+    "password",
+    "secret",
+    "token",
+    "authorization",
+    "cookie",
+    "credential",
+    "hmac",
+)
+
+
+def _is_sensitive_validation_location(loc: Any, request_path: str) -> bool:
+    parts = [str(part).lower() for part in (loc if isinstance(loc, (list, tuple)) else ())]
+    if any(any(marker in part for marker in _SENSITIVE_VALIDATION_FIELD_MARKERS) for part in parts):
+        return True
+    lower_path = (request_path or "").lower()
+    if lower_path.startswith(("/api/v1/system/config", "/api/v1/auth")):
+        if any(part in {"items", "content", "value", "body"} for part in parts):
+            return True
+    return False
+
+
+def _sanitize_validation_errors(errors: Any, request_path: str) -> Any:
+    if not isinstance(errors, list):
+        return errors
+    sanitized: list[Any] = []
+    for entry in errors:
+        if not isinstance(entry, dict):
+            sanitized.append(entry)
+            continue
+        cleaned = dict(entry)
+        if _is_sensitive_validation_location(cleaned.get("loc"), request_path):
+            if "input" in cleaned:
+                cleaned["input"] = "[REDACTED]"
+            if isinstance(cleaned.get("ctx"), dict):
+                cleaned["ctx"] = {
+                    k: ("[REDACTED]" if k in {"input", "given", "value"} else v)
+                    for k, v in cleaned["ctx"].items()
+                }
+        sanitized.append(cleaned)
+    return sanitized
+
+
 def add_error_handlers(app) -> None:
     """
     添加全局异常处理器
@@ -103,15 +150,16 @@ def add_error_handlers(app) -> None:
     @app.exception_handler(RequestValidationError)
     async def validation_exception_handler(request: Request, exc: RequestValidationError):
         """处理请求验证异常"""
+        sanitized_errors = _sanitize_validation_errors(exc.errors(), request.url.path)
         return JSONResponse(
             status_code=422,
             content={
                 "error": "validation_error",
                 "message": "请求参数验证失败",
-                # Validation errors echo input values. Overflowing JSON numbers
-                # must not turn a rejected request into a serialization failure.
+                # Validation errors echo input values. Sensitive fields are redacted above,
+                # and overflowing JSON numbers must not turn a rejected request into a 500.
                 "detail": jsonable_encoder(
-                    exc.errors(),
+                    sanitized_errors,
                     custom_encoder={float: lambda value: value if math.isfinite(value) else str(value)},
                 )
             }

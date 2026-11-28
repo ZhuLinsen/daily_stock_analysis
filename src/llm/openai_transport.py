@@ -56,6 +56,11 @@ _CHAT_COMPLETIONS_OPTIONAL_KEYS = (
     "prompt_cache_retention",
     "store",
     "user",
+    "logit_bias",
+    "logprobs",
+    "top_logprobs",
+    "n",
+    "service_tier",
 )
 
 _FILTERED_REQUEST_KWARGS = frozenset(
@@ -82,6 +87,7 @@ _FILTERED_REQUEST_KWARGS = frozenset(
         "client",
         "_dsa_deadline_monotonic",
         "_dsa_skip_sensitive_caller_headers",
+        "_dsa_disable_env_expansion",
     }
 )
 
@@ -1339,11 +1345,12 @@ def prepare_openai_request(
     )
     headers: Dict[str, str] = {"Content-Type": "application/json"}
     restrict_cross_origin = bool(kwargs.get("_dsa_skip_sensitive_caller_headers"))
+    disable_env_expansion = bool(kwargs.get("_dsa_disable_env_expansion"))
     merge_header_overrides(headers, {"extra_headers": entry.extra_headers})
     merge_header_overrides(
         headers,
         kwargs,
-        resolve_env_fn=resolve_env_reference,
+        resolve_env_fn=None if disable_env_expansion else resolve_env_reference,
         safe_allowlist_only=restrict_cross_origin,
     )
 

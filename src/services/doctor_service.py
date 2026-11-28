@@ -526,7 +526,7 @@ def format_doctor_report(report: Dict[str, Any]) -> str:
     llm = checks.get("llm", {})
     lines.append(
         f"[llm] status={llm.get('status')} backend={llm.get('generation_backend')} "
-        f"transport={llm.get('llm_transport_mode', 'litellm')} "
+        f"transport={llm.get('llm_transport_mode', 'auto')} "
         f"models={llm.get('configured_models_count')} ready={llm.get('ready')}"
     )
 

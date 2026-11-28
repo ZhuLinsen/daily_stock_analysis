@@ -3,9 +3,48 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+
+_HTTP_HEADER_NAME_RE = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]{1,128}$")
+_MAX_EXTRA_HEADERS_COUNT = 20
+_MAX_EXTRA_HEADERS_TOTAL_BYTES = 8192
+
+
+def _validate_api_extra_headers(value: Optional[Dict[str, str]]) -> Optional[Dict[str, str]]:
+    """Validate API-submitted extra HTTP headers strictly without echoing secret values."""
+    if value is None:
+        return None
+    if len(value) > _MAX_EXTRA_HEADERS_COUNT:
+        raise ValueError(f"extra_headers may contain at most {_MAX_EXTRA_HEADERS_COUNT} headers")
+    validated: Dict[str, str] = {}
+    total_bytes = 0
+    for raw_name, raw_val in value.items():
+        if not isinstance(raw_name, str) or not isinstance(raw_val, str):
+            raise ValueError("extra_headers keys and values must be strings")
+        if any(ch in raw_name for ch in ("\r", "\n", "\x00")):
+            raise ValueError("extra_headers contains invalid control characters in header name")
+        clean_name = raw_name.strip()
+        if not _HTTP_HEADER_NAME_RE.fullmatch(clean_name):
+            raise ValueError("extra_headers contains an invalid HTTP header name")
+        if any(ch in raw_val for ch in ("\r", "\n", "\x00")):
+            raise ValueError(
+                f"extra_headers header '{clean_name}' contains invalid control characters"
+            )
+        if raw_val.strip().lower().startswith("os.environ/"):
+            raise ValueError(
+                f"extra_headers header '{clean_name}' cannot use os.environ/ references in API requests"
+            )
+        total_bytes += len(clean_name.encode("utf-8")) + len(raw_val.encode("utf-8"))
+        if total_bytes > _MAX_EXTRA_HEADERS_TOTAL_BYTES:
+            raise ValueError(
+                f"extra_headers total size exceeds {_MAX_EXTRA_HEADERS_TOTAL_BYTES} bytes"
+            )
+        validated[clean_name] = raw_val
+    return validated
 
 LLMCapabilityCheck = Literal["json", "tools", "vision", "stream"]
 GenerationBackendSmokeMode = Literal["text", "json"]
@@ -285,6 +324,12 @@ class TestLLMChannelRequest(BaseModel):
     timeout_seconds: float = 20.0
     capability_checks: List[LLMCapabilityCheck] = Field(default_factory=list)
     use_saved_secret: bool = False
+    extra_headers: Optional[Dict[str, str]] = None
+
+    @field_validator("extra_headers")
+    @classmethod
+    def _validate_extra_headers(cls, value: Optional[Dict[str, str]]) -> Optional[Dict[str, str]]:
+        return _validate_api_extra_headers(value)
 
 
 class LLMCapabilityCheckResult(BaseModel):
@@ -363,6 +408,12 @@ class DiscoverLLMChannelModelsRequest(BaseModel):
     models: List[str] = Field(default_factory=list)
     timeout_seconds: float = 20.0
     use_saved_secret: bool = False
+    extra_headers: Optional[Dict[str, str]] = None
+
+    @field_validator("extra_headers")
+    @classmethod
+    def _validate_extra_headers(cls, value: Optional[Dict[str, str]]) -> Optional[Dict[str, str]]:
+        return _validate_api_extra_headers(value)
 
 
 class DiscoverLLMChannelModelsResponse(BaseModel):

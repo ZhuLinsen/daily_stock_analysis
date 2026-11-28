@@ -193,30 +193,84 @@ def is_cross_origin_safe_header(name: str) -> bool:
     return str(name or "").strip().lower() in _CROSS_ORIGIN_SAFE_HEADERS
 
 
+_BENIGN_MEDIA_OR_FORMAT_HEADER_VALUES: frozenset[str] = frozenset(
+    {
+        "application/json",
+        "application/json; charset=utf-8",
+        "application/x-www-form-urlencoded",
+        "application/octet-stream",
+        "text/plain",
+        "text/plain; charset=utf-8",
+        "text/event-stream",
+        "text/html",
+        "*/*",
+        "gzip",
+        "deflate",
+        "br",
+        "identity",
+        "gzip, deflate",
+        "gzip, deflate, br",
+        "utf-8",
+        "no-cache",
+        "no-store",
+        "close",
+        "keep-alive",
+        "json",
+        "text",
+        "xml",
+        "yaml",
+    }
+)
+
+_BENIGN_ACCEPT_LANG_RE = re.compile(
+    r"^[a-z]{2,3}(?:-[a-z]{2,4})?(?:;q=(?:0(?:\.\d{1,3})?|1(?:\.0{1,3})?))?"
+    r"(?:\s*,\s*(?:\*|[a-z]{2,3}(?:-[a-z]{2,4})?)(?:;q=(?:0(?:\.\d{1,3})?|1(?:\.0{1,3})?))?)*$",
+    re.IGNORECASE,
+)
+
+
+def is_benign_header_value(value: Any) -> bool:
+    """Return True ONLY when a header value is a standard non-secret media/format/encoding literal."""
+    text = str(value or "").strip().lower()
+    if not text:
+        return True
+    normalized = " ".join(text.split())
+    if normalized in _BENIGN_MEDIA_OR_FORMAT_HEADER_VALUES:
+        return True
+    if _BENIGN_ACCEPT_LANG_RE.fullmatch(normalized) and len(normalized) <= 32:
+        # Guard against single short opaque tokens like "tok" or "abc" matching 2-3 letters.
+        if "-" in normalized or "," in normalized or ";q=" in normalized:
+            return True
+    return False
+
+
 def collect_secret_values(
     *values: Any,
     headers: Optional[Mapping[str, Any]] = None,
+    extra_headers: Optional[Mapping[str, Any]] = None,
     url: Optional[str] = None,
 ) -> List[str]:
-    """Collect non-empty credential strings for redaction from keys, auth headers, and URL query params."""
+    """Collect non-empty credential strings for redaction from keys, auth headers, extra headers, and URL query params."""
     collected: List[str] = []
     seen: set[str] = set()
 
-    def _add(raw: Any) -> None:
+    def _add(raw: Any, *, min_len: int = 4) -> None:
         if raw is None:
             return
         text = str(raw).strip()
         if not text:
             return
         for candidate in (text, *(seg.strip() for seg in text.split(","))):
-            if len(candidate) >= 4 and candidate not in seen:
+            if len(candidate) >= min_len and candidate not in seen:
                 seen.add(candidate)
                 collected.append(candidate)
-            if candidate.lower().startswith("bearer "):
-                token = candidate[7:].strip()
-                if len(token) >= 4 and token not in seen:
-                    seen.add(token)
-                    collected.append(token)
+            for prefix in ("bearer ", "token ", "basic ", "apikey ", "api-key "):
+                if candidate.lower().startswith(prefix):
+                    token = candidate[len(prefix):].strip()
+                    if len(token) >= min_len and token not in seen:
+                        seen.add(token)
+                        collected.append(token)
+                    break
 
     for value in values:
         _add(value)
@@ -225,6 +279,11 @@ def collect_secret_values(
         for header_name, header_val in headers.items():
             if is_sensitive_header_name(str(header_name or "")):
                 _add(header_val)
+
+    if isinstance(extra_headers, Mapping):
+        for _, header_val in extra_headers.items():
+            if not is_benign_header_value(header_val):
+                _add(header_val, min_len=3)
 
     if url:
         try:
@@ -295,15 +354,15 @@ def sanitize_error_message(text: Any, secrets: Iterable[str] = ()) -> str:
     explicit: List[str] = []
     for secret in secrets:
         s = str(secret or "").strip()
-        if len(s) >= 4:
+        if len(s) >= 3:
             explicit.append(s)
             if s.lower().startswith("bearer "):
                 bare = s[7:].strip()
-                if len(bare) >= 4:
+                if len(bare) >= 3:
                     explicit.append(bare)
         for seg in s.split(","):
             seg_clean = seg.strip()
-            if len(seg_clean) >= 4:
+            if len(seg_clean) >= 3:
                 explicit.append(seg_clean)
 
     for secret in sorted(set(explicit), key=len, reverse=True):

@@ -1,22 +1,22 @@
 # Native 4-Protocol HTTPX + SSE Transport & `LLM_TRANSPORT_MODE`
 
-`daily_stock_analysis` decouples stock analysis, Ask-Stock Agent, stock screening, Vision extraction, and Channel Test from direct `litellm` SDK imports through the unified boundary in `src/llm/transport.py`. Phase 2 adds a native `httpx` + SSE transport engine (`NativeUnifiedTransport` / `NativeUnifiedRouter`) behind an **env-only** rollout switch while keeping `LLM_TRANSPORT_MODE=litellm` as the default.
+`daily_stock_analysis` decouples stock analysis, Ask-Stock Agent, stock screening, Vision extraction, and Channel Test from direct `litellm` SDK imports through the unified boundary in `src/llm/transport.py`. Phase 2 added the native `httpx` + SSE transport engine (`NativeUnifiedTransport` / `NativeUnifiedRouter`), and Phase 3 promotes `LLM_TRANSPORT_MODE=auto` as the default while keeping `LLM_TRANSPORT_MODE=litellm` as an instant env-only rollback.
 
 ## Runtime Switch (`LLM_TRANSPORT_MODE`, Env-Only)
 
-Configure `LLM_TRANSPORT_MODE` in `.env`, process environment variables, or GitHub Actions Variables/Secrets (it is intentionally not exposed in Web Settings during Phase 2 soak):
+Configure `LLM_TRANSPORT_MODE` in `.env`, process environment variables, or GitHub Actions Variables/Secrets (it is intentionally env-only and not exposed in Web Settings):
 
 | Value | Behavior | LiteLLM Import |
 | --- | --- | --- |
-| `litellm` *(default)* | Uses `LiteLLMTransport`, preserving legacy `litellm` SDK routing and test-patch hooks. | On demand |
-| `auto` | Routes **OpenAI Chat Completions**, **OpenAI Responses API**, **Anthropic Messages**, and **Google Gemini REST** through native `httpx` + SSE. Decisions happen **per alias group**: any alias backed by a cloud-IAM provider (`azure*`, `bedrock*`, `vertex_ai*`, `sagemaker*`, `cohere*`) or a missing-base custom provider is delegated to `LiteLLMTransport` without downgrading sibling native aliases. | Fallback alias only |
+| `auto` *(default)* | Routes **OpenAI Chat Completions**, **OpenAI Responses API**, **Anthropic Messages**, and **Google Gemini REST** through native `httpx` + SSE. Decisions happen **per alias group**: any alias backed by a cloud-IAM provider (`azure*`, `bedrock*`, `vertex_ai*`, `sagemaker*`, `cohere*`) or a missing-base custom provider is delegated to `LiteLLMTransport` without downgrading sibling native aliases. | Fallback alias only |
+| `litellm` *(instant rollback)* | Uses `LiteLLMTransport`, preserving legacy `litellm` SDK routing and test-patch hooks. | On demand |
 | `native` | Strictly enforces native HTTPX + SSE (`fallback_to_litellm=False`) with **zero** `litellm` import at startup or inference time. Fails closed (`NativeConfigError`) before any network I/O on unsupported providers or missing `api_base`. | Never imported |
 
 Recognized aliases:
-- `""`, `"litellm"` → `"litellm"`
-- `"auto"`, `"native_httpx"`, `"hybrid"` → `"auto"`
+- `""`, `"auto"`, `"native_httpx"`, `"hybrid"` → `"auto"`
+- `"litellm"` → `"litellm"`
 - `"native"`, `"native_only"`, `"httpx"` → `"native"`
-- Any unrecognized value logs an English warning and safely falls back to `"litellm"`.
+- Any unrecognized value logs an English warning and safely falls back to `"auto"`.
 
 ## Deterministic Protocol Precedence (R1) & Opaque Wire Models (R4)
 
@@ -65,4 +65,4 @@ Arbitrary third-party relays, aggregators, reverse proxies, and self-hosted serv
 - **Deadline & Stream Ownership**: single monotonic deadline per logical call (respecting stock cancellation), cancellation checks inside the SSE chunk loop, closeable `NativeStreamWrapper` even when never iterated, BOM stripping, rejection of truncated EOF frames and missing terminal markers, and pooled `httpx.Client` cleanup on `reset_transport_cache()`.
 - **Diagnostics**: `python main.py --doctor` reports `checks["llm"]["llm_transport_mode"]` and prints `transport=<mode>` on the `[llm]` line; usage audit records report the actual execution engine (`native` vs `litellm`).
 - **Verification Boundary**: offline CI validates all 4 protocols, SSE fuzzing, pool properties, redaction, real-TCP loopback + proxy stub, and a LiteLLM-vs-native parity harness; live SaaS vendor endpoints require opt-in verification via **Test Channel** or soak runs before promoting defaults.
-- **Instant Rollback**: unset `LLM_TRANSPORT_MODE` or set `LLM_TRANSPORT_MODE=litellm`.
+- **Instant Rollback**: set `LLM_TRANSPORT_MODE=litellm` in `.env` or your process/Actions environment.

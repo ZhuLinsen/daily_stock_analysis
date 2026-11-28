@@ -7,6 +7,7 @@ import logging
 import tempfile
 import unittest
 from contextlib import contextmanager
+from functools import wraps
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
@@ -21,7 +22,16 @@ ensure_litellm_stub()
 from src.config import ANSPIRE_LLM_MODEL_DEFAULT, Config
 from src.core.config_manager import ConfigManager
 from src.llm.backend_registry import GENERATION_ONLY_BACKEND_IDS
+from src.llm.transport import LiteLLMTransport, use_transport
 from src.services.system_config_service import ConfigConflictError, ConfigImportError, ConfigValidationError, SystemConfigService
+
+
+def _use_litellm_transport(fn):
+    @wraps(fn)
+    def _wrapped(*args, **kwargs):
+        with use_transport(LiteLLMTransport()):
+            return fn(*args, **kwargs)
+    return _wrapped
 
 
 class SystemConfigServiceTestCase(unittest.TestCase):
@@ -66,6 +76,7 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         "AGENT_LITELLM_MODEL=openai/hermes-agent",
         "LLM_CHANNELS=primary,hermes",
         "LLM_PRIMARY_PROTOCOL=openai",
+        "LLM_PRIMARY_BASE_URL=https://api.openai.com/v1",
         "LLM_PRIMARY_API_KEY=test-secret",
         "LLM_PRIMARY_MODELS=gpt-test",
         "LLM_HERMES_PROTOCOL=openai",
@@ -603,6 +614,7 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertNotIn("key-b", rendered)
         session_cls.assert_not_called()
 
+    @_use_litellm_transport
     def test_hermes_unsupported_capabilities_are_skipped_without_probe(self) -> None:
         no_proxy_calls: List[Dict[str, Any]] = []
         completion_models: List[str] = []
@@ -640,6 +652,7 @@ class SystemConfigServiceTestCase(unittest.TestCase):
             self.assertEqual(capability_results[capability]["status"], "skipped")
             self.assertEqual(capability_results[capability]["error_code"], "not_probed")
 
+    @_use_litellm_transport
     def test_hermes_failure_redacts_non_sk_secret_from_response_and_logs(self) -> None:
         @contextmanager
         def fake_no_proxy_openai_client(**_kwargs: Any):
@@ -663,6 +676,7 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertNotIn("saved-secret-token", str(result))
         self.assertNotIn("saved-secret-token", "\n".join(logs.output))
 
+    @_use_litellm_transport
     def test_hermes_json_capability_exception_redacts_non_sk_secret(self) -> None:
         @contextmanager
         def fake_no_proxy_openai_client(**_kwargs: Any):
@@ -885,6 +899,7 @@ class SystemConfigServiceTestCase(unittest.TestCase):
             f"LITELLM_CONFIG={yaml_path}",
             "LLM_CHANNELS=fallback",
             "LLM_FALLBACK_PROTOCOL=openai",
+            "LLM_FALLBACK_BASE_URL=https://fallback.example/v1",
             "LLM_FALLBACK_API_KEY=sk-fallback",
             "LLM_FALLBACK_MODELS=openai/fallback-model",
         )
@@ -1027,6 +1042,7 @@ class SystemConfigServiceTestCase(unittest.TestCase):
             "STOCK_LIST=600519",
             "LLM_CHANNELS=primary",
             "LLM_PRIMARY_PROTOCOL=openai",
+            "LLM_PRIMARY_BASE_URL=https://api.openai.com/v1",
             "LLM_PRIMARY_API_KEY=test-secret",
             "LLM_PRIMARY_MODELS=gpt-test",
             "LITELLM_MODEL=openai/gpt-test",
@@ -2475,9 +2491,11 @@ class SystemConfigServiceTestCase(unittest.TestCase):
             items=[
                 {"key": "LLM_CHANNELS", "value": "chat,responses"},
                 {"key": "LLM_CHAT_PROTOCOL", "value": "openai"},
+                {"key": "LLM_CHAT_BASE_URL", "value": "https://api.openai.com/v1"},
                 {"key": "LLM_CHAT_API_KEY", "value": "sk-chat"},
                 {"key": "LLM_CHAT_MODELS", "value": "gpt-5.6-sol"},
                 {"key": "LLM_RESPONSES_PROTOCOL", "value": "openai"},
+                {"key": "LLM_RESPONSES_BASE_URL", "value": "https://api.openai.com/v1"},
                 {"key": "LLM_RESPONSES_API_SURFACE", "value": "responses"},
                 {"key": "LLM_RESPONSES_API_KEY", "value": "sk-responses"},
                 {"key": "LLM_RESPONSES_MODELS", "value": "gpt-5.6-sol"},
@@ -2637,6 +2655,7 @@ class SystemConfigServiceTestCase(unittest.TestCase):
             items=[
                 {"key": "LLM_CHANNELS", "value": "primary"},
                 {"key": "LLM_PRIMARY_PROTOCOL", "value": "openai"},
+                {"key": "LLM_PRIMARY_BASE_URL", "value": "https://api.openai.com/v1"},
                 {"key": "LLM_PRIMARY_API_KEY", "value": "sk-test-value"},
                 {"key": "LLM_PRIMARY_MODELS", "value": "gpt-4o-mini"},
                 {"key": "AGENT_LITELLM_MODEL", "value": "gpt-4o-mini"},
@@ -3313,6 +3332,7 @@ class SystemConfigServiceTestCase(unittest.TestCase):
             )["primary"]["available"])
         self.assertEqual(self.env_path.read_text(encoding="utf-8"), before)
 
+    @_use_litellm_transport
     @patch("litellm.completion")
     def test_modelflare_existing_primary_model_supports_validation_preview_and_connection(self, completion) -> None:
         self._rewrite_env(
@@ -3339,6 +3359,7 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertEqual(completion.call_args.kwargs["api_base"], "https://modelflare.dev/v1")
         self.assertEqual(self.env_path.read_text(encoding="utf-8"), before)
 
+    @_use_litellm_transport
     @patch("litellm.completion")
     @patch("src.services.system_config_service.requests.get")
     def test_modelflare_discovery_and_connection_apply_default_endpoint(self, get, completion) -> None:
@@ -3358,6 +3379,7 @@ class SystemConfigServiceTestCase(unittest.TestCase):
                 self.assertEqual(get.call_args.args[0], expected + "/models")
                 self.assertEqual(completion.call_args.kwargs["api_base"], expected)
 
+    @_use_litellm_transport
     @patch("litellm.completion")
     @patch("src.services.system_config_service.requests.get")
     def test_modelflare_explicit_invalid_endpoint_is_not_replaced(self, get, completion) -> None:
@@ -3996,6 +4018,7 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertTrue(payload["success"])
         self.assertIn("/channels/main-channel/messages", mock_post.call_args[0][0])
 
+    @_use_litellm_transport
     @patch("litellm.completion")
     def test_test_llm_channel_returns_success_payload(self, mock_completion) -> None:
         mock_completion.return_value = type(
@@ -4020,6 +4043,7 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertEqual(payload["capability_results"], {})
         self.assertEqual(mock_completion.call_count, 1)
 
+    @_use_litellm_transport
     @patch("litellm.completion")
     def test_test_llm_channel_falls_back_to_message_content_when_content_blocks_empty(
         self,
@@ -4053,6 +4077,7 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertTrue(payload["success"])
         self.assertEqual(payload["resolved_model"], "openai/deepseek-chat")
 
+    @_use_litellm_transport
     @patch("litellm.completion")
     def test_test_llm_channel_allows_ollama_prefix_without_explicit_protocol(self, mock_completion) -> None:
         mock_completion.return_value = type(
@@ -4075,6 +4100,7 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertEqual(payload["resolved_protocol"], "ollama")
         self.assertEqual(payload["resolved_model"], "ollama/llama3")
 
+    @_use_litellm_transport
     @patch("litellm.completion")
     def test_test_llm_channel_normalizes_kimi_temperature(self, mock_completion) -> None:
         mock_completion.return_value = type(
@@ -4184,6 +4210,7 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertEqual(current_map["LLM_HERMES_API_KEYS"], "")
         self.assertEqual(current_map["LLM_HERMES_EXTRA_HEADERS"], "")
 
+    @_use_litellm_transport
     @patch("litellm.completion")
     def test_test_llm_channel_does_not_persist_normalized_kimi_temperature(self, mock_completion) -> None:
         self._rewrite_env("LLM_TEMPERATURE=0.42")
@@ -4207,6 +4234,7 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertEqual(mock_completion.call_args.kwargs["temperature"], 1.0)
         self.assertEqual(self.manager.read_config_map()["LLM_TEMPERATURE"], "0.42")
 
+    @_use_litellm_transport
     @patch("litellm.completion")
     def test_test_llm_channel_omits_temperature_for_gpt5_family(self, mock_completion) -> None:
         mock_completion.return_value = type(
@@ -4229,6 +4257,7 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertEqual(payload["resolved_model"], "openai/gpt5.5-ferr")
         self.assertNotIn("temperature", mock_completion.call_args.kwargs)
 
+    @_use_litellm_transport
     @patch("litellm.completion")
     @patch("src.services.system_config_service.Config._load_from_env")
     def test_test_llm_channel_recovers_from_unsupported_temperature(
@@ -4263,6 +4292,7 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertEqual(mock_completion.call_args_list[0].kwargs["temperature"], 0.42)
         self.assertNotIn("temperature", mock_completion.call_args_list[1].kwargs)
 
+    @_use_litellm_transport
     @patch("litellm.completion")
     def test_test_llm_channel_routes_responses_surface_through_litellm_bridge(
         self,
@@ -4288,6 +4318,7 @@ class SystemConfigServiceTestCase(unittest.TestCase):
             "openai/responses/gpt-5.6-sol",
         )
 
+    @_use_litellm_transport
     @patch("litellm.completion")
     def test_test_llm_channel_rejects_non_openai_model_before_network_call(
         self,
@@ -4297,7 +4328,7 @@ class SystemConfigServiceTestCase(unittest.TestCase):
             name="primary",
             protocol="openai",
             api_surface="responses",
-            base_url="https://api.example.com/v1",
+            base_url="",
             api_key="sk-test-value",
             models=["anthropic/claude-sonnet-4-6"],
         )
@@ -4307,6 +4338,7 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertEqual(payload["details"]["issue_code"], "responses_requires_openai_model_provider")
         mock_completion.assert_not_called()
 
+    @_use_litellm_transport
     @patch("litellm.completion")
     @patch("src.services.system_config_service.Config._load_from_env")
     def test_test_llm_channel_uses_runtime_temperature_for_non_kimi_models(
@@ -4335,6 +4367,7 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertEqual(payload["resolved_model"], "openai/gpt-4o-mini")
         self.assertEqual(mock_completion.call_args.kwargs["temperature"], 0.42)
 
+    @_use_litellm_transport
     @patch("litellm.completion")
     def test_test_llm_channel_classifies_common_failure_scenarios(self, mock_completion) -> None:
         cases = [
@@ -4379,6 +4412,7 @@ class SystemConfigServiceTestCase(unittest.TestCase):
                 if error_code == "format_error":
                     self.assertIn("choices", payload["error"])
 
+    @_use_litellm_transport
     @patch("litellm.completion")
     def test_test_llm_channel_marks_requested_capabilities_skipped_when_base_fails(self, mock_completion) -> None:
         mock_completion.side_effect = PermissionError("401 Unauthorized Bearer sk-secret-value")
@@ -4399,6 +4433,7 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertEqual(payload["capability_results"]["tools"]["details"]["reason"], "base_test_failed")
         self.assertEqual(mock_completion.call_count, 1)
 
+    @_use_litellm_transport
     @patch("litellm.completion")
     def test_test_llm_channel_runs_json_and_tools_capability_checks(self, mock_completion) -> None:
         tool_call = SimpleNamespace(function=SimpleNamespace(name="dsa_probe_echo"))
@@ -4425,6 +4460,7 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertEqual(mock_completion.call_args_list[1].kwargs["response_format"], {"type": "json_object"})
         self.assertEqual(mock_completion.call_args_list[2].kwargs["tool_choice"]["function"]["name"], "dsa_probe_echo")
 
+    @_use_litellm_transport
     @patch("litellm.completion")
     def test_test_llm_channel_json_capability_ignores_minimax_reasoning_blocks(self, mock_completion) -> None:
         mock_completion.side_effect = [
@@ -4456,6 +4492,7 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertTrue(payload["success"])
         self.assertEqual(payload["capability_results"]["json"]["status"], "passed")
 
+    @_use_litellm_transport
     @patch("litellm.completion")
     def test_test_llm_channel_json_capability_strips_minimax_think_wrapper(self, mock_completion) -> None:
         mock_completion.side_effect = [
@@ -4475,6 +4512,7 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertTrue(payload["success"])
         self.assertEqual(payload["capability_results"]["json"]["status"], "passed")
 
+    @_use_litellm_transport
     @patch("litellm.completion")
     def test_test_llm_channel_reports_json_capability_failures(self, mock_completion) -> None:
         mock_completion.side_effect = [
@@ -4497,6 +4535,7 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertEqual(result["error_code"], "format_error")
         self.assertEqual(result["details"]["reason"], "non_json")
 
+    @_use_litellm_transport
     @patch("litellm.completion")
     def test_test_llm_channel_runs_stream_capability_check_and_closes_stream(self, mock_completion) -> None:
         class _Stream:
@@ -4529,6 +4568,7 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertTrue(stream.closed)
         self.assertTrue(mock_completion.call_args_list[1].kwargs["stream"])
 
+    @_use_litellm_transport
     @patch("litellm.completion")
     def test_test_llm_channel_ignores_stream_close_failures(self, mock_completion) -> None:
         class _Stream:
@@ -4561,6 +4601,7 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertEqual(payload["capability_results"]["stream"]["status"], "passed")
         self.assertTrue(stream.close_attempted)
 
+    @_use_litellm_transport
     @patch("litellm.completion")
     def test_test_llm_channel_runs_vision_capability_check(self, mock_completion) -> None:
         mock_completion.side_effect = [
@@ -4583,6 +4624,7 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertEqual(vision_content[1]["type"], "image_url")
         self.assertTrue(vision_content[1]["image_url"]["url"].startswith("data:image/png;base64,"))
 
+    @_use_litellm_transport
     @patch("litellm.completion")
     def test_test_llm_channel_classifies_capability_unsupported(self, mock_completion) -> None:
         mock_completion.side_effect = [
@@ -4604,6 +4646,7 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertEqual(result["error_code"], "capability_unsupported")
         self.assertEqual(result["details"]["reason"], "capability_unsupported")
 
+    @_use_litellm_transport
     @patch("litellm.completion")
     def test_test_llm_channel_adds_focused_diagnostic_reasons(self, mock_completion) -> None:
         class RateLimitError(Exception):
@@ -5339,6 +5382,696 @@ class SystemConfigServiceTestCase(unittest.TestCase):
             clear=True,
         ):
             self.assertEqual(_resolve_llm_model([]), "deepseek/deepseek-v4-flash")
+
+    def test_test_llm_channel_actionable_diagnostic_hint_codes(self) -> None:
+        from src.llm.native_types import NativeAPIError, NativeConfigError
+
+        class _ErrorTransport:
+            def __init__(self, exc: Exception) -> None:
+                self._exc = exc
+
+            def can_register_model(self) -> bool:
+                return False
+
+            def completion(self, **kwargs):
+                raise self._exc
+
+        cases = [
+            (
+                "missing_v1_html",
+                NativeAPIError(
+                    "Endpoint returned HTML instead of JSON",
+                    status_code=200,
+                    error_code="non_json_html",
+                ),
+                "chat_completions",
+                "format_error",
+                "missing_v1",
+            ),
+            (
+                "missing_v1_404",
+                NativeAPIError("404 Not Found", status_code=404),
+                "chat_completions",
+                "network_error",
+                "missing_v1",
+            ),
+            (
+                "responses_unsupported_404",
+                NativeAPIError("404 Not Found on /responses", status_code=404),
+                "responses",
+                "network_error",
+                "responses_unsupported",
+            ),
+            (
+                "responses_surface_mismatch",
+                NativeConfigError(
+                    "Responses surface mismatch",
+                    error_code="endpoint_surface_mismatch",
+                ),
+                "responses",
+                "config_error",
+                "responses_unsupported",
+            ),
+            (
+                "waf_blocked",
+                NativeAPIError(
+                    "Cloudflare challenge cf-mitigated",
+                    status_code=403,
+                    error_code="provider_blocked",
+                    is_waf_blocked=True,
+                ),
+                "chat_completions",
+                "request_blocked",
+                "waf_blocked",
+            ),
+            (
+                "unknown_model",
+                NativeAPIError(
+                    "The model `does-not-exist` does not exist",
+                    status_code=404,
+                ),
+                "chat_completions",
+                "model_not_found",
+                "unknown_model",
+            ),
+            (
+                "cloud_iam_fallback",
+                NativeConfigError(
+                    "bedrock requires LiteLLM fallback",
+                    error_code="fallback_only_provider",
+                ),
+                "chat_completions",
+                "config_error",
+                "cloud_iam_fallback",
+            ),
+            (
+                "missing_base_url_native",
+                NativeConfigError(
+                    "API base URL is required",
+                    error_code="missing_api_base",
+                ),
+                "chat_completions",
+                "config_error",
+                "missing_base_url",
+            ),
+        ]
+
+        for label, exc, surface, expected_error_code, expected_hint_code in cases:
+            with self.subTest(case=label):
+                with use_transport(_ErrorTransport(exc)):
+                    payload = self.service.test_llm_channel(
+                        name="custom",
+                        protocol="openai",
+                        api_surface=surface,
+                        base_url="https://my-oneapi.example.com/v1",
+                        api_key="sk-secret-key",
+                        models=["gpt-4o-mini"],
+                    )
+                self.assertFalse(payload["success"])
+                self.assertEqual(payload["error_code"], expected_error_code)
+                self.assertEqual(payload["details"]["hint_code"], expected_hint_code)
+                if expected_hint_code == "waf_blocked":
+                    self.assertTrue(payload["details"].get("waf_blocked"))
+
+        # Validation-time missing_base_url on /models discovery also emits hint_code.
+        missing_base = self.service.discover_llm_channel_models(
+            name="custom",
+            protocol="openai",
+            base_url="",
+            api_key="sk-secret-key",
+        )
+        self.assertFalse(missing_base["success"])
+        self.assertEqual(missing_base["details"]["hint_code"], "missing_base_url")
+
+    def test_test_llm_channel_forwards_extra_headers_and_custom_relay_opaque_models(self) -> None:
+        recorded: List[Dict[str, Any]] = []
+
+        class _RecordingTransport:
+            def can_register_model(self) -> bool:
+                return False
+
+            def completion(self, **kwargs):
+                recorded.append(dict(kwargs))
+                return SimpleNamespace(
+                    choices=[SimpleNamespace(message=SimpleNamespace(content="OK"))],
+                )
+
+        with use_transport(_RecordingTransport()):
+            payload = self.service.test_llm_channel(
+                name="custom",
+                protocol="openai",
+                base_url="https://my-oneapi.example.com/v1",
+                api_key="sk-relay-secret",
+                models=["anthropic/claude-sonnet-4-6", "Qwen/Qwen3-235B"],
+                extra_headers={"X-Tenant": "acme"},
+            )
+
+        self.assertTrue(payload["success"], payload)
+        self.assertEqual(payload["resolved_protocol"], "openai")
+        self.assertEqual(payload["resolved_model"], "openai/anthropic/claude-sonnet-4-6")
+        self.assertEqual(len(recorded), 1)
+        self.assertEqual(recorded[0]["model"], "openai/anthropic/claude-sonnet-4-6")
+        self.assertEqual(recorded[0]["api_base"], "https://my-oneapi.example.com/v1")
+        self.assertEqual(recorded[0]["extra_headers"], {"X-Tenant": "acme"})
+
+    @patch("src.services.system_config_service.requests.get")
+    def test_discover_llm_channel_models_emits_waf_and_missing_v1_hint_codes(self, mock_get) -> None:
+        waf_response = Mock(
+            ok=False,
+            status_code=403,
+            text="<html><title>Just a moment...</title>Cloudflare Ray ID</html>",
+            headers={"cf-mitigated": "challenge"},
+        )
+        waf_response.json.side_effect = ValueError("not json")
+        mock_get.return_value = waf_response
+        waf_payload = self.service.discover_llm_channel_models(
+            name="custom",
+            protocol="openai",
+            base_url="https://my-oneapi.example.com/v1",
+            api_key="sk-secret-value",
+        )
+        self.assertFalse(waf_payload["success"])
+        self.assertEqual(waf_payload["error_code"], "request_blocked")
+        self.assertEqual(waf_payload["details"]["hint_code"], "waf_blocked")
+        self.assertTrue(waf_payload["details"]["waf_blocked"])
+
+        html_response = Mock(ok=True, status_code=200, text="<!doctype html><html><body>SPA</body></html>")
+        html_response.json.side_effect = ValueError("not json")
+        mock_get.return_value = html_response
+        html_payload = self.service.discover_llm_channel_models(
+            name="custom",
+            protocol="openai",
+            base_url="https://my-oneapi.example.com",
+            api_key="sk-secret-value",
+        )
+        self.assertFalse(html_payload["success"])
+        self.assertEqual(html_payload["error_code"], "format_error")
+        self.assertEqual(html_payload["details"]["reason"], "non_json")
+        self.assertEqual(html_payload["details"]["hint_code"], "missing_v1")
+
+    def test_p0_1_and_p0_2_and_p0_4_and_p0_6_and_p1_security_validation_contracts(self) -> None:
+        from src.config import Config, extra_litellm_params, get_api_keys_for_model
+        from src.llm.native_types import NativeConfigError, NativeNotFoundError
+        from src.services.generation_backend_status_service import GenerationBackendStatusService
+        from src.services.system_config_service import ConfigValidationError
+
+        # P0-1: Reject os.environ/ references in API-submitted extra_headers & api_key before dispatch.
+        dispatched = []
+
+        class _ShouldNotRunTransport:
+            def can_register_model(self) -> bool:
+                return False
+
+            def completion(self, **kwargs):
+                dispatched.append(kwargs)
+                raise AssertionError("Transport should not be called")
+
+        with use_transport(_ShouldNotRunTransport()):
+            env_hdr = self.service.test_llm_channel(
+                name="custom",
+                protocol="openai",
+                base_url="https://attacker.example/v1",
+                api_key="sk-ok",
+                models=["gpt-4o-mini"],
+                extra_headers={"X-Steal": "os.environ/OPENAI_API_KEY"},
+            )
+            env_key = self.service.test_llm_channel(
+                name="custom",
+                protocol="openai",
+                base_url="https://attacker.example/v1",
+                api_key="os.environ/OPENAI_API_KEY",
+                models=["gpt-4o-mini"],
+            )
+            env_disc = self.service.discover_llm_channel_models(
+                name="custom",
+                protocol="openai",
+                base_url="https://attacker.example/v1",
+                api_key="sk-ok",
+                extra_headers={"X-Steal": "os.environ/OPENAI_API_KEY"},
+            )
+            # P0-2: Blank custom relay base_url rejected before dispatch (no leak to api.openai.com).
+            blank_custom = self.service.test_llm_channel(
+                name="custom",
+                protocol="openai",
+                base_url="",
+                api_key="sk-relay-secret",
+                models=["gpt-4o-mini"],
+                capability_checks=["json"],
+            )
+        self.assertEqual(dispatched, [])
+        self.assertFalse(env_hdr["success"])
+        self.assertEqual(env_hdr["error_code"], "invalid_config")
+        self.assertFalse(env_key["success"])
+        self.assertEqual(env_key["details"]["reason"], "env_reference_not_allowed")
+        self.assertFalse(env_disc["success"])
+        self.assertEqual(env_disc["error_code"], "invalid_config")
+        self.assertFalse(blank_custom["success"])
+        self.assertEqual(blank_custom["details"]["hint_code"], "missing_base_url")
+        self.assertEqual(blank_custom["capability_results"]["json"]["status"], "skipped")
+
+        # P0-4: Short and whitespace custom header values redacted unconditionally in preview & errors.
+        class _EchoHeaderTransport:
+            def can_register_model(self) -> bool:
+                return False
+
+            def completion(self, **kwargs):
+                return SimpleNamespace(
+                    choices=[
+                        SimpleNamespace(
+                            message=SimpleNamespace(content="echo tok123 and my secret token")
+                        )
+                    ]
+                )
+
+        with use_transport(_EchoHeaderTransport()):
+            echo_res = self.service.test_llm_channel(
+                name="custom",
+                protocol="openai",
+                base_url="https://my-relay.example/v1",
+                api_key="sk-relay-secret",
+                models=["gpt-4o-mini"],
+                extra_headers={"X-Short": "tok123", "X-Spaced": "my secret token"},
+            )
+        self.assertTrue(echo_res["success"])
+        self.assertNotIn("tok123", echo_res["details"]["response_preview"])
+        self.assertNotIn("my secret token", echo_res["details"]["response_preview"])
+
+        # P0-6 & P2: Invalid EXTRA_HEADERS JSON & env-only LLM_TRANSPORT_MODE rejected without clobbering .env.
+        with patch.dict(os.environ, {"ENV_FILE": str(self.env_path)}, clear=True):
+            self._rewrite_env(
+                "LLM_CHANNELS=custom",
+                "LLM_CUSTOM_PROTOCOL=openai",
+                "LLM_CUSTOM_BASE_URL=https://my-relay.example/v1",
+                "LLM_CUSTOM_API_KEY=sk-relay",
+                "LLM_CUSTOM_MODELS=gpt-4o-mini",
+                'LLM_CUSTOM_EXTRA_HEADERS={"X-Auth":"keep-me"}',
+            )
+            with self.assertRaises(ConfigValidationError) as ctx:
+                self.service.update(
+                    config_version=self.manager.get_config_version(),
+                    items=[{"key": "LLM_CUSTOM_EXTRA_HEADERS", "value": "{"}],
+                    reload_now=False,
+                )
+            self.assertTrue(any(i["code"] == "invalid_extra_headers" for i in ctx.exception.issues))
+            self.assertEqual(self.manager.read_config_map()["LLM_CUSTOM_EXTRA_HEADERS"], '{"X-Auth":"keep-me"}')
+
+            # P2: Structured API rejects edits to env-only LLM_TRANSPORT_MODE.
+            with self.assertRaises(ConfigValidationError) as mode_ctx:
+                self.service.update(
+                    config_version=self.manager.get_config_version(),
+                    items=[{"key": "LLM_TRANSPORT_MODE", "value": "litellm"}],
+                    reload_now=False,
+                )
+            self.assertTrue(any(i["code"] == "env_only_key" for i in mode_ctx.exception.issues))
+            # Restore baseline .env before exiting isolated os.environ so later calls never load custom channels.
+            self._rewrite_env(
+                "STOCK_LIST=600519,000001",
+                "GEMINI_API_KEY=secret-key-value",
+                "SCHEDULE_TIME=18:00",
+                "LOG_LEVEL=INFO",
+            )
+
+        # P1-3: Legacy 3-line relay setup with slash-containing model IDs works end-to-end.
+        relay_env = {
+            "OPENAI_BASE_URL": "https://my-oneapi.example/v1",
+            "OPENAI_API_KEY": "sk-relay-3line-key",
+            "OPENAI_MODEL": "Qwen/Qwen3-235B",
+        }
+        with patch.dict(os.environ, relay_env, clear=True), patch("src.config.setup_env"), \
+                patch.object(Config, "_parse_litellm_yaml", return_value=[]):
+            cfg = Config._load_from_env()
+            self.assertEqual(cfg.litellm_model, "openai/Qwen/Qwen3-235B")
+            self.assertEqual(get_api_keys_for_model(cfg.litellm_model, cfg), ["sk-relay-3line-key"])
+            self.assertEqual(extra_litellm_params(cfg.litellm_model, cfg)["api_base"], "https://my-oneapi.example/v1")
+        self.assertEqual(
+            self.service._infer_setup_legacy_primary_model(relay_env),
+            "openai/Qwen/Qwen3-235B",
+        )
+        self.assertEqual(
+            GenerationBackendStatusService._infer_legacy_litellm_model(relay_env),
+            "openai/Qwen/Qwen3-235B",
+        )
+
+        # P1-4: Direct anthropic/ route with protocol=openai and blank base_url does not force chat_completions.
+        recorded_direct: List[Dict[str, Any]] = []
+
+        class _CaptureDirectTransport:
+            def can_register_model(self) -> bool:
+                return False
+
+            def completion(self, **kwargs):
+                recorded_direct.append(dict(kwargs))
+                return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="OK"))])
+
+        with use_transport(_CaptureDirectTransport()):
+            direct_res = self.service.test_llm_channel(
+                name="primary",
+                protocol="openai",
+                base_url="",
+                api_key="sk-ant-test",
+                models=["anthropic/claude-test"],
+            )
+        self.assertTrue(direct_res["success"], direct_res)
+        self.assertNotIn("api_surface", recorded_direct[0])
+        self.assertEqual(recorded_direct[0]["dsa_channel_protocol"], "anthropic")
+
+        # P1-6: Diagnostic precision checks.
+        auth_403 = self.service._classify_llm_http_error(
+            403,
+            "Access denied: invalid API key",
+            headers={"content-type": "application/json"},
+            raw_body='{"error":{"message":"Access denied: invalid API key"}}',
+            context="discovery",
+        )
+        self.assertEqual(auth_403.error_code, "auth")
+        self.assertNotIn("waf_blocked", auth_403.details)
+
+        models_404 = self.service._classify_llm_http_error(
+            404,
+            "404 /models not found",
+            headers={"content-type": "application/json"},
+            context="discovery",
+        )
+        self.assertEqual(models_404.reason, "endpoint_not_found")
+        self.assertEqual(models_404.details.get("hint_code"), "missing_v1")
+
+        bare_model_404 = self.service._classify_llm_exception(
+            NativeNotFoundError("NotFoundError (HTTP 404): Model not found", status_code=404)
+        )
+        self.assertEqual(bare_model_404.error_code, "model_not_found")
+        self.assertEqual(bare_model_404.details.get("hint_code"), "unknown_model")
+
+        unsupported_proto = self.service._classify_llm_exception(
+            NativeConfigError("bad proto", error_code="unsupported_channel_protocol")
+        )
+        self.assertNotIn("hint_code", unsupported_proto.details)
+        unresolved_env = self.service._classify_llm_exception(
+            NativeConfigError("unset env", error_code="unresolved_endpoint_env")
+        )
+        self.assertNotIn("hint_code", unresolved_env.details)
+
+        # P1-10: discover_llm_channel_models forwards validated extra_headers and redacts secrets on error.
+        with patch("src.services.system_config_service.requests.get") as mock_get:
+            mock_get.return_value = Mock(
+                ok=True,
+                status_code=200,
+                json=lambda: {"data": [{"id": "Qwen/Qwen3-235B"}]},
+                headers={"content-type": "application/json"},
+                text='{"data":[{"id":"Qwen/Qwen3-235B"}]}',
+            )
+            disc_ok = self.service.discover_llm_channel_models(
+                name="custom",
+                protocol="openai",
+                base_url="https://my-relay.example/v1",
+                api_key="sk-relay",
+                extra_headers={"X-Tenant": "team-secret"},
+            )
+            self.assertTrue(disc_ok["success"], disc_ok)
+            sent_headers = mock_get.call_args.kwargs["headers"]
+            self.assertEqual(sent_headers["X-Tenant"], "team-secret")
+
+    def test_round2_p0_p1_p2_contracts(self) -> None:
+        from src.config import (
+            ANSPIRE_LLM_BASE_URL_DEFAULT,
+            is_custom_openai_compatible_base_url,
+            normalize_llm_channel_model,
+            resolve_llm_channel_base_url,
+        )
+
+        with patch.dict(os.environ, {"ENV_FILE": str(self.env_path)}, clear=True):
+            # P0-1: Positive allowlist blocks renamed/numbered relays and allows openai*, anspire, minimax.
+            dispatched: List[Dict[str, Any]] = []
+
+            class _CaptureTransport:
+                def can_register_model(self) -> bool:
+                    return False
+
+                def completion(self, **kwargs):
+                    dispatched.append(dict(kwargs))
+                    return SimpleNamespace(
+                        choices=[SimpleNamespace(message=SimpleNamespace(content="OK"))]
+                    )
+
+            with use_transport(_CaptureTransport()):
+                for blocked_name in ("my_proxy", "requesty2", "openrouter2", "anspire2", "modelflare2"):
+                    res = self.service.test_llm_channel(
+                        name=blocked_name,
+                        protocol="openai",
+                        base_url="",
+                        api_key="sk-relay-secret",
+                        models=["gpt-4o-mini"],
+                    )
+                    self.assertFalse(res["success"], blocked_name)
+                    self.assertEqual(res["details"].get("hint_code"), "missing_base_url", blocked_name)
+                self.assertEqual(dispatched, [])
+
+                # F1: Runtime _parse_llm_channels & _channels_to_model_list also skip blank-URL relays.
+                with patch.dict(
+                    os.environ,
+                    {
+                        "LLM_CHANNELS": "my_proxy,anspire2",
+                        "LLM_MY_PROXY_PROTOCOL": "openai",
+                        "LLM_MY_PROXY_API_KEY": "sk-relay",
+                        "LLM_MY_PROXY_MODELS": "gpt-4o-mini",
+                        "LLM_ANSPIRE2_PROTOCOL": "openai",
+                        "LLM_ANSPIRE2_API_KEY": "sk-anspire2",
+                        "LLM_ANSPIRE2_MODELS": "gpt-4o-mini",
+                    },
+                    clear=True,
+                ):
+                    parsed_chs, parsed_issues, _, _ = Config._parse_llm_channels_with_issues("my_proxy,anspire2")
+                    self.assertEqual(parsed_chs, [])
+                    self.assertTrue(any(i.code == "missing_base_url" for i in parsed_issues))
+                    direct_ml = Config._channels_to_model_list(
+                        [
+                            {
+                                "name": "my_proxy",
+                                "protocol": "openai",
+                                "base_url": "",
+                                "api_keys": ["sk-relay"],
+                                "models": ["openai/gpt-4o-mini"],
+                            }
+                        ]
+                    )
+                    self.assertEqual(direct_ml, [])
+
+                # Official openai2, anspire (resolves default URL), and minimax/MiniMax-M1 are allowed.
+                anspire_res = self.service.test_llm_channel(
+                    name="anspire",
+                    protocol="openai",
+                    base_url="",
+                    api_key="sk-anspire",
+                    models=["deepseek-chat"],
+                )
+                self.assertTrue(anspire_res["success"], anspire_res)
+                self.assertEqual(dispatched[-1].get("api_base"), ANSPIRE_LLM_BASE_URL_DEFAULT)
+                self.assertEqual(resolve_llm_channel_base_url("anspire", ""), ANSPIRE_LLM_BASE_URL_DEFAULT)
+
+                minimax_res = self.service.test_llm_channel(
+                    name="minimax",
+                    protocol="openai",
+                    base_url="",
+                    api_key="sk-minimax",
+                    models=["minimax/MiniMax-M1"],
+                )
+                self.assertTrue(minimax_res["success"], minimax_res)
+
+                openai2_res = self.service.test_llm_channel(
+                    name="openai2",
+                    protocol="openai",
+                    base_url="",
+                    api_key="sk-openai",
+                    models=["gpt-4o-mini"],
+                )
+                self.assertTrue(openai2_res["success"], openai2_res)
+
+            # P1-1: Exported .env with LLM_TRANSPORT_MODE=litellm restores via import_env/import_desktop_env.
+            self._rewrite_env("STOCK_LIST=600519")
+            import_res = self.service.import_desktop_env(
+                config_version=self.manager.get_config_version(),
+                content="STOCK_LIST=600519\nLLM_TRANSPORT_MODE=litellm\n",
+                reload_now=False,
+            )
+            self.assertTrue(import_res["success"])
+            self.assertEqual(self.manager.read_config_map()["LLM_TRANSPORT_MODE"], "litellm")
+
+            # P1-2: Masked EXTRA_HEADERS succeeds on Save without overwriting stored value with literal ******.
+            self._rewrite_env(
+                "STOCK_LIST=600519",
+                "LLM_CHANNELS=custom",
+                "LLM_CUSTOM_PROTOCOL=openai",
+                "LLM_CUSTOM_BASE_URL=https://my-relay.example/v1",
+                "LLM_CUSTOM_API_KEY=sk-relay",
+                "LLM_CUSTOM_MODELS=gpt-4o-mini",
+                'LLM_CUSTOM_EXTRA_HEADERS={"X-Relay":"saved-hdr-secret"}',
+                'LLM_HERMES_EXTRA_HEADERS={"X-Old":"hermes-secret"}',
+            )
+            masked_save = self.service.update(
+                config_version=self.manager.get_config_version(),
+                items=[
+                    {"key": "LLM_CUSTOM_EXTRA_HEADERS", "value": "******"},
+                    {"key": "LLM_HERMES_EXTRA_HEADERS", "value": "******"},
+                ],
+                mask_token="******",
+                reload_now=False,
+            )
+            self.assertTrue(masked_save["success"])
+            saved_after = self.manager.read_config_map()
+            self.assertEqual(saved_after["LLM_CUSTOM_EXTRA_HEADERS"], '{"X-Relay":"saved-hdr-secret"}')
+            self.assertEqual(saved_after["LLM_HERMES_EXTRA_HEADERS"], '{"X-Old":"hermes-secret"}')
+
+            # P1-2: Non-Hermes probe loads saved EXTRA_HEADERS when omitted for matching base_url,
+            # and does NOT load them when explicit {} is passed or base_url differs.
+            dispatched.clear()
+            with use_transport(_CaptureTransport()):
+                ok_saved = self.service.test_llm_channel(
+                    name="custom",
+                    protocol="openai",
+                    base_url="https://my-relay.example/v1",
+                    api_key="sk-relay",
+                    models=["gpt-4o-mini"],
+                    extra_headers=None,
+                )
+                self.assertTrue(ok_saved["success"], ok_saved)
+                self.assertEqual(dispatched[-1].get("extra_headers"), {"X-Relay": "saved-hdr-secret"})
+
+                ok_cleared = self.service.test_llm_channel(
+                    name="custom",
+                    protocol="openai",
+                    base_url="https://my-relay.example/v1",
+                    api_key="sk-relay",
+                    models=["gpt-4o-mini"],
+                    extra_headers={},
+                )
+                self.assertTrue(ok_cleared["success"], ok_cleared)
+                self.assertNotIn("extra_headers", dispatched[-1])
+
+                ok_other_url = self.service.test_llm_channel(
+                    name="custom",
+                    protocol="openai",
+                    base_url="https://evil.example/v1",
+                    api_key="sk-relay",
+                    models=["gpt-4o-mini"],
+                    extra_headers=None,
+                )
+                self.assertTrue(ok_other_url["success"], ok_other_url)
+                self.assertNotIn("extra_headers", dispatched[-1])
+
+                # F2: Case-sensitive tenant paths and blank-URL provider switches must NOT reuse saved EXTRA_HEADERS.
+                self._rewrite_env(
+                    "STOCK_LIST=600519",
+                    "LLM_CHANNELS=custom,openai",
+                    "LLM_CUSTOM_PROTOCOL=openai",
+                    "LLM_CUSTOM_BASE_URL=https://my-relay.example/TeamA/v1",
+                    "LLM_CUSTOM_API_KEY=sk-relay",
+                    "LLM_CUSTOM_MODELS=gpt-4o-mini",
+                    'LLM_CUSTOM_EXTRA_HEADERS={"X-Tenant":"team-a-secret"}',
+                    "LLM_OPENAI_PROTOCOL=openai",
+                    "LLM_OPENAI_API_KEY=sk-openai",
+                    "LLM_OPENAI_MODELS=gpt-4o-mini",
+                    'LLM_OPENAI_EXTRA_HEADERS={"X-OpenAI":"openai-secret"}',
+                )
+                case_mismatch = self.service.test_llm_channel(
+                    name="custom",
+                    protocol="openai",
+                    base_url="https://my-relay.example/teama/v1",
+                    api_key="sk-relay",
+                    models=["gpt-4o-mini"],
+                    extra_headers=None,
+                )
+                self.assertTrue(case_mismatch["success"], case_mismatch)
+                self.assertNotIn("extra_headers", dispatched[-1])
+
+                port_norm_match = self.service.test_llm_channel(
+                    name="custom",
+                    protocol="openai",
+                    base_url="https://MY-RELAY.EXAMPLE:443/TeamA/v1/",
+                    api_key="sk-relay",
+                    models=["gpt-4o-mini"],
+                    extra_headers=None,
+                )
+                self.assertTrue(port_norm_match["success"], port_norm_match)
+                self.assertEqual(dispatched[-1].get("extra_headers"), {"X-Tenant": "team-a-secret"})
+
+                switched_provider = self.service.test_llm_channel(
+                    name="openai",
+                    protocol="anthropic",
+                    base_url="",
+                    api_key="sk-ant",
+                    models=["anthropic/claude-sonnet-4-6"],
+                    extra_headers=None,
+                )
+                self.assertTrue(switched_provider["success"], switched_provider)
+                self.assertNotIn("extra_headers", dispatched[-1])
+
+            # P1-3: Opaque Accept header value IS redacted in errors/preview; /models IDs are NEVER corrupted.
+            class _EchoAcceptTransport:
+                def can_register_model(self) -> bool:
+                    return False
+
+                def completion(self, **kwargs):
+                    return SimpleNamespace(
+                        choices=[SimpleNamespace(message=SimpleNamespace(content="echo opaque-accept-token"))]
+                    )
+
+            with use_transport(_EchoAcceptTransport()):
+                acc_res = self.service.test_llm_channel(
+                    name="custom",
+                    protocol="openai",
+                    base_url="https://my-relay.example/v1",
+                    api_key="sk-relay",
+                    models=["gpt-4o-mini"],
+                    extra_headers={"Accept": "opaque-accept-token"},
+                )
+            self.assertTrue(acc_res["success"])
+            self.assertNotIn("opaque-accept-token", acc_res["details"]["response_preview"])
+
+            with patch("src.services.system_config_service.requests.get") as mock_get:
+                mock_get.return_value = Mock(
+                    ok=True,
+                    status_code=200,
+                    json=lambda: {"data": [{"id": "openai/gpt-4o"}, {"id": "anthropic/claude-sonnet"}]},
+                    headers={"content-type": "application/json"},
+                    text='{"data":[{"id":"openai/gpt-4o"},{"id":"anthropic/claude-sonnet"}]}',
+                )
+                disc_models = self.service.discover_llm_channel_models(
+                    name="custom",
+                    protocol="openai",
+                    base_url="https://openrouter.ai/api/v1",
+                    api_key="sk-or",
+                    extra_headers={"X-Provider": "openai"},
+                )
+                self.assertTrue(disc_models["success"], disc_models)
+                self.assertIn("openai/openai/gpt-4o", disc_models["models"])
+                self.assertIn("anthropic/claude-sonnet", disc_models["models"])
+                self.assertFalse(any("[REDACTED]" in m for m in disc_models["models"]))
+
+            # P1-4: openrouter.ai is a relay (wraps raw IDs, preserves openrouter/...); api.minimax.chat is official.
+            self.assertTrue(is_custom_openai_compatible_base_url("https://openrouter.ai/api/v1"))
+            self.assertEqual(
+                normalize_llm_channel_model("anthropic/claude-sonnet", "openai", "https://openrouter.ai/api/v1"),
+                "openai/anthropic/claude-sonnet",
+            )
+            self.assertEqual(
+                normalize_llm_channel_model("openrouter/anthropic/claude-sonnet", "openai", "https://openrouter.ai/api/v1"),
+                "openrouter/anthropic/claude-sonnet",
+            )
+            self.assertFalse(is_custom_openai_compatible_base_url("https://api.minimax.chat/v1"))
+
+            # P2-3: get_config(include_schema=True) surfaces saved LITELLM_API_KEY cleanly.
+            self._rewrite_env("STOCK_LIST=600519", "LITELLM_API_KEY=sk-legacy-litellm")
+            cfg_payload = self.service.get_config(include_schema=True)
+            cfg_items = {item["key"]: item for item in cfg_payload["items"]}
+            self.assertIn("LITELLM_API_KEY", cfg_items)
+            self.assertEqual(cfg_items["LITELLM_API_KEY"]["value"], "sk-legacy-litellm")
+
+            # Restore baseline .env cleanly.
+            self._rewrite_env(
+                "STOCK_LIST=600519,000001",
+                "GEMINI_API_KEY=secret-key-value",
+                "SCHEDULE_TIME=18:00",
+                "LOG_LEVEL=INFO",
+            )
 
 
 if __name__ == "__main__":

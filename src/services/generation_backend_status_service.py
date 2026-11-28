@@ -20,6 +20,7 @@ from src.config import (
     is_supported_llm_channel_api_surface_value,
     find_incompatible_llm_channel_models,
     find_llm_channel_surface_conflicts,
+    normalize_legacy_openai_model,
     normalize_llm_channel_api_surface,
     normalize_llm_channel_model,
     parse_env_bool,
@@ -827,7 +828,7 @@ class GenerationBackendStatusService:
 
         if cls._openai_keys_from_map(effective_map):
             model = (effective_map.get("OPENAI_MODEL") or "gpt-6.1-sol").strip()
-            return model if "/" in model else f"openai/{model}"
+            return normalize_legacy_openai_model(model, cls._openai_base_url_from_map(effective_map))
 
         return ""
 

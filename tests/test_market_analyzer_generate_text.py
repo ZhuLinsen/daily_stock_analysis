@@ -1216,7 +1216,7 @@ class TestAnalyzerGenerateText:
         assert usage["market_group"] == "cn"
         assert usage["analysis_mode"] == "stock_analysis"
         assert usage["provider"] == "gemini"
-        assert usage["transport"] == "litellm"
+        assert usage["transport"] == "native"
         assert usage["message_count"] == 2
         markers = json.loads(usage["known_dynamic_marker_positions"])
         assert [marker["marker_name"] for marker in markers] == ["stock_code", "quote"]
@@ -2300,7 +2300,7 @@ class TestAnalyzerGenerateText:
         _assert_usage_contains(usage, {"prompt_tokens": 10, "completion_tokens": 1, "total_tokens": 11})
         assert usage["provider"] == "anthropic"
         assert usage["response_model"] == "anthropic/claude-sonnet-test"
-        assert usage["transport"] == "litellm"
+        assert usage["transport"] == "native"
         assert usage["analysis_mode"] == "stock_analysis"
 
     def test_call_litellm_system_hmac_distinguishes_language_and_market_prompt(self):
@@ -2870,7 +2870,7 @@ class TestAnalyzerGenerateText:
         assert usage_arg["legacy_prompt_mode"] == "skill_aware"
         assert usage_arg["skill_config_hmac"] and len(usage_arg["skill_config_hmac"]) == 64
         assert usage_arg["provider"] == "openai"
-        assert usage_arg["transport"] == "litellm"
+        assert usage_arg["transport"] == "native"
         assert usage_arg["message_count"] == 2
         assert json.loads(usage_arg["known_dynamic_marker_positions"]) == []
         assert mock_usage.call_args.kwargs == {"call_type": "analysis", "stock_code": "600519"}

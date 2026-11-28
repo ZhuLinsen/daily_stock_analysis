@@ -2985,10 +2985,16 @@ class ScreeningOpportunitiesApiTestCase(unittest.TestCase):
         fake_module = _make_screening_core(screen=MagicMock(side_effect=screen_impl))
 
         with (
+            patch.dict(os.environ, {"LLM_TRANSPORT_MODE": "litellm"}, clear=False),
             patch.dict(sys.modules, {"litellm": fake_litellm}, clear=False),
             _patch_screening_core(fake_module),
         ):
-            payload = self._screen(config, market="cn", strategy="dual_low", max_results=5)
+            from src.llm.transport import reset_transport_cache
+            reset_transport_cache()
+            try:
+                payload = self._screen(config, market="cn", strategy="dual_low", max_results=5)
+            finally:
+                reset_transport_cache()
 
         self.assertEqual(payload["candidate_count"], 0)
         self.assertEqual(completion_calls[0]["extra_headers"], {"x-tenant": "dsa"})
@@ -3076,10 +3082,16 @@ class ScreeningOpportunitiesApiTestCase(unittest.TestCase):
         fake_module = _make_screening_core(screen=MagicMock(side_effect=screen_impl))
 
         with (
+            patch.dict(os.environ, {"LLM_TRANSPORT_MODE": "litellm"}, clear=False),
             patch.dict(sys.modules, {"litellm": fake_litellm}, clear=False),
             _patch_screening_core(fake_module),
         ):
-            payload = self._screen(config, market="cn", strategy="dual_low", max_results=5)
+            from src.llm.transport import reset_transport_cache
+            reset_transport_cache()
+            try:
+                payload = self._screen(config, market="cn", strategy="dual_low", max_results=5)
+            finally:
+                reset_transport_cache()
 
         self.assertEqual(payload["candidate_count"], 0)
         self.assertEqual(completion_calls[0]["extra_headers"], {"x-tenant": "dsa"})
@@ -3138,10 +3150,16 @@ class ScreeningOpportunitiesApiTestCase(unittest.TestCase):
         fake_module = _make_screening_core(screen=MagicMock(side_effect=screen_impl))
 
         with (
+            patch.dict(os.environ, {"LLM_TRANSPORT_MODE": "litellm"}, clear=False),
             patch.dict(sys.modules, {"litellm": fake_litellm}, clear=False),
             _patch_screening_core(fake_module),
         ):
-            payload = self._screen(config, market="cn", strategy="dual_low", max_results=5)
+            from src.llm.transport import reset_transport_cache
+            reset_transport_cache()
+            try:
+                payload = self._screen(config, market="cn", strategy="dual_low", max_results=5)
+            finally:
+                reset_transport_cache()
 
         self.assertEqual(payload["candidate_count"], 0)
         self.assertEqual(len(completion_calls), 2)
@@ -3216,10 +3234,16 @@ class ScreeningOpportunitiesApiTestCase(unittest.TestCase):
         fake_module = _make_screening_core(screen=MagicMock(side_effect=screen_impl))
 
         with (
+            patch.dict(os.environ, {"LLM_TRANSPORT_MODE": "litellm"}, clear=False),
             patch.dict(sys.modules, {"litellm": fake_litellm}, clear=False),
             _patch_screening_core(fake_module),
         ):
-            payload = self._screen(config, market="cn", strategy="dual_low", max_results=5)
+            from src.llm.transport import reset_transport_cache
+            reset_transport_cache()
+            try:
+                payload = self._screen(config, market="cn", strategy="dual_low", max_results=5)
+            finally:
+                reset_transport_cache()
 
         self.assertEqual(payload["candidate_count"], 0)
         primary_call = next(
@@ -3303,15 +3327,21 @@ class ScreeningOpportunitiesApiTestCase(unittest.TestCase):
             self._screen(config, market="cn", strategy="dual_low", max_results=5, mock_enrichment=False)
 
         with (
+            patch.dict(os.environ, {"LLM_TRANSPORT_MODE": "litellm"}, clear=False),
             patch.dict(sys.modules, {"litellm": fake_litellm}, clear=False),
             _patch_screening_core(fake_module),
         ):
-            thread_a = threading.Thread(target=_run_screen, args=(config_a,))
-            thread_b = threading.Thread(target=_run_screen, args=(config_b,))
-            thread_a.start()
-            thread_b.start()
-            thread_a.join()
-            thread_b.join()
+            from src.llm.transport import reset_transport_cache
+            reset_transport_cache()
+            try:
+                thread_a = threading.Thread(target=_run_screen, args=(config_a,))
+                thread_b = threading.Thread(target=_run_screen, args=(config_b,))
+                thread_a.start()
+                thread_b.start()
+                thread_a.join()
+                thread_b.join()
+            finally:
+                reset_transport_cache()
 
         self.assertEqual(len(completion_calls), 2)
         self.assertCountEqual(

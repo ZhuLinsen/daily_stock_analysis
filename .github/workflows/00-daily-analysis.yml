@@ -296,6 +296,16 @@ jobs:
           LLM_OLLAMA_ENABLED: ${{ vars.LLM_OLLAMA_ENABLED || secrets.LLM_OLLAMA_ENABLED }}
           LLM_OLLAMA_EXTRA_HEADERS: ${{ vars.LLM_OLLAMA_EXTRA_HEADERS || secrets.LLM_OLLAMA_EXTRA_HEADERS }}
 
+          # 自定义中转站 / 代理渠道（配合 LLM_CHANNELS=custom 使用，例如 One-API / New-API / 自建代理）
+          LLM_CUSTOM_PROTOCOL: ${{ vars.LLM_CUSTOM_PROTOCOL || secrets.LLM_CUSTOM_PROTOCOL }}
+          LLM_CUSTOM_API_SURFACE: ${{ vars.LLM_CUSTOM_API_SURFACE || secrets.LLM_CUSTOM_API_SURFACE }}
+          LLM_CUSTOM_BASE_URL: ${{ vars.LLM_CUSTOM_BASE_URL || secrets.LLM_CUSTOM_BASE_URL }}
+          LLM_CUSTOM_API_KEY: ${{ secrets.LLM_CUSTOM_API_KEY }}
+          LLM_CUSTOM_API_KEYS: ${{ secrets.LLM_CUSTOM_API_KEYS }}
+          LLM_CUSTOM_MODELS: ${{ vars.LLM_CUSTOM_MODELS || secrets.LLM_CUSTOM_MODELS }}
+          LLM_CUSTOM_ENABLED: ${{ vars.LLM_CUSTOM_ENABLED || secrets.LLM_CUSTOM_ENABLED }}
+          LLM_CUSTOM_EXTRA_HEADERS: ${{ vars.LLM_CUSTOM_EXTRA_HEADERS || secrets.LLM_CUSTOM_EXTRA_HEADERS }}
+
           # ==========================================
           # 数据源
           # ==========================================
@@ -499,18 +509,27 @@ jobs:
           echo "📋 配置检查"
           echo "=========================================="
           echo "【AI 配置】"
-          if [ -n "$LITELLM_CONFIG" ] || [ -n "$LITELLM_API_KEY" ] || [ -n "$LITELLM_MODEL" ] || [ -n "$LLM_CHANNELS" ] || [ -n "$MODELFLARE_KEY" ] || [ -n "$LLM_MODELFLARE_API_KEY" ] || [ -n "$LLM_MODELFLARE_API_KEYS" ] || [ -n "$ANSPIRE_API_KEYS" ]; then
-            echo "  LiteLLM: ✅ 已配置"
+          read -r AI_CONFIGURED TRANSPORT_LABEL < <(python -c "
+          from src.config import Config
+          from src.llm.backend_registry import LOCAL_CLI_GENERATION_BACKEND_IDS
+          from src.llm.transport import resolve_llm_transport_mode
+          cfg = Config._load_from_env()
+          ready = bool(cfg.llm_model_list or cfg.litellm_model or (cfg.generation_backend in LOCAL_CLI_GENERATION_BACKEND_IDS))
+          print('1' if ready else '0', resolve_llm_transport_mode(config=cfg))
+          " 2>/dev/null || echo "0 auto")
+          if [ "$AI_CONFIGURED" -eq 1 ]; then
+            echo "  AI 模型:        ✅ 已配置（传输模式: $TRANSPORT_LABEL）"
           else
-            echo "  LiteLLM: ❌ 未配置"
+            echo "  AI 模型:        ❌ 未配置（请至少配置一个 AI API Key 或完整 LLM_CHANNELS）"
           fi
-          echo "  Gemini API Key: $([ -n "$GEMINI_API_KEY" ] && echo '✅ 已配置' || echo '❌ 未配置')"
-          echo "  DeepSeek Key:   $([ -n "$DEEPSEEK_API_KEY" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
+          echo "  渠道 / YAML:    $([ -n "$LLM_CHANNELS" ] && echo '✅ 渠道模式已配置' || ([ -n "$LITELLM_CONFIG" ] && echo '✅ YAML 已配置' || echo '⚪ 未配置'))"
+          echo "  OpenAI / 中转:  $([ -n "$OPENAI_API_KEY" ] || [ -n "$OPENAI_API_KEYS" ] || { [ -n "$LLM_CHANNELS" ] && { [ -n "$LLM_CUSTOM_API_KEY" ] || [ -n "$LLM_CUSTOM_API_KEYS" ]; }; } && echo '✅ 已配置' || echo '⚪ 未配置')"
+          echo "  Gemini Key:     $([ -n "$GEMINI_API_KEY" ] || [ -n "$GEMINI_API_KEYS" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
+          echo "  DeepSeek Key:   $([ -n "$DEEPSEEK_API_KEY" ] || [ -n "$DEEPSEEK_API_KEYS" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
+          echo "  Anthropic Key:  $([ -n "$ANTHROPIC_API_KEY" ] || [ -n "$ANTHROPIC_API_KEYS" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
           echo "  Modelflare Key: $([ -n "$MODELFLARE_KEY" ] || [ -n "$LLM_MODELFLARE_API_KEY" ] || [ -n "$LLM_MODELFLARE_API_KEYS" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
-          echo "  Anspire Key:    $([ -n "$ANSPIRE_API_KEYS" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
           echo "  AIHubMix Key:   $([ -n "$AIHUBMIX_KEY" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
-          echo "  OpenAI API Key: $([ -n "$OPENAI_API_KEY" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
-          echo "  Anthropic Key:  $([ -n "$ANTHROPIC_API_KEY" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
+          echo "  Anspire Key:    $([ -n "$ANSPIRE_API_KEYS" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
           echo ""
           echo "【数据源】"
           echo "  Tushare Token: $([ -n "$TUSHARE_TOKEN" ] && echo '✅ 已配置' || echo '⚪ 未配置')"

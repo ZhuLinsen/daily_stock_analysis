@@ -29,12 +29,15 @@ from src.config import (
     canonicalize_llm_channel_api_surface,
     canonicalize_llm_channel_protocol,
     channel_allows_empty_api_key,
+    channel_requires_explicit_base_url,
     find_incompatible_llm_channel_models,
     find_llm_channel_surface_conflicts,
+    get_explicit_llm_channel_model_provider,
     get_litellm_model_providers,
     get_configured_llm_models,
     is_supported_llm_channel_api_surface_value,
     normalize_agent_litellm_model,
+    normalize_legacy_openai_model,
     normalize_news_strategy_profile,
     normalize_llm_channel_api_surface,
     normalize_llm_channel_model,
@@ -84,6 +87,7 @@ from src.llm.backend_registry import (
 )
 from src.llm.generation_params import apply_litellm_generation_params
 from src.llm.local_cli_backend import resolve_local_cli_preset
+from src.llm.native_types import is_benign_header_value, is_waf_or_html_block
 from src.llm.response_content import strip_leading_think_wrapper
 from src.llm.transport import dispatch_completion, reset_transport_cache
 from src.notification_contracts import (
@@ -234,6 +238,25 @@ class SystemConfigService:
 
     _LLM_CAPABILITY_ORDER: Tuple[str, ...] = ("json", "tools", "stream", "vision")
     _LLM_STREAM_CHUNK_LIMIT = 8
+    _HTTP_HEADER_NAME_RE = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]{1,128}$")
+    _MAX_EXTRA_HEADERS_COUNT = 20
+    _MAX_EXTRA_HEADERS_TOTAL_BYTES = 8192
+    _LLM_EXTRA_HEADERS_KEY_RE = re.compile(r"^LLM_[A-Z0-9_]+_EXTRA_HEADERS$")
+    _EXPLICIT_BASE_URL_REQUIRED_CHANNEL_RE = re.compile(
+        r"^(?:custom|local|relay|proxy|vllm|lmstudio|lm_studio|oneapi|newapi)\d*$"
+    )
+    _EXPLICIT_BASE_URL_REQUIRED_PRESETS: Set[str] = {
+        "openrouter",
+        "siliconflow",
+        "requesty",
+        "x6ai",
+        "aihubmix",
+        "dashscope",
+        "zhipu",
+        "moonshot",
+        "minimax",
+        "volcengine",
+    }
     _WEB_SETTINGS_LLM_CHANNEL_SUPPORT_KEY_RE = re.compile(
         r"^LLM_([A-Z0-9_]+)_(PROTOCOL|API_SURFACE|BASE_URL|API_KEY|API_KEYS|MODELS|EXTRA_HEADERS|ENABLED)$"
     )
@@ -458,6 +481,8 @@ class SystemConfigService:
         kept only as editor support data for channels declared in LLM_CHANNELS.
         """
         keys = set(registered_keys)
+        if (config_map.get("LITELLM_API_KEY") or "").strip():
+            keys.add("LITELLM_API_KEY")
         channel_names = {
             segment.strip().upper()
             for segment in resolve_llm_channel_names(config_map).split(",")
@@ -817,6 +842,7 @@ class SystemConfigService:
             items=updates,
             mask_token="__DSA_IMPORT_LITERAL_MASK__",
             reload_now=reload_now,
+            allow_env_only_keys=True,
         )
 
     def import_desktop_env(
@@ -1010,6 +1036,189 @@ class SystemConfigService:
             )
         return None
 
+    @classmethod
+    def _contains_env_reference(cls, value: Any, *, split_csv: bool = False) -> bool:
+        if not isinstance(value, str):
+            return False
+        segments = value.split(",") if split_csv else [value]
+        return any(seg.strip().lower().startswith("os.environ/") for seg in segments if seg.strip())
+
+    @classmethod
+    def _validate_and_normalize_extra_headers(
+        cls,
+        raw_headers: Optional[Mapping[str, Any]],
+        *,
+        allow_env_refs: bool = False,
+    ) -> Tuple[Dict[str, str], Optional[str]]:
+        if raw_headers is None:
+            return {}, None
+        if not isinstance(raw_headers, Mapping):
+            return {}, "EXTRA_HEADERS must be a JSON object mapping header names to string values"
+        if len(raw_headers) > cls._MAX_EXTRA_HEADERS_COUNT:
+            return {}, f"EXTRA_HEADERS may contain at most {cls._MAX_EXTRA_HEADERS_COUNT} headers"
+        normalized: Dict[str, str] = {}
+        total_bytes = 0
+        for raw_name, raw_val in raw_headers.items():
+            if not isinstance(raw_name, str) or not isinstance(raw_val, str):
+                return {}, "EXTRA_HEADERS keys and values must be strings"
+            if any(ch in raw_name for ch in ("\r", "\n", "\x00")):
+                return {}, "EXTRA_HEADERS contains invalid control characters in header name"
+            clean_name = raw_name.strip()
+            if not cls._HTTP_HEADER_NAME_RE.fullmatch(clean_name):
+                return {}, "EXTRA_HEADERS contains an invalid HTTP header name"
+            if any(ch in raw_val for ch in ("\r", "\n", "\x00")):
+                return {}, f"EXTRA_HEADERS header '{clean_name}' contains invalid control characters"
+            if not allow_env_refs and cls._contains_env_reference(raw_val):
+                return {}, (
+                    f"EXTRA_HEADERS header '{clean_name}' cannot use os.environ/ references in API requests"
+                )
+            total_bytes += len(clean_name.encode("utf-8")) + len(raw_val.encode("utf-8"))
+            if total_bytes > cls._MAX_EXTRA_HEADERS_TOTAL_BYTES:
+                return {}, (
+                    f"EXTRA_HEADERS total size exceeds {cls._MAX_EXTRA_HEADERS_TOTAL_BYTES} bytes"
+                )
+            normalized[clean_name] = raw_val
+        return normalized, None
+
+    @classmethod
+    def _validate_extra_headers_json_string(cls, raw_value: str) -> Optional[str]:
+        trimmed = (raw_value or "").strip()
+        if not trimmed:
+            return None
+        try:
+            parsed = json.loads(trimmed)
+        except json.JSONDecodeError:
+            return "EXTRA_HEADERS must be a valid JSON object of string key-value pairs"
+        if not isinstance(parsed, dict):
+            return "EXTRA_HEADERS must be a JSON object mapping header names to string values"
+        _, err = cls._validate_and_normalize_extra_headers(parsed, allow_env_refs=True)
+        return err
+
+    @classmethod
+    def _is_extra_headers_key(cls, key: str) -> bool:
+        return bool(cls._LLM_EXTRA_HEADERS_KEY_RE.fullmatch(str(key or "").strip().upper()))
+
+    @classmethod
+    def _channel_requires_explicit_base_url(
+        cls,
+        channel_name: str,
+        resolved_protocol: str,
+        models: Sequence[str] = (),
+    ) -> bool:
+        return channel_requires_explicit_base_url(
+            channel_name,
+            resolved_protocol,
+            models=models,
+        )
+
+    @staticmethod
+    def _canonicalize_destination_url(url: str) -> str:
+        """Canonicalize HTTP(S) destination URL: lowercase scheme/host, normalize default port, preserve path/query case."""
+        raw = (url or "").strip()
+        if not raw:
+            return ""
+        parsed = urlparse(raw)
+        scheme = (parsed.scheme or "").lower()
+        hostname = (parsed.hostname or "").lower()
+        if scheme not in {"http", "https"} or not hostname:
+            return raw.rstrip("/")
+        port = parsed.port
+        if (scheme == "http" and port == 80) or (scheme == "https" and port == 443):
+            port = None
+        netloc = f"[{hostname}]" if ":" in hostname else hostname
+        if port is not None:
+            netloc = f"{netloc}:{port}"
+        path = (parsed.path or "").rstrip("/")
+        query = f"?{parsed.query}" if parsed.query else ""
+        return f"{scheme}://{netloc}{path}{query}"
+
+    @classmethod
+    def _resolve_effective_probe_destination(
+        cls,
+        *,
+        channel_name: str,
+        protocol: str,
+        base_url: str,
+        models: Sequence[str] = (),
+    ) -> str:
+        """Return canonical destination identity for saved EXTRA_HEADERS binding."""
+        resolved_url = resolve_llm_channel_base_url(channel_name, base_url)
+        if resolved_url:
+            return cls._canonicalize_destination_url(resolved_url)
+        from src.llm.native_resolve import VERIFIED_DEFAULT_PROVIDER_BASES
+
+        model_list = [str(m).strip() for m in models if str(m).strip()]
+        resolved_protocol = resolve_llm_channel_protocol(
+            protocol,
+            base_url="",
+            models=model_list or None,
+            channel_name=channel_name,
+        )
+        effective_provider = resolved_protocol
+        if model_list:
+            normalized_first = normalize_llm_channel_model(model_list[0], resolved_protocol, "")
+            explicit_provider = get_explicit_llm_channel_model_provider(normalized_first)
+            if explicit_provider:
+                effective_provider = explicit_provider
+        if not effective_provider:
+            return ""
+        default_base = VERIFIED_DEFAULT_PROVIDER_BASES.get(effective_provider)
+        if default_base:
+            return cls._canonicalize_destination_url(default_base)
+        return f"provider://{effective_provider.lower()}"
+
+    def _resolve_saved_channel_extra_headers(
+        self,
+        *,
+        channel_name: str,
+        submitted_protocol: str,
+        submitted_base_url: str,
+        submitted_models: Sequence[str] = (),
+    ) -> Dict[str, str]:
+        """Load saved non-Hermes LLM_<NAME>_EXTRA_HEADERS only when effective destination matches."""
+        if is_reserved_hermes_name(channel_name):
+            return {}
+        upper_name = channel_name.strip().upper()
+        if not upper_name:
+            return {}
+        saved_map = self._manager.read_config_map()
+        if not isinstance(saved_map, Mapping):
+            return {}
+        raw_saved_headers = str(saved_map.get(f"LLM_{upper_name}_EXTRA_HEADERS") or "").strip()
+        if not raw_saved_headers or is_masked_secret_placeholder(raw_saved_headers):
+            return {}
+        saved_protocol = (saved_map.get(f"LLM_{upper_name}_PROTOCOL") or "").strip()
+        saved_base_url = saved_map.get(f"LLM_{upper_name}_BASE_URL", "")
+        saved_models = [
+            m.strip()
+            for m in (saved_map.get(f"LLM_{upper_name}_MODELS") or "").split(",")
+            if m.strip()
+        ]
+        saved_dest = self._resolve_effective_probe_destination(
+            channel_name=channel_name,
+            protocol=saved_protocol,
+            base_url=saved_base_url,
+            models=saved_models,
+        )
+        submitted_dest = self._resolve_effective_probe_destination(
+            channel_name=channel_name,
+            protocol=submitted_protocol,
+            base_url=submitted_base_url,
+            models=submitted_models,
+        )
+        if not saved_dest or saved_dest != submitted_dest:
+            return {}
+        try:
+            parsed = json.loads(raw_saved_headers)
+        except json.JSONDecodeError:
+            return {}
+        if not isinstance(parsed, dict):
+            return {}
+        normalized, err = self._validate_and_normalize_extra_headers(parsed, allow_env_refs=False)
+        if err:
+            return {}
+        return normalized
+
     def discover_llm_channel_models(
         self,
         *,
@@ -1020,10 +1229,28 @@ class SystemConfigService:
         models: Sequence[str] = (),
         timeout_seconds: float = 20.0,
         use_saved_secret: bool = False,
+        extra_headers: Optional[Mapping[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Discover available models from an OpenAI-compatible `/models` endpoint."""
         channel_name = name.strip() or "channel"
         base_url = resolve_llm_channel_base_url(channel_name, base_url)
+        raw_extra_redactions = (
+            self._build_extra_header_redaction_values(extra_headers)
+            if isinstance(extra_headers, Mapping)
+            else set()
+        )
+        normalized_extra_headers, extra_headers_error = self._validate_and_normalize_extra_headers(
+            extra_headers,
+            allow_env_refs=False,
+        )
+        existing_models_for_dest = [str(m).strip() for m in models if str(m).strip()]
+        if extra_headers is None and not extra_headers_error and not is_reserved_hermes_name(channel_name):
+            normalized_extra_headers = self._resolve_saved_channel_extra_headers(
+                channel_name=channel_name,
+                submitted_protocol=protocol,
+                submitted_base_url=base_url,
+                submitted_models=existing_models_for_dest,
+            )
         resolved_secret, secret_error, redaction_values = self._resolve_hermes_saved_secret(
             channel_name=channel_name,
             protocol=protocol,
@@ -1032,11 +1259,67 @@ class SystemConfigService:
             use_saved_secret=use_saved_secret,
             stage="model_discovery",
         )
+        redaction_values.update(raw_extra_redactions)
+        redaction_values.update(self._build_extra_header_redaction_values(normalized_extra_headers))
+        if extra_headers_error:
+            return self._build_llm_channel_result(
+                success=False,
+                message="LLM channel configuration is invalid",
+                error=extra_headers_error,
+                stage="model_discovery",
+                error_code="invalid_config",
+                retryable=False,
+                details={
+                    "issue_key": "discover_channel_EXTRA_HEADERS",
+                    "issue_code": "invalid_extra_headers",
+                    "reason": "invalid_extra_headers",
+                },
+                resolved_protocol=None,
+                models=[],
+                latency_ms=None,
+                redaction_values=redaction_values,
+            )
         if resolved_secret is None:
             return secret_error
         api_key = resolved_secret
         redaction_values.update(self._build_redaction_values(api_key))
+        if self._contains_env_reference(api_key, split_csv=True) or self._contains_env_reference(base_url):
+            return self._build_llm_channel_result(
+                success=False,
+                message="LLM channel configuration is invalid",
+                error="os.environ/ references are not allowed in API-submitted channel credentials or Base URL",
+                stage="model_discovery",
+                error_code="invalid_config",
+                retryable=False,
+                details={
+                    "issue_key": "discover_channel_API_KEY",
+                    "issue_code": "env_reference_not_allowed",
+                    "reason": "env_reference_not_allowed",
+                },
+                resolved_protocol=None,
+                models=[],
+                latency_ms=None,
+                redaction_values=redaction_values,
+            )
         if is_reserved_hermes_name(channel_name):
+            if normalized_extra_headers:
+                return self._build_llm_channel_result(
+                    success=False,
+                    message="Hermes does not support EXTRA_HEADERS in Phase 3",
+                    error="Hermes does not support EXTRA_HEADERS in Phase 3",
+                    stage="model_discovery",
+                    error_code="invalid_config",
+                    retryable=False,
+                    details={
+                        "issue_key": "discover_channel_EXTRA_HEADERS",
+                        "issue_code": "unsupported_extra_headers",
+                        "reason": "unsupported_extra_headers",
+                    },
+                    resolved_protocol=None,
+                    models=[],
+                    latency_ms=None,
+                    redaction_values=redaction_values,
+                )
             secret_error = self._validate_hermes_submitted_secret(
                 api_key=api_key,
                 use_saved_secret=use_saved_secret,
@@ -1085,6 +1368,13 @@ class SystemConfigService:
             )
         errors = [issue for issue in validation_issues if issue["severity"] == "error"]
         if errors:
+            error_details: Dict[str, Any] = {
+                "issue_key": errors[0]["key"],
+                "issue_code": errors[0]["code"],
+                "reason": errors[0]["code"],
+            }
+            if errors[0]["code"] == "missing_base_url":
+                error_details["hint_code"] = "missing_base_url"
             return self._build_llm_channel_result(
                 success=False,
                 message="LLM channel configuration is invalid",
@@ -1092,11 +1382,7 @@ class SystemConfigService:
                 stage="model_discovery",
                 error_code="invalid_config",
                 retryable=False,
-                details={
-                    "issue_key": errors[0]["key"],
-                    "issue_code": errors[0]["code"],
-                    "reason": errors[0]["code"],
-                },
+                details=error_details,
                 resolved_protocol=resolved_protocol or None,
                 models=[],
                 latency_ms=None,
@@ -1124,8 +1410,16 @@ class SystemConfigService:
         api_keys = [segment.strip() for segment in api_key.split(",") if segment.strip()]
         selected_api_key = api_keys[0] if api_keys else ""
         redaction_values.update(self._build_redaction_values(selected_api_key))
-        request_headers = {"Accept": "application/json"}
-        if selected_api_key:
+        request_headers: Dict[str, str] = {"Accept": "application/json"}
+        for header_name, header_val in normalized_extra_headers.items():
+            existing_key = next(
+                (k for k in request_headers if k.lower() == header_name.lower()),
+                None,
+            )
+            if existing_key is not None:
+                del request_headers[existing_key]
+            request_headers[header_name] = header_val
+        if selected_api_key and not any(k.lower() == "authorization" for k in request_headers):
             request_headers["Authorization"] = f"Bearer {selected_api_key}"
         if "aihubmix.com" in base_url.lower() and not any(
             k.lower() == "app-code" for k in request_headers
@@ -1213,9 +1507,16 @@ class SystemConfigService:
 
         if not response.ok:
             error_text = self._extract_llm_discovery_error(response)
+            raw_headers = getattr(response, "headers", None)
+            response_headers = raw_headers if isinstance(raw_headers, Mapping) else None
+            raw_text = getattr(response, "text", "")
+            response_body = raw_text if isinstance(raw_text, str) else ""
             diagnostic = self._classify_llm_http_error(
                 status_code=response.status_code,
                 error_text=error_text,
+                headers=response_headers,
+                raw_body=response_body,
+                context="discovery",
             )
             return self._build_llm_channel_result(
                 success=False,
@@ -1237,14 +1538,27 @@ class SystemConfigService:
         try:
             payload = response.json()
         except ValueError:
+            is_html = self._looks_like_html_response(getattr(response, "text", "") or "")
+            non_json_details: Dict[str, Any] = {
+                "endpoint": models_url,
+                "http_status": response.status_code,
+                "reason": "non_json",
+            }
+            if is_html:
+                non_json_details["hint_code"] = "missing_v1"
+                non_json_details["html_response"] = True
             return self._build_llm_channel_result(
                 success=False,
-                message="Model discovery returned invalid JSON",
+                message=(
+                    "Endpoint returned HTML instead of JSON; missing /v1 in Base URL?"
+                    if is_html
+                    else "Model discovery returned invalid JSON"
+                ),
                 error="The /models endpoint did not return valid JSON",
                 stage="response_parse",
                 error_code="format_error",
                 retryable=False,
-                details={"endpoint": models_url, "http_status": response.status_code, "reason": "non_json"},
+                details=non_json_details,
                 resolved_protocol=resolved_protocol or None,
                 models=[],
                 latency_ms=latency_ms,
@@ -1304,12 +1618,23 @@ class SystemConfigService:
         raw_models = [str(model).strip() for model in models if str(model).strip()]
         channel_name = name.strip() or "channel"
         base_url = resolve_llm_channel_base_url(channel_name, base_url)
-        normalized_extra_headers: Dict[str, str] = {}
-        if isinstance(extra_headers, Mapping):
-            for header_key, header_val in extra_headers.items():
-                key_text = str(header_key).strip()
-                if key_text and header_val is not None:
-                    normalized_extra_headers[key_text] = str(header_val)
+        raw_extra_redactions = (
+            self._build_extra_header_redaction_values(extra_headers)
+            if isinstance(extra_headers, Mapping)
+            else set()
+        )
+        normalized_extra_headers, extra_headers_error = self._validate_and_normalize_extra_headers(
+            extra_headers,
+            allow_env_refs=False,
+        )
+        existing_models_for_dest = [str(m).strip() for m in models if str(m).strip()]
+        if extra_headers is None and not extra_headers_error and not is_reserved_hermes_name(channel_name):
+            normalized_extra_headers = self._resolve_saved_channel_extra_headers(
+                channel_name=channel_name,
+                submitted_protocol=protocol,
+                submitted_base_url=base_url,
+                submitted_models=existing_models_for_dest,
+            )
         if not raw_models and channel_name.lower() == "modelflare":
             effective_map = self._build_generation_backend_base_map()
             raw_models = resolve_llm_channel_models(
@@ -1327,7 +1652,32 @@ class SystemConfigService:
             use_saved_secret=use_saved_secret,
             stage=generation_stage,
         )
+        redaction_values.update(raw_extra_redactions)
         redaction_values.update(self._build_extra_header_redaction_values(normalized_extra_headers))
+        if extra_headers_error:
+            return self._build_llm_channel_result(
+                success=False,
+                message="LLM channel configuration is invalid",
+                error=extra_headers_error,
+                stage=generation_stage,
+                error_code="invalid_config",
+                retryable=False,
+                details={
+                    "issue_key": "test_channel_EXTRA_HEADERS",
+                    "issue_code": "invalid_extra_headers",
+                    "reason": "invalid_extra_headers",
+                },
+                resolved_protocol=None,
+                resolved_model=None,
+                latency_ms=None,
+                capability_results=self._build_skipped_capability_results(
+                    requested_capabilities,
+                    "base_test_failed",
+                    "Skipped because the base channel test did not pass",
+                    redaction_values=redaction_values,
+                ),
+                redaction_values=redaction_values,
+            )
         if resolved_secret is None:
             result = secret_error
             if requested_capabilities and "capability_results" not in result:
@@ -1340,6 +1690,30 @@ class SystemConfigService:
             return result
         api_key = resolved_secret
         redaction_values.update(self._build_redaction_values(api_key))
+        if self._contains_env_reference(api_key, split_csv=True) or self._contains_env_reference(base_url):
+            return self._build_llm_channel_result(
+                success=False,
+                message="LLM channel configuration is invalid",
+                error="os.environ/ references are not allowed in API-submitted channel credentials or Base URL",
+                stage=generation_stage,
+                error_code="invalid_config",
+                retryable=False,
+                details={
+                    "issue_key": "test_channel_API_KEY",
+                    "issue_code": "env_reference_not_allowed",
+                    "reason": "env_reference_not_allowed",
+                },
+                resolved_protocol=None,
+                resolved_model=None,
+                latency_ms=None,
+                capability_results=self._build_skipped_capability_results(
+                    requested_capabilities,
+                    "base_test_failed",
+                    "Skipped because the base channel test did not pass",
+                    redaction_values=redaction_values,
+                ),
+                redaction_values=redaction_values,
+            )
         if is_reserved_hermes_name(channel_name):
             if normalized_extra_headers:
                 return self._build_llm_channel_result(
@@ -1413,6 +1787,13 @@ class SystemConfigService:
         )
         errors = [issue for issue in validation_issues if issue["severity"] == "error"]
         if errors:
+            error_details = {
+                "issue_key": errors[0]["key"],
+                "issue_code": errors[0]["code"],
+                "reason": errors[0]["code"],
+            }
+            if errors[0]["code"] == "missing_base_url":
+                error_details["hint_code"] = "missing_base_url"
             return self._build_llm_channel_result(
                 success=False,
                 message="LLM channel configuration is invalid",
@@ -1420,11 +1801,7 @@ class SystemConfigService:
                 stage=generation_stage,
                 error_code="invalid_config",
                 retryable=False,
-                details={
-                    "issue_key": errors[0]["key"],
-                    "issue_code": errors[0]["code"],
-                    "reason": errors[0]["code"],
-                },
+                details=error_details,
                 resolved_protocol=None,
                 resolved_model=None,
                 latency_ms=None,
@@ -1447,9 +1824,15 @@ class SystemConfigService:
         selected_api_key = api_keys[0] if api_keys else ""
         redaction_values.update(self._build_redaction_values(selected_api_key))
 
+        explicit_model_provider = get_explicit_llm_channel_model_provider(resolved_model)
+        effective_protocol = (
+            explicit_model_provider
+            if explicit_model_provider and explicit_model_provider != resolved_protocol
+            else resolved_protocol
+        )
         effective_api_surface = (
             resolved_api_surface
-            if resolved_protocol == "openai"
+            if effective_protocol == "openai"
             or resolved_api_surface == "responses"
             or wire_model.startswith("openai/")
             else None
@@ -1459,7 +1842,11 @@ class SystemConfigService:
             "messages": [{"role": "user", "content": "Reply with OK"}],
             "max_tokens": 256,  # Increased to allow MiniMax-M3 thinking process + response
             "timeout": max(5.0, float(timeout_seconds)),
+            "_dsa_disable_env_expansion": True,
+            "_dsa_no_redirects": True,
         }
+        if effective_protocol and not is_reserved_hermes_name(channel_name):
+            call_kwargs["dsa_channel_protocol"] = effective_protocol
         if effective_api_surface:
             call_kwargs["api_surface"] = effective_api_surface
         if selected_api_key:
@@ -1603,6 +1990,13 @@ class SystemConfigService:
                 self._sanitize_llm_error_text(exc, redaction_values=redaction_values),
             )
             diagnostic = self._classify_llm_exception(exc)
+            merged_details = self._merge_llm_diagnostic_details({"model": resolved_model}, diagnostic)
+            if (
+                generation_stage == "responses"
+                and diagnostic.reason == "endpoint_not_found"
+                and merged_details.get("hint_code") != "responses_unsupported"
+            ):
+                merged_details["hint_code"] = "responses_unsupported"
             return self._build_llm_channel_result(
                 success=False,
                 message=diagnostic.message,
@@ -1610,7 +2004,7 @@ class SystemConfigService:
                 stage=generation_stage,
                 error_code=diagnostic.error_code,
                 retryable=diagnostic.retryable,
-                details=self._merge_llm_diagnostic_details({"model": resolved_model}, diagnostic),
+                details=merged_details,
                 resolved_protocol=resolved_protocol or None,
                 resolved_model=resolved_model,
                 resolved_api_surface=resolved_api_surface,
@@ -2147,6 +2541,8 @@ class SystemConfigService:
             "messages": messages,
             "max_tokens": max_tokens,
             "timeout": min(max(5.0, timeout), 10.0),
+            "_dsa_disable_env_expansion": True,
+            "_dsa_no_redirects": True,
         }
         if selected_api_key:
             call_kwargs["api_key"] = selected_api_key
@@ -2292,13 +2688,18 @@ class SystemConfigService:
         reload_now: bool = True,
         *,
         expected_watchlist: Optional[List[str]] = None,
+        allow_env_only_keys: bool = False,
     ) -> Dict[str, Any]:
         """Validate and persist updates into `.env`, then reload runtime config."""
         current_version = self._manager.get_config_version()
         if current_version != config_version:
             raise ConfigConflictError(current_version=current_version)
 
-        issues = self._collect_issues(items=items, mask_token=mask_token)
+        issues = self._collect_issues(
+            items=items,
+            mask_token=mask_token,
+            allow_env_only_keys=allow_env_only_keys,
+        )
         errors = [issue for issue in issues if issue["severity"] == "error"]
         if errors:
             raise ConfigValidationError(issues=errors)
@@ -2314,7 +2715,11 @@ class SystemConfigService:
             normalized_value = self._normalize_value_for_storage(value, field_schema)
             submitted_keys.add(key)
             updates.append((key, normalized_value))
-            if bool(field_schema.get("is_sensitive", False)):
+            if (
+                bool(field_schema.get("is_sensitive", False))
+                or key in self._SERVER_MASKED_CONFIG_KEYS
+                or self._is_extra_headers_key(key)
+            ):
                 sensitive_keys.add(key)
 
         warnings: List[str] = []
@@ -2638,7 +3043,13 @@ class SystemConfigService:
 
         return updates
 
-    def _collect_issues(self, items: Sequence[Dict[str, str]], mask_token: str) -> List[Dict[str, Any]]:
+    def _collect_issues(
+        self,
+        items: Sequence[Dict[str, str]],
+        mask_token: str,
+        *,
+        allow_env_only_keys: bool = False,
+    ) -> List[Dict[str, Any]]:
         """Collect field-level and cross-field validation issues."""
         saved_config_map = self._manager.read_config_map()
         display_config_map = self._build_display_config_map(saved_config_map)
@@ -2656,12 +3067,24 @@ class SystemConfigService:
             field_schema = get_field_definition(key, value)
             is_sensitive = bool(field_schema.get("is_sensitive", False))
 
-            if is_sensitive and value == mask_token and saved_config_map.get(key):
+            if (
+                (is_sensitive or key in self._SERVER_MASKED_CONFIG_KEYS or self._is_extra_headers_key(key))
+                and value == mask_token
+                and (saved_config_map.get(key) or key in self._SERVER_MASKED_CONFIG_KEYS or self._is_extra_headers_key(key))
+            ):
                 continue
 
             updated_map[key] = value
             effective_map[key] = value
-            issues.extend(self._validate_value(key=key, value=value, field_schema=field_schema))
+            issues.extend(
+                self._validate_value(
+                    key=key,
+                    value=value,
+                    field_schema=field_schema,
+                    allow_env_only_keys=allow_env_only_keys,
+                    mask_token=mask_token,
+                )
+            )
 
         issues.extend(self._validate_cross_field(effective_map=effective_map, updated_keys=set(updated_map.keys())))
         return issues
@@ -2887,12 +3310,44 @@ class SystemConfigService:
         return self._collect_generation_backend_issues(items=items, mask_token="******")
 
     @staticmethod
-    def _validate_value(key: str, value: str, field_schema: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def _validate_value(
+        key: str,
+        value: str,
+        field_schema: Dict[str, Any],
+        *,
+        allow_env_only_keys: bool = False,
+        mask_token: str = "******",
+    ) -> List[Dict[str, Any]]:
         """Validate a single field value against schema metadata."""
         issues: List[Dict[str, Any]] = []
         data_type = field_schema.get("data_type", "string")
         validation = field_schema.get("validation", {}) or {}
         is_required = field_schema.get("is_required", False)
+
+        if key == "LLM_TRANSPORT_MODE":
+            if not allow_env_only_keys:
+                return [{
+                    "key": key,
+                    "code": "env_only_key",
+                    "message": (
+                        "LLM_TRANSPORT_MODE is environment-only and cannot be edited via the "
+                        "structured settings API; configure it in .env or environment variables."
+                    ),
+                    "severity": "error",
+                    "expected": "environment-only setting",
+                    "actual": value,
+                }]
+            normalized_mode = value.strip().lower()
+            if normalized_mode and normalized_mode not in {"auto", "litellm", "native"}:
+                return [{
+                    "key": key,
+                    "code": "invalid_value",
+                    "message": "LLM_TRANSPORT_MODE must be one of auto, litellm, or native",
+                    "severity": "error",
+                    "expected": "auto | litellm | native",
+                    "actual": value,
+                }]
+            return issues
 
         if key == "AGENT_BACKEND" and value.strip().lower() == "codex_app_server":
             from src.config import AGENT_BACKEND_REMOVED_MESSAGE
@@ -2905,6 +3360,20 @@ class SystemConfigService:
         # Empty values are valid for non-required fields (skip type validation)
         if not value.strip() and not is_required:
             return issues
+
+        if SystemConfigService._LLM_EXTRA_HEADERS_KEY_RE.fullmatch(key):
+            if value == mask_token:
+                return issues
+            extra_headers_error = SystemConfigService._validate_extra_headers_json_string(value)
+            if extra_headers_error:
+                return [{
+                    "key": key,
+                    "code": "invalid_extra_headers",
+                    "message": extra_headers_error,
+                    "severity": "error",
+                    "expected": 'JSON object of string headers (e.g. {"X-Tenant":"team-a"})',
+                    "actual": "[REDACTED]",
+                }]
 
         if ("\n" in value or "\r" in value) and data_type != "json":
             issues.append(
@@ -3899,7 +4368,10 @@ class SystemConfigService:
             return "deepseek/deepseek-flash"
         if cls._has_any_config_value(effective_map, ("OPENAI_API_KEYS", "OPENAI_API_KEY", "AIHUBMIX_KEY")):
             model = (effective_map.get("OPENAI_MODEL") or "gpt-6.1-sol").strip()
-            return model if "/" in model else f"openai/{model}"
+            openai_base_url = (effective_map.get("OPENAI_BASE_URL") or "").strip() or (
+                "https://aihubmix.com/v1" if (effective_map.get("AIHUBMIX_KEY") or "").strip() else ""
+            )
+            return normalize_legacy_openai_model(model, openai_base_url)
         if (
             cls._anspire_legacy_llm_enabled(effective_map)
             and cls._has_any_config_value(effective_map, ("ANSPIRE_API_KEYS",))
@@ -4448,7 +4920,13 @@ class SystemConfigService:
                 redaction_values=redaction_values,
             ) if resolved_model is not None else resolved_model
         if models is not None:
-            payload["models"] = cls._sanitize_llm_value(models, redaction_values=redaction_values)
+            # Never run secret redaction over returned /models IDs on successful 200 discovery
+            # (e.g. X-Provider: openai must not corrupt openai/gpt-4o into [REDACTED]/gpt-4o).
+            payload["models"] = (
+                list(models)
+                if success
+                else cls._sanitize_llm_value(models, redaction_values=redaction_values)
+            )
         if capability_results is not None:
             payload["capability_results"] = cls._sanitize_llm_capability_results(
                 capability_results,
@@ -4527,65 +5005,28 @@ class SystemConfigService:
         )
 
     @classmethod
-    def _build_extra_header_redaction_values(cls, headers: Mapping[str, str]) -> Set[str]:
-        """Collect redaction tokens for auth/secret custom headers without over-redacting generic values."""
+    def _build_extra_header_redaction_values(cls, headers: Mapping[str, Any]) -> Set[str]:
+        """Collect redaction tokens for every submitted custom header value unless the value itself is a benign media/format literal."""
         redactions: Set[str] = set()
         auth_scheme_pattern = re.compile(r"(?i)^\s*(?:bearer|token|basic|apikey|api-key)\s+(.+?)\s*$")
         secret_prefix_pattern = re.compile(r"(?i)^(?:sk-|pk-|ghp_|gho_|glpat-|eyj[a-z0-9_-]{8,})")
-        auth_name_markers = (
-            "auth",
-            "token",
-            "key",
-            "secret",
-            "cookie",
-            "pass",
-            "cred",
-            "sig",
-            "session",
-            "jwt",
-            "bearer",
-        )
-        non_secret_header_names = frozenset(
-            {
-                "accept",
-                "accept-charset",
-                "accept-encoding",
-                "accept-language",
-                "anthropic-version",
-                "cache-control",
-                "content-encoding",
-                "content-language",
-                "content-length",
-                "content-type",
-                "dnt",
-                "openai-beta",
-                "origin",
-                "pragma",
-                "referer",
-                "user-agent",
-                "x-client-version",
-                "x-format",
-                "x-requested-with",
-            }
-        )
-        for header_name, raw_value in headers.items():
-            value = str(raw_value or "").strip()
+        for _, raw_value in headers.items():
+            if raw_value is None:
+                continue
+            raw_text = str(raw_value)
+            value = raw_text.strip()
             if not value:
                 continue
-            lower_name = str(header_name or "").strip().lower()
-            is_auth_header = any(marker in lower_name for marker in auth_name_markers)
             scheme_match = auth_scheme_pattern.match(value)
             looks_like_secret = bool(secret_prefix_pattern.match(value))
-            # Only standard content-type/accept headers (already in non_secret_header_names)
-            # are exempt from opaque-token redaction; custom headers containing '/' (e.g.
-            # "alfa1234/beta5678") are still redacted.
-            is_opaque_custom_secret = (
-                lower_name not in non_secret_header_names
-                and len(value) >= 12
-                and not any(ch.isspace() for ch in value)
-            )
-            if is_auth_header or scheme_match or looks_like_secret or is_opaque_custom_secret:
-                redactions.update(cls._build_redaction_values(value))
+            if (
+                is_benign_header_value(value)
+                and not scheme_match
+                and not looks_like_secret
+            ):
+                continue
+            redactions.add(raw_text)
+            redactions.update(cls._build_redaction_values(value))
             if scheme_match:
                 bare_token = scheme_match.group(1).strip()
                 if bare_token:
@@ -4604,7 +5045,15 @@ class SystemConfigService:
             if pattern is not None:
                 sanitized = pattern.sub("[REDACTED]", sanitized)
         for secret in sorted((redaction_values or set()), key=len, reverse=True):
-            if secret:
+            if not secret:
+                continue
+            if len(secret) <= 2:
+                sanitized = re.sub(
+                    r"(?<!\w)" + re.escape(secret) + r"(?!\w)",
+                    "[REDACTED]",
+                    sanitized,
+                )
+            else:
                 sanitized = sanitized.replace(secret, "[REDACTED]")
 
         patterns = [
@@ -4656,21 +5105,60 @@ class SystemConfigService:
         return value
 
     @staticmethod
-    def _classify_llm_http_error(status_code: int, error_text: str) -> _LLMDiagnostic:
+    def _looks_like_html_response(text: str) -> bool:
+        stripped = (text or "").lstrip().lower()
+        return stripped.startswith("<!doctype html") or stripped.startswith("<html")
+
+    @staticmethod
+    def _has_waf_403_signal(
+        status_code: int,
+        text: str,
+        *,
+        headers: Optional[Mapping[str, Any]] = None,
+    ) -> bool:
+        return is_waf_or_html_block(status_code, text or "", headers=headers)
+
+    @staticmethod
+    def _classify_llm_http_error(
+        status_code: int,
+        error_text: str,
+        *,
+        headers: Optional[Mapping[str, Any]] = None,
+        raw_body: Optional[str] = None,
+        context: str = "test",
+    ) -> _LLMDiagnostic:
         lowered = (error_text or "").lower()
+        body_for_waf = raw_body if raw_body is not None and raw_body != "" else (error_text or "")
+        is_models_endpoint_404 = (
+            status_code == 404
+            and (
+                bool(re.search(r"/models\b", lowered))
+                or (
+                    context == "discovery"
+                    and not SystemConfigService._has_model_not_found_signal(error_text or "")
+                )
+            )
+        )
         if SystemConfigService._has_model_access_denied_signal(error_text or ""):
             return _LLMDiagnostic(
                 "model_not_found",
                 False,
                 "Configured model is not available for this channel",
                 "model_access_denied",
+                details={"hint_code": "unknown_model"},
             )
-        if "model" in lowered and any(token in lowered for token in ("not found", "does not exist", "unknown")):
+        if (
+            not is_models_endpoint_404
+            and "model" in lowered
+            and any(token in lowered for token in ("not found", "does not exist", "unknown"))
+            and SystemConfigService._has_model_not_found_signal(error_text or "")
+        ):
             return _LLMDiagnostic(
                 "model_not_found",
                 False,
                 "Configured model could not be found on this channel",
                 "model_not_found",
+                details={"hint_code": "unknown_model"},
             )
         if status_code == 402 or any(token in lowered for token in ("billing", "balance", "insufficient balance")):
             return _LLMDiagnostic(
@@ -4700,6 +5188,14 @@ class SystemConfigService:
                 "LLM request failed before a valid response was returned",
                 "network_error",
             )
+        if SystemConfigService._has_waf_403_signal(status_code, body_for_waf, headers=headers):
+            return _LLMDiagnostic(
+                "request_blocked",
+                False,
+                "Blocked by Cloudflare/WAF, not invalid API key",
+                "provider_blocked",
+                details={"waf_blocked": True, "hint_code": "waf_blocked"},
+            )
         if SystemConfigService._has_request_blocked_signal(error_text or ""):
             return _LLMDiagnostic(
                 "request_blocked",
@@ -4715,6 +5211,7 @@ class SystemConfigService:
                 False,
                 "LLM model discovery endpoint could not be found",
                 "endpoint_not_found",
+                details={"hint_code": "missing_v1"},
             )
         if any(token in lowered for token in ("timeout", "timed out")):
             return _LLMDiagnostic("timeout", True, "LLM request timed out", "timeout")
@@ -4727,14 +5224,18 @@ class SystemConfigService:
 
     @staticmethod
     def _has_model_not_found_signal(text: str) -> bool:
-        lowered = text.lower()
+        lowered = (text or "").lower()
+        # Exclude endpoint-path 404s like "404 /models not found" or "Cannot GET /v1/models"
+        # unless the text also carries a singular "model" failure phrase.
+        if re.search(r"/models\b", lowered) and not re.search(r"\bmodel\b", lowered):
+            return False
 
         model_candidates = [
-            re.search(r"model\s+not\s+found\s*[:：]?\s*[`\"']?\s*([a-z0-9._/-]{2,})", lowered),
-            re.search(r"model\s*[`\"']?\s*([a-z0-9._/-]{2,})\s*[`\"']?\s+does\s+not\s+exist", lowered),
-            re.search(r"model\s+does\s+not\s+exist\s*[:：]?\s*[`\"']?\s*([a-z0-9._/-]{2,})", lowered),
-            re.search(r"unknown\s+model\s*[:：]?\s*[`\"']?\s*([a-z0-9._/-]{2,})", lowered),
-            re.search(r"no\s+such\s+model\s*[:：]?\s*[`\"']?\s*([a-z0-9._/-]{2,})", lowered),
+            re.search(r"\bmodel\s+not\s+found\s*[:：]?\s*[`\"']?\s*([a-z0-9._/-]{2,})", lowered),
+            re.search(r"\bmodel\s*[`\"']?\s*([a-z0-9._/-]{2,})\s*[`\"']?\s+does\s+not\s+exist", lowered),
+            re.search(r"\bmodel\s+does\s+not\s+exist\s*[:：]?\s*[`\"']?\s*([a-z0-9._/-]{2,})", lowered),
+            re.search(r"\bunknown\s+model\s*[:：]?\s*[`\"']?\s*([a-z0-9._/-]{2,})", lowered),
+            re.search(r"\bno\s+such\s+model\s*[:：]?\s*[`\"']?\s*([a-z0-9._/-]{2,})", lowered),
         ]
 
         for match in model_candidates:
@@ -4744,7 +5245,14 @@ class SystemConfigService:
             if model_id and not model_id.startswith("/") and "http" not in model_id:
                 return True
 
-        return False
+        # Also match bare singular model-not-found messages (e.g. "HTTP 404: Model not found").
+        bare_patterns = (
+            r"\bmodel\s+not\s+found\b(?!\s*[:：]?\s*(?:/|https?://))",
+            r"\bmodel\s+does\s+not\s+exist\b",
+            r"\bunknown\s+model\b",
+            r"\bno\s+such\s+model\b",
+        )
+        return any(re.search(pat, lowered) for pat in bare_patterns)
 
     @staticmethod
     def _has_model_access_denied_signal(text: str) -> bool:
@@ -4818,7 +5326,8 @@ class SystemConfigService:
         exc_name = type(exc).__name__.lower()
         text = str(exc).lower()
         # P2: Classify typed NativeConfigError BEFORE message-substring timeout/quota checks.
-        if exc_name == "nativeconfigerror" or getattr(exc, "error_code", None) in {
+        native_code = getattr(exc, "error_code", None)
+        if exc_name == "nativeconfigerror" or native_code in {
             "fallback_only_provider",
             "missing_api_base",
             "unknown_provider_without_api_base",
@@ -4830,11 +5339,23 @@ class SystemConfigService:
             "conflicting_api_base",
             "invalid_deployment_param",
         }:
+            config_reason = str(native_code or "native_config_error")
+            config_details: Dict[str, Any] = {}
+            if config_reason == "fallback_only_provider":
+                config_details["hint_code"] = "cloud_iam_fallback"
+            elif config_reason in {
+                "missing_api_base",
+                "unknown_provider_without_api_base",
+            }:
+                config_details["hint_code"] = "missing_base_url"
+            elif config_reason == "endpoint_surface_mismatch":
+                config_details["hint_code"] = "responses_unsupported"
             return _LLMDiagnostic(
                 "config_error",
                 False,
                 str(exc) or "LLM native transport configuration error",
-                str(getattr(exc, "error_code", None) or "native_config_error"),
+                config_reason,
+                details=config_details,
             )
         if isinstance(exc, TimeoutError) or "timeout" in exc_name or "timed out" in text:
             return _LLMDiagnostic("timeout", True, "LLM request timed out", "timeout")
@@ -4859,14 +5380,34 @@ class SystemConfigService:
                 "LLM request was rejected by quota or rate limiting",
                 "rate_limit",
             )
+        exc_response = getattr(exc, "response", None)
+        raw_exc_headers = getattr(exc_response, "headers", None) if exc_response is not None else None
+        exc_headers = raw_exc_headers if isinstance(raw_exc_headers, Mapping) else None
+        exc_status = getattr(exc, "status_code", None)
+        if exc_status is None and exc_response is not None:
+            exc_status = getattr(exc_response, "status_code", None)
         if getattr(exc, "is_waf_blocked", False) or (
             getattr(exc, "error_code", None) == "provider_blocked"
+        ) or (
+            exc_status == 403
+            and SystemConfigService._has_waf_403_signal(403, str(exc), headers=exc_headers)
         ):
+            is_waf = bool(getattr(exc, "is_waf_blocked", False)) or SystemConfigService._has_waf_403_signal(
+                exc_status or 403,
+                str(exc),
+                headers=exc_headers,
+            )
+            waf_details = {"waf_blocked": True, "hint_code": "waf_blocked"} if is_waf else {}
             return _LLMDiagnostic(
                 "request_blocked",
                 False,
-                "Blocked by Cloudflare/WAF, not invalid API key",
+                (
+                    "Blocked by Cloudflare/WAF, not invalid API key"
+                    if is_waf
+                    else "LLM request was blocked by provider or gateway policy"
+                ),
                 "provider_blocked",
+                details=waf_details,
             )
         if getattr(exc, "error_code", None) == "non_json_html" or (
             "text/html" in text and "base url" in text
@@ -4876,6 +5417,7 @@ class SystemConfigService:
                 False,
                 "Endpoint returned HTML instead of JSON; missing /v1 in Base URL?",
                 "non_json_html",
+                details={"hint_code": "missing_v1"},
             )
         if getattr(exc, "status_code", None) == 404 and "/responses" in text and "model" not in text:
             return _LLMDiagnostic(
@@ -4883,6 +5425,7 @@ class SystemConfigService:
                 False,
                 "Relay lacks /responses; use Chat Completions",
                 "endpoint_not_found",
+                details={"hint_code": "responses_unsupported"},
             )
         if SystemConfigService._has_provider_prefix_mismatch_signal(text):
             return _LLMDiagnostic(
@@ -4897,6 +5440,7 @@ class SystemConfigService:
                 False,
                 "Configured model is not available for this channel",
                 "model_access_denied",
+                details={"hint_code": "unknown_model"},
             )
         if SystemConfigService._has_request_blocked_signal(str(exc)):
             return _LLMDiagnostic(
@@ -4915,6 +5459,15 @@ class SystemConfigService:
                 False,
                 "Configured model could not be found on this channel",
                 "model_not_found",
+                details={"hint_code": "unknown_model"},
+            )
+        if getattr(exc, "status_code", None) == 404 and "model" not in text:
+            return _LLMDiagnostic(
+                "network_error",
+                False,
+                "Endpoint returned 404; check whether Base URL is missing /v1 or the provider path",
+                "endpoint_not_found",
+                details={"hint_code": "missing_v1"},
             )
         if "dns" in text or "name resolution" in text or "temporary failure in name resolution" in text:
             return _LLMDiagnostic("network_error", True, "LLM request failed before a valid response was returned", "dns_error")
@@ -6075,12 +6628,26 @@ class SystemConfigService:
                 }
             )
 
-        if require_base_url and not base_url_value.strip():
+        resolved_protocol = resolve_llm_channel_protocol(
+            protocol_value,
+            base_url=base_url_value,
+            models=list(model_values) if model_values else None,
+            channel_name=channel_name,
+        )
+        must_have_base_url = require_base_url or SystemConfigService._channel_requires_explicit_base_url(
+            channel_name,
+            resolved_protocol,
+            models=model_values,
+        )
+        if must_have_base_url and not base_url_value.strip():
             issues.append(
                 {
                     "key": base_url_key,
                     "code": "missing_base_url",
-                    "message": f"LLM channel '{channel_name}' requires a base URL to discover models",
+                    "message": (
+                        f"LLM channel '{channel_name}' requires an explicit base URL "
+                        "(e.g. https://your-relay/v1) so credentials are not sent to the wrong host"
+                    ),
                     "severity": "error",
                     "expected": "http(s)://host/v1",
                     "actual": "",
@@ -6109,12 +6676,6 @@ class SystemConfigService:
                 }
             )
 
-        resolved_protocol = resolve_llm_channel_protocol(
-            protocol_value,
-            base_url=base_url_value,
-            models=list(model_values) if model_values else None,
-            channel_name=channel_name,
-        )
         # Validate parsed key segments so that inputs like "," or " , " are
         # treated as empty (they produce zero usable keys after split+strip).
         _parsed_api_keys = [seg.strip() for seg in api_key_value.split(",") if seg.strip()]

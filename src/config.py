@@ -16,7 +16,7 @@ import os
 import re
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Mapping, Optional, Tuple
+from typing import Any, Dict, List, Literal, Mapping, Optional, Sequence, Tuple
 from urllib.parse import unquote, urlparse
 from dotenv import load_dotenv, dotenv_values
 from dataclasses import dataclass, field
@@ -541,9 +541,106 @@ def resolve_llm_channel_base_url(channel_name: str, base_url: Optional[str]) -> 
     explicit = (base_url or "").strip()
     if explicit:
         return explicit
-    if channel_name.strip().lower() == "modelflare":
+    lower_name = channel_name.strip().lower()
+    if lower_name == "modelflare":
         return MODELFLARE_LLM_BASE_URL_DEFAULT
+    if lower_name == "anspire":
+        return (os.getenv("ANSPIRE_LLM_BASE_URL") or ANSPIRE_LLM_BASE_URL_DEFAULT).strip()
     return ""
+
+
+_VERIFIED_BLANK_BASE_URL_PROTOCOLS: frozenset[str] = frozenset(
+    {
+        "anthropic",
+        "gemini",
+        "vertex_ai",
+        "deepseek",
+        "ollama",
+        "ollama_chat",
+    }
+)
+
+_VERIFIED_BLANK_BASE_URL_PROVIDERS: frozenset[str] = frozenset(
+    {
+        "anthropic",
+        "gemini",
+        "vertex_ai",
+        "deepseek",
+        "ollama",
+        "ollama_chat",
+        "minimax",
+        "moonshot",
+        "dashscope",
+        "zai",
+        "zhipu",
+        "groq",
+        "xai",
+        "together_ai",
+        "fireworks_ai",
+        "mistral",
+        "perplexity",
+        "cerebras",
+        "deepinfra",
+        "cohere",
+        "openrouter",
+        "modelflare",
+        "anspire",
+    }
+)
+
+
+def channel_requires_explicit_base_url(
+    channel_name: str,
+    protocol: Optional[str],
+    models: Optional[Sequence[str]] = None,
+) -> bool:
+    """Return True unless the channel resolves to a verified provider with a default endpoint.
+
+    Positive allowlist: blank ``base_url`` is permitted ONLY when the channel has
+    a named default base (``modelflare``, ``anspire``), uses a verified non-OpenAI
+    protocol (``anthropic``, ``gemini``, ``vertex_ai``, ``deepseek``, ``ollama``),
+    targets official OpenAI (``openai*`` channel name), or every declared model
+    explicitly names a verified non-OpenAI provider prefix (e.g. ``minimax/...``,
+    ``anthropic/...``, ``openrouter/...``). All other channels (``custom*``,
+    ``my_proxy``, ``requesty*``, ``x6ai*``, ``openrouter*`` with bare models,
+    ``local*``, etc.) require an explicit ``base_url`` so credentials are never
+    dispatched to ``api.openai.com`` by accident.
+    """
+    lower_name = (channel_name or "").strip().lower()
+    if not lower_name:
+        return False
+    if resolve_llm_channel_base_url(lower_name, ""):
+        return False
+    base_name = re.sub(r"[_-]?\d+$", "", lower_name)
+
+    model_list = [str(m).strip() for m in (models or ()) if str(m).strip()]
+    resolved_protocol = resolve_llm_channel_protocol(
+        protocol,
+        base_url="",
+        models=model_list or None,
+        channel_name=lower_name,
+    )
+    if resolved_protocol in _VERIFIED_BLANK_BASE_URL_PROTOCOLS:
+        return False
+
+    # Official OpenAI channel (openai, openai2, openai_main, etc.) defaults to api.openai.com.
+    if base_name == "openai" or lower_name.startswith("openai_"):
+        return False
+
+    # Allow blank base_url when channel name itself is a verified non-OpenAI cloud provider
+    # whose explicit model prefix matches a verified default provider (e.g. minimax/MiniMax-M1).
+    if model_list:
+        explicit_providers = [
+            get_explicit_llm_channel_model_provider(m)
+            for m in model_list
+        ]
+        if all(
+            provider and provider in _VERIFIED_BLANK_BASE_URL_PROVIDERS
+            for provider in explicit_providers
+        ):
+            return False
+
+    return True
 
 
 def resolve_llm_channel_names(config_map: Mapping[str, str]) -> str:
@@ -603,11 +700,19 @@ def resolve_llm_channel_protocol(
     if explicit in SUPPORTED_LLM_CHANNEL_PROTOCOLS:
         return explicit
 
-    # These gateways are OpenAI-compatible; vendor/model IDs (anthropic/...,
-    # vertex/...) are not LiteLLM protocol declarations.
-    if is_vendor_model_gateway_base_url(base_url):
-        return "openai"
+    # Infer from explicit channel name first (e.g. "anthropic", "gemini",
+    # "deepseek", "ollama") so custom reverse-proxy Base URLs on named
+    # protocol channels preserve their native protocol.
+    if channel_name:
+        name_protocol = canonicalize_llm_channel_protocol(channel_name)
+        if name_protocol in SUPPORTED_LLM_CHANNEL_PROTOCOLS:
+            return name_protocol
 
+    # Preserve canonical provider prefixes on blank-protocol channels (e.g.
+    # anthropic/..., gemini/..., deepseek/..., ollama/...) so reverse-proxy
+    # channels without an explicit PROTOCOL keep their native protocol.
+    # Channels that want opaque slash-containing model IDs over an OpenAI
+    # relay set PROTOCOL=openai explicitly (e.g. Custom Relay preset).
     for model in models or []:
         if "/" not in model:
             continue
@@ -615,18 +720,21 @@ def resolve_llm_channel_protocol(
         if prefix in SUPPORTED_LLM_CHANNEL_PROTOCOLS:
             return prefix
 
-    # Infer from channel name (e.g. "deepseek" -> deepseek, "gemini" -> gemini)
-    if channel_name:
-        name_protocol = canonicalize_llm_channel_protocol(channel_name)
-        if name_protocol in SUPPORTED_LLM_CHANNEL_PROTOCOLS:
-            return name_protocol
-
     if base_url:
         parsed = _safe_urlparse(base_url)
-        if parsed is not None and parsed.hostname in {"127.0.0.1", "localhost", "0.0.0.0"}:
-            # Default to openai for local servers (vLLM, LM Studio, LocalAI, etc.).
-            # Ollama users should set PROTOCOL=ollama explicitly or name the channel "ollama".
-            return "openai"
+        if parsed is not None:
+            hostname = (parsed.hostname or "").lower()
+            path = (parsed.path or "").strip().rstrip("/").lower()
+            if hostname == "api.anthropic.com" or hostname.endswith(".anthropic.com") or path.endswith("/messages"):
+                return "anthropic"
+            if (
+                (hostname == "generativelanguage.googleapis.com" and "/openai" not in path)
+                or ":generatecontent" in path
+                or ":streamgeneratecontent" in path
+            ):
+                return "gemini"
+            if hostname == "api.deepseek.com":
+                return "deepseek"
         return "openai"
 
     return ""
@@ -641,35 +749,116 @@ def channel_allows_empty_api_key(protocol: Optional[str], base_url: Optional[str
     return parsed is not None and parsed.hostname in {"127.0.0.1", "localhost", "0.0.0.0"}
 
 
-def is_vendor_model_gateway_base_url(base_url: Optional[str]) -> bool:
-    """Identify gateways whose vendor/model IDs must use the OpenAI handler."""
+# Official cloud provider hosts whose canonical model prefixes (e.g. minimax/...,
+# deepseek/..., dashscope/..., moonshot/..., openrouter/...) belong to that
+# official endpoint rather than a generic third-party OpenAI-compatible relay.
+# Localhost hosts are intentionally NOT included so local vLLM/LM Studio/One-API
+# endpoints still support opaque vendor-qualified model IDs.
+_OFFICIAL_CLOUD_PROVIDER_HOSTS: frozenset[str] = frozenset(
+    {
+        "api.openai.com",
+        "api.anthropic.com",
+        "generativelanguage.googleapis.com",
+        "api.deepseek.com",
+        "api.moonshot.ai",
+        "api.moonshot.cn",
+        "dashscope.aliyuncs.com",
+        "dashscope-intl.aliyuncs.com",
+        "dashscope-us.aliyuncs.com",
+        "api.z.ai",
+        "open.bigmodel.cn",
+        "api.minimax.io",
+        "api.minimax.com",
+        "api.minimax.chat",
+        "api.groq.com",
+        "api.x.ai",
+        "api.together.xyz",
+        "api.fireworks.ai",
+        "api.mistral.ai",
+        "api.perplexity.ai",
+        "api.cerebras.ai",
+        "api.deepinfra.com",
+    }
+)
+
+
+def is_custom_openai_compatible_base_url(base_url: Optional[str]) -> bool:
+    """Return True when ``base_url`` targets a third-party or self-hosted OpenAI-compatible relay.
+
+    Uses generic endpoint semantics with zero vendor relay domain allowlists:
+    blank URLs, official cloud provider hosts (aligned with
+    ``VERIFIED_DEFAULT_PROVIDER_BASES``), and explicit native ``/messages`` or
+    ``:generateContent`` paths return ``False``; any other valid HTTP(S)
+    endpoint (including self-hosted gateways and third-party relays) returns
+    ``True``.
+    """
     raw_url = (base_url or "").strip()
     if not raw_url:
         return False
-    try:
-        hostname = (urlparse(raw_url).hostname or "").lower()
-    except ValueError:
+    parsed = _safe_urlparse(raw_url)
+    if parsed is None:
         return False
-    return (
-        hostname == "requesty.ai" or hostname.endswith(".requesty.ai")
-        or hostname == "api.x6.ai"
-    )
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+        return False
+    hostname = (parsed.hostname or "").lower()
+    if not hostname:
+        return False
+    path = (parsed.path or "").strip().rstrip("/").lower()
+    if hostname in _OFFICIAL_CLOUD_PROVIDER_HOSTS:
+        return False
+    if hostname.endswith(".anthropic.com"):
+        return False
+    if hostname.endswith(".volces.com") or hostname.endswith(".aliyuncs.com"):
+        return False
+    if path.endswith("/messages"):
+        return False
+    if ":generatecontent" in path or ":streamgeneratecontent" in path:
+        return False
+    return True
+
+
+def _is_openrouter_base_url(base_url: Optional[str]) -> bool:
+    parsed = _safe_urlparse((base_url or "").strip())
+    if parsed is None:
+        return False
+    hostname = (parsed.hostname or "").lower()
+    return hostname == "openrouter.ai" or hostname.endswith(".openrouter.ai")
+
+
+def normalize_legacy_openai_model(model: str, openai_base_url: Optional[str] = None) -> str:
+    """Normalize legacy ``OPENAI_MODEL`` for both official OpenAI and custom relay ``OPENAI_BASE_URL``."""
+    normalized = (model or "").strip()
+    if not normalized:
+        return normalized
+    if "/" not in normalized:
+        return f"openai/{normalized}"
+    raw_prefix = normalized.split("/", 1)[0].strip().lower()
+    if (
+        is_custom_openai_compatible_base_url(openai_base_url)
+        and raw_prefix != "openai"
+        and not (raw_prefix == "openrouter" and _is_openrouter_base_url(openai_base_url))
+    ):
+        return f"openai/{normalized}"
+    return normalized
 
 
 def route_discovered_llm_model(model_id: str, base_url: Optional[str]) -> str:
-    """Return the saved channel value for an ID listed by a gateway ``/models``.
+    """Return the saved channel value for an ID listed by an endpoint's ``/models``.
 
-    Requesty and x6.ai list ``vendor/model`` IDs (``openai/gpt-4o-mini``,
-    ``anthropic/claude-sonnet-4-6``, ``vertex/claude-sonnet-4-5``) and managed
-    policy IDs without a slash. The vendor segment collides with LiteLLM
-    provider names, so the saved value carries the OpenAI-compatible gateway
-    route once (``openai/openai/gpt-4o-mini``); LiteLLM strips that layer and
-    sends the full gateway ID unchanged.
+    Custom OpenAI-compatible relays accept raw model IDs (``gpt-6.1-terra``,
+    ``Qwen/Qwen3-235B``, ``anthropic/claude-sonnet-4-6``) without an ``openai/``
+    prefix because ``normalize_llm_channel_model()`` automatically wraps opaque
+    relay IDs at runtime. The only collision is a relay-returned ID that literally
+    starts with ``openai/`` (e.g. ``openai/gpt-4o-mini``): prepending one outer
+    ``openai/`` layer ensures both native and LiteLLM transports strip only the
+    outer route prefix and send ``openai/gpt-4o-mini`` verbatim.
     """
     normalized_id = (model_id or "").strip()
-    if not normalized_id or not is_vendor_model_gateway_base_url(base_url):
+    if not normalized_id or not is_custom_openai_compatible_base_url(base_url):
         return normalized_id
-    return f"openai/{normalized_id}"
+    if "/" in normalized_id and normalized_id.split("/", 1)[0].strip().lower() == "openai":
+        return f"openai/{normalized_id}"
+    return normalized_id
 
 
 def normalize_llm_channel_model(model: str, protocol: Optional[str], base_url: Optional[str] = None) -> str:
@@ -683,12 +872,17 @@ def normalize_llm_channel_model(model: str, protocol: Optional[str], base_url: O
     if (
         "/" in normalized_model
         and resolved_protocol == "openai"
-        and is_vendor_model_gateway_base_url(base_url)
+        and is_custom_openai_compatible_base_url(base_url)
         and normalized_model.split("/", 1)[0].lower() != "openai"
+        and not (
+            normalized_model.split("/", 1)[0].lower() == "openrouter"
+            and _is_openrouter_base_url(base_url)
+        )
     ):
-        # Gateway vendor IDs such as anthropic/... or vertex/... must stay
-        # intact behind the OpenAI-compatible gateway route instead of being
-        # read as LiteLLM direct providers.
+        # Any custom-BASE_URL OpenAI-compatible relay (including OpenRouter) treats
+        # slash-containing model IDs (e.g. anthropic/..., vertex/..., Qwen/...) as
+        # opaque wire model IDs behind the OpenAI-compatible route. Already-saved
+        # openai/<model> (and openrouter/<model> on openrouter.ai) stay untouched.
         return f"openai/{normalized_model}"
 
     if "/" in normalized_model:
@@ -1048,7 +1242,7 @@ class Config:
     # === AI 分析配置 ===
     generation_backend: str = LITELLM_BACKEND_ID
     generation_fallback_backend: str = LITELLM_BACKEND_ID
-    llm_transport_mode: str = "litellm"
+    llm_transport_mode: str = "auto"
     generation_backend_timeout_seconds: int = DEFAULT_LOCAL_CLI_TIMEOUT_SECONDS
     generation_backend_max_output_bytes: int = DEFAULT_LOCAL_CLI_MAX_OUTPUT_BYTES
     generation_backend_max_concurrency: int = DEFAULT_GENERATION_BACKEND_MAX_CONCURRENCY
@@ -1777,11 +1971,10 @@ class Config:
                 elif deepseek_api_keys:
                     litellm_model = 'deepseek/deepseek-flash'
                 elif openai_api_keys:
-                    # For openai-compatible models, add prefix only if not already prefixed
-                    if '/' not in _openai_model_name:
-                        litellm_model = f'openai/{_openai_model_name}'
-                    else:
-                        litellm_model = _openai_model_name
+                    litellm_model = normalize_legacy_openai_model(
+                        _openai_model_name,
+                        openai_base_url,
+                    )
 
             if not litellm_fallback_models and not litellm_fallback_models_explicit:
                 # Backward compat: use gemini_model_fallback when primary is gemini
@@ -2843,6 +3036,14 @@ class Config:
             if not models:
                 _logger.warning(f"LLM channel '{ch_name}': no models configured, skipped")
                 continue
+            if not base_url and channel_requires_explicit_base_url(ch_name, protocol, models=models):
+                issues.append(HermesConfigIssue(
+                    f"LLM_{ch_upper}_BASE_URL",
+                    "missing_base_url",
+                    f"LLM channel '{ch_name}' requires an explicit BASE_URL.",
+                ))
+                _logger.warning("LLM channel '%s': missing explicit BASE_URL, skipped", ch_name)
+                continue
 
             channels.append({
                 'name': ch_name.lower(),
@@ -2904,6 +3105,16 @@ class Config:
             )
         model_list: List[Dict[str, Any]] = []
         for ch in channels:
+            ch_name = str(ch.get("name") or "")
+            ch_base_url = str(ch.get("base_url") or "").strip()
+            ch_models = [str(m) for m in (ch.get("models") or []) if str(m).strip()]
+            if not ch_base_url and channel_requires_explicit_base_url(
+                ch_name,
+                str(ch.get("protocol") or ""),
+                models=ch_models,
+            ):
+                logger.warning("LLM channel '%s': missing explicit BASE_URL in model_list build, skipped", ch_name)
+                continue
             hermes_refs = {
                 str(ref.get("route_model") or ""): ref
                 for ref in (ch.get("model_refs") or [])

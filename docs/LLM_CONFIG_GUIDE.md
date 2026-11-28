@@ -4,9 +4,27 @@
 
 欢迎！无论你是刚接触 AI 的新手小白，还是精通各种 API 的高玩老手，这份指南都能帮你快速把大模型（LLM）跑起来。
 
-本项目对外提供统一的 AI 模型接入体验，支持主流官方 API、OpenAI 兼容平台以及本地模型。底层由 [LiteLLM](https://docs.litellm.ai/) 驱动，但大多数用户只需要理解“选服务商、填 API Key、选主模型/渠道”这条默认路径。为了照顾不同阶段的用户，我们设计了“三层优先级”配置，按需选择最适合你的方式即可。
+本项目对外提供统一的 AI 模型接入体验，支持主流官方 API、任意第三方中转站（One-API / New-API / 聚合代理）以及本地模型（Ollama / vLLM / LM Studio）。底层默认启用原生 4 协议 HTTPX + SSE 传输（`LLM_TRANSPORT_MODE=auto`，云 IAM 服务商自动委托 [LiteLLM](https://docs.litellm.ai/)，需要时可通过 `LLM_TRANSPORT_MODE=litellm` 一键回滚）。
 
-如果你正在选择具体服务商、配置 GitHub Actions Secrets / Variables、排查 `details.reason` 错误或准备回滚配置，请优先查看 [LLM 服务商配置指南](./llm-providers.md)。该文档集中维护 provider 预设、Actions 变量对照、运行时能力检测边界和常见错误处理建议。如需了解原生 4 协议 HTTPX + SSE 传输引擎与灰度开关 `LLM_TRANSPORT_MODE=litellm|auto|native`（默认 `litellm`，仅环境变量控制），请参考 [原生 HTTPX 传输说明](./llm-native-transport.md)。
+如果你正在选择具体服务商、配置 GitHub Actions Secrets / Variables、排查 `details.reason` / `details.hint_code` 错误或准备回滚配置，请优先查看 [LLM 服务商配置指南](./llm-providers.md)。如需了解原生 4 协议 HTTPX + SSE 传输引擎与环境变量开关 `LLM_TRANSPORT_MODE=auto|litellm|native`（默认 `auto`，仅环境变量控制），请参考 [原生 HTTPX 传输说明](./llm-native-transport.md)。
+
+## 3 行极速上手（推荐从这里开始）
+
+- **使用第三方中转站 / One-API / New-API / 代理（只需 3 行，直接填原始模型名，无需加 `openai/` 前缀）：**
+
+```env
+OPENAI_BASE_URL=https://your-relay.example.com/v1
+OPENAI_API_KEY=sk-your-key
+OPENAI_MODEL=claude-sonnet-4-6   # 或 gpt-4o-mini、Qwen/Qwen3-235B
+```
+
+- **使用官方服务商（只需 1 行 Key）：**
+
+```env
+DEEPSEEK_API_KEY=sk-xxx          # 或 GEMINI_API_KEY= / ANTHROPIC_API_KEY= / OPENAI_API_KEY= / MODELFLARE_KEY=
+```
+
+- **使用 Web 设置页：** 打开「设置 → AI 模型」，在「快速添加渠道」中选择服务商预设，填写 Base URL（如为中转站/本地模型）、API Key 与模型后点击「测试连接」完成验证。
 
 > 本页的 provider/model/Base URL 说明本次未新增外部兼容语义，仅用于同步现网约定；实际兼容判断仍按当前仓库锁定依赖与运行时实现执行：
 > - 依赖边界：`litellm>=1.80.10,!=1.82.7,!=1.82.8,<1.99.0`（与 `requirements.txt` 一致）。

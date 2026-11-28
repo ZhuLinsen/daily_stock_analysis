@@ -353,8 +353,132 @@ ALLOWED_REQUEST_DEFAULT_KEYS: frozenset[str] = frozenset(
         "prompt_cache_retention",
         "stream_options",
         "user",
+        "logit_bias",
+        "logprobs",
+        "top_logprobs",
+        "n",
+        "service_tier",
     }
 )
+
+_KNOWN_DEPLOYMENT_OR_CALL_KEYS: frozenset[str] = frozenset(
+    {
+        "model",
+        "messages",
+        "stream",
+        "tools",
+        "tool_choice",
+        "api_key",
+        "api_base",
+        "base_url",
+        "extra_headers",
+        "headers",
+        "default_headers",
+        "extra_body",
+        "custom_llm_provider",
+        "wire_protocol",
+        "api_surface",
+        "dsa_channel_protocol",
+        "priority",
+        "order",
+        "timeout",
+        "request_timeout",
+        "num_retries",
+        "max_retries",
+        "fallbacks",
+        "metadata",
+        "caching",
+        "drop_params",
+        "client",
+        "rpm",
+        "tpm",
+        "max_parallel_requests",
+        "weight",
+        "tags",
+        "stream_timeout",
+        "api_version",
+    }
+)
+
+_PROTOCOL_SUPPORTED_REQUEST_DEFAULT_KEYS: Dict[str, frozenset[str]] = {
+    "openai_chat": frozenset(
+        {
+            "temperature",
+            "top_p",
+            "max_tokens",
+            "max_completion_tokens",
+            "stop",
+            "seed",
+            "presence_penalty",
+            "frequency_penalty",
+            "response_format",
+            "reasoning_effort",
+            "prompt_cache_key",
+            "prompt_cache_retention",
+            "store",
+            "parallel_tool_calls",
+            "stream_options",
+            "user",
+            "logit_bias",
+            "logprobs",
+            "top_logprobs",
+            "n",
+            "service_tier",
+        }
+    ),
+    "openai_responses": frozenset(
+        {
+            "temperature",
+            "top_p",
+            "max_tokens",
+            "max_completion_tokens",
+            "max_output_tokens",
+            "response_format",
+            "reasoning_effort",
+            "prompt_cache_key",
+            "prompt_cache_retention",
+            "store",
+            "parallel_tool_calls",
+            "user",
+        }
+    ),
+    "anthropic": frozenset(
+        {
+            "temperature",
+            "top_p",
+            "top_k",
+            "max_tokens",
+            "max_completion_tokens",
+            "max_output_tokens",
+            "stop",
+            "stop_sequences",
+            "response_format",
+            "thinking",
+            "reasoning_effort",
+            "parallel_tool_calls",
+        }
+    ),
+    "gemini": frozenset(
+        {
+            "temperature",
+            "top_p",
+            "top_k",
+            "max_tokens",
+            "max_completion_tokens",
+            "max_output_tokens",
+            "stop",
+            "stop_sequences",
+            "seed",
+            "presence_penalty",
+            "frequency_penalty",
+            "response_format",
+            "thinking",
+            "thinking_config",
+            "reasoning_effort",
+            "generation_config",
+        }
+    ),
+}
 
 _LOCALHOST_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "0.0.0.0"})
 _GEMINI_VERSION_SEGMENT_RE = re.compile(r"/(?:v1|v1beta|v1alpha)(?:/|$)", re.IGNORECASE)
@@ -852,6 +976,11 @@ def resolve_deployment(
         resolved_alias = raw_model
 
     # Fail closed on unresolved os.environ/VAR endpoint references (Codex #35 P0-3).
+    disable_env_expansion = bool(raw_params.get("_dsa_disable_env_expansion"))
+
+    def _resolve_val(value: Any) -> Any:
+        return value if disable_env_expansion else resolve_env_reference(value)
+
     unresolved_marker = str(raw_info.get("_dsa_unresolved_endpoint_env") or "").strip()
     if unresolved_marker:
         return Unsupported(
@@ -860,24 +989,25 @@ def resolve_deployment(
             detail=f"Endpoint environment variable is unset ({unresolved_marker})",
             model=raw_model,
         )
-    for endpoint_key in ("base_url", "api_base"):
-        missing_var = find_unresolved_env_var(raw_params.get(endpoint_key))
-        if missing_var is not None:
-            return Unsupported(
-                reason="unresolved_endpoint_env",
-                provider="unknown",
-                detail=f"{endpoint_key} environment variable '{missing_var}' is not set",
-                model=raw_model,
-            )
+    if not disable_env_expansion:
+        for endpoint_key in ("base_url", "api_base"):
+            missing_var = find_unresolved_env_var(raw_params.get(endpoint_key))
+            if missing_var is not None:
+                return Unsupported(
+                    reason="unresolved_endpoint_env",
+                    provider="unknown",
+                    detail=f"{endpoint_key} environment variable '{missing_var}' is not set",
+                    model=raw_model,
+                )
 
     # Check conflicting explicit api_base vs base_url (Codex #35 P0-3 + P1-3 urlsplit).
     has_explicit_base_url = "base_url" in raw_params and raw_params.get("base_url") is not None
     resolved_base_url_val = (
-        str(resolve_env_reference(raw_params.get("base_url")) or "").strip()
+        str(_resolve_val(raw_params.get("base_url")) or "").strip()
         if has_explicit_base_url
         else ""
     )
-    resolved_api_base_val = str(resolve_env_reference(raw_params.get("api_base")) or "").strip()
+    resolved_api_base_val = str(_resolve_val(raw_params.get("api_base")) or "").strip()
     if (
         has_explicit_base_url
         and resolved_api_base_val
@@ -899,20 +1029,20 @@ def resolve_deployment(
     )
 
     # Extract provider hints & metadata.
-    eff_custom_provider = str(resolve_env_reference(raw_params.get("custom_llm_provider")) or "").strip().lower()
+    eff_custom_provider = str(_resolve_val(raw_params.get("custom_llm_provider")) or "").strip().lower()
     eff_channel_protocol = str(
         channel_protocol
         if channel_protocol is not None
         else (
             raw_info.get("dsa_channel_protocol")
-            or resolve_env_reference(raw_params.get("dsa_channel_protocol"))
+            or _resolve_val(raw_params.get("dsa_channel_protocol"))
             or ""
         )
     ).strip().lower()
-    raw_wire_protocol = str(resolve_env_reference(raw_params.get("wire_protocol")) or "").strip()
+    raw_wire_protocol = str(_resolve_val(raw_params.get("wire_protocol")) or "").strip()
     raw_surface = str(
         raw_info.get("dsa_api_surface")
-        or resolve_env_reference(raw_params.get("api_surface"))
+        or _resolve_val(raw_params.get("api_surface"))
         or ""
     ).strip()
     eff_surface = _normalize_api_surface(raw_surface)
@@ -1195,11 +1325,13 @@ def resolve_deployment(
     # R3 Origin-Bound Credentials & Headers
     # ------------------------------------------------------------
     raw_api_key_present = "api_key" in raw_params and raw_params.get("api_key") is not None
-    raw_api_key_unresolved = find_unresolved_env_var(raw_params.get("api_key"))
+    raw_api_key_unresolved = (
+        None if disable_env_expansion else find_unresolved_env_var(raw_params.get("api_key"))
+    )
     resolved_explicit_key = (
         ""
         if raw_api_key_unresolved is not None
-        else str(resolve_env_reference(raw_params.get("api_key")) or "").strip()
+        else str(_resolve_val(raw_params.get("api_key")) or "").strip()
     )
     explicit_empty_key = raw_api_key_present and not resolved_explicit_key
 
@@ -1235,12 +1367,20 @@ def resolve_deployment(
         if base_source in {"env", "default"} or (target_origin is not None and target_origin in allowed_origins):
             effective_api_key = _resolve_provider_env_key(effective_provider)
 
-    # Resolve headers with os.environ/VAR expansion.
+    # Resolve headers with os.environ/VAR expansion (disabled for untrusted API probes).
     resolved_headers: Dict[str, str] = {}
     for hdr_key in ("extra_headers", "headers", "default_headers"):
         raw_hdrs = raw_params.get(hdr_key)
         if isinstance(raw_hdrs, Mapping):
-            merge_header_overrides(resolved_headers, {hdr_key: resolve_headers_env(raw_hdrs)})
+            if disable_env_expansion:
+                literal_hdrs = {
+                    str(hk).strip(): str(hv)
+                    for hk, hv in raw_hdrs.items()
+                    if str(hk).strip() and hv is not None
+                }
+                merge_header_overrides(resolved_headers, {hdr_key: literal_hdrs})
+            else:
+                merge_header_overrides(resolved_headers, {hdr_key: resolve_headers_env(raw_hdrs)})
 
     raw_extra_body = raw_params.get("extra_body")
     resolved_extra_body = (
@@ -1248,11 +1388,37 @@ def resolve_deployment(
     )
 
     # R8: Carry YAML/deployment allowlisted generation defaults into request_defaults.
+    # Reject unrecognized non-metadata request params instead of silently dropping them
+    # so `auto` mode delegates those aliases to LiteLLM cleanly.
+    protocol_supported_defaults = _PROTOCOL_SUPPORTED_REQUEST_DEFAULT_KEYS.get(
+        protocol,
+        ALLOWED_REQUEST_DEFAULT_KEYS,
+    )
     request_defaults: Dict[str, Any] = {}
     for k, v in raw_params.items():
+        if v is None:
+            continue
         k_lower = str(k).strip().lower()
-        if k_lower in ALLOWED_REQUEST_DEFAULT_KEYS and v is not None:
-            resolved_v = resolve_env_reference(v) if isinstance(v, str) else copy.deepcopy(v)
+        if k_lower.startswith("_dsa_") or k_lower in _KNOWN_DEPLOYMENT_OR_CALL_KEYS:
+            continue
+        if k_lower in protocol_supported_defaults:
+            resolved_v = _resolve_val(v) if isinstance(v, str) else copy.deepcopy(v)
+            if (
+                protocol == "anthropic"
+                and k_lower == "response_format"
+                and isinstance(resolved_v, Mapping)
+            ):
+                rtype = str(resolved_v.get("type") or "").strip().lower()
+                if rtype and rtype not in {"json_schema", "text"}:
+                    return Unsupported(
+                        reason="unsupported_deployment_param",
+                        provider=effective_provider,
+                        detail=(
+                            f"Anthropic native transport does not support response_format type={rtype!r}; "
+                            "delegating to LiteLLM in auto mode"
+                        ),
+                        model=raw_model,
+                    )
             if k_lower in {"store", "parallel_tool_calls"}:
                 try:
                     resolved_v = parse_strict_bool(
@@ -1269,6 +1435,16 @@ def resolve_deployment(
                         model=raw_model,
                     )
             request_defaults[k] = resolved_v
+        else:
+            return Unsupported(
+                reason="unsupported_deployment_param",
+                provider=effective_provider,
+                detail=(
+                    f"Parameter '{k}' is not forwarded natively for protocol '{protocol}'; "
+                    "delegating to LiteLLM in auto mode"
+                ),
+                model=raw_model,
+            )
 
     # P2: Default priority is 0 unless model_info.priority / order explicitly specified.
     if priority is not None:

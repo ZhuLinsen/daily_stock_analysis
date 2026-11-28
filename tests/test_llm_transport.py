@@ -1113,7 +1113,6 @@ def test_config_persists_dsa_api_surface_protocol_and_preserves_relay_models() -
         "LLM_CLAUDE_DIRECT_API_KEY": "sk-ant-direct-1234",
         "LLM_CLAUDE_DIRECT_MODELS": "claude-sonnet-4-6",
         "LLM_MIXED_OPENAI_PROTOCOL": "openai",
-        "LLM_MIXED_OPENAI_BASE_URL": "https://api.example.com/v1",
         "LLM_MIXED_OPENAI_API_KEY": "sk-mixed-1234",
         "LLM_MIXED_OPENAI_MODELS": "anthropic/claude-opus-4-6",
     }
@@ -1140,7 +1139,7 @@ def test_config_persists_dsa_api_surface_protocol_and_preserves_relay_models() -
         "dsa_channel_protocol": "openai",
         "dsa_api_surface": "responses",
     }
-    # Non-OpenAI direct channel and explicit anthropic/ on generic host do NOT claim OpenAI protocol/surface.
+    # Non-OpenAI direct channel and explicit anthropic/ without custom relay base_url do NOT claim OpenAI protocol/surface.
     assert by_alias["anthropic/claude-sonnet-4-6"]["model_info"] == {
         "dsa_channel_protocol": "anthropic",
     }
@@ -1166,6 +1165,10 @@ def test_config_persists_dsa_api_surface_protocol_and_preserves_relay_models() -
     )
     assert (
         normalize_llm_channel_model("anthropic/claude-sonnet-4-6", "openai", "https://api.example.com/v1")
+        == "openai/anthropic/claude-sonnet-4-6"
+    )
+    assert (
+        normalize_llm_channel_model("anthropic/claude-sonnet-4-6", "openai", "https://api.openai.com/v1")
         == "anthropic/claude-sonnet-4-6"
     )
 
