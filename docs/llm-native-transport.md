@@ -1,6 +1,24 @@
 # Native 4-Protocol HTTPX + SSE Transport & `LLM_TRANSPORT_MODE`
 
-`daily_stock_analysis` decouples stock analysis, Ask-Stock Agent, stock screening, Vision extraction, and Channel Test from direct `litellm` SDK imports through the unified boundary in `src/llm/transport.py`. Phase 2 added the native `httpx` + SSE transport engine (`NativeUnifiedTransport` / `NativeUnifiedRouter`), and Phase 3 promotes `LLM_TRANSPORT_MODE=auto` as the default while keeping `LLM_TRANSPORT_MODE=litellm` as an instant env-only rollback.
+`daily_stock_analysis` decouples stock analysis, Ask-Stock Agent, stock screening, Vision extraction, and Channel Test from direct `litellm` SDK imports through the unified boundary in `src/llm/transport.py`. Phase 2 added the native `httpx` + SSE transport engine (`NativeUnifiedTransport` / `NativeUnifiedRouter`), Phase 3 promoted `LLM_TRANSPORT_MODE=auto` as the default, and Phase 4 removes `litellm` / `tiktoken` / `orjson` / `openai` from core `requirements.txt` and desktop packaging into the optional `requirements-litellm.txt` extra.
+
+## Optional LiteLLM Extra (`requirements-litellm.txt`)
+
+Default installations (`pip install -r requirements.txt`, default Docker image, and Electron desktop releases) run 100% natively on `httpx` with **zero** `litellm`, `tiktoken`, `orjson`, or `openai` SDK packages installed.
+
+Install the optional extra **only** if you use Cloud IAM providers (`azure*`, `bedrock*`, `vertex_ai*`, `sagemaker*`, `cohere*`) or need the legacy `LLM_TRANSPORT_MODE=litellm` rollback:
+
+```bash
+pip install -r requirements-litellm.txt
+```
+
+For Docker builds requiring Cloud IAM / LiteLLM fallback:
+
+```bash
+docker build --build-arg INSTALL_LITELLM=true -f docker/Dockerfile -t stock-analysis:litellm .
+```
+
+If a Cloud IAM route or `LLM_TRANSPORT_MODE=litellm` is invoked without `requirements-litellm.txt` installed, runtime fails fast with typed `NativeConfigError(error_code="litellm_optional_dependency_missing")` (and Web diagnostics / `--doctor` report the exact `pip install -r requirements-litellm.txt` remediation).
 
 ## Runtime Switch (`LLM_TRANSPORT_MODE`, Env-Only)
 
@@ -63,6 +81,6 @@ Arbitrary third-party relays, aggregators, reverse proxies, and self-hosted serv
 
 - **Pool & Attempt Budget (`src/llm/native_pool.py`, `src/llm/native_engine.py`)**: exact alias matching, equal-priority round-robin rotation (`priority=0` default), cooldown skip honoring both numeric and HTTP-date `Retry-After`, total attempts capped at `1 + num_retries`, fail-fast on HTTP 400/413/422/404 and HTTP 200 HTML, and WAF/model-disabled HTTP 403 classified separately from bad API keys.
 - **Deadline & Stream Ownership**: single monotonic deadline per logical call (respecting stock cancellation), cancellation checks inside the SSE chunk loop, closeable `NativeStreamWrapper` even when never iterated, BOM stripping, rejection of truncated EOF frames and missing terminal markers, and pooled `httpx.Client` cleanup on `reset_transport_cache()`.
-- **Diagnostics**: `python main.py --doctor` reports `checks["llm"]["llm_transport_mode"]` and prints `transport=<mode>` on the `[llm]` line; usage audit records report the actual execution engine (`native` vs `litellm`).
-- **Verification Boundary**: offline CI validates all 4 protocols, SSE fuzzing, pool properties, redaction, real-TCP loopback + proxy stub, and a LiteLLM-vs-native parity harness; live SaaS vendor endpoints require opt-in verification via **Test Channel** or soak runs before promoting defaults.
-- **Instant Rollback**: set `LLM_TRANSPORT_MODE=litellm` in `.env` or your process/Actions environment.
+- **Diagnostics**: `python main.py --doctor` reports `checks["llm"]["llm_transport_mode"]` and `checks["llm"]["litellm_installed"]`, prints `transport=<mode> litellm_installed=<bool>` on the `[llm]` line, and flags missing `requirements-litellm.txt` when `LLM_TRANSPORT_MODE=litellm` or Cloud IAM fallback routes are configured; usage audit records report the actual execution engine (`native` vs `litellm`).
+- **Verification Boundary**: offline CI validates all 4 protocols, SSE fuzzing, pool properties, redaction, real-TCP loopback + proxy stub, zero-`litellm` runtime/test execution, and (when `requirements-litellm.txt` is installed) a LiteLLM-vs-native parity harness; live SaaS vendor endpoints require opt-in verification via **Test Channel** or soak runs before promoting defaults.
+- **Instant Rollback**: install `pip install -r requirements-litellm.txt` and set `LLM_TRANSPORT_MODE=litellm` in `.env` or your process/Actions environment.

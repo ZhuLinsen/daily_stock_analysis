@@ -517,6 +517,116 @@ raise SystemExit(main.main(["--doctor", "--json"]))
             self.assertTrue(parsed["checks"]["llm"]["ready"])
             self.assertNotIn("sk-cold-start-offline-secret-1234", proc.stdout)
 
+    def test_doctor_reports_litellm_installed_status_and_flags_missing_optional_extra(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            native_cfg = Config(
+                stock_list=["600519"],
+                llm_model_list=[
+                    {
+                        "model_name": "openai/gpt-4o-mini",
+                        "litellm_params": {
+                            "model": "openai/gpt-4o-mini",
+                            "api_base": "https://relay.example/v1",
+                            "api_key": "sk-native-only-secret-1234",
+                        },
+                    }
+                ],
+                litellm_model="openai/gpt-4o-mini",
+                wechat_webhook_url="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=abc",
+                database_path=f"{tmpdir}/doctor.db",
+                log_dir=tmpdir,
+            )
+            with (
+                patch.dict(os.environ, {}, clear=False),
+                patch("src.services.doctor_service.importlib.util.find_spec", return_value=None) as mock_find_spec,
+            ):
+                os.environ.pop("LLM_TRANSPORT_MODE", None)
+                native_report = run_doctor_diagnostics(native_cfg)
+                rendered_native = format_doctor_report(native_report)
+                mock_find_spec.assert_called_with("litellm")
+
+            self.assertEqual(native_report["status"], "ok")
+            self.assertTrue(native_report["checks"]["llm"]["ready"])
+            self.assertFalse(native_report["checks"]["llm"]["litellm_installed"])
+            self.assertIn("litellm_installed=False", rendered_native)
+
+            # Explicit LLM_TRANSPORT_MODE=litellm without litellm installed -> config error.
+            with (
+                patch.dict(os.environ, {"LLM_TRANSPORT_MODE": "litellm"}, clear=False),
+                patch("src.services.doctor_service.importlib.util.find_spec", return_value=None),
+            ):
+                litellm_mode_report = run_doctor_diagnostics(native_cfg)
+            self.assertEqual(litellm_mode_report["status"], "error")
+            self.assertFalse(litellm_mode_report["checks"]["llm"]["ready"])
+            self.assertFalse(litellm_mode_report["checks"]["llm"]["litellm_installed"])
+            self.assertTrue(
+                any(
+                    err["field"] == "LLM_TRANSPORT_MODE"
+                    and "pip install -r requirements-litellm.txt" in err["message"]
+                    for err in litellm_mode_report["checks"]["config"]["errors"]
+                ),
+                litellm_mode_report["checks"]["config"]["errors"],
+            )
+
+            # Default auto mode with Cloud IAM deployment in llm_model_list -> config error.
+            cloud_iam_cfg = Config(
+                stock_list=["600519"],
+                llm_model_list=[
+                    {
+                        "model_name": "bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0",
+                        "litellm_params": {
+                            "model": "bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0",
+                            "aws_region_name": "us-east-1",
+                        },
+                    }
+                ],
+                litellm_model="bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0",
+                wechat_webhook_url="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=abc",
+                database_path=f"{tmpdir}/doctor.db",
+                log_dir=tmpdir,
+            )
+            with (
+                patch.dict(os.environ, {"LLM_TRANSPORT_MODE": "auto"}, clear=False),
+                patch("src.services.doctor_service.importlib.util.find_spec", return_value=None),
+            ):
+                cloud_report = run_doctor_diagnostics(cloud_iam_cfg)
+            self.assertEqual(cloud_report["status"], "error")
+            self.assertFalse(cloud_report["checks"]["llm"]["ready"])
+            self.assertFalse(cloud_report["checks"]["llm"]["litellm_installed"])
+            self.assertTrue(
+                any(
+                    "pip install -r requirements-litellm.txt" in err["message"]
+                    and "bedrock/" in err["message"]
+                    for err in cloud_report["checks"]["config"]["errors"]
+                ),
+                cloud_report["checks"]["config"]["errors"],
+            )
+
+            # Direct Cloud IAM litellm_model without llm_model_list -> config error.
+            direct_azure_cfg = Config(
+                stock_list=["600519"],
+                litellm_model="azure/gpt-4o",
+                llm_model_list=[],
+                wechat_webhook_url="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=abc",
+                database_path=f"{tmpdir}/doctor.db",
+                log_dir=tmpdir,
+            )
+            with (
+                patch.dict(os.environ, {"LLM_TRANSPORT_MODE": "auto"}, clear=False),
+                patch("src.services.doctor_service.importlib.util.find_spec", return_value=None),
+            ):
+                azure_report = run_doctor_diagnostics(direct_azure_cfg)
+            self.assertEqual(azure_report["status"], "error")
+            self.assertFalse(azure_report["checks"]["llm"]["ready"])
+            self.assertTrue(
+                any(
+                    "pip install -r requirements-litellm.txt" in err["message"]
+                    and "azure/gpt-4o" in err["message"]
+                    for err in azure_report["checks"]["config"]["errors"]
+                ),
+                azure_report["checks"]["config"]["errors"],
+            )
+
 
 def _stub_notify(serp_secret: str, router_secret: str):
     from src.services.notification_diagnostics import NotificationDiagnosticIssue, NotificationDiagnosticResult

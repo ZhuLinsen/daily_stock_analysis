@@ -16,7 +16,7 @@ import sys
 import threading
 import time
 from types import ModuleType, SimpleNamespace
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Dict, Iterable, List, Mapping, Optional
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -162,12 +162,14 @@ class _RecordingTransport:
         return _RecordedTransportError
 
 
+def _is_module_name_constant(node: Optional[ast.AST], roots: frozenset[str]) -> bool:
+    if not (isinstance(node, ast.Constant) and isinstance(node.value, str)):
+        return False
+    return node.value.split(".", 1)[0] in roots
+
+
 def _is_litellm_name_constant(node: Optional[ast.AST]) -> bool:
-    return (
-        isinstance(node, ast.Constant)
-        and isinstance(node.value, str)
-        and (node.value == "litellm" or node.value.startswith("litellm."))
-    )
+    return _is_module_name_constant(node, frozenset({"litellm"}))
 
 
 def _call_target_module_arg(node: ast.Call) -> Optional[ast.AST]:
@@ -188,6 +190,73 @@ def _is_sys_modules_expr(node: ast.AST) -> bool:
     )
 
 
+def _find_optional_sdk_import_violations(
+    source: str,
+    rel_path: str,
+    *,
+    forbidden_roots: frozenset[str] = frozenset({"litellm", "tiktoken", "tiktoken_ext", "orjson", "openai"}),
+    top_level_only: bool = False,
+) -> List[str]:
+    """Inspect a Python module AST for imports/loads of optional LiteLLM stack packages."""
+    tree = ast.parse(source, filename=rel_path)
+    violations: List[str] = []
+
+    if top_level_only:
+        nodes: Iterable[ast.AST] = tree.body
+    else:
+        nodes = ast.walk(tree)
+
+    for node in nodes:
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.split(".", 1)[0] in forbidden_roots:
+                    scope = "top-level " if top_level_only else "direct "
+                    violations.append(f"{rel_path}:{node.lineno}: {scope}import {alias.name}")
+        elif isinstance(node, ast.ImportFrom):
+            module_name = node.module or ""
+            if module_name.split(".", 1)[0] in forbidden_roots:
+                scope = "top-level " if top_level_only else "direct "
+                violations.append(f"{rel_path}:{node.lineno}: {scope}from-import {module_name}")
+        elif not top_level_only and isinstance(node, ast.Subscript):
+            if _is_sys_modules_expr(node.value) and _is_module_name_constant(node.slice, forbidden_roots):
+                violations.append(
+                    f"{rel_path}:{node.lineno}: direct sys.modules[{node.slice.value!r}] access"
+                )
+        elif not top_level_only and isinstance(node, ast.Call):
+            func = node.func
+            first_or_name_arg = _call_target_module_arg(node)
+            if (
+                (
+                    (isinstance(func, ast.Attribute) and func.attr == "import_module")
+                    or (isinstance(func, ast.Name) and func.id == "import_module")
+                )
+                and _is_module_name_constant(first_or_name_arg, forbidden_roots)
+            ):
+                violations.append(
+                    f"{rel_path}:{node.lineno}: dynamic import_module({first_or_name_arg.value!r})"
+                )
+            elif (
+                isinstance(func, ast.Name)
+                and func.id == "__import__"
+                and _is_module_name_constant(first_or_name_arg, forbidden_roots)
+            ):
+                violations.append(
+                    f"{rel_path}:{node.lineno}: dynamic __import__({first_or_name_arg.value!r})"
+                )
+            elif (
+                isinstance(func, ast.Attribute)
+                and _is_sys_modules_expr(func.value)
+                and func.attr in {"get", "pop", "setdefault"}
+                and node.args
+                and _is_module_name_constant(node.args[0], forbidden_roots)
+            ):
+                violations.append(
+                    f"{rel_path}:{node.lineno}: direct sys.modules.{func.attr}({node.args[0].value!r})"
+                )
+
+    return violations
+
+
 def _find_litellm_boundary_violations(source: str, rel_path: str) -> List[str]:
     """Inspect a Python module AST for direct LiteLLM coupling outside src/llm/transport.py."""
     forbidden_litellm_attrs = {
@@ -198,54 +267,16 @@ def _find_litellm_boundary_violations(source: str, rel_path: str) -> List[str]:
         "token_counter",
     }
     tree = ast.parse(source, filename=rel_path)
-    violations: List[str] = []
+    violations: List[str] = _find_optional_sdk_import_violations(
+        source,
+        rel_path,
+        forbidden_roots=frozenset({"litellm"}),
+    )
 
     for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                if alias.name == "litellm" or alias.name.startswith("litellm."):
-                    violations.append(f"{rel_path}:{node.lineno}: direct import {alias.name}")
-        elif isinstance(node, ast.ImportFrom):
-            module_name = node.module or ""
-            if module_name == "litellm" or module_name.startswith("litellm."):
-                violations.append(f"{rel_path}:{node.lineno}: direct from-import {module_name}")
-        elif isinstance(node, ast.Subscript):
-            if _is_sys_modules_expr(node.value) and _is_litellm_name_constant(node.slice):
-                violations.append(
-                    f"{rel_path}:{node.lineno}: direct sys.modules[{node.slice.value!r}] access"
-                )
-        elif isinstance(node, ast.Call):
+        if isinstance(node, ast.Call):
             func = node.func
-            first_or_name_arg = _call_target_module_arg(node)
             if (
-                (
-                    (isinstance(func, ast.Attribute) and func.attr == "import_module")
-                    or (isinstance(func, ast.Name) and func.id == "import_module")
-                )
-                and _is_litellm_name_constant(first_or_name_arg)
-            ):
-                violations.append(
-                    f"{rel_path}:{node.lineno}: dynamic import_module({first_or_name_arg.value!r})"
-                )
-            elif (
-                isinstance(func, ast.Name)
-                and func.id == "__import__"
-                and _is_litellm_name_constant(first_or_name_arg)
-            ):
-                violations.append(
-                    f"{rel_path}:{node.lineno}: dynamic __import__({first_or_name_arg.value!r})"
-                )
-            elif (
-                isinstance(func, ast.Attribute)
-                and _is_sys_modules_expr(func.value)
-                and func.attr in {"get", "pop", "setdefault"}
-                and node.args
-                and _is_litellm_name_constant(node.args[0])
-            ):
-                violations.append(
-                    f"{rel_path}:{node.lineno}: direct sys.modules.{func.attr}({node.args[0].value!r})"
-                )
-            elif (
                 isinstance(func, ast.Attribute)
                 and isinstance(func.value, ast.Name)
                 and func.value.id == "litellm"
@@ -268,7 +299,7 @@ def _find_litellm_boundary_violations(source: str, rel_path: str) -> List[str]:
 
 
 def test_repo_wide_ast_guard_forbids_direct_litellm_imports_and_calls() -> None:
-    """AST guard preventing direct litellm imports/loads/sys.modules/SDK calls outside src/llm/transport.py."""
+    """AST guard preventing direct litellm/tiktoken/orjson/openai coupling outside controlled lazy boundaries."""
     scan_roots = [
         REPO_ROOT / "src",
         REPO_ROOT / "api",
@@ -277,9 +308,8 @@ def test_repo_wide_ast_guard_forbids_direct_litellm_imports_and_calls() -> None:
         REPO_ROOT / "main.py",
         REPO_ROOT / "server.py",
     ]
-    exempt_files = {
-        (REPO_ROOT / "src" / "llm" / "transport.py").resolve(),
-    }
+    transport_file = (REPO_ROOT / "src" / "llm" / "transport.py").resolve()
+    hermes_file = (REPO_ROOT / "src" / "llm" / "hermes.py").resolve()
 
     py_files: List[Path] = []
     for root in scan_roots:
@@ -290,16 +320,45 @@ def test_repo_wide_ast_guard_forbids_direct_litellm_imports_and_calls() -> None:
 
     violations: List[str] = []
     for path in py_files:
-        if path.resolve() in exempt_files:
-            continue
+        resolved = path.resolve()
         rel = path.relative_to(REPO_ROOT).as_posix()
-        violations.extend(_find_litellm_boundary_violations(path.read_text(encoding="utf-8"), rel))
+        source = path.read_text(encoding="utf-8")
+
+        # tiktoken/tiktoken_ext and orjson must NEVER be imported anywhere in runtime code.
+        violations.extend(
+            _find_optional_sdk_import_violations(
+                source,
+                rel,
+                forbidden_roots=frozenset({"tiktoken", "tiktoken_ext", "orjson"}),
+            )
+        )
+        # Top-level imports of any optional SDK package are forbidden everywhere (even transport.py / hermes.py).
+        violations.extend(
+            _find_optional_sdk_import_violations(
+                source,
+                rel,
+                forbidden_roots=frozenset({"litellm", "tiktoken", "tiktoken_ext", "orjson", "openai"}),
+                top_level_only=True,
+            )
+        )
+        # litellm imports/calls are allowed lazily ONLY in src/llm/transport.py.
+        if resolved != transport_file:
+            violations.extend(_find_litellm_boundary_violations(source, rel))
+        # openai imports are allowed lazily ONLY in src/llm/transport.py and src/llm/hermes.py.
+        if resolved not in {transport_file, hermes_file}:
+            violations.extend(
+                _find_optional_sdk_import_violations(
+                    source,
+                    rel,
+                    forbidden_roots=frozenset({"openai"}),
+                )
+            )
 
     assert violations == []
 
 
 def test_ast_guard_catches_all_bypass_patterns_and_allows_clean_code() -> None:
-    """Positive and negative unit tests verifying AST guard catches indirect LiteLLM import bypasses."""
+    """Positive and negative unit tests verifying AST guard catches indirect optional SDK import bypasses."""
     bad_snippets = [
         "import litellm\n",
         "from litellm.types.utils import LlmProviders\n",
@@ -314,6 +373,21 @@ def test_ast_guard_catches_all_bypass_patterns_and_allows_clean_code() -> None:
     for snippet in bad_snippets:
         assert _find_litellm_boundary_violations(snippet, "src/example.py"), snippet
 
+    for opt_snippet in (
+        "import openai\n",
+        "from openai import OpenAI\n",
+        "import tiktoken\n",
+        "import orjson\n",
+        "import importlib\nimportlib.import_module('tiktoken_ext')\n",
+        "import sys\nsys.modules.get('orjson')\n",
+    ):
+        assert _find_optional_sdk_import_violations(opt_snippet, "src/example.py"), opt_snippet
+
+    assert _find_optional_sdk_import_violations(
+        "import openai\n",
+        "src/llm/hermes.py",
+        top_level_only=True,
+    )
     assert _find_litellm_boundary_violations("Router(model_list=[])\n", "src/analyzer.py")
     assert _find_litellm_boundary_violations(
         "from src.llm.transport import dispatch_completion\ndispatch_completion(model='openai/gpt-4o')\n",
@@ -322,20 +396,23 @@ def test_ast_guard_catches_all_bypass_patterns_and_allows_clean_code() -> None:
 
 
 def test_importing_runtime_modules_does_not_eagerly_import_litellm() -> None:
-    """Importing runtime modules must not trigger litellm import at module load time."""
+    """Importing runtime modules must not require litellm/tiktoken/orjson/openai or eagerly import LLM SDKs."""
     probe = """
 import sys
 import src.llm
+import src.llm.hermes
 import src.llm.transport
 import src.config
 import src.analyzer
 import src.agent.llm_adapter
 import src.agent.chat_context
+import src.services.doctor_service
 import src.services.image_stock_extractor
 import src.services.screening.ranker
 import src.services.screening_service
 import src.services.system_config_service
-assert "litellm" not in sys.modules, f"litellm eagerly imported"
+for pkg in ("litellm", "tiktoken", "tiktoken_ext", "openai"):
+    assert pkg not in sys.modules, f"{pkg} eagerly imported"
 """
     env = dict(os.environ)
     env["PYTHONPATH"] = str(REPO_ROOT)
@@ -348,6 +425,45 @@ assert "litellm" not in sys.modules, f"litellm eagerly imported"
         timeout=30,
     )
     assert proc.returncode == 0, f"stderr={proc.stderr}\nstdout={proc.stdout}"
+
+    # Also prove all core runtime modules import cleanly when litellm/tiktoken/orjson/openai are absent.
+    blocked_probe = """
+import importlib.abc, sys
+BLOCKED = frozenset({"litellm", "tiktoken", "tiktoken_ext", "orjson", "openai"})
+class _Filter(importlib.abc.MetaPathFinder):
+    def __init__(self, inner):
+        self._inner = inner
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname.split(".", 1)[0] in BLOCKED:
+            return None
+        return self._inner.find_spec(fullname, path, target)
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+sys.meta_path[:] = [_Filter(f) for f in sys.meta_path]
+import src.llm
+import src.llm.hermes
+import src.llm.transport
+import src.config
+import src.analyzer
+import src.agent.llm_adapter
+import src.agent.chat_context
+import src.services.doctor_service
+import src.services.image_stock_extractor
+import src.services.screening.ranker
+import src.services.screening_service
+import src.services.system_config_service
+for pkg in ("litellm", "tiktoken", "tiktoken_ext", "orjson", "openai"):
+    assert pkg not in sys.modules, f"{pkg} unexpectedly present when blocked"
+"""
+    proc_blocked = subprocess.run(
+        [sys.executable, "-c", blocked_probe],
+        cwd=str(REPO_ROOT),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert proc_blocked.returncode == 0, f"stderr={proc_blocked.stderr}\nstdout={proc_blocked.stdout}"
 
 
 def test_load_litellm_sets_local_model_cost_map_default(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1639,3 +1755,229 @@ model_list:
     assert "application/json" not in redactions
     assert "json" not in redactions
     assert "alfa1234/beta5678" in redactions
+
+
+class _BlockOptionalDepsFinder(importlib.abc.MetaPathFinder):
+    """MetaPathFinder simulating an environment without optional LiteLLM stack packages."""
+
+    def __init__(self, blocked_roots: frozenset[str] = frozenset({"litellm", "tiktoken", "orjson", "openai"})) -> None:
+        self._blocked_roots = blocked_roots
+
+    def find_spec(self, fullname: str, path: Any, target: Any = None) -> Any:
+        if fullname.split(".", 1)[0] in self._blocked_roots:
+            raise ModuleNotFoundError(f"No module named {fullname!r}", name=fullname)
+        return None
+
+
+def _block_optional_deps(
+    monkeypatch: pytest.MonkeyPatch,
+    blocked_roots: frozenset[str] = frozenset({"litellm", "tiktoken", "orjson", "openai"}),
+) -> _BlockOptionalDepsFinder:
+    for mod_name in list(sys.modules.keys()):
+        if mod_name.split(".", 1)[0] in blocked_roots:
+            monkeypatch.delitem(sys.modules, mod_name, raising=False)
+    finder = _BlockOptionalDepsFinder(blocked_roots)
+    monkeypatch.setattr(sys, "meta_path", [finder, *sys.meta_path])
+    return finder
+
+
+def test_phase4_missing_litellm_ux_across_explicit_mode_cloud_iam_and_system_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Phase 4: missing optional LiteLLM raises typed NativeConfigError with pip install remediation."""
+    import httpx
+    from src.llm import transport as llm_transport_mod
+    from src.llm.native_types import NativeConfigError
+
+    _block_optional_deps(monkeypatch)
+    reset_transport_cache()
+    try:
+        # (i) Explicit LLM_TRANSPORT_MODE=litellm -> completion() & create_router() raise NativeConfigError.
+        lt = LiteLLMTransport()
+        with pytest.raises(NativeConfigError) as exc_comp:
+            lt.completion(model="openai/gpt-4o", messages=[{"role": "user", "content": "hi"}])
+        assert exc_comp.value.status_code == 400
+        assert exc_comp.value.error_code == "litellm_optional_dependency_missing"
+        assert "pip install -r requirements-litellm.txt" in str(exc_comp.value)
+        assert "LLM_TRANSPORT_MODE=litellm" in str(exc_comp.value)
+
+        with pytest.raises(NativeConfigError) as exc_router:
+            lt.create_router([{"model_name": "openai/gpt-4o", "litellm_params": {"model": "openai/gpt-4o"}}])
+        assert exc_router.value.status_code == 400
+        assert exc_router.value.error_code == "litellm_optional_dependency_missing"
+        assert "pip install -r requirements-litellm.txt" in str(exc_router.value)
+
+        # Hidden bug fix: register_model() swallows missing litellm while updating _SHARED_MODEL_COSTS.
+        lt.register_model({"phase4-custom-model": {"input_cost_per_token": 0.001, "output_cost_per_token": 0.002}})
+        assert "phase4-custom-model" in lt.get_model_cost()
+        assert lt.can_register_model() is False
+
+        # _build_litellm_no_redirect_client() raises litellm_optional_dependency_missing when openai is missing.
+        with pytest.raises(NativeConfigError) as exc_no_redir:
+            llm_transport_mod._build_litellm_no_redirect_client(
+                {"model": "openai/gpt-4o-mini", "api_base": "https://relay.example/v1", "api_key": "sk-test"},
+                SimpleNamespace(route_all_chat_openai_to_responses=False),
+            )
+        assert exc_no_redir.value.error_code == "litellm_optional_dependency_missing"
+        assert "pip install -r requirements-litellm.txt" in str(exc_no_redir.value)
+
+        # (ii) LLM_TRANSPORT_MODE=auto Cloud IAM direct + hybrid router delegation -> actionable NativeConfigError,
+        # while sibling native aliases in the SAME router keep working with zero litellm import!
+        def _native_mock(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "id": "cmpl-native",
+                    "model": "gpt-4o-mini",
+                    "choices": [{"index": 0, "message": {"role": "assistant", "content": "native-ok"}, "finish_reason": "stop"}],
+                },
+            )
+
+        auto_transport = llm_transport_mod.create_native_transport(
+            http_transport=httpx.MockTransport(_native_mock),
+            fallback_to_litellm=True,
+        )
+        for cloud_model, expected_provider in (
+            ("azure/gpt-4o", "azure"),
+            ("bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0", "bedrock"),
+            ("vertex_ai/gemini-2.5-pro", "vertex_ai"),
+            ("sagemaker/jumpstart-model", "sagemaker"),
+            ("cohere/command-r-plus", "cohere"),
+        ):
+            with pytest.raises(NativeConfigError) as exc_cloud:
+                auto_transport.completion(
+                    model=cloud_model,
+                    messages=[{"role": "user", "content": "hi"}],
+                )
+            assert exc_cloud.value.status_code == 400
+            assert exc_cloud.value.error_code == "litellm_optional_dependency_missing"
+            assert exc_cloud.value.llm_provider == expected_provider
+            assert "pip install -r requirements-litellm.txt" in str(exc_cloud.value)
+            assert expected_provider in str(exc_cloud.value)
+
+        hybrid_router = auto_transport.create_router(
+            [
+                {
+                    "model_name": "openai/gpt-4o-mini",
+                    "litellm_params": {
+                        "model": "openai/gpt-4o-mini",
+                        "api_base": "https://relay.example/v1",
+                        "api_key": "sk-native",
+                    },
+                },
+                {
+                    "model_name": "bedrock/claude-sonnet",
+                    "litellm_params": {
+                        "model": "bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0",
+                    },
+                },
+            ]
+        )
+        native_resp = hybrid_router.completion(
+            model="openai/gpt-4o-mini",
+            messages=[{"role": "user", "content": "hi"}],
+        )
+        assert native_resp.choices[0].message.content == "native-ok"
+        with pytest.raises(NativeConfigError) as exc_hybrid:
+            hybrid_router.completion(
+                model="bedrock/claude-sonnet",
+                messages=[{"role": "user", "content": "hi"}],
+            )
+        assert exc_hybrid.value.error_code == "litellm_optional_dependency_missing"
+        assert "bedrock" in str(exc_hybrid.value)
+        assert "pip install -r requirements-litellm.txt" in str(exc_hybrid.value)
+
+        # (iii) SystemConfigService._classify_llm_exception & test_llm_channel classify missing LiteLLM cleanly.
+        diag = SystemConfigService._classify_llm_exception(exc_hybrid.value)
+        assert diag.error_code == "config_error"
+        assert diag.retryable is False
+        assert diag.reason == "litellm_optional_dependency_missing"
+        assert diag.details["hint_code"] == "litellm_optional_dependency_missing"
+
+        service = SystemConfigService()
+        monkeypatch.delenv("LLM_TRANSPORT_MODE", raising=False)
+        reset_transport_cache()
+        test_res = service.test_llm_channel(
+            name="vertex_cloud",
+            protocol="vertex_ai",
+            base_url="",
+            api_key="sk-test-vertex",
+            models=["vertex_ai/gemini-2.5-pro"],
+        )
+        assert test_res["success"] is False, test_res
+        assert test_res["error_code"] == "config_error", test_res
+        assert test_res["retryable"] is False
+        assert test_res["details"]["reason"] == "litellm_optional_dependency_missing"
+        assert test_res["details"]["hint_code"] == "litellm_optional_dependency_missing"
+        assert "pip install -r requirements-litellm.txt" in (test_res["error"] or "")
+
+        # Explicit LLM_TRANSPORT_MODE=litellm test_llm_channel also surfaces actionable config_error.
+        monkeypatch.setenv("LLM_TRANSPORT_MODE", "litellm")
+        reset_transport_cache()
+        litellm_mode_res = service.test_llm_channel(
+            name="custom",
+            protocol="openai",
+            base_url="http://127.0.0.1:9/v1",
+            api_key="sk-test-key",
+            models=["gpt-4o-mini"],
+        )
+        assert litellm_mode_res["success"] is False, litellm_mode_res
+        assert litellm_mode_res["error_code"] == "config_error", litellm_mode_res
+        assert litellm_mode_res["retryable"] is False
+        assert litellm_mode_res["details"]["reason"] == "litellm_optional_dependency_missing"
+        assert litellm_mode_res["details"]["hint_code"] == "litellm_optional_dependency_missing"
+        assert "pip install -r requirements-litellm.txt" in (litellm_mode_res["error"] or "")
+    finally:
+        monkeypatch.delenv("LLM_TRANSPORT_MODE", raising=False)
+        reset_transport_cache()
+
+
+def test_phase4_hermes_no_proxy_client_works_without_openai_in_native_and_errors_cleanly_in_litellm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Phase 4: Hermes uses native _HermesNoProxyClient with zero openai import in auto/native modes."""
+    import httpx
+    from src.llm.hermes import _HermesNoProxyClient, open_hermes_no_proxy_client
+    from src.llm.native_types import NativeConfigError, extract_client_overrides
+
+    _block_optional_deps(monkeypatch, frozenset({"litellm", "tiktoken", "orjson", "openai"}))
+    reset_transport_cache()
+    try:
+        for mode in ("auto", "native"):
+            monkeypatch.setenv("LLM_TRANSPORT_MODE", mode)
+            reset_transport_cache()
+            secret = "sk-hermes-super-secret-98765"
+            with open_hermes_no_proxy_client(
+                api_key=secret,
+                base_url="http://localhost:8642/v1",
+                timeout=7.5,
+            ) as client:
+                assert isinstance(client, _HermesNoProxyClient)
+                assert secret not in repr(client)
+                assert "127.0.0.1:8642/v1" in repr(client)
+                ext_key, ext_base, ext_http = extract_client_overrides({"client": client})
+                assert ext_key == secret
+                assert ext_base == "http://127.0.0.1:8642/v1"
+                assert isinstance(ext_http, httpx.Client)
+                assert not ext_http.is_closed
+                assert "openai" not in sys.modules
+            assert ext_http.is_closed
+
+        # Explicit LLM_TRANSPORT_MODE=litellm with openai blocked fails cleanly without creating/leaking httpx.Client.
+        monkeypatch.setenv("LLM_TRANSPORT_MODE", "litellm")
+        reset_transport_cache()
+        with patch("httpx.Client") as mock_httpx_client:
+            with pytest.raises(NativeConfigError) as exc_info:
+                with open_hermes_no_proxy_client(
+                    api_key="sk-hermes-secret",
+                    base_url="http://127.0.0.1:8642/v1",
+                    timeout=5.0,
+                ):
+                    pass
+        assert exc_info.value.status_code == 400
+        assert exc_info.value.error_code == "litellm_optional_dependency_missing"
+        assert "pip install -r requirements-litellm.txt" in str(exc_info.value)
+        mock_httpx_client.assert_not_called()
+    finally:
+        monkeypatch.delenv("LLM_TRANSPORT_MODE", raising=False)
+        reset_transport_cache()

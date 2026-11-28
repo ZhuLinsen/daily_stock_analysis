@@ -132,6 +132,12 @@ cd /opt/stock-analyzer
 pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 ```
 
+> **Optional LiteLLM Extra**: Official OpenAI, Anthropic, Gemini, DeepSeek, Ollama, and arbitrary third-party relays run natively on `httpx` without installing LiteLLM. Install the optional extra only if you use Cloud IAM providers (AWS Bedrock / Google Vertex AI / Azure / SageMaker / Cohere) or explicit `LLM_TRANSPORT_MODE=litellm` rollback:
+> ```bash
+> pip install -r requirements-litellm.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+> ```
+> For Docker builds that need the optional extra, pass `--build-arg INSTALL_LITELLM=true`.
+
 ### 3. Configure Environment Variables
 
 ```bash

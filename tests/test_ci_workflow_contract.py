@@ -323,6 +323,7 @@ def test_backend_filter_covers_mixed_changes_and_shared_web_assets() -> None:
     assert outputs(["src/config.py"]) == (True, False, True, False, False, False)
     assert outputs(["src/services/screening/pipeline.py"]) == (True, False, True, False, False, False)
     assert outputs(["requirements.txt"]) == (True, False, True, False, False, True)
+    assert outputs(["requirements-litellm.txt"]) == (True, False, True, False, False, False)
     assert outputs(["docker/Dockerfile"]) == (True, False, True, False, False, False)
     assert outputs(["apps/dsa-web/src/App.tsx"]) == (False, False, True, True, True, False)
     assert outputs(["apps/dsa-web/package-lock.json"]) == (False, False, True, True, True, False)

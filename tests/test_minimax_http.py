@@ -6,9 +6,13 @@ import subprocess
 import sys
 import unittest
 
+from tests.litellm_stub import is_real_package_installed
+
 
 class MiniMaxHTTPTest(unittest.TestCase):
     def test_real_sdk_contract(self):
+        if not (is_real_package_installed("litellm") and is_real_package_installed("openai")):
+            self.skipTest("optional litellm/openai extra not installed (requirements-litellm.txt)")
         # Other unit tests intentionally install a LiteLLM stub. A fresh process
         # makes this contract independent of collection order and those stubs.
         # Explicitly pin LLM_TRANSPORT_MODE=litellm because this test exercises

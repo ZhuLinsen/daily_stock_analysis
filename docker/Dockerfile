@@ -45,10 +45,14 @@ RUN groupadd -g 1000 dsa && \
     useradd -u 1000 -g dsa -m dsa
 
 # 复制依赖文件
-COPY requirements.txt .
+COPY requirements.txt requirements-litellm.txt ./
+
+# 可选安装 LiteLLM 扩展（仅用于 Bedrock/Vertex/Azure/SageMaker/Cohere 或 LLM_TRANSPORT_MODE=litellm 回滚）
+ARG INSTALL_LITELLM=false
 
 # 安装 Python 依赖
-RUN --mount=type=cache,target=/root/.cache/pip pip install -r requirements.txt
+RUN --mount=type=cache,target=/root/.cache/pip pip install -r requirements.txt && \
+    if [ "$INSTALL_LITELLM" = "true" ]; then pip install -r requirements-litellm.txt; fi
 
 # 复制应用代码
 COPY *.py ./

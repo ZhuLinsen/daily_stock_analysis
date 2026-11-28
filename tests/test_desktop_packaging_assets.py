@@ -12,8 +12,11 @@ class DesktopPackagingAssetsTestCase(unittest.TestCase):
 
     repo_root = Path(__file__).resolve().parent.parent
 
-    def test_orjson_is_declared_bundled_and_probed(self) -> None:
-        requirements = (self.repo_root / "requirements.txt").read_text(encoding="utf-8")
+    def test_optional_litellm_stack_is_excluded_from_core_and_desktop_packaging(self) -> None:
+        requirements_path = self.repo_root / "requirements.txt"
+        optional_req_path = self.repo_root / "requirements-litellm.txt"
+        requirements = requirements_path.read_text(encoding="utf-8")
+        optional_requirements = optional_req_path.read_text(encoding="utf-8")
         main = (self.repo_root / "main.py").read_text(encoding="utf-8")
         macos_script = (self.repo_root / "scripts" / "build-backend-macos.sh").read_text(
             encoding="utf-8"
@@ -22,9 +25,37 @@ class DesktopPackagingAssetsTestCase(unittest.TestCase):
             encoding="utf-8"
         )
 
-        self.assertIn("orjson>=3.10,<4", requirements)
-        self.assertIn('"orjson"', macos_script)
-        self.assertIn("'orjson'", windows_script)
+        # Optional LiteLLM stack lives strictly in ASCII-clean requirements-litellm.txt.
+        optional_req_path.read_bytes().decode("ascii")
+        core_pkg_lines = [
+            line.split("#", 1)[0].strip().lower()
+            for line in requirements.splitlines()
+            if line.split("#", 1)[0].strip()
+        ]
+        for excluded in ("litellm", "tiktoken", "orjson", "openai"):
+            self.assertFalse(
+                any(
+                    line == excluded
+                    or line.startswith(f"{excluded}>")
+                    or line.startswith(f"{excluded}<")
+                    or line.startswith(f"{excluded}=")
+                    or line.startswith(f"{excluded}[")
+                    or line.startswith(f"{excluded};")
+                    for line in core_pkg_lines
+                ),
+                f"{excluded} must not be declared in core requirements.txt",
+            )
+
+        self.assertIn("orjson>=3.10,<4", optional_requirements)
+        self.assertIn("litellm>=1.80.10", optional_requirements)
+        self.assertIn("tiktoken>=0.8.0,<0.12.0", optional_requirements)
+        self.assertIn("openai>=1.0.0", optional_requirements)
+
+        for script_text in (macos_script, windows_script):
+            self.assertNotIn("orjson", script_text)
+            self.assertNotIn("tiktoken", script_text)
+            self.assertNotIn("litellm", script_text)
+
         self.assertIn('DSA_PACKAGED_IMPORT_PROBE="${module}"', macos_script)
         self.assertIn("$env:DSA_PACKAGED_IMPORT_PROBE = $module", windows_script)
         self.assertIn('importlib.import_module(_packaged_import_probe)', main)

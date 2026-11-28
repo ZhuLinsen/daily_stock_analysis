@@ -5329,6 +5329,7 @@ class SystemConfigService:
         native_code = getattr(exc, "error_code", None)
         if exc_name == "nativeconfigerror" or native_code in {
             "fallback_only_provider",
+            "litellm_optional_dependency_missing",
             "missing_api_base",
             "unknown_provider_without_api_base",
             "unsupported_wire_protocol",
@@ -5343,6 +5344,8 @@ class SystemConfigService:
             config_details: Dict[str, Any] = {}
             if config_reason == "fallback_only_provider":
                 config_details["hint_code"] = "cloud_iam_fallback"
+            elif config_reason == "litellm_optional_dependency_missing":
+                config_details["hint_code"] = "litellm_optional_dependency_missing"
             elif config_reason in {
                 "missing_api_base",
                 "unknown_provider_without_api_base",

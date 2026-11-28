@@ -30,6 +30,8 @@ def test_dockerfile_bundles_builtin_screening_engine() -> None:
 
     assert "screening.git" not in requirements.lower()
     assert "pip install -r requirements.txt" in dockerfile
+    assert "ARG INSTALL_LITELLM=false" in dockerfile
+    assert "requirements-litellm.txt" in dockerfile
     assert "--mount=type=cache,target=/root/.cache/pip" in dockerfile
     assert "import src.services.screening.pipeline" in dockerfile
 

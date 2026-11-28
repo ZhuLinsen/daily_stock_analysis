@@ -83,10 +83,10 @@ def test_backend_build_collects_and_probes_miniracer(filename: str) -> None:
     assert "MiniRacer().eval('1 + 1')" in script
     # The frozen executable must probe the runtime, not the source interpreter.
     if filename.endswith(".ps1"):
-        assert "'orjson', 'py_mini_racer'" in script
+        assert "'futu', 'py_mini_racer'" in script
         assert "-WindowStyle Hidden" in script
     else:
-        assert "futu orjson py_mini_racer; do" in script
+        assert "futu py_mini_racer; do" in script
 
 
 @pytest.mark.parametrize("filename", ["build-backend.ps1", "build-backend-macos.sh"])
