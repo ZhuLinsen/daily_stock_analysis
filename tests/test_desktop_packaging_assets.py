@@ -32,7 +32,7 @@ class DesktopPackagingAssetsTestCase(unittest.TestCase):
             for line in requirements.splitlines()
             if line.split("#", 1)[0].strip()
         ]
-        for excluded in ("litellm", "tiktoken", "orjson", "openai"):
+        for excluded in ("litellm", "orjson", "openai"):
             self.assertFalse(
                 any(
                     line == excluded
@@ -45,16 +45,20 @@ class DesktopPackagingAssetsTestCase(unittest.TestCase):
                 ),
                 f"{excluded} must not be declared in core requirements.txt",
             )
+        # tiktoken<0.12 remains pinned in requirements.txt for tavily-python runtime (#537).
+        self.assertIn("tiktoken>=0.8.0,<0.12.0", requirements)
 
         self.assertIn("orjson>=3.10,<4", optional_requirements)
         self.assertIn("litellm>=1.80.10", optional_requirements)
         self.assertIn("tiktoken>=0.8.0,<0.12.0", optional_requirements)
         self.assertIn("openai>=1.0.0", optional_requirements)
+        self.assertIn("google-auth>=2.0.0", optional_requirements)
 
         for script_text in (macos_script, windows_script):
             self.assertNotIn("orjson", script_text)
-            self.assertNotIn("tiktoken", script_text)
             self.assertNotIn("litellm", script_text)
+            self.assertIn("tiktoken", script_text)
+            self.assertIn("tiktoken_ext.openai_public", script_text)
 
         self.assertIn('DSA_PACKAGED_IMPORT_PROBE="${module}"', macos_script)
         self.assertIn("$env:DSA_PACKAGED_IMPORT_PROBE = $module", windows_script)

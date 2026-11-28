@@ -300,6 +300,11 @@ def test_litellm_parameter_recovery_respects_stock_deadline():
 
 
 def test_litellm_router_retries_same_model_deployment_with_stock_deadline():
+    from tests.litellm_stub import is_real_package_installed
+
+    if not (is_real_package_installed("litellm") and is_real_package_installed("openai")):
+        pytest.skip("optional litellm/openai extra not installed (requirements-litellm.txt)")
+
     # Agent unit tests can install a process-wide LiteLLM stub.
     script = """
 import os
@@ -334,6 +339,77 @@ assert all(0 < call.kwargs["timeout"] <= 10 for call in completion.call_args_lis
 """
     completed = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=20)
     assert completed.returncode == 0, completed.stdout + completed.stderr
+
+
+def test_native_router_retries_same_model_deployment_with_stock_deadline():
+    """Unconditional zero-litellm test: NativeUnifiedRouter retries same-model deployments within stock deadline."""
+    import httpx
+    from src.core.stock_execution_context import StockCancellationToken, set_current_stock_cancellation
+    from src.llm.errors import call_litellm_with_param_recovery
+    from src.llm.transport import NativeUnifiedRouter
+
+    seen_auth: list[str] = []
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        auth = request.headers.get("authorization", "")
+        seen_auth.append(auth)
+        if auth == "Bearer sk-primary":
+            return httpx.Response(
+                429,
+                request=request,
+                json={"error": {"message": "fixture rate limit"}},
+            )
+        return httpx.Response(
+            200,
+            request=request,
+            json={
+                "id": "chatcmpl-recovered",
+                "model": "gpt-4o",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "recovered"},
+                        "finish_reason": "stop",
+                    }
+                ],
+            },
+        )
+
+    deployments = [
+        {
+            "model_name": "fixture",
+            "litellm_params": {
+                "model": "openai/gpt-4o",
+                "api_base": "https://relay.example/v1",
+                "api_key": key,
+            },
+        }
+        for key in ("sk-primary", "sk-backup")
+    ]
+    router = NativeUnifiedRouter(
+        model_list=deployments,
+        http_transport=httpx.MockTransport(_handler),
+        num_retries=2,
+        sleep_fn=lambda _: None,
+    )
+    previous = set_current_stock_cancellation(StockCancellationToken(time.monotonic() + 10))
+    observed_timeouts: list[float] = []
+    try:
+        def _dispatch(kwargs: dict) -> object:
+            observed_timeouts.append(float(kwargs["timeout"]))
+            return router.completion(**kwargs)
+
+        result = call_litellm_with_param_recovery(
+            _dispatch,
+            model="fixture",
+            call_kwargs={"model": "fixture", "messages": [{"role": "user", "content": "test"}]},
+        )
+    finally:
+        set_current_stock_cancellation(previous)
+
+    assert result.choices[0].message.content == "recovered"
+    assert seen_auth == ["Bearer sk-primary", "Bearer sk-backup"]
+    assert all(0 < t <= 10 for t in observed_timeouts)
 
 
 def test_shutdown_cancels_queued_stock_before_releasing_running_slot():

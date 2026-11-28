@@ -221,3 +221,46 @@ def test_daily_analysis_status_logic_handles_lone_keys_and_trimmed_transport_mod
             cfg = Config._load_from_env()
             assert bool(cfg.llm_model_list)
             assert resolve_llm_transport_mode(config=cfg) == "native"
+
+
+def test_daily_analysis_conditionally_installs_optional_litellm_extra() -> None:
+    import os
+    from unittest.mock import patch
+    from src.config import Config
+    from src.llm.transport import resolve_llm_transport_mode
+    from src.services.doctor_service import _find_routes_requiring_litellm
+
+    workflow = yaml.safe_load(WORKFLOW_PATH.read_text(encoding="utf-8"))
+    analyze = next(step for step in workflow["jobs"]["analyze"]["steps"] if step.get("name") == "执行股票分析")
+    run_script = analyze["run"]
+    assert "_find_routes_requiring_litellm" in run_script
+    assert "pip install -r requirements-litellm.txt" in run_script
+
+    def _needs_litellm(env_map: dict[str, str]) -> bool:
+        with (
+            patch("src.config.setup_env"),
+            patch.object(Config, "_parse_litellm_yaml", return_value=[]),
+            patch.dict(os.environ, env_map, clear=True),
+        ):
+            cfg = Config._load_from_env()
+            mode = resolve_llm_transport_mode(config=cfg)
+            return (mode == "litellm") or (mode == "auto" and bool(_find_routes_requiring_litellm(cfg)))
+
+    # Standard native OpenAI-compatible relay -> does NOT install requirements-litellm.txt.
+    assert _needs_litellm({
+        "LLM_CHANNELS": "custom",
+        "LLM_CUSTOM_PROTOCOL": "openai",
+        "LLM_CUSTOM_BASE_URL": "https://relay.example/v1",
+        "LLM_CUSTOM_API_KEY": "sk-relay",
+        "LLM_CUSTOM_MODELS": "gpt-4o-mini",
+    }) is False
+
+    # Explicit rollback LLM_TRANSPORT_MODE=litellm -> installs requirements-litellm.txt.
+    assert _needs_litellm({
+        "LLM_TRANSPORT_MODE": "litellm",
+        "OPENAI_API_KEY": "sk-test",
+    }) is True
+
+    # Auto mode with Cloud IAM or non-native provider -> installs requirements-litellm.txt.
+    assert _needs_litellm({"LITELLM_MODEL": "bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0"}) is True
+    assert _needs_litellm({"LITELLM_MODEL": "replicate/demo"}) is True

@@ -627,6 +627,31 @@ raise SystemExit(main.main(["--doctor", "--json"]))
                 azure_report["checks"]["config"]["errors"],
             )
 
+            # Direct non-Cloud-IAM fallback route (e.g. replicate/demo) -> also caught by Doctor (P1-4).
+            direct_replicate_cfg = Config(
+                stock_list=["600519"],
+                litellm_model="replicate/demo",
+                llm_model_list=[],
+                wechat_webhook_url="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=abc",
+                database_path=f"{tmpdir}/doctor.db",
+                log_dir=tmpdir,
+            )
+            with (
+                patch.dict(os.environ, {"LLM_TRANSPORT_MODE": "auto"}, clear=False),
+                patch("src.services.doctor_service.importlib.util.find_spec", return_value=None),
+            ):
+                replicate_report = run_doctor_diagnostics(direct_replicate_cfg)
+            self.assertEqual(replicate_report["status"], "error")
+            self.assertFalse(replicate_report["checks"]["llm"]["ready"])
+            self.assertTrue(
+                any(
+                    "pip install -r requirements-litellm.txt" in err["message"]
+                    and "replicate/demo" in err["message"]
+                    for err in replicate_report["checks"]["config"]["errors"]
+                ),
+                replicate_report["checks"]["config"]["errors"],
+            )
+
 
 def _stub_notify(serp_secret: str, router_secret: str):
     from src.services.notification_diagnostics import NotificationDiagnosticIssue, NotificationDiagnosticResult

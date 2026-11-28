@@ -4,7 +4,7 @@
 
 欢迎！无论你是刚接触 AI 的新手小白，还是精通各种 API 的高玩老手，这份指南都能帮你快速把大模型（LLM）跑起来。
 
-本项目对外提供统一的 AI 模型接入体验，支持主流官方 API、任意第三方中转站（One-API / New-API / 聚合代理）以及本地模型（Ollama / vLLM / LM Studio）。底层默认启用原生 4 协议 HTTPX + SSE 传输（`LLM_TRANSPORT_MODE=auto`，默认安装无需 `litellm`/`openai`/`tiktoken`/`orjson`）；仅当使用 Bedrock / Vertex AI / Azure / SageMaker / Cohere 等云 IAM 服务商或需要 `LLM_TRANSPORT_MODE=litellm` 回滚时，才需额外安装可选依赖 `pip install -r requirements-litellm.txt`（详见 [LiteLLM](https://docs.litellm.ai/)）。
+本项目对外提供统一的 AI 模型接入体验，支持主流官方 API、任意第三方中转站（One-API / New-API / 聚合代理）以及本地模型（Ollama / vLLM / LM Studio）。底层默认启用原生 4 协议 HTTPX + SSE 传输（`LLM_TRANSPORT_MODE=auto`，默认安装无需 `litellm`/`openai`/`orjson`）；仅当使用 Bedrock / Vertex AI / Azure / SageMaker / Cohere 等云 IAM 服务商、高级 LiteLLM 专有 YAML 参数或需要 `LLM_TRANSPORT_MODE=litellm` 回滚时，才需额外安装可选依赖 `pip install -r requirements-litellm.txt`（含 `google-auth`，详见 [LiteLLM](https://docs.litellm.ai/)）。
 
 如果你正在选择具体服务商、配置 GitHub Actions Secrets / Variables、排查 `details.reason` / `details.hint_code` 错误或准备回滚配置，请优先查看 [LLM 服务商配置指南](./llm-providers.md)。如需了解原生 4 协议 HTTPX + SSE 传输引擎与环境变量开关 `LLM_TRANSPORT_MODE=auto|litellm|native`（默认 `auto`，仅环境变量控制），请参考 [原生 HTTPX 传输说明](./llm-native-transport.md)。
 

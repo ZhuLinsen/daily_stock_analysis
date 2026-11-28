@@ -509,14 +509,21 @@ jobs:
           echo "📋 配置检查"
           echo "=========================================="
           echo "【AI 配置】"
-          read -r AI_CONFIGURED TRANSPORT_LABEL < <(python -c "
+          read -r AI_CONFIGURED TRANSPORT_LABEL NEEDS_LITELLM < <(python -c "
           from src.config import Config
           from src.llm.backend_registry import LOCAL_CLI_GENERATION_BACKEND_IDS
           from src.llm.transport import resolve_llm_transport_mode
+          from src.services.doctor_service import _find_routes_requiring_litellm
           cfg = Config._load_from_env()
           ready = bool(cfg.llm_model_list or cfg.litellm_model or (cfg.generation_backend in LOCAL_CLI_GENERATION_BACKEND_IDS))
-          print('1' if ready else '0', resolve_llm_transport_mode(config=cfg))
-          " 2>/dev/null || echo "0 auto")
+          mode = resolve_llm_transport_mode(config=cfg)
+          needs_litellm = (mode == 'litellm') or (mode == 'auto' and bool(_find_routes_requiring_litellm(cfg)))
+          print('1' if ready else '0', mode, '1' if needs_litellm else '0')
+          " 2>/dev/null || echo "0 auto 0")
+          if [ "$NEEDS_LITELLM" = "1" ]; then
+            echo "📦 检测到 LLM_TRANSPORT_MODE=$TRANSPORT_LABEL 或 Cloud IAM/LiteLLM 回退路由，安装可选依赖 requirements-litellm.txt..."
+            pip install -r requirements-litellm.txt
+          fi
           if [ "$AI_CONFIGURED" -eq 1 ]; then
             echo "  AI 模型:        ✅ 已配置（传输模式: $TRANSPORT_LABEL）"
           else

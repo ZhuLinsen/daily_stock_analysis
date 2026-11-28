@@ -9,7 +9,12 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
-from src.config import Config, get_configured_llm_models
+from src.config import (
+    Config,
+    extra_litellm_params,
+    get_api_keys_for_model,
+    get_configured_llm_models,
+)
 from src.core.config_registry import _is_sensitive_key, get_field_definition
 from src.llm.backend_registry import (
     LOCAL_CLI_GENERATION_BACKEND_IDS,
@@ -309,6 +314,27 @@ def _find_routes_requiring_litellm(config: Config) -> List[str]:
             continue
         prefix = candidate.split("/", 1)[0].strip().lower() if "/" in candidate else ""
         if prefix in FALLBACK_ONLY_PROVIDERS:
+            _add(candidate)
+            continue
+        direct_params: Dict[str, Any] = {"model": candidate}
+        try:
+            extra_params = extra_litellm_params(candidate, config)
+            if isinstance(extra_params, dict):
+                direct_params.update(extra_params)
+        except Exception:
+            pass
+        try:
+            keys = get_api_keys_for_model(candidate, config)
+            if keys and not direct_params.get("api_key"):
+                direct_params["api_key"] = keys[0]
+        except Exception:
+            pass
+        resolved = resolve_deployment(
+            {"model_name": candidate, "litellm_params": direct_params},
+            deployment_id=f"doctor-direct:{candidate}",
+            alias=candidate,
+        )
+        if isinstance(resolved, Unsupported) and resolved.reason not in _HARD_CONFIG_ERROR_REASONS:
             _add(candidate)
 
     return routes

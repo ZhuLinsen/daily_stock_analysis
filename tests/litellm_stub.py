@@ -84,18 +84,20 @@ def is_real_package_installed(name: str) -> bool:
 
 @contextmanager
 def without_litellm_stub() -> Iterator[None]:
-    """Temporarily remove the litellm test stub and restore it if real litellm is not loaded."""
+    """Temporarily remove the litellm test stub and restore prior sys.modules state on exit."""
     had_stub = bool(getattr(sys.modules.get("litellm"), "__dsa_test_stub__", False))
     saved = {
-        module_name: sys.modules[module_name]
-        for module_name in ("litellm", "litellm.types", "litellm.types.utils")
-        if module_name in sys.modules
+        module_name: mod
+        for module_name, mod in list(sys.modules.items())
+        if module_name == "litellm" or module_name.startswith("litellm.")
     }
     if had_stub:
         remove_litellm_stub()
     try:
         yield
     finally:
-        if had_stub and "litellm" not in sys.modules:
-            for module_name, mod in saved.items():
-                sys.modules[module_name] = mod
+        if had_stub:
+            for module_name in list(sys.modules.keys()):
+                if module_name == "litellm" or module_name.startswith("litellm."):
+                    sys.modules.pop(module_name, None)
+            sys.modules.update(saved)

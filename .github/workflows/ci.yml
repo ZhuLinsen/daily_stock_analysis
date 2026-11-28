@@ -268,7 +268,7 @@ jobs:
       - name: 🔍 Docker smoke imports
         run: |
           docker run --rm stock-analysis:test python -c "
-          import sys
+          import importlib.util, sys
           from src.config import get_config; print('✅ config')
           from src.storage import DatabaseManager; print('✅ storage')
           from src.notification import NotificationService; print('✅ notification')
@@ -278,9 +278,11 @@ jobs:
           from bot.dispatcher import CommandDispatcher; print('✅ bot')
           from api.app import app; print('✅ api')
           import futu; print('✅ futu')
-          for pkg in ('litellm', 'tiktoken', 'orjson', 'openai'):
+          for pkg in ('litellm', 'orjson', 'openai'):
               assert pkg not in sys.modules, f'unexpected optional dependency imported: {pkg}'
-          print('✅ All Docker imports OK (zero litellm/tiktoken/orjson/openai)')
+              assert importlib.util.find_spec(pkg) is None, f'optional dependency must not be installed in core image: {pkg}'
+          assert 'tiktoken' not in sys.modules, 'tiktoken should not be eagerly imported at startup'
+          print('✅ All Docker imports OK (zero litellm/orjson/openai installed)')
           "
 
   desktop-tests:

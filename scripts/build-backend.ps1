@@ -89,6 +89,10 @@ $hiddenImports = @(
   'multipart.multipart',
   'json_repair',
   'fin_primitives',
+  # Transitive runtime dependency of tavily-python (Issue #537)
+  'tiktoken',
+  'tiktoken_ext',
+  'tiktoken_ext.openai_public',
   'api',
   'api.app',
   'api.deps',
@@ -138,6 +142,7 @@ $pyInstallerArgs = @(
   '--add-data', 'static;static',
   '--add-data', 'strategies;strategies',
   '--add-data', 'src/assets/share_image;src/assets/share_image',
+  '--collect-data', 'tiktoken',
   '--collect-data', 'akshare',
   '--collect-data', 'fxmacrodata_public',
   '--collect-all', 'py_mini_racer',

@@ -340,12 +340,16 @@ class _AllModelsFailedError(Exception):
         last_model: Optional[str] = None,
         last_provider: Optional[str] = None,
         last_usage: Optional[Dict[str, Any]] = None,
+        last_error_code: Optional[str] = None,
+        last_error_message: Optional[str] = None,
     ):
         super().__init__(message)
         self.last_response_text = last_response_text
         self.last_model = last_model
         self.last_provider = last_provider
         self.last_usage = last_usage or {}
+        self.last_error_code = last_error_code
+        self.last_error_message = last_error_message
 
 
 from src.utils.data_processing import normalize_report_signal_attribution
@@ -3492,6 +3496,23 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
             hermes_kwargs["stream"] = False
             hermes_kwargs.pop("api_key", None)
             hermes_kwargs.pop("api_base", None)
+            for param_key, param_val in params.items():
+                if param_key in {
+                    "model",
+                    "api_key",
+                    "api_base",
+                    "base_url",
+                    "extra_body",
+                    "stream",
+                    "timeout",
+                    "client",
+                    "api_surface",
+                    "wire_protocol",
+                    "dsa_channel_protocol",
+                } or str(param_key).startswith("_dsa_"):
+                    continue
+                if param_val is not None:
+                    hermes_kwargs.setdefault(param_key, param_val)
             hermes_short = hermes_wire_model.split("/")[-1] if "/" in hermes_wire_model else hermes_wire_model
             merged_hermes_extra = merge_thinking_extra_body(
                 params,
@@ -4087,6 +4108,8 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
         use_channel_router = self._has_channel_config(config)
 
         last_error = None
+        last_error_code: Optional[str] = None
+        last_error_message: Optional[str] = None
         last_response_text: Optional[str] = None
         last_model: Optional[str] = None
         last_provider: Optional[str] = None
@@ -4240,6 +4263,8 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                                 safe_error,
                             )
                         last_error = RuntimeError(f"{type(exc).__name__}: {safe_error}")
+                    except NativeConfigError:
+                        raise
                     except Exception as exc:
                         safe_error = self._sanitize_litellm_exception_text(exc, config=config, model=model)
                         logger.warning(
@@ -4340,6 +4365,8 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                         last_provider = router_provider
                 safe_error = self._sanitize_litellm_exception_text(e, config=config, model=model)
                 logger.warning("[LiteLLM] %s failed: %s", model, safe_error)
+                last_error_code = getattr(e, "error_code", None)
+                last_error_message = safe_error
                 last_error = RuntimeError(f"{type(e).__name__}: {safe_error}")
                 continue
 
@@ -4349,6 +4376,8 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
             last_model=last_model,
             last_provider=last_provider,
             last_usage=last_usage,
+            last_error_code=last_error_code,
+            last_error_message=last_error_message,
         )
 
     def generate_text(
@@ -4418,6 +4447,7 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
             raise
         except _AllModelsFailedError as exc:
             backend_id, fallback_backend_id = self._resolve_generation_backend_config()
+            is_missing_optional_litellm = exc.last_error_code == "litellm_optional_dependency_missing"
             if not fallback_backend_id and backend_id == LITELLM_BACKEND_ID:
                 logger.warning(
                     "[generate_text_with_metadata] Primary LiteLLM exhausted all configured models; "
@@ -4426,34 +4456,52 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                 usage = dict(exc.last_usage or {})
                 if exc.last_provider:
                     usage.setdefault("provider", exc.last_provider)
+                diagnostics: Dict[str, Any] = {
+                    "reason": (
+                        "litellm_optional_dependency_missing"
+                        if is_missing_optional_litellm
+                        else "all_models_failed"
+                    ),
+                    "configured_primary_backend": backend_id,
+                    "configured_fallback_backend": fallback_backend_id,
+                    "last_model": exc.last_model,
+                    "template_fallback": True,
+                }
+                if is_missing_optional_litellm and exc.last_error_message:
+                    diagnostics["message"] = exc.last_error_message
                 return GenerationResult(
                     text="",
                     model=exc.last_model or str(getattr(self._get_runtime_config(), "litellm_model", "") or ""),
                     provider=exc.last_provider or backend_id,
                     backend=backend_id,
                     usage=usage,
-                    diagnostics={
-                        "reason": "all_models_failed",
-                        "configured_primary_backend": backend_id,
-                        "configured_fallback_backend": fallback_backend_id,
-                        "last_model": exc.last_model,
-                        "template_fallback": True,
-                    },
+                    diagnostics=diagnostics,
                 )
             failed_backend = fallback_backend_id or backend_id
+            error_details: Dict[str, Any] = {
+                "reason": (
+                    "litellm_optional_dependency_missing"
+                    if is_missing_optional_litellm
+                    else "all_models_failed"
+                ),
+                "configured_primary_backend": backend_id,
+                "configured_fallback_backend": fallback_backend_id,
+                "last_model": exc.last_model,
+            }
+            if is_missing_optional_litellm and exc.last_error_message:
+                error_details["message"] = exc.last_error_message
             raise GenerationError(
-                error_code=GenerationErrorCode.UNKNOWN_BACKEND_ERROR,
+                error_code=(
+                    GenerationErrorCode.BACKEND_NOT_CONFIGURED
+                    if is_missing_optional_litellm
+                    else GenerationErrorCode.UNKNOWN_BACKEND_ERROR
+                ),
                 stage="fallback" if fallback_backend_id else "generation",
                 retryable=False,
                 fallbackable=False,
                 backend=failed_backend,
                 provider=exc.last_provider or failed_backend,
-                details={
-                    "reason": "all_models_failed",
-                    "configured_primary_backend": backend_id,
-                    "configured_fallback_backend": fallback_backend_id,
-                    "last_model": exc.last_model,
-                },
+                details=error_details,
             ) from exc
         except Exception as exc:
             logger.error("[generate_text_with_metadata] LLM call failed: %s", exc)

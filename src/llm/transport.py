@@ -590,6 +590,42 @@ def _build_missing_litellm_error(
     )
 
 
+def _adapt_hermes_client_for_litellm(
+    client_obj: Any,
+    *,
+    require_real_sdk: bool = True,
+    litellm_mod: Optional[Any] = None,
+    explicit_mode: bool = True,
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+) -> Any:
+    """Convert native ``_HermesNoProxyClient`` to ``openai.OpenAI`` before LiteLLM SDK calls."""
+    if not getattr(client_obj, "_dsa_hermes_no_proxy", False):
+        return client_obj
+    if require_real_sdk and not _is_real_litellm_sdk(litellm_mod):
+        return client_obj
+    try:
+        import openai
+    except ModuleNotFoundError as exc:
+        raise _build_missing_litellm_error(
+            explicit_mode=explicit_mode,
+            provider=provider,
+            model=model,
+        ) from exc
+    return openai.OpenAI(
+        api_key=str(getattr(client_obj, "api_key", "") or ""),
+        base_url=getattr(client_obj, "base_url", None),
+        http_client=getattr(client_obj, "_client", None),
+    )
+
+
+def _is_litellm_sdk_router(router: Any) -> bool:
+    if router is None:
+        return False
+    mod_name = str(getattr(type(router), "__module__", "") or "")
+    return mod_name == "litellm" or mod_name.startswith("litellm.")
+
+
 def _build_litellm_no_redirect_client(
     payload: Mapping[str, Any],
     litellm_mod: Optional[Any] = None,
@@ -665,16 +701,11 @@ class LiteLLMTransport:
         if api_surface and "model" in payload:
             payload["model"] = _encode_litellm_responses_wire_model(payload["model"], api_surface)
         litellm_mod = self._load_litellm()
-        existing_client = payload.get("client")
-        if getattr(existing_client, "_dsa_hermes_no_proxy", False) and _is_real_litellm_sdk(litellm_mod):
-            try:
-                import openai
-            except ModuleNotFoundError as exc:
-                raise _build_missing_litellm_error(explicit_mode=True) from exc
-            payload["client"] = openai.OpenAI(
-                api_key=str(getattr(existing_client, "api_key", "") or ""),
-                base_url=getattr(existing_client, "base_url", None),
-                http_client=getattr(existing_client, "_client", None),
+        if "client" in payload:
+            payload["client"] = _adapt_hermes_client_for_litellm(
+                payload.get("client"),
+                litellm_mod=litellm_mod,
+                explicit_mode=True,
             )
         owned_http_client = None
         if no_redirects and "client" not in payload and _is_real_litellm_sdk(litellm_mod):
@@ -1165,6 +1196,15 @@ class NativeUnifiedRouter:
                 unsupported_meta = self._fallback_unsupported_by_alias.get(target_alias)
                 fallback_provider = unsupported_meta.provider if unsupported_meta is not None else None
                 try:
+                    fallback_kwargs = dict(req_kwargs)
+                    if "client" in fallback_kwargs and _is_litellm_sdk_router(fallback_router):
+                        fallback_kwargs["client"] = _adapt_hermes_client_for_litellm(
+                            fallback_kwargs.get("client"),
+                            require_real_sdk=False,
+                            explicit_mode=False,
+                            provider=fallback_provider,
+                            model=target_alias,
+                        )
                     return _tag_response_transport_engine(
                         dispatch_completion(
                             router=fallback_router,
@@ -1172,7 +1212,7 @@ class NativeUnifiedRouter:
                             messages=messages,
                             stream=stream,
                             num_retries=effective_retries,
-                            **req_kwargs,
+                            **fallback_kwargs,
                         ),
                         "litellm",
                     )
@@ -1668,6 +1708,12 @@ def dispatch_completion(
                 )
             router_kwargs = _strip_internal_litellm_kwargs(kwargs)
             router_kwargs.pop("api_surface", None)
+            if "client" in router_kwargs and _is_litellm_sdk_router(router):
+                router_kwargs["client"] = _adapt_hermes_client_for_litellm(
+                    router_kwargs.get("client"),
+                    require_real_sdk=False,
+                    explicit_mode=True,
+                )
             return router.completion(**router_kwargs)
         return router.completion(**kwargs)
     if transport is not None:

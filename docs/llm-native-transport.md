@@ -1,12 +1,12 @@
 # Native 4-Protocol HTTPX + SSE Transport & `LLM_TRANSPORT_MODE`
 
-`daily_stock_analysis` decouples stock analysis, Ask-Stock Agent, stock screening, Vision extraction, and Channel Test from direct `litellm` SDK imports through the unified boundary in `src/llm/transport.py`. Phase 2 added the native `httpx` + SSE transport engine (`NativeUnifiedTransport` / `NativeUnifiedRouter`), Phase 3 promoted `LLM_TRANSPORT_MODE=auto` as the default, and Phase 4 removes `litellm` / `tiktoken` / `orjson` / `openai` from core `requirements.txt` and desktop packaging into the optional `requirements-litellm.txt` extra.
+`daily_stock_analysis` decouples stock analysis, Ask-Stock Agent, stock screening, Vision extraction, and Channel Test from direct `litellm` SDK imports through the unified boundary in `src/llm/transport.py`. Phase 2 added the native `httpx` + SSE transport engine (`NativeUnifiedTransport` / `NativeUnifiedRouter`), Phase 3 promoted `LLM_TRANSPORT_MODE=auto` as the default, and Phase 4 removes `litellm` / `orjson` / `openai` from core `requirements.txt` and desktop packaging into the optional `requirements-litellm.txt` extra (`tiktoken<0.12` remains pinned in `requirements.txt` solely as a transitive dependency of `tavily-python`, Issue #537, with zero direct imports in repository code).
 
 ## Optional LiteLLM Extra (`requirements-litellm.txt`)
 
-Default installations (`pip install -r requirements.txt`, default Docker image, and Electron desktop releases) run 100% natively on `httpx` with **zero** `litellm`, `tiktoken`, `orjson`, or `openai` SDK packages installed.
+Default installations (`pip install -r requirements.txt`, default Docker image, and Electron desktop releases) run 100% natively on `httpx` with **zero** `litellm`, `orjson`, or `openai` SDK packages installed.
 
-Install the optional extra **only** if you use Cloud IAM providers (`azure*`, `bedrock*`, `vertex_ai*`, `sagemaker*`, `cohere*`) or need the legacy `LLM_TRANSPORT_MODE=litellm` rollback:
+Install the optional extra (`orjson`, `litellm`, `tiktoken`, `openai`, `google-auth`) **only** if you use Cloud IAM providers (`azure*`, `bedrock*`, `vertex_ai*`, `sagemaker*`, `cohere*`), unsupported LiteLLM YAML params (e.g. `organization`, `project`, or Anthropic `response_format={"type":"json_object"}`), or need the legacy `LLM_TRANSPORT_MODE=litellm` rollback:
 
 ```bash
 pip install -r requirements-litellm.txt
@@ -18,7 +18,9 @@ For Docker builds requiring Cloud IAM / LiteLLM fallback:
 docker build --build-arg INSTALL_LITELLM=true -f docker/Dockerfile -t stock-analysis:litellm .
 ```
 
-If a Cloud IAM route or `LLM_TRANSPORT_MODE=litellm` is invoked without `requirements-litellm.txt` installed, runtime fails fast with typed `NativeConfigError(error_code="litellm_optional_dependency_missing")` (and Web diagnostics / `--doctor` report the exact `pip install -r requirements-litellm.txt` remediation).
+Scheduled GitHub Actions (`00-daily-analysis.yml`) automatically installs `requirements-litellm.txt` on demand when `LLM_TRANSPORT_MODE=litellm` or fallback-requiring routes are configured.
+
+If a Cloud IAM / unsupported-param route or `LLM_TRANSPORT_MODE=litellm` is invoked without `requirements-litellm.txt` installed, runtime fails fast with typed `NativeConfigError(error_code="litellm_optional_dependency_missing")` (and `--doctor` / Channel Test / Agent / Vision / screening / market review surface the exact `pip install -r requirements-litellm.txt` remediation).
 
 ## Runtime Switch (`LLM_TRANSPORT_MODE`, Env-Only)
 
@@ -26,7 +28,7 @@ Configure `LLM_TRANSPORT_MODE` in `.env`, process environment variables, or GitH
 
 | Value | Behavior | LiteLLM Import |
 | --- | --- | --- |
-| `auto` *(default)* | Routes **OpenAI Chat Completions**, **OpenAI Responses API**, **Anthropic Messages**, and **Google Gemini REST** through native `httpx` + SSE. Decisions happen **per alias group**: any alias backed by a cloud-IAM provider (`azure*`, `bedrock*`, `vertex_ai*`, `sagemaker*`, `cohere*`) or a missing-base custom provider is delegated to `LiteLLMTransport` without downgrading sibling native aliases. | Fallback alias only |
+| `auto` *(default)* | Routes **OpenAI Chat Completions**, **OpenAI Responses API**, **Anthropic Messages**, and **Google Gemini REST** through native `httpx` + SSE. Decisions happen **per alias group**: any alias backed by a cloud-IAM provider (`azure*`, `bedrock*`, `vertex_ai*`, `sagemaker*`, `cohere*`), an unsupported LiteLLM YAML deployment param (`organization`, `project`, Anthropic `response_format={"type":"json_object"}`, etc.), or a missing-base custom provider is delegated to `LiteLLMTransport` without downgrading sibling native aliases (requires optional `requirements-litellm.txt`). | Fallback alias only |
 | `litellm` *(instant rollback)* | Uses `LiteLLMTransport`, preserving legacy `litellm` SDK routing and test-patch hooks. | On demand |
 | `native` | Strictly enforces native HTTPX + SSE (`fallback_to_litellm=False`) with **zero** `litellm` import at startup or inference time. Fails closed (`NativeConfigError`) before any network I/O on unsupported providers or missing `api_base`. | Never imported |
 

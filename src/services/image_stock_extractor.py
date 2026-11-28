@@ -311,13 +311,28 @@ def _get_api_keys_for_model(model: str, cfg: Config) -> List[str]:
     return [k for k in cfg.openai_api_keys if k and len(k) >= 8]
 
 
+_VISION_IAM_KEYLESS_PROVIDERS: frozenset[str] = frozenset(
+    {
+        "bedrock",
+        "bedrock_mantle",
+        "vertex_ai",
+        "vertex_ai_beta",
+        "sagemaker",
+        "sagemaker_chat",
+        "sagemaker_nova",
+    }
+)
+
+
 def _deployment_allows_empty_api_key(deployment: Dict[str, Any]) -> bool:
     """Return whether a configured vision deployment is a supported keyless endpoint."""
     params = resolve_litellm_params_env(deployment.get("litellm_params") or {})
     if str(params.get("api_key") or "").strip():
         return False
     wire_model = str(params.get("model") or "").strip()
-    protocol = wire_model.split("/", 1)[0] if "/" in wire_model else None
+    protocol = wire_model.split("/", 1)[0].strip().lower() if "/" in wire_model else None
+    if protocol in _VISION_IAM_KEYLESS_PROVIDERS:
+        return True
     if "base_url" in params and params.get("base_url") is not None:
         api_base = params.get("base_url")
     else:
@@ -379,7 +394,8 @@ def _call_litellm_vision(image_b64: str, mime_type: str, api_key: Optional[str] 
                     )
                 if _has_deployment_endpoint_conflict(item):
                     raise ValueError("Vision deployment has conflicting api_base and base_url values")
-    if key is None and not deployment_params:
+    model_prefix = model.split("/", 1)[0].strip().lower() if "/" in model else ""
+    if key is None and not deployment_params and model_prefix not in _VISION_IAM_KEYLESS_PROVIDERS:
         raise ValueError(f"No API key found for vision model {model}")
     wire_model = str(deployment_params.get("model") or model).strip()
     raw_api_surface = str(
@@ -451,7 +467,12 @@ def _call_litellm_vision(image_b64: str, mime_type: str, api_key: Optional[str] 
     if deployment_params.get("extra_headers"):
         call_kwargs["extra_headers"] = dict(deployment_params["extra_headers"])
     # Add api_base and custom headers for OpenAI-compatible providers
-    if not deployment_params and not model.startswith("gemini/") and not model.startswith("anthropic/") and not model.startswith("vertex_ai/"):
+    if (
+        not deployment_params
+        and not model.startswith("gemini/")
+        and not model.startswith("anthropic/")
+        and model_prefix not in _VISION_IAM_KEYLESS_PROVIDERS
+    ):
         if cfg.openai_base_url:
             call_kwargs["api_base"] = cfg.openai_base_url
         if cfg.openai_base_url and "aihubmix.com" in cfg.openai_base_url:
@@ -499,6 +520,8 @@ def extract_stock_codes_from_image(
     model = _resolve_vision_model()
     keys = _get_api_keys_for_model(model, get_config())
 
+    from src.llm.native_types import NativeConfigError
+
     last_error: Optional[Exception] = None
     for attempt in range(3):
         try:
@@ -511,6 +534,9 @@ def extract_stock_codes_from_image(
                 f"{[(i[0], i[1]) for i in items[:5]]}{'...' if len(items) > 5 else ''}"
             )
             return items, raw
+        except NativeConfigError as e:
+            logger.error("[ImageExtractor] Non-retryable LLM config error: %s", e)
+            raise ValueError(f"Vision 模型配置错误: {e}") from e
         except Exception as e:
             last_error = e
             if attempt < 2:

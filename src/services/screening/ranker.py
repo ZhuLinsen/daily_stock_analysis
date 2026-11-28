@@ -197,8 +197,12 @@ def rank_candidates_with_metadata(
                     max_tokens=max_tokens,
                 )
             except Exception as exc:
-                failure_reason = "timeout" if _is_timeout_error(exc) else "call_failed"
-                model_errors.append(f"{failure_reason}:{exc.__class__.__name__}")
+                if getattr(exc, "error_code", None) == "litellm_optional_dependency_missing":
+                    failure_reason = "litellm_optional_dependency_missing"
+                    model_errors.append(f"{failure_reason}:{exc}")
+                else:
+                    failure_reason = "timeout" if _is_timeout_error(exc) else "call_failed"
+                    model_errors.append(f"{failure_reason}:{exc.__class__.__name__}")
                 break
 
             parsed = _parse_ranking_response_detail(response, candidates)

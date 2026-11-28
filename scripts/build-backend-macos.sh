@@ -73,6 +73,10 @@ hidden_imports=(
   "multipart"
   "multipart.multipart"
   "json_repair"
+  # Transitive runtime dependency of tavily-python (Issue #537)
+  "tiktoken"
+  "tiktoken_ext"
+  "tiktoken_ext.openai_public"
   "api"
   "api.app"
   "api.deps"
@@ -117,7 +121,7 @@ for module in "${hidden_imports[@]}"; do
 done
 
 pushd "${ROOT_DIR}" >/dev/null
-cmd=("${PYTHON_BIN}" -m PyInstaller --name stock_analysis --onedir --noconfirm --noconsole --runtime-hook "${SCRIPT_DIR}/pyinstaller_runtime_compat.py" --add-data "static:static" --add-data "strategies:strategies" --add-data "src/assets/share_image:src/assets/share_image" --collect-data akshare --collect-data fxmacrodata_public)
+cmd=("${PYTHON_BIN}" -m PyInstaller --name stock_analysis --onedir --noconfirm --noconsole --runtime-hook "${SCRIPT_DIR}/pyinstaller_runtime_compat.py" --add-data "static:static" --add-data "strategies:strategies" --add-data "src/assets/share_image:src/assets/share_image" --collect-data tiktoken --collect-data akshare --collect-data fxmacrodata_public)
 cmd+=("--collect-all" "src.services.screening")
 cmd+=("--collect-all" "futu")
 cmd+=("--collect-all" "py_mini_racer")

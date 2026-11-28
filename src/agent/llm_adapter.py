@@ -600,7 +600,11 @@ class LLMToolAdapter:
                 )
             except NativeConfigError as exc:
                 self._backend_error = GenerationError(
-                    error_code=GenerationErrorCode.CAPABILITY_UNSUPPORTED,
+                    error_code=(
+                        GenerationErrorCode.BACKEND_NOT_CONFIGURED
+                        if exc.error_code == "litellm_optional_dependency_missing"
+                        else GenerationErrorCode.CAPABILITY_UNSUPPORTED
+                    ),
                     stage="generation",
                     retryable=False,
                     fallbackable=False,
@@ -658,7 +662,11 @@ class LLMToolAdapter:
                 )
             except NativeConfigError as exc:
                 self._backend_error = GenerationError(
-                    error_code=GenerationErrorCode.CAPABILITY_UNSUPPORTED,
+                    error_code=(
+                        GenerationErrorCode.BACKEND_NOT_CONFIGURED
+                        if exc.error_code == "litellm_optional_dependency_missing"
+                        else GenerationErrorCode.CAPABILITY_UNSUPPORTED
+                    ),
                     stage="generation",
                     retryable=False,
                     fallbackable=False,
@@ -752,9 +760,13 @@ class LLMToolAdapter:
         """Shared completion path for both tool and text-only calls."""
         config = self._config
         if self._backend_error is not None:
+            detail_msg = ""
+            if isinstance(self._backend_error.details, dict):
+                detail_msg = str(self._backend_error.details.get("message") or "").strip()
             error_msg = (
-                "Agent generation backend configuration error: "
-                f"{self._backend_error.message}"
+                f"Agent generation backend configuration error: {detail_msg}"
+                if detail_msg
+                else f"Agent generation backend configuration error: {self._backend_error.message}"
             )
             logger.error(error_msg)
             return LLMResponse(content=error_msg, provider="error")

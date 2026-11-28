@@ -18,9 +18,10 @@ import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from unittest.mock import patch
 
+from contextlib import nullcontext
 import httpx
 import pytest
-from tests.litellm_stub import is_real_package_installed, remove_litellm_stub
+from tests.litellm_stub import is_real_package_installed, without_litellm_stub
 
 from src.agent.llm_adapter import LLMToolAdapter
 from src.analyzer import GeminiAnalyzer
@@ -162,7 +163,15 @@ def test_real_config_to_router_e2e_across_all_modes_without_use_transport(
     if mode == "litellm":
         if not (is_real_package_installed("litellm") and is_real_package_installed("openai")):
             pytest.skip("optional litellm/openai extra not installed (requirements-litellm.txt)")
-        remove_litellm_stub()
+    with (without_litellm_stub() if mode == "litellm" else nullcontext()):
+        _run_real_config_to_router_e2e_for_mode(mode, monkeypatch)
+
+
+def _run_real_config_to_router_e2e_for_mode(
+    mode: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if mode == "litellm":
         pytest.importorskip("litellm")
         pytest.importorskip("openai")
     def _responder(req: Dict[str, Any], handler: BaseHTTPRequestHandler) -> None:
@@ -742,7 +751,11 @@ def test_litellm_vs_native_parity_harness_all_four_protocols() -> None:
     """Point installed LiteLLM and NativeUnifiedTransport at the SAME loopback server and assert wire & response parity."""
     if not (is_real_package_installed("litellm") and is_real_package_installed("openai")):
         pytest.skip("optional litellm/openai extra not installed (requirements-litellm.txt)")
-    remove_litellm_stub()
+    with without_litellm_stub():
+        _run_litellm_vs_native_parity_harness_all_four_protocols()
+
+
+def _run_litellm_vs_native_parity_harness_all_four_protocols() -> None:
     real_litellm = pytest.importorskip("litellm")
     pytest.importorskip("openai")
     def _parity_responder(req: Dict[str, Any], handler: BaseHTTPRequestHandler) -> None:
@@ -2429,7 +2442,16 @@ def test_p0_3_test_llm_channel_blocks_cross_origin_redirects_in_both_modes(
     if mode == "litellm":
         if not (is_real_package_installed("litellm") and is_real_package_installed("openai")):
             pytest.skip("optional litellm/openai extra not installed (requirements-litellm.txt)")
-        remove_litellm_stub()
+    with (without_litellm_stub() if mode == "litellm" else nullcontext()):
+        _run_p0_3_redirect_check_for_mode(mode, monkeypatch, tmp_path)
+
+
+def _run_p0_3_redirect_check_for_mode(
+    mode: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    if mode == "litellm":
         pytest.importorskip("litellm")
         pytest.importorskip("openai")
     from src.core.config_manager import ConfigManager
@@ -2507,7 +2529,15 @@ def test_p0_2_litellm_responses_mode_redirect_blocked_and_fail_closed(
     # Real LiteLLM SDK Responses-mode loopback 302 test (runs when optional requirements-litellm.txt is installed).
     if not (is_real_package_installed("litellm") and is_real_package_installed("openai")):
         return
-    remove_litellm_stub()
+    with without_litellm_stub():
+        _run_p0_2_real_sdk_responses_redirect_test(tmp_path, monkeypatch)
+
+
+def _run_p0_2_real_sdk_responses_redirect_test(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from src.core.config_manager import ConfigManager
+    from src.services.system_config_service import SystemConfigService
 
     evil_hits: List[Dict[str, Any]] = []
 
@@ -2599,11 +2629,11 @@ def test_p1_3_and_p1_5_native_extra_header_redaction_and_yaml_params(
     assert _litellm_uses_responses_bridge({"model": "openai/Doubao-Seed-2.0-pro"}, fake_litellm_mod) is False
     assert _litellm_uses_responses_bridge({"model": "openai/responses/gpt-5-pro"}, fake_litellm_mod) is True
     if is_real_package_installed("litellm"):
-        remove_litellm_stub()
-        import litellm as real_litellm_mod
+        with without_litellm_stub():
+            import litellm as real_litellm_mod
 
-        assert _litellm_uses_responses_bridge({"model": "openai/Doubao-Seed-2.0-pro"}, real_litellm_mod) is False
-        assert _litellm_uses_responses_bridge({"model": "openai/gpt-5-pro"}, real_litellm_mod) is True
+            assert _litellm_uses_responses_bridge({"model": "openai/Doubao-Seed-2.0-pro"}, real_litellm_mod) is False
+            assert _litellm_uses_responses_bridge({"model": "openai/gpt-5-pro"}, real_litellm_mod) is True
 
     # P1-5 & F6: Anthropic json_schema resolves natively & prepares output_config.format;
     # Anthropic json_object delegates in auto; organization/project delegate in auto.
