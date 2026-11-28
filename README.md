@@ -25,7 +25,7 @@
 
 [**产品预览**](#-产品预览) · [**功能特性**](#-功能特性) · [**快速开始**](#-快速开始) · [**推送效果**](#-推送效果) · [**文档中心**](docs/INDEX.md) · [**完整指南**](docs/full-guide.md)
 
-简体中文 | [English](docs/README_EN.md) | [繁體中文](docs/README_CHT.md)
+简体中文 | [English](docs/README_EN.md) | [繁體中文](docs/README_CHT.md) | [日本語](docs/README_JA.md) | [한국어](docs/README_KO.md)
 
 </div>
 

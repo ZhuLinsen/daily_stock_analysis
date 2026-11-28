@@ -84,3 +84,5 @@
 | [英文文档索引](INDEX_EN.md) | English documentation index |
 | [英文 README](README_EN.md) | English project overview and quick start |
 | [繁中 README](README_CHT.md) | 繁體中文項目概覽與快速開始 |
+| [日文 README](README_JA.md) | 日本語クイック入口（日本株・米国株クイックスタート、詳細文書は英語版へ誘導） |
+| [韩文 README](README_KO.md) | 한국어 빠른 시작 안내（`REPORT_LANGUAGE=ko` 및 한국·미국주식 가이드） |
