@@ -1091,6 +1091,28 @@ class BacktestServiceTestCase(unittest.TestCase):
             self.assertIsNone(result.start_price)
             self.assertIsNone(result.end_close)
 
+    def test_run_backtest_uses_complete_alias_when_preferred_end_close_is_missing(self) -> None:
+        start, end = date(2024, 1, 1), date(2024, 1, 2)
+        with self.db.get_session() as session:
+            session.query(StockDaily).filter_by(code="600519", date=end).one().close = None
+            session.add_all([
+                StockDaily(code="600519.SH", date=start, close=200.0),
+                StockDaily(code="600519.SH", date=end, close=220.0),
+            ])
+            session.commit()
+
+        service = BacktestService(self.db)
+        with patch.object(service, "_try_fill_daily_data") as refill:
+            stats = service.run_backtest(code="600519", eval_window_days=1, min_age_days=0)
+
+        refill.assert_not_called()
+        self.assertEqual(stats["completed"], 1)
+        with self.db.get_session() as session:
+            result = session.query(BacktestResult).one()
+            self.assertEqual(result.start_price, 200.0)
+            self.assertEqual(result.end_close, 220.0)
+            self.assertAlmostEqual(result.stock_return_pct, 10.0)
+
     def test_run_backtest_uses_exact_expected_start_across_code_aliases(self) -> None:
         with self.db.get_session() as session:
             session.add(

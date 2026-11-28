@@ -1538,6 +1538,8 @@ With the default `BACKTEST_ENGINE_VERSION=v1.1`, analyses in `intraday`, `lunch_
 
 For a long plan, stop-loss must be below the evaluation entry and take-profit must be above it. If either supplied target is invalid, the original targets and direction evaluation are preserved, `simulated_exit_reason=invalid_targets`, and simulated exit price, return and both hit flags are null. These plans are excluded from simulated-return averages and target-hit rates. Target validation also applies to explicit v1; the v1 fallback restores only the old anchor convention. Existing stored results are not automatically recalculated; rerun the backtest API with `force=true` to reevaluate them.
 
+When local prices are stored under equivalent codes such as `600519` and `600519.SH`, backtests and skill opinion evaluations prefer the first series that covers the full window and has finite, positive closing prices on both the entry day and the final evaluation day.
+
 Skill opinion outcomes use the same intraday anchor. New results are stored separately under `skill-opinion-outcome-v1.1`.
 
 ### Auto-run
