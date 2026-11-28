@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 from concurrent.futures import CancelledError
+from contextlib import ExitStack, contextmanager
 from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import importlib
 import json
 import logging
 import os
@@ -15,11 +17,11 @@ import subprocess
 import sys
 import threading
 import time
-from typing import Any, Callable, Dict, List, Optional, Tuple
-from unittest.mock import patch
+import types
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
+from unittest.mock import MagicMock, patch
 
 import httpx
-import litellm as real_litellm
 import pytest
 
 from src.agent.llm_adapter import LLMToolAdapter
@@ -60,6 +62,66 @@ from src.services.screening.ranker import rank_candidates
 from src.services.system_config_service import SystemConfigService
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+_CACHED_REAL_LITELLM_MODULES: Optional[Dict[str, Any]] = None
+
+
+def _is_real_litellm_module(mod: Any) -> bool:
+    return (
+        isinstance(mod, types.ModuleType)
+        and not getattr(mod, "__dsa_test_stub__", False)
+        and bool(getattr(mod, "__file__", None))
+        and callable(getattr(mod, "completion", None))
+    )
+
+
+@contextmanager
+def _use_real_litellm() -> Iterator[Any]:
+    """Ensure the genuine installed litellm package is active in sys.modules.
+
+    Earlier test modules in the same pytest shard may install a MagicMock or
+    lightweight stub into ``sys.modules["litellm"]`` at import time because
+    runtime code now lazy-loads litellm. Cache the real module tree once to
+    avoid re-importing litellm multiple times and restore prior sys.modules
+    entries on exit so sibling tests stay isolated.
+    """
+    global _CACHED_REAL_LITELLM_MODULES
+    existing = sys.modules.get("litellm")
+    if _is_real_litellm_module(existing):
+        yield existing
+        return
+
+    saved = {
+        name: mod
+        for name, mod in list(sys.modules.items())
+        if name == "litellm" or name.startswith("litellm.")
+    }
+    for name in list(saved):
+        sys.modules.pop(name, None)
+
+    try:
+        if _CACHED_REAL_LITELLM_MODULES is not None:
+            sys.modules.update(_CACHED_REAL_LITELLM_MODULES)
+            real_mod = _CACHED_REAL_LITELLM_MODULES["litellm"]
+        else:
+            os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
+            real_mod = importlib.import_module("litellm")
+            if not _is_real_litellm_module(real_mod):
+                raise RuntimeError(f"Expected genuine litellm package, got {type(real_mod)!r}")
+            _CACHED_REAL_LITELLM_MODULES = {
+                name: mod
+                for name, mod in sys.modules.items()
+                if name == "litellm" or name.startswith("litellm.")
+            }
+        reset_transport_cache()
+        yield real_mod
+    finally:
+        for name in [
+            key for key in list(sys.modules) if key == "litellm" or key.startswith("litellm.")
+        ]:
+            sys.modules.pop(name, None)
+        sys.modules.update(saved)
+        reset_transport_cache()
 
 
 # ============================================================
@@ -193,7 +255,10 @@ def test_real_config_to_router_e2e_across_all_modes_without_use_transport(
             return
         _send_json(handler, 404, {"error": {"message": "not found"}})
 
-    with _LoopbackServer(_responder) as srv:
+    with ExitStack() as stack:
+        if mode == "litellm":
+            stack.enter_context(_use_real_litellm())
+        srv = stack.enter_context(_LoopbackServer(_responder))
         # Clear interfering env vars and configure real LLM_CHANNELS + LLM_TRANSPORT_MODE
         for k in list(os.environ.keys()):
             if k.startswith(("LLM_", "LITELLM_", "OPENAI_", "GEMINI_", "ANTHROPIC_", "DEEPSEEK_", "MODELFLARE_", "AIHUBMIX_", "VISION_", "AGENT_LITELLM_")):
@@ -835,7 +900,7 @@ def test_litellm_vs_native_parity_harness_all_four_protocols() -> None:
     native = create_native_transport(fallback_to_litellm=False)
     messages = [{"role": "user", "content": "ping"}]
 
-    with _LoopbackServer(_parity_responder) as srv:
+    with _use_real_litellm() as real_litellm, _LoopbackServer(_parity_responder) as srv:
         fixtures = [
             (
                 "openai_chat_gpt4o",
@@ -2376,3 +2441,19 @@ finally:
         timeout=30,
     )
     assert proc.returncode == 0, f"stderr={proc.stderr}\nstdout={proc.stdout}"
+
+
+def test_use_real_litellm_recovers_from_poisoned_sys_modules_magicmock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: earlier tests installing MagicMock into sys.modules['litellm'] must not break real-SDK tests."""
+    poisoned = MagicMock(name="poisoned_litellm")
+    monkeypatch.setitem(sys.modules, "litellm", poisoned)
+    assert sys.modules["litellm"] is poisoned
+
+    with _use_real_litellm() as real_mod:
+        assert _is_real_litellm_module(real_mod)
+        assert sys.modules["litellm"] is real_mod
+        assert real_mod is not poisoned
+
+    assert sys.modules["litellm"] is poisoned
