@@ -579,18 +579,21 @@ def test_llm_channel(
 ) -> TestLLMChannelResponse:
     """Validate and test one channel definition without writing `.env`."""
     try:
-        payload = service.test_llm_channel(
-            name=request.name,
-            protocol=request.protocol,
-            api_surface=request.api_surface,
-            base_url=request.base_url,
-            api_key=request.api_key,
-            models=request.models,
-            enabled=request.enabled,
-            timeout_seconds=request.timeout_seconds,
-            capability_checks=request.capability_checks,
-            use_saved_secret=request.use_saved_secret,
-        )
+        test_kwargs: dict = {
+            "name": request.name,
+            "protocol": request.protocol,
+            "api_surface": request.api_surface,
+            "base_url": request.base_url,
+            "api_key": request.api_key,
+            "models": request.models,
+            "enabled": request.enabled,
+            "timeout_seconds": request.timeout_seconds,
+            "capability_checks": request.capability_checks,
+            "use_saved_secret": request.use_saved_secret,
+        }
+        if request.extra_headers is not None:
+            test_kwargs["extra_headers"] = request.extra_headers
+        payload = service.test_llm_channel(**test_kwargs)
         return TestLLMChannelResponse.model_validate(payload)
     except (ValueError, TypeError) as exc:
         raise HTTPException(
@@ -671,15 +674,18 @@ def discover_llm_channel_models(
 ) -> DiscoverLLMChannelModelsResponse:
     """Discover models for one channel definition without writing `.env`."""
     try:
-        payload = service.discover_llm_channel_models(
-            name=request.name,
-            protocol=request.protocol,
-            base_url=request.base_url,
-            api_key=request.api_key,
-            models=request.models,
-            timeout_seconds=request.timeout_seconds,
-            use_saved_secret=request.use_saved_secret,
-        )
+        discover_kwargs: dict = {
+            "name": request.name,
+            "protocol": request.protocol,
+            "base_url": request.base_url,
+            "api_key": request.api_key,
+            "models": request.models,
+            "timeout_seconds": request.timeout_seconds,
+            "use_saved_secret": request.use_saved_secret,
+        }
+        if request.extra_headers is not None:
+            discover_kwargs["extra_headers"] = request.extra_headers
+        payload = service.discover_llm_channel_models(**discover_kwargs)
         return DiscoverLLMChannelModelsResponse.model_validate(payload)
     except (ValueError, TypeError) as exc:
         raise HTTPException(

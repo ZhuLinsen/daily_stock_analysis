@@ -1,6 +1,6 @@
 # LLM 服务商配置指南
 
-本文面向首次配置用户，说明如何选择 LLM 配置方式、如何把 Web 设置页「AI 模型配置」预设映射到 `.env` / GitHub Actions，以及如何处理常见检测错误。关于原生 4 协议 HTTPX + SSE 传输引擎与三种中转站接入模式（env-only `LLM_TRANSPORT_MODE=litellm|auto|native`，默认 `litellm`），另见 [原生 HTTPX 传输说明](./llm-native-transport.md)。
+本文面向首次配置用户，说明如何选择 LLM 配置方式、如何把 Web 设置页「AI 模型配置」预设映射到 `.env` / GitHub Actions，以及如何处理常见检测错误。关于原生 4 协议 HTTPX + SSE 传输引擎与三种中转站接入模式（env-only `LLM_TRANSPORT_MODE=auto|litellm|native`，默认 `auto`，可用 `litellm` 一键回滚），另见 [原生 HTTPX 传输说明](./llm-native-transport.md)。
 
 > 本页未引入新的外部 provider、模型名或 Base URL 兼容行为，仅整理配置参考与官方来源；实际兼容性仍以仓库当前运行时依赖与测试结论为准。
 
@@ -36,9 +36,9 @@ Codex App Server 问股后端已移除。`AGENT_BACKEND` 仅支持 `auto`（推�
 
 1. 打开设置页的「AI 模型配置」。
 2. 在「快速添加渠道」选择服务商预设。
-3. 填入 API Key，必要时点击「获取模型」。
+3. 填入 API Key（中转站/本地模型同时填写 Base URL），必要时点击「获取模型」；任意第三方 OpenAI 兼容中转站均支持直接填写原始模型 ID（无需加 `openai/` 前缀）。
 4. 选择主模型、Agent 主模型、备选模型和 Vision 模型后保存。
-5. 点击「测试连接」确认鉴权、模型名、额度和响应格式正常。
+5. 点击「测试连接」确认鉴权、模型名、额度和响应格式正常；失败时 API 会返回结构化 `details.reason` 与 `details.hint_code` 排障线索。
 6. 如需确认 JSON / tools / stream / vision 能力，手动勾选「运行时能力检测」后再触发；该检测会产生真实 LLM 请求，结果只代表当前账号、模型和 endpoint 的一次 best-effort 检测，不会写回 `.env`，也不会阻止保存。
 
 ## Channels 示例
@@ -75,7 +75,7 @@ LLM_X6AI_API_KEY=sk-your-own-key
 LLM_X6AI_MODELS=openai/anthropic/claude-haiku-5-5-discount
 ```
 
-模型仅为示例，需从账号模型列表获取并测试连接。x6.ai 的 `vendor/model` ID 必须保留：WebUI「获取模型」会添加一次 `openai/` 路由层，例如 `anthropic/…` 保存为 `openai/anthropic/…`，`openai/…` 保存为 `openai/openai/…`。手动配置推荐复制获取模型后的完整值；已有配置不会被自动重写。
+模型仅为示例，需从账号模型列表获取并测试连接。任意自定义 `Base URL` 的 OpenAI-compatible 中转站（包括 x6.ai、Requesty、One-API / New-API 等，无需硬编码域名白名单）均可直接保存原始 `vendor/model` ID（如 `anthropic/claude-haiku-5-5-discount`、`Qwen/Qwen3-235B`），运行时会自动套用一次 `openai/` 路由；仅当上游模型 ID 本身以 `openai/` 开头时（如 `openai/gpt-4o-mini`），「获取模型」会保存为 `openai/openai/gpt-4o-mini` 以防前缀冲突。已保存的 `openai/<model>` 旧配置保持 100% 兼容，不会被自动重写。
 
 GitHub Actions 中将 `LLM_CHANNELS=x6ai`、协议、地址和模型配置为 Variables，`LLM_X6AI_API_KEY` 或 `LLM_X6AI_API_KEYS` 配置为 Secrets；每日分析工作流已透传该渠道全部字段。Docker / Desktop 复用相同配置与 WebUI。模型目录不保证当前 Key 对每个模型都有调用权限；以测试连接结果为准，失败时可换用已验证模型。测试用 Key 不应提交到仓库。
 
@@ -160,7 +160,7 @@ LITELLM_FALLBACK_MODELS=openai/gpt-5.6-terra,openai/gpt-5.6-luna
 | 火山方舟 / 豆包 | [在线推理（常规）](https://www.volcengine.com/docs/82379/2121998)、[模型列表](https://www.volcengine.com/docs/82379/1949118) | 官方示例使用 `https://ark.cn-beijing.volces.com/api/v3` 与 `doubao-seed-1-6-251015`；如使用 Coding Plan，请改用其专用 Base URL 和模型名，不要套用本表的在线推理模板。 |
 | SiliconFlow | [模型列表](https://docs.siliconflow.cn/quickstart/models)、[获取模型列表 API](https://docs.siliconflow.cn/cn/api-reference/models/get-model-list) | 平台模型实时更新且 `/models` 需要 API Key；模板只给常见新模型示例，保存前建议在 Web 设置页点击「获取模型」确认账号可见性。 |
 | OpenRouter | [Models API](https://openrouter.ai/docs/api/api-reference/models/get-models) | OpenRouter 支持 `~anthropic/claude-sonnet-latest`、`~openai/gpt-latest` 等 latest router alias；2026-05-03 的一次手动 live smoke 以 Claude Sonnet latest 作为默认示例通过，GPT latest 保留为可按账号权限切换的备选。 |
-| Requesty | [Models API](https://docs.requesty.ai/api-reference/endpoint/models-list)、[EU Routing](https://docs.requesty.ai/features/eu-routing) | 模板示例为无斜杠的 managed 模型 ID，运行时按 `openai/<model>` 路由；Base URL 为 `requesty.ai` 域名时，Web「获取模型」返回的 vendor/model ID 会保存为 `openai/<vendor>/<model>`（如 `openai/openai/gpt-4o-mini`、`openai/anthropic/claude-sonnet-4-6`），手动填写的 `anthropic/...`、`vertex/...` 也会自动补上 `openai/` 网关路由，完整 ID 原样发送给 Requesty；仅 `openai/` 开头的 ID 与 LiteLLM 路由前缀重名，手动填写时需写成 `openai/openai/gpt-4o-mini`。同一 API Key 可用于 EU 端点 `https://router.eu.requesty.ai/v1`。 |
+| Requesty | [Models API](https://docs.requesty.ai/api-reference/endpoint/models-list)、[EU Routing](https://docs.requesty.ai/features/eu-routing) | 模板示例为无斜杠的 managed 模型 ID，运行时按 `openai/<model>` 路由；所有自定义 `Base URL` 的 OpenAI-compatible 网关/中转站现均统一支持直接填写 `anthropic/...`、`vertex/...`、`Qwen/...` 等原始 vendor/model ID（不再依赖域名白名单），运行时自动补上 `openai/` 网关路由并将完整 ID 原样发送给上游；仅 `openai/` 开头的 ID 与路由前缀重名，由「获取模型」或手动写为 `openai/openai/gpt-4o-mini`。已有 `openai/<vendor>/<model>` 配置保持 100% 兼容。同一 API Key 可用于 EU 端点 `https://router.eu.requesty.ai/v1`。 |
 | Anspire Open（兼容） | [Anspire Open](https://open.anspire.cn/dsa?share_code=QFBC0FYC) | `ANSPIRE_API_KEYS` 在未配置更高优先级 OpenAI-compatible 来源时可用于大模型网关与搜索；兼容示例为 `openai/Doubao-Seed-2.0-lite` + `https://open-gateway.anspire.cn/v6`，是否可用以控制台与模型权限为准。 |
 | LiteLLM | [OpenAI-Compatible Endpoints](https://docs.litellm.ai/docs/providers/openai_compatible) | OpenAI-compatible 端点需要把运行时模型写成 `openai/<model>`，Base URL 只填到服务商兼容入口，不额外拼接 `/chat/completions`。 |
 
@@ -196,7 +196,7 @@ LITELLM_FALLBACK_MODELS=openai/gpt-5.6-terra,openai/gpt-5.6-luna
 | `LLM_USAGE_HMAC_SECRET` | Secrets | 可选；只有需要跨部署比较 usage message HMAC 时才配置同一个高熵随机密钥，例如 `openssl rand -hex 32`；不要放 Variables 或提交到版本控制。 |
 | `LLM_USAGE_HMAC_KEY_VERSION` | Variables 或 Secrets | 可选；轮换 `LLM_USAGE_HMAC_SECRET` 时同步更新版本标签，避免误比较不同密钥生成的 HMAC。 |
 
-默认 workflow 已显式映射 `modelflare`、`primary`、`secondary`、`aihubmix`、`anspire`、`deepseek`、`dashscope`、`zhipu`、`moonshot`、`minimax`、`volcengine`、`siliconflow`、`openrouter`、`requesty`、`gemini`、`anthropic`、`openai`、`ollama`、`hermes`；`mimo` 未在默认 workflow 中映射。若使用 `mimo`（或任何未列渠道名），除了在 Variables/Secrets 配置同名 `LLM_<CHANNEL>_*` 外，还需在 workflow 中同步补齐对应 env 映射；本地 `.env`、Docker 和自托管脚本不受这个限制。
+默认 workflow 已显式映射 `custom`、`modelflare`、`primary`、`secondary`、`x6ai`、`aihubmix`、`anspire`、`deepseek`、`dashscope`、`zhipu`、`moonshot`、`minimax`、`volcengine`、`siliconflow`、`openrouter`、`requesty`、`gemini`、`anthropic`、`openai`、`ollama`、`hermes`；因此任意自定义中转站可直接使用 `LLM_CHANNELS=custom` + `LLM_CUSTOM_*`（无需修改 workflow）。`mimo` 未在默认 workflow 中映射；若使用 `mimo`（或其他未列渠道名），除了在 Variables/Secrets 配置同名 `LLM_<CHANNEL>_*` 外，还需在 workflow 中同步补齐对应 env 映射；本地 `.env`、Docker 和自托管脚本不受这个限制。
 
 回滚 HMAC 遥测显式配置时，可移除 `LLM_USAGE_HMAC_SECRET` 并恢复或删除 `LLM_USAGE_HMAC_KEY_VERSION`；留空后系统会回到本地生成 `.llm_usage_hmac_secret` 的默认行为。
 
@@ -242,6 +242,12 @@ Phase 3 只支持普通分析 / JSON generation，不支持 stream/SSE、tools�
 | `null_content` | Chat completion 返回成功但 `content` 为空。 | 换用兼容文本输出的模型，或检查是否强制 tool / vision 响应。 |
 | `malformed_choices` | 响应缺少兼容的 `choices` 结构。 | 确认 endpoint 是 Chat Completions 兼容接口，不是 Embeddings、Responses 或其它协议入口。 |
 | `capability_unsupported` | JSON / tools / stream / vision smoke 参数不被当前模型或 endpoint 支持。 | 换支持该能力的模型，或把结果视为当前账号、模型和 endpoint 的一次能力诊断，不代表 provider 全局不支持。 |
+| `hint_code=missing_v1` | 接口返回 HTML 页面或 404，通常缺少 `/v1` 后缀。 | 将 Base URL 修正为兼容入口（如 `https://your-relay.example.com/v1`），不要多拼 `/chat/completions`。 |
+| `hint_code=responses_unsupported` | 中转站不支持 `/responses` 接口或路径与 Surface 冲突。 | 将 `API Surface` 切回 `Chat Completions`。 |
+| `hint_code=waf_blocked` | 被 Cloudflare / WAF 拦截（HTTP 403），并非 API Key 错误。 | 检查代理出口 IP、WAF 策略或联系中转站管理员，不要误换 Key。 |
+| `hint_code=unknown_model` | 模型 ID 不存在或当前账号无权限。 | 点击「获取模型」核对精确名称；第三方中转站直接填原始 ID，无需 `openai/` 前缀。 |
+| `hint_code=missing_base_url` | 自定义中转站或兼容渠道未填 Base URL。 | 补齐以 `/v1` 等结尾的 Base URL 后重试。 |
+| `hint_code=cloud_iam_fallback` | Bedrock / Vertex / Azure 等云 IAM 渠道需要 LiteLLM 兼容层。 | 在 `.env` 中保持默认 `LLM_TRANSPORT_MODE=auto`（安装 `litellm`）或显式设为 `LLM_TRANSPORT_MODE=litellm`。 |
 | `unknown_error` | 服务商或客户端抛出未能细分的异常。 | 先查看 `details.message` / 日志中的原始错误，再按网络、鉴权、模型名和额度逐项排查。 |
 
 完整分类逻辑以 `src/services/system_config_service.py` 中的错误分类实现为准。

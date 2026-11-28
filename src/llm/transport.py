@@ -4,8 +4,8 @@
 Phase 1 (Issue #2622) centralized all runtime ``litellm`` interactions behind
 ``LLMTransport``. Phase 2 plugs in the native 4-protocol HTTPX + SSE engine
 (``NativeUnifiedTransport`` + ``NativeUnifiedRouter``) controlled by the
-env-only ``LLM_TRANSPORT_MODE`` switch (default ``litellm``; opt-in ``auto``
-per-alias hybrid or strict ``native``).
+env-only ``LLM_TRANSPORT_MODE`` switch (default ``auto`` per-alias hybrid;
+instant rollback via ``litellm``; strict zero-LiteLLM ``native``).
 """
 
 from __future__ import annotations
@@ -468,6 +468,136 @@ def _sync_shared_pricing_to_transport(
         logger.debug("Skipping shared model cost sync to fallback transport: %s", exc)
 
 
+class _NoRedirectStreamWrapper:
+    """Close an attached ``httpx.Client`` when a LiteLLM stream finishes or closes."""
+
+    def __init__(self, inner: Any, http_client: Any) -> None:
+        self._inner = inner
+        self._http_client = http_client
+        self._closed = False
+
+    def __iter__(self) -> Iterator[Any]:
+        try:
+            for chunk in self._inner:
+                yield chunk
+        finally:
+            self.close()
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        inner_close = getattr(self._inner, "close", None)
+        if callable(inner_close):
+            try:
+                inner_close()
+            except Exception:
+                pass
+        try:
+            self._http_client.close()
+        except Exception:
+            pass
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
+def _is_real_litellm_sdk(module: Any) -> bool:
+    if module is None or getattr(module, "__dsa_test_stub__", False):
+        return False
+    module_file = getattr(module, "__file__", None)
+    return isinstance(module_file, str) and bool(module_file.strip())
+
+
+def _litellm_uses_responses_bridge(payload: Mapping[str, Any], litellm_mod: Any) -> bool:
+    """Return True when LiteLLM routes the OpenAI call through its Responses HTTPHandler."""
+    raw_model = str(payload.get("model") or "").strip()
+    lower_model = raw_model.lower()
+    if lower_model.startswith("openai/responses/") or lower_model.startswith("responses/"):
+        return True
+    if getattr(litellm_mod, "route_all_chat_openai_to_responses", False):
+        return True
+    custom_provider = str(payload.get("custom_llm_provider") or "").strip() or None
+    provider = custom_provider
+    model_name = raw_model
+    try:
+        get_llm_provider = getattr(litellm_mod, "get_llm_provider", None)
+        if callable(get_llm_provider):
+            resolved_model, resolved_provider, _, _ = get_llm_provider(
+                model=raw_model,
+                custom_llm_provider=custom_provider,
+                api_base=payload.get("api_base"),
+            )
+            model_name = str(resolved_model or raw_model)
+            provider = str(resolved_provider or provider or "")
+    except Exception:
+        pass
+    if provider and provider.lower() != "openai":
+        return True
+    try:
+        from litellm.main import responses_api_bridge_check
+
+        model_info, _ = responses_api_bridge_check(
+            model=model_name,
+            custom_llm_provider="openai",
+            web_search_options=payload.get("web_search_options"),
+            tools=payload.get("tools"),
+            reasoning_effort=payload.get("reasoning_effort"),
+            reasoning_summary=payload.get("reasoning_summary"),
+        )
+        if isinstance(model_info, Mapping) and str(model_info.get("mode") or "").lower() == "responses":
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _build_litellm_no_redirect_client(
+    payload: Mapping[str, Any],
+    litellm_mod: Optional[Any] = None,
+) -> Tuple[Optional[Any], Optional[Any]]:
+    """Build a ``follow_redirects=False`` client for LiteLLM probe calls."""
+    try:
+        import httpx
+    except ImportError:
+        return None, None
+    raw_timeout = payload.get("timeout")
+    try:
+        timeout = float(raw_timeout) if raw_timeout is not None else 20.0
+    except (TypeError, ValueError):
+        timeout = 20.0
+    http_client = httpx.Client(follow_redirects=False, timeout=timeout)
+    model_str = str(payload.get("model") or "").strip().lower()
+    use_openai_sdk_client = (
+        (
+            (model_str.startswith("openai/") and not model_str.startswith("openai/responses/"))
+            or ("/" not in model_str)
+        )
+        and not _litellm_uses_responses_bridge(payload, litellm_mod)
+    )
+    if use_openai_sdk_client:
+        try:
+            import openai
+
+            client = openai.OpenAI(
+                api_key=str(payload.get("api_key") or "sk-placeholder"),
+                base_url=str(payload.get("api_base") or "").strip() or None,
+                http_client=http_client,
+                max_retries=0,
+            )
+            return client, http_client
+        except Exception:
+            http_client.close()
+            return None, None
+    try:
+        from litellm.llms.custom_httpx.http_handler import HTTPHandler
+
+        return HTTPHandler(client=http_client), http_client
+    except Exception:
+        http_client.close()
+        return None, None
+
+
 class LiteLLMTransport:
     """Default ``LLMTransport`` backed lazily by ``litellm``."""
 
@@ -482,14 +612,45 @@ class LiteLLMTransport:
         return module
 
     def completion(self, **kwargs: Any) -> Any:
+        no_redirects = bool(kwargs.get("_dsa_no_redirects"))
         payload = _strip_internal_litellm_kwargs(kwargs)
         api_surface = payload.pop("api_surface", None)
         if api_surface and "model" in payload:
             payload["model"] = _encode_litellm_responses_wire_model(payload["model"], api_surface)
-        return _tag_response_transport_engine(
-            self._load_litellm().completion(**payload),
-            "litellm",
-        )
+        litellm_mod = self._load_litellm()
+        owned_http_client = None
+        if no_redirects and "client" not in payload and _is_real_litellm_sdk(litellm_mod):
+            probe_client, owned_http_client = _build_litellm_no_redirect_client(payload, litellm_mod)
+            if probe_client is None:
+                from src.llm.native_types import NativeConfigError
+
+                raise NativeConfigError(
+                    "Unable to build follow_redirects=False HTTP client for LiteLLM probe",
+                    error_code="no_redirect_client_unavailable",
+                )
+            payload["client"] = probe_client
+            payload.setdefault("num_retries", 0)
+        is_stream = bool(payload.get("stream"))
+        try:
+            result = _tag_response_transport_engine(
+                litellm_mod.completion(**payload),
+                "litellm",
+            )
+        except Exception:
+            if owned_http_client is not None:
+                try:
+                    owned_http_client.close()
+                except Exception:
+                    pass
+            raise
+        if owned_http_client is not None:
+            if is_stream:
+                return _NoRedirectStreamWrapper(result, owned_http_client)
+            try:
+                owned_http_client.close()
+            except Exception:
+                pass
+        return result
 
     def create_router(self, model_list: List[Dict[str, Any]], **kwargs: Any) -> Any:
         module = self._load_litellm()
@@ -1063,9 +1224,10 @@ class NativeUnifiedTransport:
         call_kwargs.pop("model", None)
         _, caller_client_base, caller_http = extract_client_overrides(call_kwargs)
         caller_client_origin = url_origin(caller_client_base) if caller_client_base else None
+        disable_env = bool(call_kwargs.get("_dsa_disable_env_expansion"))
         raw_caller_base = (
-            resolve_env_reference(call_kwargs.get("base_url"))
-            or resolve_env_reference(call_kwargs.get("api_base"))
+            (call_kwargs.get("base_url") if disable_env else resolve_env_reference(call_kwargs.get("base_url")))
+            or (call_kwargs.get("api_base") if disable_env else resolve_env_reference(call_kwargs.get("api_base")))
             or caller_client_base
         )
         caller_header_origin = url_origin(str(raw_caller_base)) if raw_caller_base else None
@@ -1240,17 +1402,17 @@ def resolve_llm_transport_mode(
                 candidate = str(cfg_mode)
 
     cleaned = str(candidate or "").strip().lower()
-    if not cleaned or cleaned == "litellm":
-        return "litellm"
-    if cleaned in {"auto", "native_httpx", "hybrid"}:
+    if not cleaned or cleaned in {"auto", "native_httpx", "hybrid"}:
         return "auto"
+    if cleaned == "litellm":
+        return "litellm"
     if cleaned in {"native", "native_only", "httpx"}:
         return "native"
     logger.warning(
-        "[LLMTransport] Unsupported LLM_TRANSPORT_MODE=%r; falling back to 'litellm'",
+        "[LLMTransport] Unsupported LLM_TRANSPORT_MODE=%r; falling back to 'auto'",
         candidate,
     )
-    return "litellm"
+    return "auto"
 
 
 def _get_transport_for_mode(mode: str) -> LLMTransport:

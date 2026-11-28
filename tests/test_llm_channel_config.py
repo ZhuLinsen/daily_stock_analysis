@@ -143,6 +143,7 @@ class LLMChannelConfigTestCase(unittest.TestCase):
         self.assertEqual(config.litellm_model, "openai/yaml-model")
         with patch.dict(os.environ, {
             "MODELFLARE_KEY": "sk-short", "LLM_CHANNELS": "other",
+            "LLM_OTHER_BASE_URL": "https://other.example/v1",
             "LLM_OTHER_API_KEY": "sk-other", "LLM_OTHER_MODELS": "other-model", "LLM_OTHER_PROTOCOL": "openai",
         }, clear=True), patch.object(Config, "_parse_litellm_yaml", return_value=[]):
             config = Config._load_from_env()
@@ -335,6 +336,7 @@ class LLMChannelConfigTestCase(unittest.TestCase):
             "LLM_CHANNELS": "draft",
             "LLM_DRAFT_PROTOCOL": "openai",
             "LLM_DRAFT_API_SURFACE": "responses",
+            "LLM_DRAFT_BASE_URL": "https://draft.example/v1",
             "LLM_DRAFT_API_KEY": "sk-draft-test-value",
             "LLM_DRAFT_MODELS": "deepseek-ai/DeepSeek-V3",
         }
@@ -362,9 +364,11 @@ class LLMChannelConfigTestCase(unittest.TestCase):
         env = {
             "LLM_CHANNELS": "chat,responses",
             "LLM_CHAT_PROTOCOL": "openai",
+            "LLM_CHAT_BASE_URL": "https://api.openai.com/v1",
             "LLM_CHAT_API_KEY": "sk-chat-test-value",
             "LLM_CHAT_MODELS": "gpt-5.6-sol",
             "LLM_RESPONSES_PROTOCOL": "openai",
+            "LLM_RESPONSES_BASE_URL": "https://api.openai.com/v1",
             "LLM_RESPONSES_API_SURFACE": "responses",
             "LLM_RESPONSES_API_KEY": "sk-responses-test-value",
             "LLM_RESPONSES_MODELS": "gpt-5.6-sol",
@@ -416,9 +420,11 @@ class LLMChannelConfigTestCase(unittest.TestCase):
         env = {
             "LLM_CHANNELS": "primary,backup",
             "LLM_PRIMARY_PROTOCOL": "openai",
+            "LLM_PRIMARY_BASE_URL": "https://api.openai.com/v1",
             "LLM_PRIMARY_API_KEY": "sk-primary-test-value",
             "LLM_PRIMARY_MODELS": "gpt-4o-mini",
             "LLM_BACKUP_PROTOCOL": "openai",
+            "LLM_BACKUP_BASE_URL": "https://api.openai.com/v1",
             "LLM_BACKUP_API_KEY": "sk-backup-test-value",
             "LLM_BACKUP_MODELS": "gpt-4o-mini",
         }
@@ -1192,7 +1198,12 @@ class LLMChannelConfigTestCase(unittest.TestCase):
     def test_gateway_discovered_models_save_and_route_through_gateway(
         self, mock_get, _mock_parse_yaml, _mock_setup_env
     ) -> None:
-        for channel, base_url in (("requesty", "https://router.requesty.ai/v1"), ("x6ai", "https://api.x6.ai/v1")):
+        # Works identically for known gateways AND any arbitrary custom relay URL (de-whitelisted).
+        for channel, base_url in (
+            ("requesty", "https://router.requesty.ai/v1"),
+            ("x6ai", "https://api.x6.ai/v1"),
+            ("custom", "https://my-oneapi.example.com/v1"),
+        ):
             with self.subTest(channel=channel):
                 mock_response = Mock(ok=True, status_code=200)
                 mock_response.json.return_value = {
@@ -1200,6 +1211,7 @@ class LLMChannelConfigTestCase(unittest.TestCase):
                         {"id": "openai/gpt-4o-mini"},
                         {"id": "anthropic/claude-sonnet-4-6"},
                         {"id": "vertex/claude-sonnet-4-5"},
+                        {"id": "Qwen/Qwen3-235B"},
                         {"id": "gpt-6.1-terra"},
                     ]
                 }
@@ -1213,65 +1225,103 @@ class LLMChannelConfigTestCase(unittest.TestCase):
                 )
 
                 self.assertTrue(payload["success"])
-                expected = [
+                expected_discovered = [
+                    "openai/openai/gpt-4o-mini",
+                    "anthropic/claude-sonnet-4-6",
+                    "vertex/claude-sonnet-4-5",
+                    "Qwen/Qwen3-235B",
+                    "gpt-6.1-terra",
+                ]
+                expected_runtime = [
                     "openai/openai/gpt-4o-mini",
                     "openai/anthropic/claude-sonnet-4-6",
                     "openai/vertex/claude-sonnet-4-5",
+                    "openai/Qwen/Qwen3-235B",
                     "openai/gpt-6.1-terra",
                 ]
-                self.assertEqual(payload["models"], expected)
+                self.assertEqual(payload["models"], expected_discovered)
 
-                # The Web editor saves the selected discovery values as-is.
-                env = {
-                    "LLM_CHANNELS": channel,
-                    f"LLM_{channel.upper()}_PROTOCOL": "openai",
-                    f"LLM_{channel.upper()}_BASE_URL": base_url,
-                    f"LLM_{channel.upper()}_API_KEY": "sk-test-value",
-                    f"LLM_{channel.upper()}_MODELS": ",".join(payload["models"]),
-                }
-                with patch.dict(os.environ, env, clear=True):
-                    config = Config._load_from_env()
+                # Saving raw discovered model IDs AND already-saved openai/<model> IDs both route cleanly.
+                for saved_models in (payload["models"], expected_runtime):
+                    env = {
+                        "LLM_CHANNELS": channel,
+                        f"LLM_{channel.upper()}_PROTOCOL": "openai",
+                        f"LLM_{channel.upper()}_BASE_URL": base_url,
+                        f"LLM_{channel.upper()}_API_KEY": "sk-test-value",
+                        f"LLM_{channel.upper()}_MODELS": ",".join(saved_models),
+                    }
+                    with patch.dict(os.environ, env, clear=True):
+                        config = Config._load_from_env()
 
-                self.assertEqual(config.llm_channels[0]["models"], expected)
-                self.assertEqual(
-                    [entry["litellm_params"]["model"] for entry in config.llm_model_list],
-                    expected,
-                )
-                self.assertEqual(
-                    {entry["litellm_params"]["api_base"] for entry in config.llm_model_list},
-                    {base_url},
-                )
+                    self.assertEqual(config.llm_channels[0]["models"], expected_runtime)
+                    self.assertEqual(
+                        [entry["litellm_params"]["model"] for entry in config.llm_model_list],
+                        expected_runtime,
+                    )
+                    self.assertEqual(
+                        {entry["litellm_params"]["api_base"] for entry in config.llm_model_list},
+                        {base_url},
+                    )
 
     def test_gateway_model_normalization_is_idempotent(self) -> None:
         from src.config import normalize_llm_channel_model
 
         cases = {
-            # Hand-typed Requesty vendor IDs keep the gateway route.
+            # Raw opaque vendor IDs keep the OpenAI-compatible relay route on ANY custom base_url.
             "anthropic/claude-sonnet-4-6": "openai/anthropic/claude-sonnet-4-6",
             "vertex/claude-sonnet-4-5": "openai/vertex/claude-sonnet-4-5",
+            "Qwen/Qwen3-235B": "openai/Qwen/Qwen3-235B",
+            "claude-sonnet-4-6": "openai/claude-sonnet-4-6",
             "gpt-6.1-terra": "openai/gpt-6.1-terra",
-            # Already routed values are never prefixed again.
+            # Already routed openai/<model> values remain 100% backwards-compatible and idempotent.
             "openai/openai/gpt-4o-mini": "openai/openai/gpt-4o-mini",
             "openai/anthropic/claude-sonnet-4-6": "openai/anthropic/claude-sonnet-4-6",
             "openai/vertex/claude-sonnet-4-5": "openai/vertex/claude-sonnet-4-5",
         }
-        for base_url in ("https://router.requesty.ai/v1", "https://router.eu.requesty.ai/v1", "https://api.x6.ai/v1"):
-            for protocol in ("openai", ""):
-                for raw, expected in cases.items():
-                    with self.subTest(base_url=base_url, protocol=protocol, model=raw):
-                        once = normalize_llm_channel_model(raw, protocol, base_url)
-                        self.assertEqual(once, expected)
-                        self.assertEqual(normalize_llm_channel_model(once, protocol, base_url), expected)
+        for base_url in (
+            "https://router.requesty.ai/v1",
+            "https://router.eu.requesty.ai/v1",
+            "https://api.x6.ai/v1",
+            "https://requesty.ai.example.com/v1",
+            "https://api.example.com/v1",
+            "https://my-oneapi.internal/v1",
+        ):
+            for raw, expected in cases.items():
+                with self.subTest(base_url=base_url, protocol="openai", model=raw):
+                    once = normalize_llm_channel_model(raw, "openai", base_url)
+                    self.assertEqual(once, expected)
+                    self.assertEqual(normalize_llm_channel_model(once, "openai", base_url), expected)
 
-        # Other hosts keep the existing LiteLLM provider semantics.
+        # P1-2: Blank-protocol reverse-proxy channels preserve canonical provider prefixes
+        # (anthropic/..., gemini/..., deepseek/..., ollama/...) instead of forcing OpenAI.
         self.assertEqual(
-            normalize_llm_channel_model("anthropic/claude-sonnet-4-6", "openai", "https://requesty.ai.example.com/v1"),
+            normalize_llm_channel_model("anthropic/claude-sonnet-4-6", "", "https://proxy.example.com/v1"),
             "anthropic/claude-sonnet-4-6",
         )
         self.assertEqual(
-            normalize_llm_channel_model("vertex/claude-sonnet-4-5", "openai", "https://api.example.com/v1"),
-            "vertex_ai/claude-sonnet-4-5",
+            normalize_llm_channel_model("gemini/gemini-2.5-flash", "", "https://proxy.example.com/v1beta"),
+            "gemini/gemini-2.5-flash",
         )
+        self.assertEqual(
+            normalize_llm_channel_model("Qwen/Qwen3-235B", "", "https://my-oneapi.internal/v1"),
+            "openai/Qwen/Qwen3-235B",
+        )
+
+        # P1-1: Official cloud provider hosts keep canonical provider routes unchanged.
+        for official_base_url, raw, expected in (
+            ("", "anthropic/claude-sonnet-4-6", "anthropic/claude-sonnet-4-6"),
+            ("https://api.openai.com/v1", "vertex/claude-sonnet-4-5", "vertex_ai/claude-sonnet-4-5"),
+            ("https://api.minimax.io/v1", "minimax/MiniMax-M3", "minimax/MiniMax-M3"),
+            ("https://api.deepseek.com/v1", "deepseek/deepseek-chat", "deepseek/deepseek-chat"),
+            ("https://openrouter.ai/api/v1", "openrouter/anthropic/claude-3.5-sonnet", "openrouter/anthropic/claude-3.5-sonnet"),
+            ("https://dashscope.aliyuncs.com/compatible-mode/v1", "dashscope/qwen-max", "dashscope/qwen-max"),
+            ("https://api.moonshot.ai/v1", "moonshot/kimi-k2", "moonshot/kimi-k2"),
+        ):
+            with self.subTest(official_base_url=official_base_url, model=raw):
+                self.assertEqual(
+                    normalize_llm_channel_model(raw, "openai", official_base_url),
+                    expected,
+                )
 
     @patch("src.config.setup_env")
     @patch.object(Config, "_parse_litellm_yaml", return_value=[])
@@ -1323,19 +1373,30 @@ class LLMChannelConfigTestCase(unittest.TestCase):
     @patch("src.config.setup_env")
     @patch.object(Config, "_parse_litellm_yaml", return_value=[])
     def test_minimax_prefixed_models_are_not_rewritten_for_openai_compatible_channels(self, _mock_parse_yaml, _mock_setup_env) -> None:
-        env = {
+        # Official OpenAI (no custom relay base_url) preserves direct provider prefixes.
+        env_official = {
+            "LLM_CHANNELS": "primary",
+            "LLM_PRIMARY_PROTOCOL": "openai",
+            "LLM_PRIMARY_API_KEY": "sk-test-value",
+            "LLM_PRIMARY_MODELS": "minimax/MiniMax-M1",
+        }
+        with patch.dict(os.environ, env_official, clear=True):
+            config = Config._load_from_env()
+        self.assertEqual(config.llm_channels[0]["models"], ["minimax/MiniMax-M1"])
+        self.assertEqual(config.llm_model_list[0]["litellm_params"]["model"], "minimax/MiniMax-M1")
+
+        # Custom OpenAI-compatible relay wraps opaque vendor-prefixed IDs under openai/.
+        env_relay = {
             "LLM_CHANNELS": "primary",
             "LLM_PRIMARY_PROTOCOL": "openai",
             "LLM_PRIMARY_BASE_URL": "https://api.example.com/v1",
             "LLM_PRIMARY_API_KEY": "sk-test-value",
             "LLM_PRIMARY_MODELS": "minimax/MiniMax-M1",
         }
-
-        with patch.dict(os.environ, env, clear=True):
-            config = Config._load_from_env()
-
-        self.assertEqual(config.llm_channels[0]["models"], ["minimax/MiniMax-M1"])
-        self.assertEqual(config.llm_model_list[0]["litellm_params"]["model"], "minimax/MiniMax-M1")
+        with patch.dict(os.environ, env_relay, clear=True):
+            relay_config = Config._load_from_env()
+        self.assertEqual(relay_config.llm_channels[0]["models"], ["openai/minimax/MiniMax-M1"])
+        self.assertEqual(relay_config.llm_model_list[0]["litellm_params"]["model"], "openai/minimax/MiniMax-M1")
 
     @patch("src.config.setup_env")
     @patch.object(Config, "_parse_litellm_yaml", return_value=[])
@@ -1924,6 +1985,58 @@ class LLMChannelConfigTestCase(unittest.TestCase):
             ),
             "https://dashscope.aliyuncs.com/compatible-mode/v1/models",
         )
+
+    def test_channel_requires_explicit_base_url_generic_slots_vs_relays(self) -> None:
+        from src.config import channel_requires_explicit_base_url
+
+        # Built-in primary/secondary slots with explicit official openai/<model> allow blank base_url.
+        self.assertFalse(channel_requires_explicit_base_url("primary", "", models=["openai/gpt-4o-mini"]))
+        self.assertFalse(channel_requires_explicit_base_url("primary", "openai", models=["openai/gpt-4o-mini"]))
+        self.assertFalse(channel_requires_explicit_base_url("secondary", "", models=["openai/gpt-4o"]))
+
+        # Bare models, empty model suffix, or nested relay models on primary/secondary still require explicit base_url.
+        self.assertTrue(channel_requires_explicit_base_url("primary", "openai", models=["gpt-4o-mini"]))
+        self.assertTrue(channel_requires_explicit_base_url("secondary", "openai", models=["gpt-4o"]))
+        self.assertTrue(channel_requires_explicit_base_url("primary", "openai", models=["openai/"]))
+        self.assertTrue(
+            channel_requires_explicit_base_url("primary", "openai", models=["openai/anthropic/claude-sonnet"])
+        )
+
+        # Custom/relay/local/numbered slots ALWAYS require explicit base_url even with openai/ prefix.
+        for relay_name in ("my_proxy", "openrouter2", "custom", "requesty2", "anspire2", "modelflare2", "local"):
+            self.assertTrue(
+                channel_requires_explicit_base_url(relay_name, "openai", models=["openai/gpt-4o-mini"]),
+                relay_name,
+            )
+
+        # Runtime parsing honors raw_models: bare gpt-4o-mini on primary is skipped, explicit openai/gpt-4o-mini loads.
+        with patch.dict(
+            os.environ,
+            {
+                "LLM_CHANNELS": "primary",
+                "LLM_PRIMARY_PROTOCOL": "openai",
+                "LLM_PRIMARY_API_KEY": "sk-test",
+                "LLM_PRIMARY_MODELS": "gpt-4o-mini",
+            },
+            clear=True,
+        ):
+            parsed_bare, issues_bare, _, _ = Config._parse_llm_channels_with_issues("primary")
+            self.assertEqual(parsed_bare, [])
+            self.assertTrue(any(i.code == "missing_base_url" for i in issues_bare))
+
+        with patch.dict(
+            os.environ,
+            {
+                "LLM_CHANNELS": "primary",
+                "LLM_PRIMARY_API_KEY": "sk-test",
+                "LLM_PRIMARY_MODELS": "openai/gpt-4o-mini",
+            },
+            clear=True,
+        ):
+            parsed_explicit, issues_explicit, _, _ = Config._parse_llm_channels_with_issues("primary")
+            self.assertEqual(len(parsed_explicit), 1)
+            self.assertEqual(parsed_explicit[0]["models"], ["openai/gpt-4o-mini"])
+            self.assertFalse(any(i.code == "missing_base_url" for i in issues_explicit))
 
 
 if __name__ == "__main__":

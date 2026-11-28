@@ -4,9 +4,27 @@
 
 Welcome! Whether you are a beginner newly exposed to AI or a veteran skilled with various APIs, this guide will help you set up Large Language Models (LLMs) quickly.
 
-This project exposes a unified AI model access flow that supports official APIs, OpenAI-compatible platforms, and local models. Under the hood it is powered by [LiteLLM](https://docs.litellm.ai/), but most users only need to think in terms of picking a provider, adding an API key, and optionally choosing a primary model or channels. To cater to different experience levels, we provide a three-tier configuration hierarchy. Choose the method that fits you best.
+This project provides a unified AI model setup for official APIs, arbitrary third-party relays (One-API / New-API / proxies), and local models (Ollama / vLLM / LM Studio). By default it uses the native 4-protocol HTTPX + SSE transport (`LLM_TRANSPORT_MODE=auto`, delegating cloud-IAM providers to [LiteLLM](https://docs.litellm.ai/), with instant env-only rollback via `LLM_TRANSPORT_MODE=litellm`).
 
-If you are choosing a concrete provider, setting up GitHub Actions Secrets / Variables, troubleshooting a `details.reason` error, or rolling back an LLM configuration, start with the [Provider Configuration Guide](./llm-providers.md). It is the maintained reference for provider presets, Actions variable mapping, runtime capability-check boundaries, and common error handling. For the opt-in native 4-protocol HTTPX + SSE transport engine and env-only `LLM_TRANSPORT_MODE=litellm|auto|native` switch (default `litellm`), see [Native HTTPX Transport](./llm-native-transport.md).
+If you are choosing a concrete provider, setting up GitHub Actions Secrets / Variables, troubleshooting a `details.reason` / `details.hint_code` error, or rolling back an LLM configuration, start with the [Provider Configuration Guide](./llm-providers.md). For the native 4-protocol HTTPX + SSE transport engine and env-only `LLM_TRANSPORT_MODE=auto|litellm|native` switch (default `auto`), see [Native HTTPX Transport](./llm-native-transport.md).
+
+## 3-Line Quick Start (Start Here)
+
+- **Any Third-Party Relay / One-API / New-API / Proxy (3 lines; paste raw model IDs directly without an `openai/` prefix):**
+
+```env
+OPENAI_BASE_URL=https://your-relay.example.com/v1
+OPENAI_API_KEY=sk-your-key
+OPENAI_MODEL=claude-sonnet-4-6   # or gpt-4o-mini, Qwen/Qwen3-235B
+```
+
+- **Official Provider (1 line):**
+
+```env
+DEEPSEEK_API_KEY=sk-xxx          # or GEMINI_API_KEY= / ANTHROPIC_API_KEY= / OPENAI_API_KEY= / MODELFLARE_KEY=
+```
+
+- **Web Settings UI:** Open **Settings → AI Model**, choose a provider preset in **Quick Add Channel**, fill in your Base URL (for custom relays / local servers), API key, and models, then click **Test Connection** to verify.
 
 ---
 
@@ -305,8 +323,7 @@ LITELLM_MODEL=openai/hermes-agent
 
 ### MiniMax Model Naming in Channel Mode
 
-- For the official OpenAI-compatible MiniMax channel, use `MiniMax-M3.1-Flash,MiniMax-M3`. Explicit saved provider-prefixed IDs such as `minimax/MiniMax-M3.1-Flash` remain supported.
-- The Web settings page now keeps that value unchanged in Primary, Agent Primary, Fallback, and Vision selectors instead of rewriting it to `openai/minimax/<model-name>`.
+- For the official OpenAI-compatible MiniMax channel (`https://api.minimax.io/v1`), use `MiniMax-M3.1-Flash,MiniMax-M3`. Explicit saved provider-prefixed IDs such as `minimax/MiniMax-M3.1-Flash` remain supported and keep their canonical route unchanged on the official MiniMax host instead of being rewritten to `openai/minimax/<model-name>`. (Generic third-party relays with explicit `PROTOCOL=openai` wrap opaque vendor-prefixed IDs under `openai/`.)
 
 ### Default-Model Ask-Stock / LiteLLM Compatibility Notes
 

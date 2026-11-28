@@ -19,7 +19,10 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from unittest.mock import patch
 
 import httpx
-import litellm as real_litellm
+from tests.litellm_stub import remove_litellm_stub
+
+remove_litellm_stub()
+import litellm as real_litellm  # noqa: E402
 import pytest
 
 from src.agent.llm_adapter import LLMToolAdapter
@@ -2376,3 +2379,336 @@ finally:
         timeout=30,
     )
     assert proc.returncode == 0, f"stderr={proc.stderr}\nstdout={proc.stdout}"
+
+
+def test_default_transport_mode_is_auto_with_litellm_rollback(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Phase 3 cutover: default LLM_TRANSPORT_MODE is auto and litellm remains instant env rollback."""
+    from src.llm.transport import LiteLLMTransport, NativeUnifiedTransport, get_transport
+
+    monkeypatch.delenv("LLM_TRANSPORT_MODE", raising=False)
+    reset_transport_cache()
+    try:
+        assert resolve_llm_transport_mode() == "auto"
+        assert Config().llm_transport_mode == "auto"
+        assert isinstance(get_transport(), NativeUnifiedTransport)
+
+        monkeypatch.setenv("LLM_TRANSPORT_MODE", "unrecognized_mode")
+        reset_transport_cache()
+        assert resolve_llm_transport_mode() == "auto"
+
+        monkeypatch.setenv("LLM_TRANSPORT_MODE", "litellm")
+        reset_transport_cache()
+        assert resolve_llm_transport_mode() == "litellm"
+        assert isinstance(get_transport(), LiteLLMTransport)
+    finally:
+        monkeypatch.delenv("LLM_TRANSPORT_MODE", raising=False)
+        reset_transport_cache()
+
+
+@pytest.mark.parametrize("mode", ["auto", "litellm"])
+def test_p0_3_test_llm_channel_blocks_cross_origin_redirects_in_both_modes(
+    mode: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """P0-3: test_llm_channel never follows 302 redirects or leaks extra_headers in auto OR litellm mode."""
+    from src.core.config_manager import ConfigManager
+    from src.services.system_config_service import SystemConfigService
+
+    evil_hits: List[Dict[str, Any]] = []
+
+    def _evil_handler(req: Dict[str, Any], handler: BaseHTTPRequestHandler) -> None:
+        evil_hits.append(req)
+        handler.send_response(200)
+        handler.send_header("Content-Type", "application/json")
+        handler.end_headers()
+        handler.wfile.write(b'{"id":"evil","choices":[{"index":0,"message":{"role":"assistant","content":"stolen"}}]}')
+
+    with _LoopbackServer(_evil_handler) as evil_srv:
+        def _redirect_handler(req: Dict[str, Any], handler: BaseHTTPRequestHandler) -> None:
+            del req
+            handler.send_response(302)
+            handler.send_header("Location", f"{evil_srv.base_url}/v1/chat/completions")
+            handler.send_header("Content-Length", "0")
+            handler.end_headers()
+
+        with _LoopbackServer(_redirect_handler) as relay_srv:
+            env_path = tmp_path / ".env"
+            env_path.write_text("STOCK_LIST=600519\n", encoding="utf-8")
+            service = SystemConfigService(manager=ConfigManager(env_path=env_path))
+            monkeypatch.setenv("LLM_TRANSPORT_MODE", mode)
+            reset_transport_cache()
+            try:
+                result = service.test_llm_channel(
+                    name="custom",
+                    protocol="openai",
+                    base_url=f"{relay_srv.base_url}/v1",
+                    api_key="sk-probe-secret",
+                    models=["gpt-4o-mini"],
+                    extra_headers={"X-Relay-Secret": "super-secret-header"},
+                    timeout_seconds=10.0,
+                )
+            finally:
+                monkeypatch.delenv("LLM_TRANSPORT_MODE", raising=False)
+                reset_transport_cache()
+
+            assert result["success"] is False, result
+            assert len(relay_srv.requests) == 1, f"Origin A expected 1 request under mode={mode}, got {len(relay_srv.requests)}"
+            assert evil_hits == [], f"Redirect leaked request to evil server under mode={mode}: {evil_hits}"
+
+
+def test_p0_2_litellm_responses_mode_redirect_blocked_and_fail_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """P0-2: LiteLLM Responses-mode models block redirects AND fail closed if no-redirect client fails."""
+    from src.core.config_manager import ConfigManager
+    from src.llm.transport import LiteLLMTransport
+    from src.services.system_config_service import SystemConfigService
+
+    evil_hits: List[Dict[str, Any]] = []
+
+    def _evil_handler(req: Dict[str, Any], handler: BaseHTTPRequestHandler) -> None:
+        evil_hits.append(req)
+        handler.send_response(200)
+        handler.send_header("Content-Type", "application/json")
+        handler.end_headers()
+        handler.wfile.write(b'{"id":"resp_evil","output":[]}')
+
+    with _LoopbackServer(_evil_handler) as evil_srv:
+        def _redirect_handler(req: Dict[str, Any], handler: BaseHTTPRequestHandler) -> None:
+            del req
+            handler.send_response(302)
+            handler.send_header("Location", f"{evil_srv.base_url}/v1/responses")
+            handler.send_header("Content-Length", "0")
+            handler.end_headers()
+
+        with _LoopbackServer(_redirect_handler) as relay_srv:
+            env_path = tmp_path / ".env"
+            env_path.write_text("STOCK_LIST=600519\n", encoding="utf-8")
+            service = SystemConfigService(manager=ConfigManager(env_path=env_path))
+            monkeypatch.setenv("LLM_TRANSPORT_MODE", "litellm")
+            reset_transport_cache()
+            try:
+                result = service.test_llm_channel(
+                    name="custom",
+                    protocol="openai",
+                    base_url=f"{relay_srv.base_url}/v1",
+                    api_key="sk-probe-secret",
+                    models=["gpt-5-pro"],
+                    extra_headers={"X-Relay-Secret": "super-secret-header"},
+                    timeout_seconds=10.0,
+                )
+            finally:
+                monkeypatch.delenv("LLM_TRANSPORT_MODE", raising=False)
+                reset_transport_cache()
+
+            assert result["success"] is False, result
+            assert len(relay_srv.requests) == 1, f"Origin A expected 1 request, got {len(relay_srv.requests)}"
+            assert evil_hits == [], f"Responses-mode redirect leaked to evil server: {evil_hits}"
+
+    # Fail closed if no-redirect client construction returns (None, None).
+    with patch("src.llm.transport._build_litellm_no_redirect_client", return_value=(None, None)):
+        with pytest.raises(NativeConfigError) as exc_info:
+            LiteLLMTransport().completion(
+                model="openai/gpt-4o-mini",
+                messages=[{"role": "user", "content": "hi"}],
+                api_base="http://127.0.0.1:9/v1",
+                api_key="sk-test",
+                _dsa_no_redirects=True,
+            )
+    assert exc_info.value.error_code == "no_redirect_client_unavailable"
+
+
+def test_p1_3_and_p1_5_native_extra_header_redaction_and_yaml_params(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """P1-3 & P1-5: Native errors/logs redact opaque extra headers; Anthropic params & org delegation work."""
+    from types import SimpleNamespace
+
+    # P1-3 & F5: Opaque submitted extra headers (including 3-char secrets and digit-containing IDs like us-7f3ac9e0)
+    # are redacted in native logs & errors.
+    def _transport_err_handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError(
+            "failed echoing tenant-secret-999 and opaque-accept-888 and abc and us-7f3ac9e0",
+            request=request,
+        )
+
+    transport = create_native_transport(http_transport=httpx.MockTransport(_transport_err_handler))
+    caplog.set_level(logging.WARNING)
+    with pytest.raises(NativeConnectionError) as conn_exc:
+        transport.completion(
+            model="openai/gpt-4o-mini",
+            messages=[{"role": "user", "content": "hi"}],
+            api_base="https://relay.example/v1",
+            api_key="sk-key",
+            extra_headers={
+                "X-Tenant": "tenant-secret-999",
+                "Accept": "opaque-accept-888",
+                "X-Short": "abc",
+                "X-Region-Token": "us-7f3ac9e0",
+            },
+        )
+    for leaked in ("tenant-secret-999", "opaque-accept-888", "abc", "us-7f3ac9e0"):
+        assert leaked not in str(conn_exc.value)
+        assert leaked not in caplog.text
+
+    # F4: Third-party chat models ending in -pro (e.g. Doubao-Seed-2.0-pro) are NOT misclassified as Responses API.
+    from src.llm.transport import _litellm_uses_responses_bridge
+
+    assert _litellm_uses_responses_bridge({"model": "openai/Doubao-Seed-2.0-pro"}, real_litellm) is False
+    assert _litellm_uses_responses_bridge({"model": "openai/gpt-5-pro"}, real_litellm) is True
+
+    # P1-5 & F6: Anthropic json_schema resolves natively & prepares output_config.format;
+    # Anthropic json_object delegates in auto; organization/project delegate in auto.
+    from src.llm.anthropic_transport import prepare_anthropic_request
+    from src.llm.native_resolve import Unsupported, resolve_deployment
+
+    json_schema_fmt = {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "stock_report",
+            "schema": {"type": "object", "properties": {"score": {"type": "integer"}}},
+        },
+    }
+    ant_dep = resolve_deployment(
+        {
+            "model_name": "anthropic/claude-sonnet-4-6",
+            "litellm_params": {
+                "model": "anthropic/claude-sonnet-4-6",
+                "api_key": "sk-ant",
+                "response_format": json_schema_fmt,
+                "max_output_tokens": 512,
+                "max_retries": 2,
+            },
+        }
+    )
+    assert isinstance(ant_dep, DeploymentSpec), ant_dep
+    assert ant_dep.request_defaults["response_format"] == json_schema_fmt
+    assert ant_dep.request_defaults["max_output_tokens"] == 512
+    _, _, ant_body, _ = prepare_anthropic_request(
+        ant_dep,
+        [{"role": "user", "content": "hi"}],
+        False,
+        dict(ant_dep.request_defaults),
+    )
+    assert ant_body["output_config"]["format"]["type"] == "json_schema"
+    assert ant_body["max_tokens"] == 512
+
+    ant_json_obj = resolve_deployment(
+        {
+            "model_name": "anthropic/claude-sonnet-4-6",
+            "litellm_params": {
+                "model": "anthropic/claude-sonnet-4-6",
+                "api_key": "sk-ant",
+                "response_format": {"type": "json_object"},
+            },
+        }
+    )
+    assert isinstance(ant_json_obj, Unsupported)
+    assert ant_json_obj.reason == "unsupported_deployment_param"
+
+    org_res = resolve_deployment(
+        {
+            "model_name": "openai/gpt-4o",
+            "litellm_params": {
+                "model": "openai/gpt-4o",
+                "api_key": "sk-test",
+                "organization": "org-123",
+            },
+        }
+    )
+    assert isinstance(org_res, Unsupported)
+    assert org_res.reason == "unsupported_deployment_param"
+
+    proj_res = resolve_deployment(
+        {
+            "model_name": "openai/gpt-4o",
+            "litellm_params": {
+                "model": "openai/gpt-4o",
+                "api_key": "sk-test",
+                "project": "proj-456",
+            },
+        }
+    )
+    assert isinstance(proj_res, Unsupported)
+    assert proj_res.reason == "unsupported_deployment_param"
+
+
+def test_p1_5_yaml_logit_bias_forwarded_and_unrecognized_param_delegates_in_auto() -> None:
+    """P1-5: Supported OpenAI YAML params (logit_bias) forward natively; unrecognized params delegate in auto."""
+    from types import SimpleNamespace
+
+    captured_bodies: List[Dict[str, Any]] = []
+
+    def _mock_handler(request: httpx.Request) -> httpx.Response:
+        captured_bodies.append(json.loads(request.read().decode("utf-8")))
+        return httpx.Response(
+            200,
+            json={
+                "id": "cmpl-1",
+                "model": "gpt-4o",
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+            },
+        )
+
+    fallback_calls: List[Dict[str, Any]] = []
+
+    class _FallbackTransport:
+        transport_engine = "litellm"
+
+        def create_router(self, model_list: List[Dict[str, Any]], **kwargs: Any) -> Any:
+            class _FakeRouter:
+                def completion(self, **call_kwargs: Any) -> Any:
+                    fallback_calls.append({"model_list": model_list, "kwargs": call_kwargs})
+                    return SimpleNamespace(
+                        choices=[SimpleNamespace(message=SimpleNamespace(content="from-fallback"))]
+                    )
+
+            return _FakeRouter()
+
+        def completion(self, **kwargs: Any) -> Any:
+            fallback_calls.append({"kwargs": kwargs})
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content="from-fallback"))]
+            )
+
+    transport = create_native_transport(
+        http_transport=httpx.MockTransport(_mock_handler),
+        fallback_transport=_FallbackTransport(),
+    )
+    router = transport.create_router(
+        [
+            {
+                "model_name": "openai/with-logit-bias",
+                "litellm_params": {
+                    "model": "openai/gpt-4o",
+                    "api_base": "https://relay.example/v1",
+                    "api_key": "sk-test",
+                    "logit_bias": {"123": -100},
+                },
+            },
+            {
+                "model_name": "openai/with-custom-param",
+                "litellm_params": {
+                    "model": "openai/gpt-4o",
+                    "api_base": "https://relay.example/v1",
+                    "api_key": "sk-test",
+                    "custom_unsupported_vendor_flag": {"mode": "strict"},
+                },
+            },
+        ]
+    )
+
+    resp_native = router.completion(
+        model="openai/with-logit-bias",
+        messages=[{"role": "user", "content": "hi"}],
+    )
+    assert resp_native.choices[0].message.content == "ok"
+    assert captured_bodies[0]["logit_bias"] == {"123": -100}
+
+    resp_fallback = router.completion(
+        model="openai/with-custom-param",
+        messages=[{"role": "user", "content": "hi"}],
+    )
+    assert resp_fallback.choices[0].message.content == "from-fallback"
+    assert len(fallback_calls) == 1

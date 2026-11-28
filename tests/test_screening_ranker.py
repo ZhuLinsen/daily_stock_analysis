@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import json
 import sys
 from types import SimpleNamespace
@@ -11,8 +12,15 @@ from unittest.mock import patch
 import pytest
 
 from src.llm.generation_params import clear_litellm_generation_param_recovery_cache
+from src.llm.transport import LiteLLMTransport, use_transport
 from src.services.screening.models import Pick
 from src.services.screening.ranker import _RANKING_SYSTEM_INSTRUCTIONS, _call_llm, rank_candidates_with_metadata
+
+
+@contextmanager
+def _use_fake_litellm(fake_litellm: object):
+    with use_transport(LiteLLMTransport()), patch.dict(sys.modules, {"litellm": fake_litellm}, clear=False):
+        yield
 
 
 def _response(content: str = "ok") -> SimpleNamespace:
@@ -55,7 +63,7 @@ def test_screening_ranker_direct_call_omits_temperature_for_gpt5() -> None:
 
     fake_litellm = SimpleNamespace(completion=completion)
 
-    with patch.dict(sys.modules, {"litellm": fake_litellm}, clear=False):
+    with _use_fake_litellm(fake_litellm):
         result = _call_llm(
             "rank candidates",
             api_key="test-key",
@@ -79,7 +87,7 @@ def test_screening_ranker_direct_call_uses_responses_wire_model_for_matching_cha
 
     fake_litellm = SimpleNamespace(completion=completion)
 
-    with patch.dict(sys.modules, {"litellm": fake_litellm}, clear=False):
+    with _use_fake_litellm(fake_litellm):
         result = _call_llm(
             "rank candidates",
             api_key="test-key",
@@ -115,7 +123,7 @@ def test_screening_ranker_does_not_retry_public_alias_after_responses_attempt_fa
 
     fake_litellm = SimpleNamespace(completion=completion)
 
-    with patch.dict(sys.modules, {"litellm": fake_litellm}, clear=False):
+    with _use_fake_litellm(fake_litellm):
         try:
             _call_llm(
                 "rank candidates",
@@ -153,7 +161,7 @@ def test_screening_ranker_rejects_invalid_responses_wire_route_before_call() -> 
 
     fake_litellm = SimpleNamespace(completion=completion)
 
-    with patch.dict(sys.modules, {"litellm": fake_litellm}, clear=False):
+    with _use_fake_litellm(fake_litellm):
         try:
             _call_llm(
                 "rank candidates",
@@ -191,7 +199,7 @@ def test_screening_ranker_direct_call_retries_temperature_with_param_recovery() 
 
     fake_litellm = SimpleNamespace(completion=completion)
 
-    with patch.dict(sys.modules, {"litellm": fake_litellm}, clear=False):
+    with _use_fake_litellm(fake_litellm):
         result = _call_llm(
             "rank candidates",
             api_key="test-key",
@@ -224,7 +232,7 @@ def test_screening_ranker_does_not_read_reasoning_content_when_content_is_empty(
         )
 
     fake_litellm = SimpleNamespace(completion=completion)
-    with patch.dict(sys.modules, {"litellm": fake_litellm}, clear=False):
+    with _use_fake_litellm(fake_litellm):
         result = _call_llm(
             "rank candidates",
             api_key="test-key",
@@ -255,7 +263,7 @@ def test_screening_ranker_reads_choice_content_blocks_without_changing_json() ->
             ]
         )
 
-    with patch.dict(sys.modules, {"litellm": SimpleNamespace(completion=completion)}, clear=False):
+    with _use_fake_litellm(SimpleNamespace(completion=completion)):
         result = _call_llm(
             "rank candidates",
             api_key="test-key",
@@ -285,7 +293,7 @@ def test_screening_ranker_ignores_thinking_blocks_in_message_content() -> None:
             ]
         )
 
-    with patch.dict(sys.modules, {"litellm": SimpleNamespace(completion=completion)}, clear=False):
+    with _use_fake_litellm(SimpleNamespace(completion=completion)):
         result = _call_llm(
             "rank candidates",
             api_key="test-key",
@@ -323,7 +331,7 @@ model_list:
         encoding="utf-8",
     )
 
-    with patch.dict(sys.modules, {"litellm": fake_litellm}, clear=False):
+    with _use_fake_litellm(fake_litellm):
         result = _call_llm(
             "rank candidates",
             api_key="test-key",
@@ -350,7 +358,7 @@ def test_screening_ranker_fallback_keeps_untrusted_text_out_of_system_message() 
             raise RuntimeError("primary model unavailable")
         return _response()
 
-    with patch.dict(sys.modules, {"litellm": SimpleNamespace(completion=completion)}, clear=False):
+    with _use_fake_litellm(SimpleNamespace(completion=completion)):
         result = _call_llm(
             prompt, "test-key", "openai/test-primary", "",
             fallback_models=["openai/test-fallback"], json_mode=False,
@@ -411,7 +419,7 @@ def test_search_injection_stays_in_data_through_ranking_retries_and_fallback(tra
         options["config_path"] = str(config_path)
 
     fake_litellm = SimpleNamespace(completion=completion, Router=FakeRouter)
-    with patch.dict(sys.modules, {"litellm": fake_litellm}, clear=False):
+    with _use_fake_litellm(fake_litellm):
         result = rank_candidates_with_metadata(
             [candidate], "Trusted strategy", "test-key", models[0], context=attack,
             fallback_models=models[1:], max_retries=1, **options,
@@ -451,7 +459,7 @@ def test_ranking_coverage_retry_respects_total_message_budget() -> None:
         calls.append(kwargs)
         return _response("invalid" if len(calls) == 1 else _ranking_response(candidate.code))
 
-    with patch.dict(sys.modules, {"litellm": SimpleNamespace(completion=completion)}, clear=False):
+    with _use_fake_litellm(SimpleNamespace(completion=completion)):
         result = rank_candidates_with_metadata(
             [candidate], "", "test-key", "openai/test-model", context="x" * 5000,
             max_prompt_chars=3000, max_retries=1,

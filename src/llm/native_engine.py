@@ -437,17 +437,25 @@ def _entry_secrets(
     url: Optional[str] = None,
     headers: Optional[Mapping[str, Any]] = None,
 ) -> List[str]:
-    merged_headers: Dict[str, Any] = dict(entry.extra_headers)
+    submitted_extra_headers: Dict[str, Any] = dict(entry.extra_headers)
+    disable_env_expansion = bool(kwargs.get("_dsa_disable_env_expansion"))
     for key in ("extra_headers", "headers", "default_headers"):
         raw = kwargs.get(key)
         if isinstance(raw, Mapping):
-            merged_headers.update(resolve_headers_env(raw))
+            if disable_env_expansion:
+                for hk, hv in raw.items():
+                    if str(hk).strip() and hv is not None:
+                        submitted_extra_headers[str(hk).strip()] = str(hv)
+            else:
+                submitted_extra_headers.update(resolve_headers_env(raw))
+    merged_headers: Dict[str, Any] = dict(submitted_extra_headers)
     if isinstance(headers, Mapping):
         merged_headers.update(headers)
     return collect_secret_values(
         entry.api_key,
         kwargs.get("api_key"),
         headers=merged_headers,
+        extra_headers=submitted_extra_headers,
         url=url or entry.endpoint_url or entry.api_base,
     )
 

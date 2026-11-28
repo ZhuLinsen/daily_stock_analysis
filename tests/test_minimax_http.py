@@ -11,23 +11,283 @@ class MiniMaxHTTPTest(unittest.TestCase):
     def test_real_sdk_contract(self):
         # Other unit tests intentionally install a LiteLLM stub. A fresh process
         # makes this contract independent of collection order and those stubs.
+        # Explicitly pin LLM_TRANSPORT_MODE=litellm because this test exercises
+        # the real LiteLLM + OpenAI SDK SyncAPIClient / litellm.Router stack.
         env = {
             "PATH": os.environ.get("PATH", ""),
             "PYTHONPATH": str(Path(__file__).resolve().parents[1]),
+            "LLM_TRANSPORT_MODE": "litellm",
             "LITELLM_LOCAL_MODEL_COST_MAP": "True",
             "LITELLM_TELEMETRY": "False",
+            "PYTHONUTF8": "1",
         }
+        if os.environ.get("SYSTEMROOT"):
+            env["SYSTEMROOT"] = os.environ["SYSTEMROOT"]
         result = subprocess.run(
             [sys.executable, __file__, "--transport-contract"],
-            env=env, capture_output=True, text=True, timeout=90,
+            env=env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=90,
         )
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(
+            result.returncode,
+            0,
+            (result.stdout or "") + (result.stderr or ""),
+        )
+
+    def test_native_auto_http_contract(self):
+        """Exercise the default auto (native HTTPX) stack for MiniMax & OpenRouter wire contracts."""
+        import json
+        from unittest.mock import patch
+
+        import httpx
+        from src.agent.llm_adapter import LLMToolAdapter
+        from src.analyzer import GeminiAnalyzer
+        from src.config import Config
+        from src.llm.transport import (
+            create_native_transport,
+            resolve_llm_transport_mode,
+            use_transport,
+        )
+
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(resolve_llm_transport_mode(), "auto")
+
+        tools = [{"type": "function", "function": {
+            "name": "get_price", "description": "Get a stock price",
+            "parameters": {"type": "object", "properties": {"symbol": {"type": "string"}},
+                           "required": ["symbol"]},
+        }}]
+        image_urls = [
+            "https://example.com/chart.png",
+            "data:image/png;base64,iVBORw0KGgo=",
+        ]
+        cases = [(model, "https://api.minimax.io/v1") for model in (
+            "MiniMax-M3.1-Flash", "MiniMax-M3", "MiniMax-M2.7", "custom-model", "gpt-4o",
+        )] + [
+            ("MiniMax-M3.1-Flash", "https://api.minimax.com/v1"),
+            ("MiniMax-M3.1-Flash", "https://custom.example/v1"),
+        ]
+
+        for model, base_url in cases:
+            requests = []
+
+            def handle_request(request, _model=model, _base_url=base_url, _requests=requests):
+                assert str(request.url) == _base_url + "/chat/completions"
+                assert request.headers["authorization"] == "Bearer test-only"
+                body = json.loads(request.read())
+                _requests.append(body)
+                assert body["model"] == _model
+                assert body.get("thinking", {}).get("type") != "disabled"
+                assert body.get("reasoning_effort") != "none"
+                assert "service_tier" not in body
+                assert body.get("reasoning_split") is not False
+                if "tools" not in body:
+                    assert body["messages"][-1]["content"] == "Analyze the current market."
+                    return httpx.Response(200, request=request, json={
+                        "id": "chatcmpl-text", "object": "chat.completion", "created": 1,
+                        "model": _model, "choices": [{"index": 0, "finish_reason": "stop",
+                            "message": {"role": "assistant", "content": "Market analysis complete."}}],
+                    })
+                assert body["tools"] == tools
+                assert body.get("tool_choice", "auto") == "auto"
+                assert [part["image_url"]["url"] for part in body["messages"][1]["content"]
+                        if part["type"] == "image_url"] == image_urls
+                if len(_requests) == 1:
+                    message = {"role": "assistant", "content": None, "reasoning_content": "fixture reasoning",
+                               "tool_calls": [{"id": "price-1", "type": "function", "function": {
+                                   "name": "get_price", "arguments": '{"symbol":"AAPL"}',
+                               }}]}
+                    finish = "tool_calls"
+                else:
+                    assistant = body["messages"][-2]
+                    assert assistant["reasoning_content"] == "fixture reasoning"
+                    assert assistant["tool_calls"][0]["id"] == "price-1"
+                    assert json.loads(assistant["tool_calls"][0]["function"]["arguments"]) == {"symbol": "AAPL"}
+                    assert body["messages"][-1] == {
+                        "role": "tool", "tool_call_id": "price-1", "content": '{"price": 123}',
+                    }
+                    message = {"role": "assistant", "content": "The price is 123."}
+                    finish = "stop"
+                return httpx.Response(200, request=request, json={
+                    "id": "chatcmpl-test", "object": "chat.completion", "created": 1,
+                    "model": _model, "choices": [{"index": 0, "message": message, "finish_reason": finish}],
+                    "usage": {"prompt_tokens": 20, "completion_tokens": 5, "total_tokens": 25},
+                })
+
+            native_transport = create_native_transport(
+                http_transport=httpx.MockTransport(handle_request),
+                fallback_to_litellm=False,
+                sleep_fn=lambda _: None,
+            )
+            env = {
+                "LLM_CHANNELS": "minimax",
+                "LLM_MINIMAX_PROTOCOL": "openai",
+                "LLM_MINIMAX_BASE_URL": base_url,
+                "LLM_MINIMAX_API_KEY": "test-only",
+                "LLM_MINIMAX_MODELS": (
+                    "MiniMax-M3.1-Flash,MiniMax-M3"
+                    if model == "MiniMax-M3.1-Flash" and base_url == "https://api.minimax.io/v1"
+                    else model
+                ),
+            }
+            with patch.dict(os.environ, env, clear=True), patch("src.config.setup_env"), \
+                    patch.object(Config, "_parse_litellm_yaml", return_value=[]), \
+                    use_transport(native_transport):
+                config = Config._load_from_env()
+                self.assertEqual(config.llm_transport_mode, "auto")
+                self.assertEqual(config.litellm_model, "openai/" + model)
+                adapter = LLMToolAdapter(config)
+                self.assertTrue(adapter.is_available)
+                messages = [
+                    {"role": "system", "content": "Analyze the chart using the tool."},
+                    {"role": "user", "content": [
+                        {"type": "text", "text": "What is the current price?"},
+                        *[{"type": "image_url", "image_url": {"url": url}} for url in image_urls],
+                    ]},
+                ]
+                first = adapter.call_with_tools(messages, tools, timeout=15)
+                self.assertTrue(first.tool_calls, first.content)
+                self.assertEqual(first.reasoning_content, "fixture reasoning")
+                call = first.tool_calls[0]
+                self.assertEqual((call.id, call.name, call.arguments), ("price-1", "get_price", {"symbol": "AAPL"}))
+                messages += [
+                    {"role": "assistant", "content": first.content, "reasoning_content": first.reasoning_content,
+                     "tool_calls": [{"id": call.id, "name": call.name, "arguments": call.arguments}]},
+                    {"role": "tool", "tool_call_id": call.id, "content": {"price": 123}},
+                ]
+                second = adapter.call_with_tools(messages, tools, timeout=15)
+                self.assertEqual(second.content, "The price is 123.")
+                self.assertEqual(len(requests), 2)
+                if model == "MiniMax-M3.1-Flash" and base_url == "https://api.minimax.io/v1":
+                    analyzer = GeminiAnalyzer(config=config)
+                    self.assertEqual(analyzer.generate_text("Analyze the current market."), "Market analysis complete.")
+                    self.assertEqual(len(requests), 3)
+
+        openrouter_url = "https://openrouter.ai/api/v1"
+        openrouter_model = "openai/minimax/minimax-m3.1-flash"
+        provider_policy = {
+            "only": ["minimax"],
+            "allow_fallbacks": False,
+            "data_collection": "deny",
+        }
+        openrouter_requests = []
+
+        def handle_openrouter(request):
+            assert str(request.url) == openrouter_url + "/chat/completions"
+            body = json.loads(request.read())
+            auth = request.headers["authorization"]
+            openrouter_requests.append((auth, body))
+            if auth == "Bearer key-fail-once":
+                return httpx.Response(500, request=request, json={"error": {"message": "transient upstream error"}})
+            return httpx.Response(200, request=request, json={
+                "id": "chatcmpl-or", "object": "chat.completion", "created": 1,
+                "model": body["model"], "choices": [{"index": 0, "finish_reason": "stop",
+                    "message": {"role": "assistant", "content": "OpenRouter response ok."}}],
+            })
+
+        or_transport = create_native_transport(
+            http_transport=httpx.MockTransport(handle_openrouter),
+            fallback_to_litellm=False,
+            sleep_fn=lambda _: None,
+        )
+        with use_transport(or_transport):
+            yaml_cfg = Config(
+                stock_list=[],
+                litellm_model=openrouter_model,
+                llm_model_list=[{
+                    "model_name": openrouter_model,
+                    "litellm_params": {
+                        "model": openrouter_model,
+                        "api_base": openrouter_url,
+                        "api_key": "test-only",
+                        "extra_body": {"provider": dict(provider_policy)},
+                    },
+                }],
+            )
+            self.assertEqual(LLMToolAdapter(yaml_cfg).call_text([{"role": "user", "content": "Hello"}]).content, "OpenRouter response ok.")
+            self.assertEqual(LLMToolAdapter(yaml_cfg).call_with_tools([{"role": "user", "content": "Hello"}], tools).content, "OpenRouter response ok.")
+            self.assertEqual(GeminiAnalyzer(config=yaml_cfg).generate_text("Analyze OpenRouter."), "OpenRouter response ok.")
+            self.assertEqual(len(openrouter_requests), 3)
+            for _auth, body in openrouter_requests:
+                self.assertEqual(body.get("provider"), provider_policy)
+                self.assertEqual(body.get("reasoning_effort"), "low")
+
+            openrouter_requests.clear()
+            override_cfg = Config(
+                stock_list=[],
+                litellm_model=openrouter_model,
+                llm_model_list=[{
+                    "model_name": openrouter_model,
+                    "litellm_params": {
+                        "model": openrouter_model,
+                        "api_base": openrouter_url,
+                        "api_key": "test-override",
+                        "extra_body": {
+                            "provider": dict(provider_policy),
+                            "reasoning_effort": "high",
+                        },
+                    },
+                }],
+            )
+            self.assertEqual(LLMToolAdapter(override_cfg).call_text([{"role": "user", "content": "Hi"}]).content, "OpenRouter response ok.")
+            self.assertEqual(GeminiAnalyzer(config=override_cfg).generate_text("Hi"), "OpenRouter response ok.")
+            self.assertEqual(len(openrouter_requests), 2)
+            for _auth, body in openrouter_requests:
+                self.assertEqual(body.get("provider"), provider_policy)
+                self.assertEqual(body.get("reasoning_effort"), "high")
+
+            openrouter_requests.clear()
+            retry_cfg = Config(
+                stock_list=[],
+                litellm_model=openrouter_model,
+                llm_model_list=[
+                    {
+                        "model_name": openrouter_model,
+                        "litellm_params": {
+                            "model": openrouter_model,
+                            "api_base": openrouter_url,
+                            "api_key": "key-fail-once",
+                            "extra_body": {"provider": {"only": ["minimax-primary"], "allow_fallbacks": False}},
+                        },
+                    },
+                    {
+                        "model_name": openrouter_model,
+                        "litellm_params": {
+                            "model": openrouter_model,
+                            "api_base": openrouter_url,
+                            "api_key": "key-backup",
+                            "extra_body": {"provider": {"only": ["minimax-backup"], "data_collection": "deny"}},
+                        },
+                    },
+                ],
+            )
+            self.assertEqual(LLMToolAdapter(retry_cfg).call_text([{"role": "user", "content": "Retry"}]).content, "OpenRouter response ok.")
+            self.assertEqual(len(openrouter_requests), 2)
+            self.assertEqual(openrouter_requests[0][0], "Bearer key-fail-once")
+            self.assertEqual(openrouter_requests[0][1].get("provider"), {"only": ["minimax-primary"], "allow_fallbacks": False})
+            self.assertEqual(openrouter_requests[0][1].get("reasoning_effort"), "low")
+            self.assertEqual(openrouter_requests[1][0], "Bearer key-backup")
+            self.assertEqual(openrouter_requests[1][1].get("provider"), {"only": ["minimax-backup"], "data_collection": "deny"})
+            self.assertEqual(openrouter_requests[1][1].get("reasoning_effort"), "low")
 
 
 def run_transport_contract():
     import json
+    import socket
     import traceback
     from unittest.mock import patch
+
+    _orig_socket_connect = socket.socket.connect
+
+    def _block_external_connect(self, address):
+        host = address[0] if isinstance(address, tuple) and address else None
+        if host in {"127.0.0.1", "::1"}:
+            return _orig_socket_connect(self, address)
+        raise AssertionError(f"Unexpected network access: {address!r}")
 
     import httpx
     import litellm
@@ -111,6 +371,7 @@ def run_transport_contract():
                 raise
 
         env = {
+            "LLM_TRANSPORT_MODE": "litellm",
             "LLM_CHANNELS": "minimax",
             "LLM_MINIMAX_PROTOCOL": "openai",
             "LLM_MINIMAX_BASE_URL": base_url,
@@ -126,7 +387,7 @@ def run_transport_contract():
         with patch.dict(os.environ, env, clear=True), patch("src.config.setup_env"), \
                 patch.object(Config, "_parse_litellm_yaml", return_value=[]), \
                 patch.object(SyncAPIClient, "_send_request", send_request), \
-                patch("socket.socket.connect", side_effect=AssertionError("Unexpected network access")):
+                patch("socket.socket.connect", _block_external_connect):
             config = Config._load_from_env()
             assert config.litellm_model == "openai/" + model
             adapter = LLMToolAdapter(config)
@@ -240,7 +501,7 @@ def run_transport_contract():
     ]
 
     with patch.object(SyncAPIClient, "_send_request", send_openrouter), \
-            patch("socket.socket.connect", side_effect=AssertionError("Unexpected network access")):
+            patch("socket.socket.connect", _block_external_connect):
         from src.analyzer import GeminiAnalyzer
 
         yaml_cfg = Config(

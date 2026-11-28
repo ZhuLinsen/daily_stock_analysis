@@ -997,11 +997,12 @@ def prepare_anthropic_request(
         "anthropic-version": ANTHROPIC_DEFAULT_VERSION,
     }
     skip_sensitive = bool(kwargs.get("_dsa_skip_sensitive_caller_headers"))
+    disable_env_expansion = bool(kwargs.get("_dsa_disable_env_expansion"))
     merge_header_overrides(headers, {"extra_headers": entry.extra_headers})
     merge_header_overrides(
         headers,
         kwargs,
-        resolve_env_fn=resolve_env_reference,
+        resolve_env_fn=None if disable_env_expansion else resolve_env_reference,
         safe_allowlist_only=skip_sensitive,
     )
 

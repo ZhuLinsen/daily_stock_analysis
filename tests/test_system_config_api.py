@@ -960,6 +960,51 @@ class SystemConfigApiTestCase(unittest.TestCase):
         self.assertEqual(payload["stage"], "model_discovery")
         mock_discover.assert_called_once()
 
+    def test_422_validation_error_redacts_sensitive_extra_headers_and_rejects_crlf_or_env_ref(self) -> None:
+        app = FastAPI()
+        app.include_router(system_config.router, prefix="/api/v1/system")
+        app.dependency_overrides[system_config.get_system_config_service] = lambda: self.service
+        add_error_handlers(app)
+
+        async def post_invalid(path: str, body: dict) -> httpx.Response:
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+                return await client.post(path, json=body)
+
+        for path in ("/api/v1/system/config/llm/test-channel", "/api/v1/system/config/llm/discover-models"):
+            resp_crlf = asyncio.run(
+                post_invalid(
+                    path,
+                    {
+                        "name": "custom",
+                        "protocol": "openai",
+                        "base_url": "https://relay.example/v1",
+                        "api_key": "sk-secret",
+                        "models": ["gpt-4o-mini"],
+                        "extra_headers": {"X-Auth": "secret-val\r\nX-Injected: 1"},
+                    },
+                )
+            )
+            self.assertEqual(resp_crlf.status_code, 422)
+            self.assertNotIn("secret-val", resp_crlf.text)
+            self.assertNotIn("X-Injected", resp_crlf.text)
+
+            resp_env = asyncio.run(
+                post_invalid(
+                    path,
+                    {
+                        "name": "custom",
+                        "protocol": "openai",
+                        "base_url": "https://relay.example/v1",
+                        "api_key": "sk-secret",
+                        "models": ["gpt-4o-mini"],
+                        "extra_headers": {"X-Steal": "os.environ/OPENAI_API_KEY"},
+                    },
+                )
+            )
+            self.assertEqual(resp_env.status_code, 422)
+            self.assertNotIn("os.environ/OPENAI_API_KEY", resp_env.text)
+
 
 if __name__ == "__main__":
     unittest.main()
