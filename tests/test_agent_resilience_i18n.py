@@ -1369,15 +1369,56 @@ def test_round4_malformed_dashboard_sections_stripped_and_render_safely() -> Non
 
     notif_svc = NotificationService()
     notif_svc._report_summary_only = False
-    fake_cfg = SimpleNamespace(
-        report_renderer_enabled=False,
-        report_language="en",
-        report_show_llm_model=False,
-    )
-    notif_svc._config = fake_cfg
-    with patch("src.notification.get_config", return_value=fake_cfg):
-        notif_md = notif_svc.generate_dashboard_report([malformed_result], report_date="2026-11-27")
-    assert "AAPL" in notif_md
+    for renderer_enabled in (False, True):
+        fake_cfg = SimpleNamespace(
+            report_renderer_enabled=renderer_enabled,
+            report_language="en",
+            report_show_llm_model=False,
+            report_templates_dir="templates",
+        )
+        notif_svc._config = fake_cfg
+        with patch("src.notification.get_config", return_value=fake_cfg), patch(
+            "src.services.report_renderer.get_config", return_value=fake_cfg
+        ):
+            for bad_dashboard in (
+                malformed_result.dashboard,
+                [],
+                ["unexpected-list"],
+                "unexpected-string",
+                123,
+                {
+                    "core_conclusion": [],
+                    "battle_plan": "bad-battle-plan",
+                    "intelligence": 42,
+                    "signal_attribution": ["bad-signal-attr"],
+                    "data_perspective": [],
+                },
+                {
+                    "core_conclusion": {"one_sentence": 999, "position_advice": []},
+                    "battle_plan": {"sniper_points": [], "action_checklist": "bad-checklist"},
+                    "intelligence": {"risk_alerts": "bad-risk", "positive_catalysts": 123},
+                },
+            ):
+                variant = AnalysisResult(
+                    code="AAPL",
+                    name="Apple",
+                    sentiment_score=55,
+                    trend_prediction="Neutral",
+                    operation_advice="Hold",
+                    decision_type="hold",
+                    confidence_level="Medium",
+                    analysis_summary="Test summary",
+                    buy_reason=12345,  # type: ignore[arg-type]
+                    key_points=["p1", "p2"],  # type: ignore[arg-type]
+                    risk_warning={"w": 1},  # type: ignore[arg-type]
+                    report_language="en",
+                    dashboard=bad_dashboard,  # type: ignore[arg-type]
+                )
+                assert "AAPL" in notif_svc.generate_dashboard_report([variant], report_date="2026-11-27")
+                assert "AAPL" in notif_svc.generate_wechat_dashboard([variant])
+                assert "AAPL" in notif_svc.generate_wechat_summary([variant])
+                assert "AAPL" in notif_svc.generate_brief_report([variant], report_date="2026-11-27")
+                assert "AAPL" in notif_svc.generate_single_stock_report(variant)
 
 
 def test_round4_single_agent_sentiment_strings_and_prompt_example(tmp_path) -> None:

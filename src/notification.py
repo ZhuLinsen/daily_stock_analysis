@@ -1324,6 +1324,16 @@ class NotificationService(
             signal_tag,
         )
 
+    @staticmethod
+    def _as_dict(value: Any) -> Dict[str, Any]:
+        """Return *value* if it is a dict, otherwise an empty dict."""
+        return value if isinstance(value, dict) else {}
+
+    @staticmethod
+    def _as_list(value: Any) -> List[Any]:
+        """Return *value* if it is a list, otherwise an empty list."""
+        return value if isinstance(value, list) else []
+
     def generate_dashboard_report(
         self,
         results: List[AnalysisResult],
@@ -1766,10 +1776,10 @@ class NotificationService(
         else:
             for result in sorted_results:
                 signal_text, signal_emoji, _ = self._get_signal_level(result)
-                dashboard = result.dashboard if hasattr(result, 'dashboard') and result.dashboard else {}
-                core = dashboard.get('core_conclusion', {}) if dashboard else {}
-                battle = dashboard.get('battle_plan', {}) if dashboard else {}
-                intel = dashboard.get('intelligence', {}) if dashboard else {}
+                dashboard = self._as_dict(getattr(result, 'dashboard', None))
+                core = self._as_dict(dashboard.get('core_conclusion'))
+                battle = self._as_dict(dashboard.get('battle_plan'))
+                intel = self._as_dict(dashboard.get('intelligence'))
 
                 # 股票名称
                 stock_name = self._get_display_name(result, report_language)
@@ -1779,7 +1789,8 @@ class NotificationService(
                 lines.append("")
 
                 # 核心决策（一句话）
-                one_sentence = core.get('one_sentence', result.analysis_summary) if core else result.analysis_summary
+                raw_one_sentence = core.get('one_sentence', result.analysis_summary) if core else result.analysis_summary
+                one_sentence = str(raw_one_sentence) if raw_one_sentence else ""
                 if one_sentence:
                     lines.append(f"📌 **{one_sentence[:80]}**")
                     lines.append("")
@@ -1803,7 +1814,7 @@ class NotificationService(
                     lines.append("")
 
                 # 风险警报（最重要，醒目显示）
-                risks = intel.get('risk_alerts', []) if intel else []
+                risks = self._as_list(intel.get('risk_alerts'))
                 if risks:
                     lines.append(f"🚨 **{labels['risk_alerts_label']}**:")
                     for risk in risks[:2]:  # 最多显示2条
@@ -1813,7 +1824,7 @@ class NotificationService(
                     lines.append("")
 
                 # 利好催化
-                catalysts = intel.get('positive_catalysts', []) if intel else []
+                catalysts = self._as_list(intel.get('positive_catalysts'))
                 if catalysts:
                     lines.append(f"✨ **{labels['positive_catalysts_label']}**:")
                     for cat in catalysts[:2]:  # 最多显示2条
@@ -1823,7 +1834,7 @@ class NotificationService(
                     lines.append("")
 
                 # 狙击点位
-                sniper = battle.get('sniper_points', {}) if battle else {}
+                sniper = self._as_dict(battle.get('sniper_points'))
                 if sniper:
                     ideal_buy = str(sniper.get('ideal_buy', ''))
                     stop_loss = str(sniper.get('stop_loss', ''))
@@ -1840,7 +1851,7 @@ class NotificationService(
                         lines.append("")
 
                 # 持仓建议
-                pos_advice = core.get('position_advice', {}) if core else {}
+                pos_advice = self._as_dict(core.get('position_advice'))
                 if pos_advice:
                     no_pos = str(pos_advice.get('no_position', ''))
                     has_pos = str(pos_advice.get('has_position', ''))
@@ -1877,7 +1888,7 @@ class NotificationService(
                     lines.append("")
 
                 # 检查清单简化版
-                checklist = battle.get('action_checklist', []) if battle else []
+                checklist = self._as_list(battle.get('action_checklist'))
                 if checklist:
                     # 只显示不通过的项目
                     failed_checks = [str(c) for c in checklist if str(c).startswith('❌') or str(c).startswith('⚠️')]
@@ -1946,17 +1957,20 @@ class NotificationService(
 
             # 操作理由（截断）
             if hasattr(result, 'buy_reason') and result.buy_reason:
-                reason = result.buy_reason[:80] + "..." if len(result.buy_reason) > 80 else result.buy_reason
+                buy_reason_str = str(result.buy_reason)
+                reason = buy_reason_str[:80] + "..." if len(buy_reason_str) > 80 else buy_reason_str
                 lines.append(f"💡 {reason}")
 
             # 核心看点
             if hasattr(result, 'key_points') and result.key_points:
-                points = result.key_points[:60] + "..." if len(result.key_points) > 60 else result.key_points
+                key_points_str = str(result.key_points)
+                points = key_points_str[:60] + "..." if len(key_points_str) > 60 else key_points_str
                 lines.append(f"🎯 {points}")
 
             # 风险提示（截断）
             if hasattr(result, 'risk_warning') and result.risk_warning:
-                risk = result.risk_warning[:50] + "..." if len(result.risk_warning) > 50 else result.risk_warning
+                risk_warning_str = str(result.risk_warning)
+                risk = risk_warning_str[:50] + "..." if len(risk_warning_str) > 50 else risk_warning_str
                 lines.append(f"⚠️ {risk}")
 
             lines.append("")
@@ -2020,9 +2034,9 @@ class NotificationService(
         for r in sorted_results:
             signal_text, emoji, _ = self._get_signal_level(r)
             name = self._get_display_name(r, report_language)
-            dash = r.dashboard or {}
-            core = dash.get('core_conclusion', {}) or {}
-            one = (core.get('one_sentence') or r.analysis_summary or '')[:60]
+            dash = self._as_dict(getattr(r, 'dashboard', None))
+            core = self._as_dict(dash.get('core_conclusion'))
+            one = str(core.get('one_sentence') or r.analysis_summary or '')[:60]
             lines.append(
                 f"**{name}({r.code})** {emoji} "
                 f"{signal_text} | "
@@ -2056,10 +2070,10 @@ class NotificationService(
         report_language = self._get_report_language(result)
         labels = get_report_labels(report_language)
         signal_text, signal_emoji, _ = self._get_signal_level(result)
-        dashboard = result.dashboard if hasattr(result, 'dashboard') and result.dashboard else {}
-        core = dashboard.get('core_conclusion', {}) if dashboard else {}
-        battle = dashboard.get('battle_plan', {}) if dashboard else {}
-        intel = dashboard.get('intelligence', {}) if dashboard else {}
+        dashboard = self._as_dict(getattr(result, 'dashboard', None))
+        core = self._as_dict(dashboard.get('core_conclusion'))
+        battle = self._as_dict(dashboard.get('battle_plan'))
+        intel = self._as_dict(dashboard.get('intelligence'))
 
         # 股票名称（转义 *ST 等特殊字符）
         stock_name = self._get_display_name(result, report_language)
@@ -2078,7 +2092,8 @@ class NotificationService(
         self._append_market_snapshot(lines, result)
 
         # 核心决策（一句话）
-        one_sentence = core.get('one_sentence', result.analysis_summary) if core else result.analysis_summary
+        raw_one_sentence = core.get('one_sentence', result.analysis_summary) if core else result.analysis_summary
+        one_sentence = str(raw_one_sentence) if raw_one_sentence else ""
         if one_sentence:
             lines.extend([
                 f"### 📌 {labels['core_conclusion_heading']}",
@@ -2111,7 +2126,7 @@ class NotificationService(
                 lines.append(f"💭 **{labels['sentiment_summary_label']}**: {str(intel['sentiment_summary'])[:80]}")
 
             # 风险警报
-            risks = intel.get('risk_alerts', [])
+            risks = self._as_list(intel.get('risk_alerts'))
             if risks:
                 if not info_added:
                     lines.append(f"### 📰 {labels['info_heading']}")
@@ -2123,7 +2138,7 @@ class NotificationService(
                     lines.append(f"- {str(risk)[:60]}")
 
             # 利好催化
-            catalysts = intel.get('positive_catalysts', [])
+            catalysts = self._as_list(intel.get('positive_catalysts'))
             if catalysts:
                 lines.append("")
                 lines.append(f"✨ **{labels['positive_catalysts_label']}**:")
@@ -2134,7 +2149,7 @@ class NotificationService(
             lines.append("")
 
         # 狙击点位
-        sniper = battle.get('sniper_points', {}) if battle else {}
+        sniper = self._as_dict(battle.get('sniper_points'))
         if sniper:
             lines.extend([
                 f"### 🎯 {labels['action_points_heading']}",
@@ -2149,7 +2164,7 @@ class NotificationService(
             lines.append("")
 
         # ========== 信号归因分析 ==========
-        signal_attr = dashboard.get('signal_attribution', {}) if dashboard else {}
+        signal_attr = self._as_dict(dashboard.get('signal_attribution'))
         if signal_attribution_has_content(signal_attr):
             lines.extend([
                 f"### 🎯 {labels.get('signal_attribution_heading', '信号归因分析')}",
@@ -2180,7 +2195,7 @@ class NotificationService(
             lines.append("")
 
         # 持仓建议
-        pos_advice = core.get('position_advice', {}) if core else {}
+        pos_advice = self._as_dict(core.get('position_advice'))
         if pos_advice:
             lines.extend([
                 f"### 💼 {labels['position_advice_heading']}",
@@ -2225,7 +2240,7 @@ class NotificationService(
 
     def _append_market_snapshot(self, lines: List[str], result: AnalysisResult) -> None:
         snapshot = getattr(result, 'market_snapshot', None)
-        if not snapshot:
+        if not isinstance(snapshot, dict) or not snapshot:
             return
 
         report_language = self._get_report_language(result)
