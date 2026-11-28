@@ -1,5 +1,5 @@
 import type React from 'react';
-import type { ParsedApiError } from '../../api/error';
+import { localizeParsedApiError, type ParsedApiError } from '../../api/error';
 import { useUiLanguage } from '../../contexts/UiLanguageContext';
 
 interface ApiErrorAlertProps {
@@ -19,8 +19,10 @@ export const ApiErrorAlert: React.FC<ApiErrorAlertProps> = ({
   dismissLabel,
   onDismiss,
 }) => {
-  const { t } = useUiLanguage();
-  const showDetails = error.rawMessage.trim() && error.rawMessage.trim() !== error.message.trim();
+  const { language, t } = useUiLanguage();
+  const localizedError = localizeParsedApiError(error, language);
+  const showDetails = localizedError.rawMessage.trim()
+    && localizedError.rawMessage.trim() !== localizedError.message.trim();
 
   return (
     <div
@@ -29,8 +31,8 @@ export const ApiErrorAlert: React.FC<ApiErrorAlertProps> = ({
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="text-sm font-semibold">{error.title}</p>
-          <p className="mt-1 whitespace-pre-line break-words text-xs opacity-90">{error.message}</p>
+          <p className="text-sm font-semibold">{localizedError.title}</p>
+          <p className="mt-1 whitespace-pre-line break-words text-xs opacity-90">{localizedError.message}</p>
         </div>
         {onDismiss ? (
           <button
@@ -46,7 +48,7 @@ export const ApiErrorAlert: React.FC<ApiErrorAlertProps> = ({
         <details className="mt-3 rounded-lg border border-subtle bg-surface-2 px-3 py-2">
           <summary className="cursor-pointer text-xs text-[hsl(var(--color-danger-alert-text))] opacity-90">{t('common.details')}</summary>
           <pre className="mt-2 whitespace-pre-wrap break-words text-[11px] leading-5 text-[hsl(var(--color-danger-alert-text))] opacity-85">
-            {error.rawMessage}
+            {localizedError.rawMessage}
           </pre>
         </details>
       ) : null}

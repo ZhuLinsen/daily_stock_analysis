@@ -1,7 +1,7 @@
 import { Component, lazy, Suspense, useEffect, useRef, useState } from 'react';
 import type React from 'react';
 import { LineChart } from 'lucide-react';
-import { stocksApi, type StockKLineItem } from '../../api/stocks';
+import { stocksApi, type StockHistoryResponse, type StockKLineItem } from '../../api/stocks';
 import type { ReportLanguage, ReportStrategy as ReportStrategyType } from '../../types/analysis';
 import { Card } from '../common';
 import { DashboardPanelHeader } from '../dashboard';
@@ -48,6 +48,8 @@ interface ChartState {
   open: boolean;
   loading: boolean;
   bars: StockKLineItem[] | null;
+  priceAdjustment?: StockHistoryResponse['priceAdjustment'];
+  ohlcSynthesized?: boolean | null;
   failed: boolean;
 }
 
@@ -106,6 +108,8 @@ export const ReportStrategy: React.FC<ReportStrategyProps> = ({
     open: false,
     loading: false,
     bars: null,
+    priceAdjustment: null,
+    ohlcSynthesized: null,
     failed: false,
   });
 
@@ -121,6 +125,8 @@ export const ReportStrategy: React.FC<ReportStrategyProps> = ({
   const showChart = isSameReport ? chartState.open : false;
   const isLoadingChart = isSameReport ? chartState.loading : false;
   const chartBars = isSameReport ? chartState.bars : null;
+  const chartPriceAdjustment = isSameReport ? chartState.priceAdjustment : null;
+  const chartOhlcSynthesized = isSameReport ? chartState.ohlcSynthesized : null;
   const chartFailed = isSameReport && chartState.failed;
 
   const fetchChartBars = async () => {
@@ -136,6 +142,8 @@ export const ReportStrategy: React.FC<ReportStrategyProps> = ({
       open: true,
       loading: true,
       bars: null,
+      priceAdjustment: null,
+      ohlcSynthesized: null,
       failed: false,
     };
     setChartState(pendingState);
@@ -144,7 +152,13 @@ export const ReportStrategy: React.FC<ReportStrategyProps> = ({
       setChartState(current => activeReportKeyRef.current === reportKey
         && requestSeqRef.current === requestSeq
         && current.requestSeq === requestSeq
-        ? { ...pendingState, loading: false, bars: res.data }
+        ? {
+            ...pendingState,
+            loading: false,
+            bars: res.data,
+            priceAdjustment: res.priceAdjustment ?? null,
+            ohlcSynthesized: res.ohlcSynthesized ?? null,
+          }
         : current);
     } catch {
       setChartState(current => activeReportKeyRef.current === reportKey
@@ -222,6 +236,8 @@ export const ReportStrategy: React.FC<ReportStrategyProps> = ({
             <ReportPriceLevelsChart
               bars={chartBars ?? []}
               failed={chartFailed}
+              ohlcSynthesized={chartOhlcSynthesized}
+              priceAdjustment={chartPriceAdjustment}
               strategy={strategy}
               language={reportLanguage}
               reportCurrentPrice={currentPrice}

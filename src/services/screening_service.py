@@ -876,6 +876,10 @@ class ScreeningStrategyResponse(BaseModel):
     market_scope: List[str] = Field(default_factory=list)
     market: str = ""
     analysis_skills: List[str] = Field(default_factory=list)
+    requires_daily_features: bool = False
+    active_filters: List[str] = Field(default_factory=list)
+    factor_weights: Dict[str, float] = Field(default_factory=dict)
+    style: Dict[str, Any] = Field(default_factory=dict)
 
 
 class ScreeningService:
@@ -1655,6 +1659,32 @@ def _normalize_strategy(raw: Any) -> Dict[str, Any]:
     )
     name = str(item.get("display_name") or item.get("name") or item.get("title") or strategy_id)
     category = str(item.get("category") or item.get("tag") or "")
+    raw_weights = item.get("factor_weights") or item.get("factorWeights") or {}
+    parsed_weights: Dict[str, float] = {}
+    if isinstance(raw_weights, dict):
+        for k, v in raw_weights.items():
+            if isinstance(v, bool):
+                continue
+            key_str = str(k or "").strip()
+            num = _safe_float(v)
+            if key_str and num is not None and num >= 0:
+                parsed_weights[key_str] = num
+    total_weight = sum(parsed_weights.values())
+    factor_weights: Dict[str, float] = (
+        {k: v / total_weight for k, v in parsed_weights.items() if v > 0}
+        if total_weight > 0
+        else {}
+    )
+
+    raw_style = _to_plain(item.get("style"))
+    style: Dict[str, Any] = {}
+    if isinstance(raw_style, dict):
+        style = dict(raw_style)
+        if "market_regime" in style:
+            style["market_regime"] = _list_text_values(style.get("market_regime"))
+        elif "marketRegime" in style:
+            style["market_regime"] = _list_text_values(style.pop("marketRegime"))
+
     return _strategy_model(
         id=strategy_id,
         name=name,
@@ -1668,6 +1698,14 @@ def _normalize_strategy(raw: Any) -> Dict[str, Any]:
         analysis_skills=_list_text_values(
             item.get("analysis_skills") or item.get("analysisSkills")
         ),
+        requires_daily_features=bool(
+            item.get("requires_daily_features") or item.get("requiresDailyFeatures")
+        ),
+        active_filters=_list_text_values(
+            item.get("active_filters") or item.get("activeFilters")
+        ),
+        factor_weights=factor_weights,
+        style=style,
     )
 
 

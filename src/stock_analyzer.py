@@ -18,7 +18,7 @@
 
 import logging
 from dataclasses import dataclass, field
-from typing import Dict, Any, List
+from typing import Any, Dict, List, Optional
 from enum import Enum
 
 import pandas as pd
@@ -133,9 +133,10 @@ class TrendAnalysisResult:
     signal_score: int = 0            # 综合评分 0-100
     signal_reasons: List[str] = field(default_factory=list)
     risk_factors: List[str] = field(default_factory=list)
-    
+    quant_factors: Optional[Dict[str, Any]] = None
+
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        payload: Dict[str, Any] = {
             'code': self.code,
             'trend_status': self.trend_status.value,
             'ma_alignment': self.ma_alignment,
@@ -168,6 +169,9 @@ class TrendAnalysisResult:
             'rsi_status': self.rsi_status.value,
             'rsi_signal': self.rsi_signal,
         }
+        if self.quant_factors is not None:
+            payload['quant_factors'] = self.quant_factors
+        return payload
 
 
 class StockTrendAnalyzer:
@@ -260,6 +264,16 @@ class StockTrendAnalyzer:
 
         # 7. 生成买入信号
         self._generate_signal(result)
+
+        # 8. 补充多因子量化指标（不改变既有 signal_score）
+        try:
+            from src.quant_factors import compute_quant_factors
+
+            qf = compute_quant_factors(df, code)
+            if qf.sufficient_data:
+                result.quant_factors = qf.to_dict()
+        except Exception as e:
+            logger.warning(f"{code} quant factor computation failed: {e}")
 
         return result
     
@@ -783,15 +797,24 @@ class StockTrendAnalyzer:
             f"   综合评分: {result.signal_score}/100",
         ]
 
+        if result.quant_factors:
+            from src.quant_factors import format_quant_factors_summary
+
+            qf_summary = format_quant_factors_summary(result.quant_factors)
+            if qf_summary:
+                lines.append("")
+                lines.append("📐 量化多因子指标:")
+                lines.append(qf_summary)
+
         if result.signal_reasons:
-            lines.append(f"")
-            lines.append(f"✅ 买入理由:")
+            lines.append("")
+            lines.append("✅ 买入理由:")
             for reason in result.signal_reasons:
                 lines.append(f"   {reason}")
 
         if result.risk_factors:
-            lines.append(f"")
-            lines.append(f"⚠️ 风险因素:")
+            lines.append("")
+            lines.append("⚠️ 风险因素:")
             for risk in result.risk_factors:
                 lines.append(f"   {risk}")
 

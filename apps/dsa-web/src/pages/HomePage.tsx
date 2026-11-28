@@ -2,7 +2,6 @@ import type React from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   BarChart3,
-  Check,
   FileText,
   SlidersHorizontal,
   Sparkles,
@@ -22,6 +21,7 @@ import { ReportMarkdownDrawer } from '../components/report/ReportMarkdownDrawer'
 import { MarketReviewReportView } from '../components/report/MarketReviewReportView';
 import { MarketReviewRegionSelector } from '../components/market-review/MarketReviewRegionSelector';
 import { ReportSummary } from '../components/report/ReportSummary';
+import { StrategyPickerMenu } from '../components/strategy';
 import { RunFlowPanel } from '../components/run-flow';
 import { TaskPanel } from '../components/tasks';
 import {
@@ -32,6 +32,7 @@ import {
 } from '../components/watchlist/HomeStockWorkspace';
 import { isWatchlistRowPendingAnalysis } from '../components/watchlist/watchlistRowState';
 import { useDashboardLifecycle, useHomeDashboardState } from '../hooks';
+import { localizeStockPoolDuplicateError, localizeStockPoolInputError } from '../stores/stockPoolStore';
 import { useWatchlist } from '../hooks/useWatchlist';
 import { useUiLanguage } from '../contexts/UiLanguageContext';
 import { localizeSkill } from '../locales/strategyText';
@@ -321,6 +322,7 @@ const HomePage: React.FC = () => {
   const [completedTaskRefreshPendingCounts, setCompletedTaskRefreshPendingCounts] = useState<Map<string, number>>(
     new Map(),
   );
+  const [strategyInitialFocus, setStrategyInitialFocus] = useState<'selected' | 'first' | 'last' | null>(null);
   const duplicateBannerTimer = useRef<number | null>(null);
   const marketReviewPollTimer = useRef<number | null>(null);
   const stockBarLoadStartedRef = useRef(false);
@@ -328,8 +330,6 @@ const HomePage: React.FC = () => {
   const dashboardScrollRef = useRef<HTMLElement | null>(null);
   const strategyMenuRef = useRef<HTMLDivElement | null>(null);
   const strategyButtonRef = useRef<HTMLButtonElement | null>(null);
-  const strategyItemRefs = useRef<Array<HTMLButtonElement | null>>([]);
-  const strategyInitialFocusIndexRef = useRef<number | null>(null);
 
   const stopMarketReviewPolling = useCallback(() => {
     if (marketReviewPollTimer.current !== null) {
@@ -358,7 +358,11 @@ const HomePage: React.FC = () => {
   const {
     query,
     inputError,
+    inputErrorResolver,
+    inputErrorResolvedValue,
     duplicateError,
+    duplicateErrorResolver,
+    duplicateErrorResolvedValue,
     error,
     isAnalyzing,
     selectedReport,
@@ -402,6 +406,21 @@ const HomePage: React.FC = () => {
     loadStockBar,
     refreshStockBar,
   } = useHomeDashboardState();
+
+  const localizedInputError = useMemo(
+    () => localizeStockPoolInputError(
+      { inputError, inputErrorResolver, inputErrorResolvedValue },
+      uiLanguage,
+    ),
+    [inputError, inputErrorResolver, inputErrorResolvedValue, uiLanguage],
+  );
+  const localizedDuplicateError = useMemo(
+    () => localizeStockPoolDuplicateError(
+      { duplicateError, duplicateErrorResolver, duplicateErrorResolvedValue },
+      uiLanguage,
+    ),
+    [duplicateError, duplicateErrorResolver, duplicateErrorResolvedValue, uiLanguage],
+  );
 
   const clearDuplicateBannerTimer = useCallback(() => {
     if (duplicateBannerTimer.current !== null) {
@@ -501,6 +520,7 @@ const HomePage: React.FC = () => {
         return;
       }
       setStrategyMenuOpen(false);
+      setStrategyInitialFocus(null);
     };
 
     document.addEventListener('mousedown', handlePointerDown);
@@ -544,12 +564,14 @@ const HomePage: React.FC = () => {
         id: skill.id,
         name: skill.name,
         description: skill.description,
+        category: skill.category,
       })),
     ],
     [localizedAnalysisSkills, t],
   );
   const closeStrategyMenu = useCallback((restoreFocus = false) => {
     setStrategyMenuOpen(false);
+    setStrategyInitialFocus(null);
     if (restoreFocus) {
       strategyButtonRef.current?.focus();
     }
@@ -557,81 +579,32 @@ const HomePage: React.FC = () => {
   const selectStrategy = useCallback((strategyId: string) => {
     setSelectedStrategyId(strategyId);
     setStrategyMenuOpen(false);
+    setStrategyInitialFocus(null);
   }, []);
-  const focusStrategyItem = useCallback((index: number) => {
-    const itemCount = strategyOptions.length;
-    if (itemCount === 0) {
-      return;
-    }
-    const nextIndex = (index + itemCount) % itemCount;
-    strategyItemRefs.current[nextIndex]?.focus();
-  }, [strategyOptions.length]);
-  const getSelectedStrategyIndex = useCallback(() => {
-    const selectedIndex = strategyOptions.findIndex((option) => option.id === selectedStrategyId);
-    return selectedIndex >= 0 ? selectedIndex : 0;
-  }, [selectedStrategyId, strategyOptions]);
-  useEffect(() => {
-    strategyItemRefs.current = strategyItemRefs.current.slice(0, strategyOptions.length);
-  }, [strategyOptions.length]);
-  useEffect(() => {
-    if (!strategyMenuOpen) {
-      return undefined;
-    }
-
-    const targetIndex = strategyInitialFocusIndexRef.current ?? getSelectedStrategyIndex();
-    strategyInitialFocusIndexRef.current = null;
-    const timeout = window.setTimeout(() => focusStrategyItem(targetIndex), 0);
-    return () => window.clearTimeout(timeout);
-  }, [focusStrategyItem, getSelectedStrategyIndex, strategyMenuOpen]);
+  const handleStrategyButtonClick = useCallback(() => {
+    setStrategyMenuOpen((open) => {
+      const next = !open;
+      setStrategyInitialFocus(next ? 'selected' : null);
+      return next;
+    });
+  }, []);
   const handleStrategyButtonKeyDown = useCallback((event: React.KeyboardEvent<HTMLButtonElement>) => {
     if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') {
       return;
     }
 
     event.preventDefault();
-    const targetIndex = event.key === 'ArrowUp' ? strategyOptions.length - 1 : 0;
     if (strategyMenuOpen) {
-      focusStrategyItem(targetIndex);
+      const items = strategyMenuRef.current?.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]');
+      if (items && items.length > 0) {
+        const target = event.key === 'ArrowUp' ? items[items.length - 1] : items[0];
+        target?.focus();
+      }
       return;
     }
-    strategyInitialFocusIndexRef.current = targetIndex;
+    setStrategyInitialFocus(event.key === 'ArrowUp' ? 'last' : 'first');
     setStrategyMenuOpen(true);
-  }, [focusStrategyItem, strategyMenuOpen, strategyOptions.length]);
-  const handleStrategyMenuKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
-    const itemCount = strategyOptions.length;
-    if (itemCount === 0) {
-      return;
-    }
-
-    const currentIndex = strategyItemRefs.current.findIndex((item) => item === document.activeElement);
-    switch (event.key) {
-      case 'Escape':
-        event.preventDefault();
-        closeStrategyMenu(true);
-        break;
-      case 'ArrowDown':
-        event.preventDefault();
-        focusStrategyItem(currentIndex >= 0 ? currentIndex + 1 : 0);
-        break;
-      case 'ArrowUp':
-        event.preventDefault();
-        focusStrategyItem(currentIndex >= 0 ? currentIndex - 1 : itemCount - 1);
-        break;
-      case 'Home':
-        event.preventDefault();
-        focusStrategyItem(0);
-        break;
-      case 'End':
-        event.preventDefault();
-        focusStrategyItem(itemCount - 1);
-        break;
-      case 'Tab':
-        setStrategyMenuOpen(false);
-        break;
-      default:
-        break;
-    }
-  }, [closeStrategyMenu, focusStrategyItem, strategyOptions.length]);
+  }, [strategyMenuOpen]);
   const setupNeedsAction = setupStatus ? !setupStatus.isComplete : false;
   const sampleReport = useMemo(() => getSampleAnalysisReport(uiLanguage), [uiLanguage]);
   const showSamplePreview = samplePreviewOpen && !selectedReport && !marketReviewReport;
@@ -1554,7 +1527,7 @@ const HomePage: React.FC = () => {
                   }}
                   placeholder={t('home.placeholder')}
                   disabled={isAnalyzing}
-                  className={inputError ? 'border-danger/50' : undefined}
+                  className={localizedInputError ? 'border-danger/50' : undefined}
                 />
               </div>
               {analysisSkills.length > 0 ? (
@@ -1566,7 +1539,7 @@ const HomePage: React.FC = () => {
                     aria-haspopup="menu"
                     aria-expanded={strategyMenuOpen}
                     aria-controls={strategyMenuOpen ? 'strategy-menu' : undefined}
-                    onClick={() => setStrategyMenuOpen((open) => !open)}
+                    onClick={handleStrategyButtonClick}
                     onKeyDown={handleStrategyButtonKeyDown}
                     disabled={isAnalyzing}
                     className="home-surface-button flex h-10 max-w-[8.5rem] items-center gap-1.5 rounded-xl px-3 text-xs text-foreground disabled:cursor-not-allowed disabled:opacity-60 sm:max-w-[11rem]"
@@ -1575,37 +1548,21 @@ const HomePage: React.FC = () => {
                     <span className="truncate">{selectedStrategy?.name || t('home.strategy')}</span>
                   </button>
                   {strategyMenuOpen ? (
-                    <div
-                      id="strategy-menu"
-                      role="menu"
-                      aria-labelledby="strategy-menu-button"
-                      onKeyDown={handleStrategyMenuKeyDown}
-                      className="absolute right-0 top-11 z-[120] max-h-80 w-[min(18rem,calc(100vw-1.5rem))] overflow-y-auto rounded-xl border border-subtle bg-elevated p-1.5 text-sm text-foreground shadow-2xl"
-                    >
-                      {strategyOptions.map((option, index) => {
-                        const selected = selectedStrategyId === option.id;
-                        return (
-                          <button
-                            key={option.id || 'default'}
-                            ref={(node) => {
-                              strategyItemRefs.current[index] = node;
-                            }}
-                            type="button"
-                            role="menuitemradio"
-                            aria-checked={selected}
-                            tabIndex={-1}
-                            onClick={() => selectStrategy(option.id)}
-                            className="flex w-full items-start gap-2 rounded-lg px-2.5 py-2 text-left transition-colors hover:bg-hover"
-                          >
-                            <Check className={`mt-0.5 h-4 w-4 flex-shrink-0 ${selected ? 'opacity-100' : 'opacity-0'}`} aria-hidden="true" />
-                            <span className="min-w-0">
-                              <span className="block font-medium">{option.name}</span>
-                              <span className="mt-0.5 line-clamp-2 block text-xs leading-5 text-muted-text">{option.description}</span>
-                            </span>
-                          </button>
-                        );
-                      })}
-                    </div>
+                    <StrategyPickerMenu
+                      options={strategyOptions}
+                      selectedId={selectedStrategyId}
+                      language={uiLanguage}
+                      onSelect={selectStrategy}
+                      onClose={() => closeStrategyMenu(true)}
+                      onTabClose={() => {
+                        setStrategyMenuOpen(false);
+                        setStrategyInitialFocus(null);
+                      }}
+                      initialFocusTarget={strategyInitialFocus}
+                      menuId="strategy-menu"
+                      labelledBy="strategy-menu-button"
+                      className="absolute right-0 top-11 z-[120]"
+                    />
                   ) : null}
                 </div>
               ) : null}
@@ -1660,21 +1617,21 @@ const HomePage: React.FC = () => {
           </div>
         </header>
 
-        {inputError || (duplicateError && duplicateBannerVisible) ? (
+        {localizedInputError || (localizedDuplicateError && duplicateBannerVisible) ? (
           <div className="px-3 pb-2 md:px-4">
-            {inputError ? (
+            {localizedInputError ? (
               <InlineAlert
                 variant="danger"
                 title={t('home.inputInvalid')}
-                message={inputError}
+                message={localizedInputError}
                 className="rounded-xl px-3 py-2 text-xs shadow-none"
               />
             ) : null}
-            {!inputError && duplicateError && duplicateBannerVisible ? (
+            {!localizedInputError && localizedDuplicateError && duplicateBannerVisible ? (
               <InlineAlert
                 variant="warning"
                 title={t('home.duplicateTask')}
-                message={duplicateError}
+                message={localizedDuplicateError}
                 action={(
                   <button
                     type="button"

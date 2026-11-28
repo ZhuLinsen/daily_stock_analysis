@@ -238,8 +238,8 @@ const initialSample = stageSamples[0];
     <meta
       name="description"
       content={isEn
-        ? 'Open-source LLM stock analysis across A-shares, HK, US, JP, KR, and TW markets with decision dashboards, 15 Agent strategies, backtesting, and multi-channel delivery.'
-        : '基于 AI 大模型的 A股/港股/美股/日股/韩股/台股智能分析系统，提供每日决策仪表盘、大盘复盘、15 种 Agent 策略问股、告警风控与多渠道推送。'}
+        ? 'Open-source LLM stock analysis across A-shares, HK, US, JP, KR, and TW markets with decision dashboards, 20 Agent strategies, backtesting, and multi-channel delivery.'
+        : '基于 AI 大模型的 A股/港股/美股/日股/韩股/台股智能分析系统，提供每日决策仪表盘、大盘复盘、20 种 Agent 策略问股、告警风控与多渠道推送。'}
     />
     <link rel="canonical" href={isEn ? 'https://dsa.zhulinsen.tech/en/' : 'https://dsa.zhulinsen.tech/'} />
     <link rel="alternate" hreflang="zh-CN" href="https://dsa.zhulinsen.tech/" />
@@ -405,8 +405,8 @@ const initialSample = stageSamples[0];
 
         <p class="text-sm sm:text-lg leading-relaxed max-w-2xl mx-auto" style="color: var(--ob-muted);">
           {isEn
-            ? 'Synthesize multi-source quotes, live financial news, technicals, and 15 built-in Agent strategies. Deploy in 5 minutes via Desktop App, GitHub Actions, or Docker.'
-            : '聚合多源行情、实时金融新闻、筹码技术面与 15 种 Agent 交易策略。无需昂贵服务器，5 分钟通过桌面客户端、GitHub Actions 或 Docker 跑通每日推送闭环。'}
+            ? 'Synthesize multi-source quotes, live financial news, technicals, and 20 built-in Agent strategies. Deploy in 5 minutes via Desktop App, GitHub Actions, or Docker.'
+            : '聚合多源行情、实时金融新闻、筹码技术面与 20 种 Agent 交易策略。无需昂贵服务器，5 分钟通过桌面客户端、GitHub Actions 或 Docker 跑通每日推送闭环。'}
         </p>
 
         <!-- Primary / Secondary CTAs -->
@@ -592,7 +592,7 @@ const initialSample = stageSamples[0];
                   <div class="pt-2 border-t flex items-center justify-between text-xs" style="border-color: var(--ob-border);">
                     <span style="color: var(--ob-subtle);">{isEn ? 'Strategy Skills' : '策略框架'}</span>
                     <a href={localizeDoc('/docs/features/strategies/')} class="no-underline font-medium" style="color: var(--ob-accent);">
-                      {isEn ? '15 Built-in Strategies →' : '15 种 Agent 策略 →'}
+                      {isEn ? '20 Built-in Strategies →' : '20 种 Agent 策略 →'}
                     </a>
                   </div>
                 </div>
@@ -691,12 +691,12 @@ const initialSample = stageSamples[0];
             <div class="ob-card-soft p-4 space-y-2.5">
               <div class="flex items-center justify-between text-xs mono-num">
                 <span style="color: var(--ob-muted);">AGENT STRATEGY MATRIX</span>
-                <span style="color: var(--ob-accent);">15 SKILLS</span>
+                <span style="color: var(--ob-accent);">20 SKILLS</span>
               </div>
               <div class="flex flex-wrap gap-1.5 text-xs">
                 {(isEn
-                  ? ['MA Cross', 'Chan Theory', 'Elliott Wave', 'Bull Trend', 'Hotspots', 'Event Driven', 'Growth', 'ETF Rotation', '+7 Custom YAML']
-                  : ['均线金叉', '缠论结构', '波浪理论', '多头趋势', '热点题材', '事件驱动', '成长质量', 'ETF 轮动', '+7 自定义 YAML']
+                  ? ['MA Cross', 'Chan Theory', 'Elliott Wave', 'Bull Trend', 'Hotspots', 'Event Driven', 'Growth', 'VCP Breakout', '+12 More & YAML']
+                  : ['均线金叉', '缠论结构', '波浪理论', '多头趋势', '热点题材', '事件驱动', '成长质量', 'VCP 突破', '+12 更多与自定义 YAML']
                 ).map((tag, idx) => (
                   <span
                     class="px-2.5 py-1 rounded-md border font-medium"
@@ -713,7 +713,7 @@ const initialSample = stageSamples[0];
             </div>
             <div>
               <h3 class="text-base font-semibold m-0" style="color: var(--ob-ink);">
-                {isEn ? '15 Built-in Strategies & Multi-Turn Q&A' : 'Agent 15 种内置策略与多轮追问'}
+                {isEn ? '20 Built-in Strategies & Multi-Turn Q&A' : 'Agent 20 种内置策略与多轮追问'}
               </h3>
               <p class="text-xs leading-relaxed mt-1.5 mb-0" style="color: var(--ob-muted);">
                 {isEn
@@ -884,18 +884,39 @@ const initialSample = stageSamples[0];
               {isEn ? 'Watchlist tracking, decision dashboards, market reviews, and Agent Q&A.' : '自选股跟踪、决策仪表盘、大盘复盘与 Agent 多策略问股。'}
             </p>
           </div>
-          <a
-            href="https://github.com/ZhuLinsen/alphasift"
-            target="_blank"
-            rel="noopener noreferrer"
-            class="ob-card ob-card-hover p-5 no-underline block"
-          >
-            <div class="text-xs font-semibold mono-num" style="color: var(--ob-muted);">ECOSYSTEM · {isEn ? 'STOCK DISCOVERY' : '全市场选股'}</div>
-            <h3 class="text-base font-bold mt-1.5 mb-0" style="color: var(--ob-ink);">AlphaSift ↗</h3>
-            <p class="text-xs mt-1.5 mb-0 leading-relaxed" style="color: var(--ob-muted);">
-              {isEn ? 'Multi-factor full-market screening and auditable YAML stock discovery.' : '多因子全市场扫描与可审计 YAML 策略，筛选高胜率候选股票池。'}
-            </p>
-          </a>
+          <div class="ob-card ob-card-hover p-5 flex flex-col justify-between gap-3">
+            <div>
+              <div class="text-xs font-semibold mono-num" style="color: var(--ob-muted);">ECOSYSTEM · {isEn ? 'STOCK DISCOVERY' : '全市场选股'}</div>
+              <h3 class="text-base font-bold mt-1.5 mb-0" style="color: var(--ob-ink);">AlphaSift</h3>
+              <p class="text-xs mt-1.5 mb-0 leading-relaxed" style="color: var(--ob-muted);">
+                {isEn
+                  ? 'Automated multi-market daily stock screening with auditable YAML strategies and public T+N paper-tracked performance.'
+                  : '自动化多市场每日选股、可审计 YAML 策略与公开 T+N 纸面跟踪（A 股可选公告排雷与 AI 复核）。'}
+              </p>
+            </div>
+            <div class="flex flex-wrap items-center gap-3 pt-1 text-xs font-semibold">
+              <a
+                href={isEn
+                  ? 'https://alphasift.zhulinsen.tech/?lang=en&utm_source=dsa_site'
+                  : 'https://alphasift.zhulinsen.tech/?lang=zh&utm_source=dsa_site'}
+                target="_blank"
+                rel="noopener noreferrer"
+                class="no-underline hover:underline"
+                style="color: var(--ob-accent-strong);"
+              >
+                {isEn ? 'Daily Picks ↗' : '在线今日榜单 ↗'}
+              </a>
+              <a
+                href="https://github.com/ZhuLinsen/alphasift"
+                target="_blank"
+                rel="noopener noreferrer"
+                class="no-underline hover:underline"
+                style="color: var(--ob-muted);"
+              >
+                GitHub ↗
+              </a>
+            </div>
+          </div>
           <a
             href="https://github.com/ZhuLinsen/alphaevo"
             target="_blank"

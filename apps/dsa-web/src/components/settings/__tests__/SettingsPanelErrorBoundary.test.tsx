@@ -1,18 +1,26 @@
 import { render, screen, waitFor } from '@testing-library/react';
 import type { ReactElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { UiLanguageProvider } from '../../../contexts/UiLanguageContext';
+import { UI_LANGUAGE_STORAGE_KEY } from '../../../utils/uiLanguage';
 import { SettingsPanelErrorBoundary } from '../SettingsPanelErrorBoundary';
 
 function ThrowingPanel({ message = 'mock settings panel crash' }: { message?: string }): ReactElement {
   throw new Error(message);
 }
 
+function ThrowingUnknown({ value }: { value: unknown }): ReactElement {
+  throw value;
+}
+
 describe('SettingsPanelErrorBoundary', () => {
   beforeEach(() => {
+    window.localStorage.removeItem(UI_LANGUAGE_STORAGE_KEY);
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
   });
 
   afterEach(() => {
+    window.localStorage.removeItem(UI_LANGUAGE_STORAGE_KEY);
     vi.restoreAllMocks();
   });
 
@@ -80,5 +88,32 @@ describe('SettingsPanelErrorBoundary', () => {
       expect(screen.getByText('Agent 设置已恢复')).toBeInTheDocument();
     });
     expect(screen.queryByText('Agent 设置加载失败')).not.toBeInTheDocument();
+  });
+
+  it('renders English error boundary copy including non-Error unknown fallback when UI language is en', () => {
+    window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'en');
+
+    render(
+      <UiLanguageProvider>
+        <SettingsPanelErrorBoundary title="Notification settings" resetKey="notify-en">
+          <ThrowingUnknown value={null} />
+        </SettingsPanelErrorBoundary>
+      </UiLanguageProvider>,
+    );
+
+    expect(screen.getByText('Notification settings failed to load')).toBeInTheDocument();
+    expect(screen.getByText('This settings area hit a frontend runtime error. Other settings remain usable.')).toBeInTheDocument();
+    expect(screen.getByText(/Error summary: Unknown frontend runtime error/)).toBeInTheDocument();
+  });
+
+  it('renders Chinese unknown fallback summary when throwing blank non-Error in zh mode', () => {
+    render(
+      <SettingsPanelErrorBoundary title="通知设置" resetKey="notify-zh-blank">
+        <ThrowingUnknown value="   " />
+      </SettingsPanelErrorBoundary>,
+    );
+
+    expect(screen.getByText('通知设置加载失败')).toBeInTheDocument();
+    expect(screen.getByText(/错误摘要：未知前端运行时异常/)).toBeInTheDocument();
   });
 });

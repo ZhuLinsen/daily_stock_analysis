@@ -32,6 +32,7 @@ class TemperatureOmissionTestCase(unittest.TestCase):
             "openai/gpt-4o-mini",
             "openai/gpt-4.1",
             "gemini/gemini-3.6-flash",
+            "deepseek/deepseek-flash",
             "deepseek/deepseek-v4-flash",
             "openai/qwen3.6-plus",
         ):

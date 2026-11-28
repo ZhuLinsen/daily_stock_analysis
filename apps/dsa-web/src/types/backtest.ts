@@ -65,10 +65,10 @@ export interface BacktestResultItem {
   firstHit?: string;
   firstHitDate?: string;
   firstHitTradingDays?: number;
-  simulatedEntryPrice?: number;
-  simulatedExitPrice?: number;
-  simulatedExitReason?: string;
-  simulatedReturnPct?: number;
+  simulatedEntryPrice?: number | null;
+  simulatedExitPrice?: number | null;
+  simulatedExitReason?: string | null;
+  simulatedReturnPct?: number | null;
 }
 
 export interface BacktestResultsResponse {
@@ -79,6 +79,36 @@ export interface BacktestResultsResponse {
 }
 
 // ============ Performance Metrics ============
+
+export interface BacktestEquityPoint {
+  index: number;
+  date?: string | null;
+  code?: string | null;
+  returnPct?: number | null;
+  equityPct?: number | null;
+  outcome?: string | null;
+}
+
+export interface BacktestQuantMetrics {
+  sampleCount?: number;
+  activeTradeCount?: number;
+  profitFactor?: number | null;
+  expectancyPct?: number | null;
+  payoffRatio?: number | null;
+  avgWinPct?: number | null;
+  avgLossPct?: number | null;
+  cumulativeReturnPct?: number | null;
+  maxDrawdownPct?: number | null;
+  sharpeRatio?: number | null;
+  sortinoRatio?: number | null;
+  calmarRatio?: number | null;
+  bestTradePct?: number | null;
+  worstTradePct?: number | null;
+  maxConsecutiveWins?: number;
+  maxConsecutiveLosses?: number;
+  exitReasonBreakdown?: Record<string, number>;
+  equityCurve?: BacktestEquityPoint[];
+}
 
 export interface PerformanceMetrics {
   scope: string;
@@ -109,4 +139,5 @@ export interface PerformanceMetrics {
 
   adviceBreakdown: Record<string, unknown>;
   diagnostics: Record<string, unknown>;
+  quantMetrics?: BacktestQuantMetrics | null;
 }

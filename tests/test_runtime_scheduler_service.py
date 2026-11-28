@@ -29,6 +29,7 @@ from src.services.runtime_scheduler import (
     RUNTIME_SCHEDULER_SUPPRESS_START_ENV,
     RUNTIME_SCHEDULER_TIMEOUT_ENV,
     RuntimeSchedulerService,
+    WORKER_EXIT_GRACE_SECONDS,
     _run_scheduled_analysis_process,
 )
 
@@ -476,6 +477,83 @@ class RuntimeSchedulerServiceTestCase(unittest.TestCase):
         terminate.assert_called_once_with(process)
         self.assertIsNotNone(service.status()["last_success_at"])
         self.assertIsNone(service.status()["last_error"])
+
+    def test_worker_flushes_result_queue_after_put(self) -> None:
+        queue = MagicMock()
+        worker = MagicMock()
+        worker._run_analysis_locked.return_value = True
+        worker._last_error = None
+        worker._last_skip_reason = None
+        with patch("src.services.runtime_scheduler.os.setsid"), patch(
+            "src.services.runtime_scheduler.RuntimeSchedulerService", return_value=worker,
+        ):
+            _run_scheduled_analysis_process(queue, None, {})
+        queue.put.assert_called_once()
+        queue.close.assert_called_once()
+        queue.join_thread.assert_called_once()
+
+    def test_watchdog_preserves_result_and_terminates_slow_exiting_worker(self) -> None:
+        for worker_result, expected_success_set, expected_error in (
+            ({"success": True, "error": None, "skipped": None}, True, None),
+            ({"success": False, "error": "upstream error", "skipped": None}, False, "upstream error"),
+        ):
+            config = SimpleNamespace(stock_list=["600519"])
+            service = RuntimeSchedulerService(config_provider=lambda: config)
+            join_timeouts = []
+
+            class _SlowExitProcess:
+                def __init__(self, *args, **kwargs):
+                    self.pid = 515151
+                    self.exitcode = None
+                    self._alive = True
+
+                def start(self) -> None:
+                    return None
+
+                def is_alive(self) -> bool:
+                    return self._alive
+
+                def join(self, timeout=None) -> None:
+                    join_timeouts.append(timeout)
+
+                def terminate(self) -> None:
+                    self._alive = False
+
+                def kill(self) -> None:
+                    self._alive = False
+
+            class _ResultQueue:
+                def get(self, timeout=None):
+                    return dict(worker_result)
+
+                def cancel_join_thread(self) -> None:
+                    return None
+
+                def close(self) -> None:
+                    return None
+
+            fake_context = SimpleNamespace(
+                Queue=lambda: _ResultQueue(),
+                Process=_SlowExitProcess,
+            )
+
+            with patch(
+                "src.services.runtime_scheduler.multiprocessing.get_context",
+                return_value=fake_context,
+            ), patch(
+                "src.services.runtime_scheduler._terminate_analysis_process_tree",
+            ) as terminate_tree:
+                self.assertTrue(service._run_lock.acquire(blocking=False))
+                service._run_analysis_with_watchdog(["600519"], lock_held=True)
+
+            terminate_tree.assert_called_once()
+            self.assertEqual(join_timeouts, [WORKER_EXIT_GRACE_SECONDS])
+            status = service.status()
+            self.assertEqual(status["last_error"], expected_error)
+            if expected_success_set:
+                self.assertIsNotNone(status["last_success_at"])
+            else:
+                self.assertIsNone(status["last_success_at"])
 
     @unittest.skipUnless(os.name == "posix", "POSIX process-group regression")
     def test_worker_exit_without_result_terminates_remaining_process_group(self) -> None:

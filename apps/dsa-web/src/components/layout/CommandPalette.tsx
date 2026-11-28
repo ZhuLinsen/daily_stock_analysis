@@ -21,7 +21,7 @@ interface PaletteItem {
 
 const STATIC_COMMANDS: PaletteItem[] = [
   { id: 'nav-home', titleZh: '首页工作台', titleEn: 'Home Dashboard', subtitleZh: '分析与决策报告主工作台', subtitleEn: 'Single-stock analysis & reports', keywords: 'home dashboard report 首页 报告 分析', to: '/' },
-  { id: 'nav-chat', titleZh: '策略问股 Agent', titleEn: 'Agent Ask Chat', subtitleZh: '15 种内置策略多轮对话分析', subtitleEn: 'Multi-turn strategy Q&A', keywords: 'chat ask agent strategy 问股 策略 对话', to: '/chat' },
+  { id: 'nav-chat', titleZh: '策略问股 Agent', titleEn: 'Agent Ask Chat', subtitleZh: '20 种内置策略多轮对话分析', subtitleEn: 'Multi-turn strategy Q&A', keywords: 'chat ask agent strategy 问股 策略 对话', to: '/chat' },
   { id: 'nav-screening', titleZh: '智能选股', titleEn: 'Stock Screening', subtitleZh: '多因子与自然语言条件筛选', subtitleEn: 'Multi-factor & NL screening', keywords: 'screening filter quant 选股 筛选', to: '/screening' },
   { id: 'nav-portfolio', titleZh: '真实持仓与风控', titleEn: 'Portfolio & Risk', subtitleZh: '账户快照、相关性压力测试与仓位计算', subtitleEn: 'Holdings, correlation & risk control', keywords: 'portfolio holdings risk stress 持仓 组合 风险 压力测试', to: '/portfolio' },
   { id: 'nav-signals', titleZh: 'AI 决策信号池', titleEn: 'AI Decision Signals', subtitleZh: '结构化信号与止盈止损跟踪', subtitleEn: 'Tracked AI signals & outcomes', keywords: 'signals decision 建议 信号', to: '/decision-signals' },

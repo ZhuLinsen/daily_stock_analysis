@@ -36,7 +36,7 @@ class Skill:
         display_name: Human-readable name (e.g., "龙头策略").
         description: Brief description of when to apply this strategy.
         instructions: Detailed natural language instructions injected into the system prompt.
-        category: Skill category — "trend" (趋势), "pattern" (形态), "reversal" (反转), "framework" (框架).
+        category: Skill category — "trend" (趋势), "pattern" (形态), "reversal" (反转), "framework" (框架), "quant" (量化因子).
         core_rules: List of core trading rule numbers this strategy relates to (1-7).
         required_tools: List of tool names this skill depends on.
         allowed_tools: Optional allowlist metadata from SKILL.md frontmatter.
@@ -441,7 +441,13 @@ class SkillManager:
             return ""
 
         # Group by category
-        categories = {"trend": "趋势", "pattern": "形态", "reversal": "反转", "framework": "框架"}
+        categories = {
+            "quant": "量化因子",
+            "trend": "趋势",
+            "pattern": "形态",
+            "reversal": "反转",
+            "framework": "框架",
+        }
         grouped: Dict[str, List[Skill]] = {}
         for skill in active:
             cat = skill.category or "trend"
@@ -450,7 +456,7 @@ class SkillManager:
         parts = []
         idx = 1
         # Render known categories in fixed order, then any remaining custom categories
-        ordered_keys = ["trend", "pattern", "reversal", "framework"]
+        ordered_keys = ["quant", "trend", "pattern", "reversal", "framework"]
         for cat_key in ordered_keys + [k for k in grouped if k not in ordered_keys]:
             skills_in_cat = grouped.get(cat_key, [])
             if not skills_in_cat:

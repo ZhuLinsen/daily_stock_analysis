@@ -3,11 +3,51 @@ import type { StockKLineItem } from '../api/stocks';
 export interface PriceChartDatum {
   date: string;
   shortDate: string;
+  open?: number | null;
   close: number;
   high: number;
   low: number;
+  hasValidRange?: boolean;
+  volume?: number | null;
   ma5: number | null;
   ma20: number | null;
+  ma60?: number | null;
+  ema20?: number | null;
+  bollUpper?: number | null;
+  bollMid?: number | null;
+  bollLower?: number | null;
+  bollBandwidthPct?: number | null;
+  bollPercentB?: number | null;
+  rsi14?: number | null;
+  macdDif?: number | null;
+  macdDea?: number | null;
+  macdHist?: number | null;
+  macdPrevDiff?: number | null;
+  kdjK?: number | null;
+  kdjD?: number | null;
+  kdjJ?: number | null;
+  atr14?: number | null;
+  atrPct?: number | null;
+}
+
+export type RsiRegime = 'oversold' | 'overbought' | 'neutral';
+export type MacdSignalState = 'bullish_cross' | 'bearish_cross' | 'bullish' | 'bearish' | 'neutral';
+
+export interface QuantTelemetrySummary {
+  riskRewardRatio: number | null;
+  upsidePct: number | null;
+  downsidePct: number | null;
+  ma20BiasPct: number | null;
+  ma60BiasPct: number | null;
+  annualizedVolPct: number | null;
+  maxDrawdownPct: number | null;
+  rsi14: number | null;
+  rsiRegime: RsiRegime | null;
+  bollBandwidthPct: number | null;
+  bollPercentB: number | null;
+  bollSqueeze: boolean;
+  macdSignal: MacdSignalState | null;
+  atrPct: number | null;
 }
 
 const INDICATOR_PREFIX_RE = /(?:MA|BOLL|RSI|KDJ|MACD|WR|BIAS|T\+)\s*(?:\d+\s*\/\s*)*$/i;
@@ -204,49 +244,264 @@ export function formatChartAxisPrice(value: number): string {
   return value.toFixed(3);
 }
 
+export function formatChartDisplayPrice(value: number): string {
+  if (!Number.isFinite(value)) {
+    return '';
+  }
+  const abs = Math.abs(value);
+  if (abs >= 1) {
+    return value.toFixed(2);
+  }
+  if (abs >= 0.01) {
+    return value.toFixed(3);
+  }
+  return value.toFixed(4);
+}
+
 /**
- * Enrich chronological daily bars with rolling MA5 / MA20 overlays computed on full input,
- * then keep at most the latest `displayLimit` trading sessions (default 60D).
+ * Enrich chronological daily bars with rolling MA5/MA20/MA60, EMA20, BOLL(20,2),
+ * RSI(14), MACD(12,26,9), KDJ(9,3,3), and ATR(14) computed over full history,
+ * then keep at most the latest `displayLimit` trading sessions (default 60D; <=0 keeps all).
  */
 export function enrichBarsWithMovingAverages(
   bars: StockKLineItem[],
   displayLimit = 60,
+  options?: { ohlcSynthesized?: boolean },
 ): PriceChartDatum[] {
-  const sorted = [...bars]
+  const ohlcSynthesized = Boolean(options?.ohlcSynthesized);
+  const preSorted = [...bars]
     .filter((b) => b && Number.isFinite(Number(b.close)) && Number(b.close) > 0)
     .sort((a, b) => String(a.date).localeCompare(String(b.date)));
 
-  const enriched = sorted.map((bar, idx) => {
-    const close = Number(bar.close);
-    const high = Number.isFinite(Number(bar.high)) && Number(bar.high) > 0 ? Number(bar.high) : close;
-    const low = Number.isFinite(Number(bar.low)) && Number(bar.low) > 0 ? Number(bar.low) : close;
+  const deduped = new Map<string, StockKLineItem>();
+  for (const bar of preSorted) {
+    deduped.set(String(bar.date), bar);
+  }
+  const sorted = [...deduped.values()];
 
+  if (sorted.length === 0) {
+    return [];
+  }
+
+  let ema12 = Number(sorted[0].close);
+  let ema26 = Number(sorted[0].close);
+  let ema20 = Number(sorted[0].close);
+  let dea = 0;
+  let prevRawMacdDiff: number | null = null;
+
+  let avgGain = 0;
+  let avgLoss = 0;
+  let kdjK = 50;
+  let kdjD = 50;
+  let atr14State = 0;
+  let sumTr14 = 0;
+  let atrValidCount = 0;
+
+  const k12 = 2 / 13;
+  const k26 = 2 / 27;
+  const k20 = 2 / 21;
+  const k9 = 2 / 10;
+
+  const normalized = sorted.map((bar) => {
+    const close = Number(bar.close);
+    const validHigh =
+      !ohlcSynthesized
+      && bar.high != null
+      && Number.isFinite(Number(bar.high))
+      && Number(bar.high) > 0
+        ? Number(bar.high)
+        : null;
+    const validLow =
+      !ohlcSynthesized
+      && bar.low != null
+      && Number.isFinite(Number(bar.low))
+      && Number(bar.low) > 0
+        ? Number(bar.low)
+        : null;
+    const hasValidRange = validHigh != null && validLow != null;
+    const high = hasValidRange ? Math.max(validHigh, validLow, close) : close;
+    const low = hasValidRange ? Math.min(validHigh, validLow, close) : close;
+    const open =
+      !ohlcSynthesized
+      && bar.open != null
+      && Number.isFinite(Number(bar.open))
+      && Number(bar.open) > 0
+        ? Number(bar.open)
+        : null;
+    const volume =
+      bar.volume != null && Number.isFinite(Number(bar.volume)) && Number(bar.volume) >= 0
+        ? Number(bar.volume)
+        : null;
+    return { bar, close, high, low, hasValidRange, open, volume };
+  });
+
+  const enriched: PriceChartDatum[] = normalized.map(({ bar, close, high, low, hasValidRange, open, volume }, idx) => {
     let ma5: number | null = null;
     if (idx >= 4) {
       let sum5 = 0;
       for (let i = idx - 4; i <= idx; i += 1) {
-        sum5 += Number(sorted[i].close);
+        sum5 += normalized[i].close;
       }
       ma5 = sum5 / 5;
     }
 
     let ma20: number | null = null;
+    let bollUpper: number | null = null;
+    let bollMid: number | null = null;
+    let bollLower: number | null = null;
+    let bollBandwidthPct: number | null = null;
+    let bollPercentB: number | null = null;
     if (idx >= 19) {
       let sum20 = 0;
       for (let i = idx - 19; i <= idx; i += 1) {
-        sum20 += Number(sorted[i].close);
+        sum20 += normalized[i].close;
       }
       ma20 = sum20 / 20;
+      let variance = 0;
+      for (let i = idx - 19; i <= idx; i += 1) {
+        const diff = normalized[i].close - ma20;
+        variance += diff * diff;
+      }
+      const std = Math.sqrt(variance / 20);
+      bollMid = ma20;
+      bollUpper = ma20 + 2 * std;
+      bollLower = ma20 - 2 * std;
+      bollBandwidthPct = ma20 > 0 ? ((bollUpper - bollLower) / ma20) * 100 : null;
+      bollPercentB = bollUpper > bollLower ? (close - bollLower) / (bollUpper - bollLower) : null;
+    }
+
+    let ma60: number | null = null;
+    if (idx >= 59) {
+      let sum60 = 0;
+      for (let i = idx - 59; i <= idx; i += 1) {
+        sum60 += normalized[i].close;
+      }
+      ma60 = sum60 / 60;
+    }
+
+    if (idx > 0) {
+      ema12 = close * k12 + ema12 * (1 - k12);
+      ema26 = close * k26 + ema26 * (1 - k26);
+      ema20 = close * k20 + ema20 * (1 - k20);
+    }
+    const rawDif = ema12 - ema26;
+    dea = idx === 0 ? rawDif : rawDif * k9 + dea * (1 - k9);
+    const rawDiff = rawDif - dea;
+    const macdDif = idx >= 25 ? rawDif : null;
+    const macdDea = idx >= 25 ? dea : null;
+    const macdHist = idx >= 25 ? 2 * rawDiff : null;
+    const macdPrevDiff = idx >= 25 ? prevRawMacdDiff : null;
+    prevRawMacdDiff = rawDiff;
+
+    let rsi14: number | null = null;
+    if (idx > 0) {
+      const prevClose = normalized[idx - 1].close;
+      const change = close - prevClose;
+      const gain = change > 0 ? change : 0;
+      const loss = change < 0 ? -change : 0;
+      if (idx <= 14) {
+        avgGain += gain / 14;
+        avgLoss += loss / 14;
+      } else {
+        avgGain = (avgGain * 13 + gain) / 14;
+        avgLoss = (avgLoss * 13 + loss) / 14;
+      }
+      if (idx >= 14) {
+        if (avgGain === 0 && avgLoss === 0) {
+          rsi14 = 50;
+        } else if (avgLoss === 0) {
+          rsi14 = 100;
+        } else {
+          const rs = avgGain / avgLoss;
+          rsi14 = 100 - 100 / (1 + rs);
+        }
+      }
+    }
+
+    let kOut: number | null = null;
+    let dOut: number | null = null;
+    let jOut: number | null = null;
+    if (idx >= 8) {
+      let low9 = Number.POSITIVE_INFINITY;
+      let high9 = Number.NEGATIVE_INFINITY;
+      let windowRangeValid = true;
+      for (let i = idx - 8; i <= idx; i += 1) {
+        const b = normalized[i];
+        if (!b.hasValidRange) {
+          windowRangeValid = false;
+          break;
+        }
+        if (b.high > high9) high9 = b.high;
+        if (b.low < low9) low9 = b.low;
+      }
+      if (!windowRangeValid) {
+        kdjK = 50;
+        kdjD = 50;
+      } else {
+        const rsv = high9 === low9 ? 50 : ((close - low9) / (high9 - low9)) * 100;
+        kdjK = (2 * kdjK + rsv) / 3;
+        kdjD = (2 * kdjD + kdjK) / 3;
+        kOut = kdjK;
+        dOut = kdjD;
+        jOut = 3 * kdjK - 2 * kdjD;
+      }
+    }
+
+    let atr14: number | null = null;
+    let atrPct: number | null = null;
+    if (idx > 0) {
+      if (!hasValidRange) {
+        atrValidCount = 0;
+        sumTr14 = 0;
+        atr14State = 0;
+      } else {
+        const prevClose = normalized[idx - 1].close;
+        const tr = Math.max(high - low, Math.abs(high - prevClose), Math.abs(low - prevClose));
+        if (atrValidCount < 14) {
+          sumTr14 += tr;
+          atrValidCount += 1;
+          if (atrValidCount === 14) {
+            atr14State = sumTr14 / 14;
+            atr14 = atr14State;
+          }
+        } else {
+          atr14State = (atr14State * 13 + tr) / 14;
+          atr14 = atr14State;
+        }
+        if (atr14 != null && close > 0) {
+          atrPct = (atr14 / close) * 100;
+        }
+      }
     }
 
     return {
       date: bar.date,
       shortDate: bar.date.length >= 10 ? bar.date.slice(5, 10) : bar.date,
+      open,
       close,
       high,
       low,
+      hasValidRange,
+      volume,
       ma5,
       ma20,
+      ma60,
+      ema20: idx >= 4 ? ema20 : null,
+      bollUpper,
+      bollMid,
+      bollLower,
+      bollBandwidthPct,
+      bollPercentB,
+      rsi14,
+      macdDif,
+      macdDea,
+      macdHist,
+      macdPrevDiff,
+      kdjK: kOut,
+      kdjD: dOut,
+      kdjJ: jOut,
+      atr14,
+      atrPct,
     };
   });
 
@@ -254,4 +509,184 @@ export function enrichBarsWithMovingAverages(
     return enriched.slice(-displayLimit);
   }
   return enriched;
+}
+
+/**
+ * Compute live quantitative risk, valuation-anchor distance, and momentum/squeeze telemetry
+ * for the visible chart window and strategy price levels.
+ */
+export function computeQuantTelemetry(
+  data: PriceChartDatum[],
+  levels?: {
+    idealBuy?: number | null;
+    secondaryBuy?: number | null;
+    stopLoss?: number | null;
+    takeProfit?: number | null;
+  },
+  options?: { priceAdjustment?: string | null },
+): QuantTelemetrySummary {
+  if (data.length === 0) {
+    return {
+      riskRewardRatio: null,
+      upsidePct: null,
+      downsidePct: null,
+      ma20BiasPct: null,
+      ma60BiasPct: null,
+      annualizedVolPct: null,
+      maxDrawdownPct: null,
+      rsi14: null,
+      rsiRegime: null,
+      bollBandwidthPct: null,
+      bollPercentB: null,
+      bollSqueeze: false,
+      macdSignal: null,
+      atrPct: null,
+    };
+  }
+
+  const latest = data[data.length - 1];
+  const entryRef =
+    levels?.idealBuy != null && levels.idealBuy > 0
+      ? levels.idealBuy
+      : levels?.secondaryBuy != null && levels.secondaryBuy > 0
+        ? levels.secondaryBuy
+        : latest.close;
+  const stopLoss = levels?.stopLoss ?? null;
+  const takeProfit = levels?.takeProfit ?? null;
+
+  const upsidePct =
+    takeProfit != null && entryRef > 0 ? ((takeProfit - entryRef) / entryRef) * 100 : null;
+  const downsidePct =
+    stopLoss != null && entryRef > 0 ? ((entryRef - stopLoss) / entryRef) * 100 : null;
+  const minStopDistance = entryRef * 1e-4;
+  const riskRewardRatio =
+    stopLoss != null
+    && takeProfit != null
+    && entryRef > 0
+    && (entryRef - stopLoss) >= minStopDistance
+    && takeProfit > entryRef
+      ? (takeProfit - entryRef) / (entryRef - stopLoss)
+      : null;
+
+  if (options?.priceAdjustment === 'unadjusted') {
+    return {
+      riskRewardRatio,
+      upsidePct,
+      downsidePct,
+      ma20BiasPct: null,
+      ma60BiasPct: null,
+      annualizedVolPct: null,
+      maxDrawdownPct: null,
+      rsi14: null,
+      rsiRegime: null,
+      bollBandwidthPct: null,
+      bollPercentB: null,
+      bollSqueeze: false,
+      macdSignal: null,
+      atrPct: null,
+    };
+  }
+
+  const ma20BiasPct =
+    latest.ma20 != null && latest.ma20 > 0 ? ((latest.close - latest.ma20) / latest.ma20) * 100 : null;
+  const ma60BiasPct =
+    latest.ma60 != null && latest.ma60 > 0 ? ((latest.close - latest.ma60) / latest.ma60) * 100 : null;
+
+  const returns: number[] = [];
+  for (let i = 1; i < data.length; i += 1) {
+    const prev = data[i - 1].close;
+    if (prev > 0) {
+      returns.push((data[i].close - prev) / prev);
+    }
+  }
+  let annualizedVolPct: number | null = null;
+  if (returns.length >= 5) {
+    const mean = returns.reduce((acc, r) => acc + r, 0) / returns.length;
+    const sampleVar =
+      returns.reduce((acc, r) => acc + (r - mean) * (r - mean), 0) / Math.max(1, returns.length - 1);
+    annualizedVolPct = Math.sqrt(sampleVar) * Math.sqrt(252) * 100;
+  }
+
+  let maxDrawdownPct: number | null = null;
+  if (data.length >= 2) {
+    let peak = data[0].close;
+    let minDd = 0;
+    for (const bar of data) {
+      if (bar.close > peak) {
+        peak = bar.close;
+      }
+      if (peak > 0) {
+        const dd = ((bar.close - peak) / peak) * 100;
+        if (dd < minDd) {
+          minDd = dd;
+        }
+      }
+    }
+    maxDrawdownPct = minDd;
+  }
+
+  const rsi14 = latest.rsi14 ?? null;
+  const rsiRegime: RsiRegime | null =
+    rsi14 == null ? null : rsi14 <= 30 ? 'oversold' : rsi14 >= 70 ? 'overbought' : 'neutral';
+
+  const bollBandwidthPct = latest.bollBandwidthPct ?? null;
+  const validBandwidths = data
+    .map((d) => d.bollBandwidthPct)
+    .filter((v): v is number => v != null && Number.isFinite(v));
+  let bollSqueeze = false;
+  if (bollBandwidthPct != null) {
+    if (bollBandwidthPct <= 8) {
+      bollSqueeze = true;
+    } else if (validBandwidths.length >= 10) {
+      const sortedBw = [...validBandwidths].sort((a, b) => a - b);
+      const q20Index = Math.floor(sortedBw.length * 0.2);
+      if (bollBandwidthPct <= sortedBw[q20Index]) {
+        bollSqueeze = true;
+      }
+    }
+  }
+
+  let macdSignal: MacdSignalState | null = null;
+  const MACD_EPSILON = 1e-9;
+  if (latest.macdDif != null && latest.macdDea != null) {
+    const diff = latest.macdDif - latest.macdDea;
+    const prev = data.length >= 2 ? data[data.length - 2] : null;
+    const prevDiff =
+      prev?.macdDif != null && prev?.macdDea != null
+        ? prev.macdDif - prev.macdDea
+        : latest.macdPrevDiff ?? null;
+    if (prevDiff != null) {
+      if (prevDiff <= 0 && diff > MACD_EPSILON) {
+        macdSignal = 'bullish_cross';
+      } else if (prevDiff >= 0 && diff < -MACD_EPSILON) {
+        macdSignal = 'bearish_cross';
+      }
+    }
+    if (macdSignal == null) {
+      if (latest.macdDif > MACD_EPSILON && latest.macdDea > MACD_EPSILON) {
+        macdSignal = 'bullish';
+      } else if (latest.macdDif < -MACD_EPSILON && latest.macdDea < -MACD_EPSILON) {
+        macdSignal = 'bearish';
+      } else {
+        macdSignal = 'neutral';
+      }
+    }
+  }
+
+  return {
+    riskRewardRatio,
+    upsidePct,
+    downsidePct,
+    ma20BiasPct,
+    ma60BiasPct,
+    annualizedVolPct,
+    maxDrawdownPct,
+    rsi14,
+    rsiRegime,
+    bollBandwidthPct,
+    bollPercentB: latest.bollPercentB ?? null,
+    bollSqueeze,
+    macdSignal,
+    atrPct: latest.atrPct ?? null,
+  };
 }

@@ -240,6 +240,21 @@ _STRATEGY_SKILL_CANONICAL_MAP = {
     "wave theory": "wave_theory",
     "wave_theory": "wave_theory",
     "波浪理论": "wave_theory",
+    "bollinger squeeze": "bollinger_squeeze",
+    "bollinger_squeeze": "bollinger_squeeze",
+    "布林带收口突破": "bollinger_squeeze",
+    "rsi mean reversion": "rsi_mean_reversion",
+    "rsi_mean_reversion": "rsi_mean_reversion",
+    "rsi/kdj 均值回归": "rsi_mean_reversion",
+    "turtle donchian": "turtle_donchian",
+    "turtle_donchian": "turtle_donchian",
+    "海龟唐奇安趋势": "turtle_donchian",
+    "momentum quality": "momentum_quality",
+    "momentum_quality": "momentum_quality",
+    "动量低波复合因子": "momentum_quality",
+    "vcp breakout": "vcp_breakout",
+    "vcp_breakout": "vcp_breakout",
+    "vcp 波动收敛突破": "vcp_breakout",
 }
 
 _STRATEGY_SKILL_TRANSLATIONS = {
@@ -258,6 +273,11 @@ _STRATEGY_SKILL_TRANSLATIONS = {
     "one_yang_three_yin": {"zh": "一阳三阴", "en": "One Yang Three Yin", "ko": "일양삼음"},
     "shrink_pullback": {"zh": "缩量回踩", "en": "Shrink Pullback", "ko": "거래량 축소 눌림"},
     "wave_theory": {"zh": "波浪理论", "en": "Wave Theory", "ko": "파동 이론"},
+    "bollinger_squeeze": {"zh": "布林带收口突破", "en": "Bollinger Squeeze", "ko": "볼린저 스퀴즈 돌파"},
+    "rsi_mean_reversion": {"zh": "RSI/KDJ 均值回归", "en": "RSI/KDJ Mean Reversion", "ko": "RSI/KDJ 평균 회귀"},
+    "turtle_donchian": {"zh": "海龟唐奇安趋势", "en": "Turtle Donchian Trend", "ko": "터틀 돈치안 추세"},
+    "momentum_quality": {"zh": "动量低波复合因子", "en": "Momentum Low-Vol Quality", "ko": "모멘텀 저변동 복합 팩터"},
+    "vcp_breakout": {"zh": "VCP 波动收敛突破", "en": "VCP Volatility Contraction", "ko": "VCP 변동성 수축 돌파"},
 }
 
 _CHIP_HEALTH_CANONICAL_MAP = {

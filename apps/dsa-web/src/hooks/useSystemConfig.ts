@@ -1,12 +1,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { createParsedApiError, getParsedApiError, type ParsedApiError } from '../api/error';
+import {
+  createLocalizedParsedApiError,
+  createParsedApiError,
+  getParsedApiError,
+  localizeParsedApiError,
+  type ParsedApiError,
+} from '../api/error';
 import { systemConfigApi, SystemConfigConflictError, SystemConfigValidationError } from '../api/systemConfig';
+import { useActiveUiLanguage } from '../contexts/UiLanguageContext';
 import type {
   ConfigValidationIssue,
   SystemConfigCategorySchema,
   SystemConfigItem,
   SystemConfigUpdateItem,
 } from '../types/systemConfig';
+import { resolveActiveUiLanguage } from '../utils/format';
 import { serializeStockListValue } from '../utils/stockList';
 
 type ToastState = {
@@ -16,6 +24,12 @@ type ToastState = {
   type: 'error';
   error: ParsedApiError;
 } | null;
+
+type ToastNotice =
+  | { kind: 'no_changes' }
+  | { kind: 'updated'; warnings: string[] }
+  | { kind: 'error'; error: ParsedApiError }
+  | null;
 
 type RetryAction = 'load' | 'save' | null;
 
@@ -69,6 +83,8 @@ function normalizeFieldValue(value: string, schema: SystemConfigItem['schema'] |
 }
 
 export function useSystemConfig() {
+  const activeLanguage = useActiveUiLanguage();
+
   // Server state
   const [configVersion, setConfigVersion] = useState<string>('');
   const [maskToken, setMaskToken] = useState<string>('******');
@@ -80,13 +96,43 @@ export function useSystemConfig() {
   const [draftValues, setDraftValues] = useState<Record<string, string>>({});
   const [activeCategory, setActiveCategory] = useState<string>('base');
   const [validationIssues, setValidationIssues] = useState<ConfigValidationIssue[]>([]);
-  const [toast, setToast] = useState<ToastState>(null);
+  const [toastNotice, setToastNotice] = useState<ToastNotice>(null);
+
+  const toast = useMemo<ToastState>(() => {
+    if (!toastNotice) {
+      return null;
+    }
+    const isEn = activeLanguage === 'en';
+    if (toastNotice.kind === 'no_changes') {
+      return { type: 'success', message: isEn ? 'No unsaved changes.' : '当前没有可保存的修改。' };
+    }
+    if (toastNotice.kind === 'updated') {
+      const warningText = toastNotice.warnings.length > 0
+        ? isEn
+          ? `; Warnings: ${toastNotice.warnings.join('; ')}`
+          : `；警告：${toastNotice.warnings.join('；')}`
+        : '';
+      return {
+        type: 'success',
+        message: isEn ? `Settings updated${warningText}` : `配置已更新${warningText}`,
+      };
+    }
+    return { type: 'error', error: localizeParsedApiError(toastNotice.error, activeLanguage) };
+  }, [activeLanguage, toastNotice]);
 
   // Request state
   const [isLoading, setIsLoading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
-  const [loadError, setLoadError] = useState<ParsedApiError | null>(null);
-  const [saveError, setSaveError] = useState<ParsedApiError | null>(null);
+  const [loadErrorState, setLoadErrorState] = useState<ParsedApiError | null>(null);
+  const [saveErrorState, setSaveErrorState] = useState<ParsedApiError | null>(null);
+  const loadError = useMemo(
+    () => (loadErrorState ? localizeParsedApiError(loadErrorState, activeLanguage) : null),
+    [activeLanguage, loadErrorState],
+  );
+  const saveError = useMemo(
+    () => (saveErrorState ? localizeParsedApiError(saveErrorState, activeLanguage) : null),
+    [activeLanguage, saveErrorState],
+  );
   const [retryAction, setRetryAction] = useState<RetryAction>(null);
   const serverItemByKeyRef = useRef<Record<string, SystemConfigItem>>({});
   const mountedRef = useRef(true);
@@ -245,7 +291,7 @@ export function useSystemConfig() {
     lastFailedSaveItemsRef.current = null;
     lastFailedSaveVersionRef.current = null;
     setIsLoading(true);
-    setLoadError(null);
+    setLoadErrorState(null);
     setRetryAction(null);
 
     try {
@@ -259,11 +305,11 @@ export function useSystemConfig() {
       }
       committedConfigSeqRef.current = reqSeq;
       pendingCommittedKeysRef.current.clear();
-      setSaveError(null);
+      setSaveErrorState(null);
       setLlmModelProviders(config.llmModelProviders || []);
       setLlmYamlActive(config.llmYamlActive);
       applyServerPayload(config.items, config.configVersion, config.maskToken);
-      setToast(null);
+      setToastNotice(null);
       return true;
     } catch (error: unknown) {
       if (!mountedRef.current) {
@@ -273,7 +319,7 @@ export function useSystemConfig() {
         return true;
       }
       if (reqSeq === nextConfigRequestSeqRef.current) {
-        setLoadError(getParsedApiError(error));
+        setLoadErrorState(getParsedApiError(error, resolveActiveUiLanguage()));
         setRetryAction('load');
       }
       return false;
@@ -294,7 +340,7 @@ export function useSystemConfig() {
     }
     setDraftValues(next);
     setValidationIssues([]);
-    setSaveError(null);
+    setSaveErrorState(null);
   }, [serverItems]);
 
   const applyPartialUpdate = useCallback((updatedItems: Array<{ key: string; value: string }>) => {
@@ -327,7 +373,7 @@ export function useSystemConfig() {
       pendingCommittedKeysRef.current.clear();
       lastFailedSaveItemsRef.current = null;
       lastFailedSaveVersionRef.current = null;
-      setSaveError(null);
+      setSaveErrorState(null);
       setRetryAction((prev) => (prev === 'save' ? null : prev));
       setLlmModelProviders(config.llmModelProviders || []);
       setLlmYamlActive(config.llmYamlActive);
@@ -367,28 +413,32 @@ export function useSystemConfig() {
   }, [dirtyKeys, draftValues, serverItemByKey]);
 
   const save = useCallback(async (changedItems?: SystemConfigUpdateItem[]): Promise<SaveResult> => {
+    const startIsEn = resolveActiveUiLanguage() === 'en';
     if (saveInFlightRef.current) {
-      return { success: false, message: '配置保存进行中' };
+      return {
+        success: false,
+        message: startIsEn ? 'Configuration save already in progress' : '配置保存进行中',
+      };
     }
 
     const explicitItems = changedItems ?? [];
     const resolvedChangedItems = explicitItems.length > 0 ? explicitItems : getChangedItems();
 
     if (!explicitItems.length && !hasDirty) {
-      setToast({ type: 'success', message: '当前没有可保存的修改。' });
-      return { success: true, message: '当前没有可保存的修改' };
+      setToastNotice({ kind: 'no_changes' });
+      return { success: true, message: startIsEn ? 'No unsaved changes' : '当前没有可保存的修改' };
     }
 
     if (!resolvedChangedItems.length) {
-      setToast({ type: 'success', message: '当前没有可保存的修改。' });
-      return { success: true, message: '当前没有可保存的修改' };
+      setToastNotice({ kind: 'no_changes' });
+      return { success: true, message: startIsEn ? 'No unsaved changes' : '当前没有可保存的修改' };
     }
 
     lastFailedSaveItemsRef.current = explicitItems.length > 0 ? [...explicitItems] : null;
     lastFailedSaveVersionRef.current = configVersion;
     saveInFlightRef.current = true;
     setIsSaving(true);
-    setSaveError(null);
+    setSaveErrorState(null);
     setRetryAction(null);
 
     try {
@@ -399,16 +449,22 @@ export function useSystemConfig() {
       setValidationIssues(validateResult.issues || []);
 
       if (!validateResult.valid) {
-        setSaveError(createParsedApiError({
-          title: '配置校验未通过',
-          message: '请先修正表单错误后再保存。',
-          rawMessage: '配置校验未通过，请先修正表单错误。',
-          category: 'http_error',
-        }));
+        const currentIsEn = resolveActiveUiLanguage() === 'en';
+        setSaveErrorState(createLocalizedParsedApiError((lang) => {
+          const isEn = lang === 'en';
+          return createParsedApiError({
+            title: isEn ? 'Configuration validation failed' : '配置校验未通过',
+            message: isEn ? 'Fix the form errors before saving.' : '请先修正表单错误后再保存。',
+            rawMessage: isEn
+              ? 'Configuration validation failed. Fix the form errors before saving.'
+              : '配置校验未通过，请先修正表单错误。',
+            category: 'http_error',
+          });
+        }, resolveActiveUiLanguage()));
         setRetryAction('save');
         return {
           success: false,
-          message: '配置校验未通过',
+          message: currentIsEn ? 'Configuration validation failed' : '配置校验未通过',
           issues: validateResult.issues,
         };
       }
@@ -442,37 +498,53 @@ export function useSystemConfig() {
         applyServerPayload(refreshed.items, refreshed.configVersion, refreshed.maskToken);
       }
 
-      const warningText = updateResult.warnings?.length
-        ? `；警告：${updateResult.warnings.join('；')}`
-        : '';
-      setToast({ type: 'success', message: `配置已更新${warningText}` });
+      setToastNotice({
+        kind: 'updated',
+        warnings: updateResult.warnings ?? [],
+      });
       return { success: true };
     } catch (error: unknown) {
+      const currentLanguage = resolveActiveUiLanguage();
+      const currentIsEn = currentLanguage === 'en';
       if (!mountedRef.current) {
-        return { success: false, message: '保存失败' };
+        return { success: false, message: currentIsEn ? 'Save failed' : '保存失败' };
       }
 
       let resolvedError: ParsedApiError;
       if (error instanceof SystemConfigValidationError) {
         setValidationIssues(error.issues);
-        resolvedError = error.parsedError ?? getParsedApiError(error);
+        resolvedError = localizeParsedApiError(
+          error.parsedError ?? getParsedApiError(error, currentLanguage),
+          currentLanguage,
+        );
       } else if (error instanceof SystemConfigConflictError) {
-        const baseParsedError = error.parsedError ?? getParsedApiError(error);
-        resolvedError = createParsedApiError({
-          title: '配置版本冲突',
-          message: `${error.message}，请先重新加载配置。`,
-          rawMessage: baseParsedError.rawMessage,
-          status: baseParsedError.status,
-          category: baseParsedError.category,
-        });
+        const baseParsedError = error.parsedError ?? getParsedApiError(error, currentLanguage);
+        resolvedError = createLocalizedParsedApiError((lang) => {
+          const localizedBase = localizeParsedApiError(baseParsedError, lang);
+          const isEn = lang === 'en';
+          const detailMessage = localizedBase.message || error.message;
+          const enSuffix = detailMessage.endsWith('.')
+            ? ' Please reload settings first.'
+            : '. Please reload settings first.';
+          const zhSuffix = detailMessage.endsWith('。')
+            ? '请先重新加载配置。'
+            : '，请先重新加载配置。';
+          return createParsedApiError({
+            title: isEn ? 'Configuration version conflict' : '配置版本冲突',
+            message: isEn ? `${detailMessage}${enSuffix}` : `${detailMessage}${zhSuffix}`,
+            rawMessage: localizedBase.rawMessage,
+            status: localizedBase.status,
+            category: localizedBase.category,
+          });
+        }, currentLanguage);
       } else {
-        resolvedError = getParsedApiError(error);
+        resolvedError = getParsedApiError(error, currentLanguage);
       }
 
-      setSaveError(resolvedError);
-      setToast({ type: 'error', error: resolvedError });
+      setSaveErrorState(resolvedError);
+      setToastNotice({ kind: 'error', error: resolvedError });
       setRetryAction('save');
-      return { success: false, message: '保存失败' };
+      return { success: false, message: currentIsEn ? 'Save failed' : '保存失败' };
     } finally {
       saveInFlightRef.current = false;
       if (mountedRef.current) {
@@ -502,7 +574,7 @@ export function useSystemConfig() {
   }, [configVersion, load, retryAction, save]);
 
   const clearToast = useCallback(() => {
-    setToast(null);
+    setToastNotice(null);
   }, []);
 
   return {

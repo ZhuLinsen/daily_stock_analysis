@@ -1,6 +1,8 @@
 import { fireEvent, render, screen } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { UiLanguageProvider } from '../../../contexts/UiLanguageContext';
 import type { RunFlowEdge, RunFlowLane, RunFlowNode } from '../../../types/runFlow';
+import { UI_LANGUAGE_STORAGE_KEY } from '../../../utils/uiLanguage';
 import { RunFlowGraph } from '../RunFlowGraph';
 
 const lanes: RunFlowLane[] = [
@@ -844,5 +846,57 @@ describe('RunFlowGraph', () => {
     );
     expect(screen.getByTestId('run-flow-expanded-group-topology_data_realtime_quote')).toBeInTheDocument();
     expect(screen.getByTestId('run-flow-expanded-group-topology_data_news_search')).toBeInTheDocument();
+  });
+
+  describe('localization (EN)', () => {
+    afterEach(() => {
+      window.localStorage.removeItem(UI_LANGUAGE_STORAGE_KEY);
+      document.documentElement.lang = '';
+    });
+
+    it('translates runtime and backend Chinese edge labels into English when UI language is en', () => {
+      window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'en');
+
+      const allEdgeNodes: RunFlowNode[] = [
+        { id: 'queue', lane: 'entry', kind: 'queue', label: 'Queue', status: 'success' },
+        { id: 'src1', lane: 'data_source', kind: 'data_source', label: 'Source 1', status: 'failed' },
+        { id: 'src2', lane: 'data_source', kind: 'data_source', label: 'Source 2', status: 'fallback' },
+        { id: 'src3', lane: 'data_source', kind: 'data_source', label: 'Source 3', status: 'success' },
+        { id: 'src4', lane: 'data_source', kind: 'data_source', label: 'Source 4', status: 'success' },
+        { id: 'llm', lane: 'analysis', kind: 'model', label: 'LLM', status: 'success' },
+        { id: 'save', lane: 'artifact', kind: 'artifact', label: 'Report', status: 'success' },
+        { id: 'notify', lane: 'artifact', kind: 'notification', label: 'Notify', status: 'success' },
+      ];
+      const allEdges: RunFlowEdge[] = [
+        { id: 'e-invoke', from: 'queue', to: 'src1', kind: 'control', status: 'failed', label: '调用' },
+        { id: 'e-fallback', from: 'src1', to: 'src2', kind: 'fallback', status: 'fallback', label: '降级' },
+        { id: 'e-retry', from: 'src2', to: 'src3', kind: 'retry', status: 'success', label: '重试' },
+        { id: 'e-details', from: 'queue', to: 'src4', kind: 'control', status: 'success', label: '详情' },
+        { id: 'e-generate', from: 'src3', to: 'llm', kind: 'data', status: 'success', label: '生成' },
+        { id: 'e-save', from: 'llm', to: 'save', kind: 'data', status: 'success', label: '保存' },
+        { id: 'e-notify', from: 'save', to: 'notify', kind: 'control', status: 'success', label: '通知' },
+      ];
+
+      render(
+        <UiLanguageProvider>
+          <RunFlowGraph
+            lanes={[
+              ...lanes,
+              { id: 'artifact', label: 'Artifact', order: 4 },
+            ]}
+            nodes={allEdgeNodes}
+            edges={allEdges}
+          />
+        </UiLanguageProvider>
+      );
+
+      for (const expected of ['Invoke', 'Fallback', 'Retry', 'Details', 'Generate', 'Save']) {
+        expect(screen.getAllByText(expected).length).toBeGreaterThanOrEqual(1);
+      }
+      expect(screen.getAllByText('Notify').length).toBeGreaterThanOrEqual(2);
+      for (const zhLabel of ['调用', '降级', '重试', '详情', '生成', '保存', '通知']) {
+        expect(screen.queryByText(zhLabel)).not.toBeInTheDocument();
+      }
+    });
   });
 });

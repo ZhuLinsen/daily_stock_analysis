@@ -111,3 +111,4 @@ class PerformanceMetrics(BaseModel):
 
     advice_breakdown: Dict[str, Any] = Field(default_factory=dict)
     diagnostics: Dict[str, Any] = Field(default_factory=dict)
+    quant_metrics: Optional[Dict[str, Any]] = None

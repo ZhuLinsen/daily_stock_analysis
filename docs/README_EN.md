@@ -55,9 +55,9 @@ English | [简体中文](../README.md) | [繁體中文](README_CHT.md)
 | Capability | Coverage |
 |------------|----------|
 | AI decision reports | Core conclusion, score, trend, entry/exit levels, risk alerts, catalysts, and action checklist |
-| Multi-market data | Covers A-shares, Hong Kong, US, Japanese, Korean, Taiwan stocks, and ETFs, with quotes, K-lines, technical indicators, news, announcements, fundamentals, and report context. Data-source coverage and market boundaries are documented in [market boundaries](./market-support.md) |
+| Multi-market data | Covers A-shares, Hong Kong, US, Japanese, Korean, Taiwan stocks, and ETFs, with quotes, K-lines, technical indicators, news, announcements, fundamentals, and report context. Data-source coverage and market boundaries are documented in [market boundaries](./market-support_EN.md) |
 | Web / desktop workspace | Manual analysis, task progress, history, full Markdown reports, backtest, portfolio, settings, and light/dark themes |
-| Agent strategy chat | Multi-turn Q&A with 15 built-in strategies across Web/Bot/API |
+| Agent strategy chat | Multi-turn Q&A with 20 built-in strategies across Web/Bot/API |
 | Smart import & autocomplete | Image, CSV/Excel, clipboard import; code/name/pinyin/alias autocomplete |
 | Automation & notifications | GitHub Actions, Docker, local scheduler, FastAPI service, and WeChat Work / Feishu / Telegram / Discord / Slack / Email delivery |
 
@@ -156,7 +156,7 @@ Open the `Actions` tab and click `I understand my workflows, go ahead and enable
 
 #### 4. Manual Test
 
-`Actions` -> `Daily Stock Analysis` -> `Run workflow` -> `Run workflow`.
+`Actions` -> `每日股票分析` (`.github/workflows/00-daily-analysis.yml`) -> `Run workflow` -> `Run workflow`.
 
 #### Done
 
@@ -183,9 +183,9 @@ python main.py
 Common commands:
 
 ```bash
-python main.py --debug
-python main.py --dry-run
-python main.py --stocks 600519,hk00700,AAPL,2330.TW
+python main.py --debug --no-notify   # verbose debug logs (runs full analysis and market review; suppresses notifications only)
+python main.py --dry-run --no-market-review --no-notify   # stock-pipeline dry-run without market review or push
+python main.py --stocks 600519,hk00700,AAPL,2330.TW --no-market-review  # specific tickers only (skip default market review)
 python main.py --market-review
 python main.py --schedule
 python main.py --serve-only

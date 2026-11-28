@@ -114,6 +114,7 @@ class TimeoutPartialHelpersTests(unittest.TestCase):
         self.assertEqual(field["data_type"], "boolean")
         self.assertEqual(field["ui_control"], "switch")
         self.assertEqual(field["default_value"], "true")
+        self.assertEqual(field["help_key"], "settings.system.DSA_TIMEOUT_PARTIAL_NOTIFY")
         SystemConfigFieldSchema.model_validate(field)
 
     def test_collect_completed_analyses_since_fail_open(self) -> None:

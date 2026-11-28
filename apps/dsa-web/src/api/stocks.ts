@@ -1,5 +1,6 @@
 import apiClient from './index';
 import { toCamelCase } from './utils';
+import { resolveActiveUiLanguage } from '../utils/format';
 
 export type ExtractItem = {
   code?: string | null;
@@ -29,6 +30,8 @@ export type StockHistoryResponse = {
   stockName?: string | null;
   period: string;
   data: StockKLineItem[];
+  priceAdjustment?: 'forward' | 'backward' | 'unadjusted' | 'unknown' | null;
+  ohlcSynthesized?: boolean | null;
 };
 
 export const stocksApi = {
@@ -68,7 +71,11 @@ export const stocksApi = {
       const data = response.data as { codes?: string[]; items?: ExtractItem[] };
       return { codes: data.codes ?? [], items: data.items };
     }
-    throw new Error('请提供文件或粘贴文本');
+    throw new Error(
+      resolveActiveUiLanguage() === 'en'
+        ? 'Please provide a file or paste text'
+        : '请提供文件或粘贴文本',
+    );
   },
 
   async getHistory(
