@@ -218,7 +218,11 @@ def _resolve_vision_model() -> str:
     """Determine the litellm model to use for vision."""
     cfg = get_config()
     # Prefer explicit vision model, then OPENAI_VISION_MODEL alias, then primary litellm model
-    model = (cfg.vision_model or cfg.openai_vision_model or cfg.litellm_model or "").strip()
+    model = (
+        str(cfg.vision_model or "").strip()
+        or str(cfg.openai_vision_model or "").strip()
+        or str(cfg.litellm_model or "").strip()
+    )
     if not model:
         # Fallback: infer from available keys
         if cfg.gemini_api_keys:
@@ -401,6 +405,8 @@ def build_direct_vision_litellm_params(model: str, cfg: Config) -> Dict[str, Any
     if not is_native_gemini_or_anthropic and prefix not in _VISION_IAM_KEYLESS_PROVIDERS:
         if cfg.openai_base_url:
             params["api_base"] = cfg.openai_base_url
+            if "/" not in normalized and normalized.lower().startswith(("claude", "gemini")):
+                params["custom_llm_provider"] = "openai"
         if cfg.openai_base_url and "aihubmix.com" in cfg.openai_base_url:
             params["extra_headers"] = {"APP-Code": "GPIJ3886"}
     keys = _get_api_keys_for_model(normalized, cfg)
@@ -553,28 +559,53 @@ def _call_litellm_vision(image_b64: str, mime_type: str, api_key: Optional[str] 
     if raw_wire_protocol:
         call_kwargs["wire_protocol"] = raw_wire_protocol
     raw_custom_provider = str(deployment_params.get("custom_llm_provider") or "").strip()
-    if raw_custom_provider:
-        call_kwargs["custom_llm_provider"] = raw_custom_provider
     raw_channel_protocol = str(
         deployment_info.get("dsa_channel_protocol")
         or deployment_params.get("dsa_channel_protocol")
         or ""
     ).strip()
+    if raw_custom_provider:
+        call_kwargs["custom_llm_provider"] = raw_custom_provider
+    elif raw_channel_protocol.lower() in _VISION_IAM_KEYLESS_PROVIDERS and "/" not in wire_model:
+        call_kwargs["custom_llm_provider"] = raw_channel_protocol.lower()
     if raw_channel_protocol:
         call_kwargs["dsa_channel_protocol"] = raw_channel_protocol
     if deployment_params.get("extra_headers"):
         call_kwargs["extra_headers"] = dict(deployment_params["extra_headers"])
+
+    def _strip_gemini_max_output_tokens(raw_gc: Any) -> Optional[Dict[str, Any]]:
+        if not isinstance(raw_gc, dict):
+            return None
+        cleaned = {
+            gc_k: gc_v
+            for gc_k, gc_v in raw_gc.items()
+            if str(gc_k).strip().lower() not in {"maxoutputtokens", "max_output_tokens"}
+        }
+        return cleaned or None
+
     for param_key, param_val in deployment_params.items():
         key_str = str(param_key)
+        key_lower = key_str.strip().lower()
         if key_str in _HANDLED_VISION_DEPLOYMENT_KEYS or key_str.startswith("_dsa_"):
+            continue
+        if key_lower in {"generation_config", "generationconfig"}:
+            cleaned_gc = _strip_gemini_max_output_tokens(param_val)
+            if cleaned_gc:
+                call_kwargs.setdefault(key_str, cleaned_gc)
             continue
         if key_str == "extra_body":
             if isinstance(param_val, dict):
-                sanitized_extra = {
-                    eb_k: eb_v
-                    for eb_k, eb_v in param_val.items()
-                    if str(eb_k).strip().lower() not in _EXTRACTOR_OWNED_EXTRA_BODY_KEYS
-                }
+                sanitized_extra: Dict[str, Any] = {}
+                for eb_k, eb_v in param_val.items():
+                    eb_k_lower = str(eb_k).strip().lower()
+                    if eb_k_lower in _EXTRACTOR_OWNED_EXTRA_BODY_KEYS:
+                        continue
+                    if eb_k_lower in {"generationconfig", "generation_config"} and isinstance(eb_v, dict):
+                        cleaned_nested_gc = _strip_gemini_max_output_tokens(eb_v)
+                        if cleaned_nested_gc:
+                            sanitized_extra[eb_k] = cleaned_nested_gc
+                        continue
+                    sanitized_extra[eb_k] = eb_v
                 if sanitized_extra:
                     call_kwargs["extra_body"] = sanitized_extra
             continue
@@ -587,6 +618,8 @@ def _call_litellm_vision(image_b64: str, mime_type: str, api_key: Optional[str] 
             call_kwargs["api_base"] = direct_params["api_base"]
         if direct_params.get("extra_headers"):
             call_kwargs["extra_headers"] = dict(direct_params["extra_headers"])
+        if direct_params.get("custom_llm_provider") and "custom_llm_provider" not in call_kwargs:
+            call_kwargs["custom_llm_provider"] = direct_params["custom_llm_provider"]
 
     response = dispatch_completion(compat_proxy=litellm, config=cfg, **call_kwargs)
     if response and response.choices and response.choices[0].message.content:

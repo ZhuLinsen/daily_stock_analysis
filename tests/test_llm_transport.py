@@ -2630,8 +2630,32 @@ def test_phase4_round4_vision_alias_fail_closed_extra_body_hermes_env_ranker_res
             image_stock_extractor._call_litellm_vision("aGVsbG8=", "image/png")
         assert len(rec_v.completion_calls) == calls_before
 
-        # 2. P1-3: Bare claude-* / gemini-* on explicit OPENAI_BASE_URL relay with ONLY OPENAI_API_KEY succeeds!
+        # 1b. Keyless IAM alias matched via dsa_channel_protocol='vertex_ai' preserves custom_llm_provider='vertex_ai'.
+        cfg_vertex_chan_proto = Config(
+            vision_model="vision-proto",
+            llm_model_list=[
+                {
+                    "model_name": "vision-proto",
+                    "litellm_params": {
+                        "model": "gemini-2.5-pro",
+                        "vertex_project": "proj-chan-proto",
+                        "generation_config": {"max_output_tokens": 5, "topP": 0.8},
+                        "extra_body": {"generationConfig": {"maxOutputTokens": 5, "topK": 32}},
+                    },
+                    "model_info": {"dsa_channel_protocol": "vertex_ai"},
+                }
+            ],
+        )
+        monkeypatch.setattr(image_stock_extractor, "get_config", lambda: cfg_vertex_chan_proto)
+        image_stock_extractor._call_litellm_vision("aGVsbG8=", "image/png")
+        assert rec_v.completion_calls[-1]["custom_llm_provider"] == "vertex_ai"
+        assert rec_v.completion_calls[-1]["generation_config"] == {"topP": 0.8}
+        assert rec_v.completion_calls[-1]["extra_body"] == {"generationConfig": {"topK": 32}}
+
+        # 2. P1-3: Bare claude-* / gemini-* on explicit OPENAI_BASE_URL relay with ONLY OPENAI_API_KEY succeeds
+        # and forwards custom_llm_provider='openai' for LiteLLM rollback parity; whitespace vision_model does not shadow!
         cfg_bare_claude_relay = Config(
+            vision_model="   ",
             openai_vision_model="claude-sonnet-4-6",
             openai_api_keys=["sk-relay-only-1234"],
             openai_base_url="https://relay.example/v1",
@@ -2643,6 +2667,7 @@ def test_phase4_round4_vision_alias_fail_closed_extra_body_hermes_env_ranker_res
         assert rec_v.completion_calls[-1]["model"] == "claude-sonnet-4-6"
         assert rec_v.completion_calls[-1]["api_key"] == "sk-relay-only-1234"
         assert rec_v.completion_calls[-1]["api_base"] == "https://relay.example/v1"
+        assert rec_v.completion_calls[-1]["custom_llm_provider"] == "openai"
 
         # Explicit anthropic/ prefix NEVER falls back to OPENAI_API_KEY/OPENAI_BASE_URL!
         cfg_explicit_ant_no_key = Config(

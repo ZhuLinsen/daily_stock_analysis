@@ -280,9 +280,9 @@ def test_daily_analysis_conditionally_installs_optional_litellm_extra(tmp_path: 
             check=False,
         )
         assert res.returncode == 0, f"Probe failed: rc={res.returncode} stderr={res.stderr}"
-        output_lines = [line for line in res.stdout.splitlines() if line.strip()]
-        assert len(output_lines) == 1, f"Expected single-line probe output for Bash read, got: {res.stdout!r}"
-        parts = output_lines[0].split()
+        raw_lines = res.stdout.splitlines()
+        assert len(raw_lines) == 1, f"Expected exact single-line probe output for Bash read, got: {res.stdout!r}"
+        parts = raw_lines[0].split()
         assert len(parts) == 3, f"Unexpected probe output: {res.stdout!r}"
         return parts[0], parts[1], parts[2]
 
