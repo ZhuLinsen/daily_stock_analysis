@@ -3383,4 +3383,499 @@ describe('PortfolioPage FX refresh', () => {
     expect(await screen.findAllByText(/最大回撤: 4\.25%/)).toHaveLength(2);
     expect(screen.queryAllByText(/18\.50%/)).toHaveLength(0);
   });
+
+  it('clears unedited manual trade and corporate action drafts when account A succeeds while viewing account B (OR-COR-16b3b9a9)', async () => {
+    const pendingTradeA = deferredPromise<{ id: number }>();
+    const pendingCorpA = deferredPromise<{ id: number }>();
+
+    getAccounts.mockResolvedValue(makeAccounts([{ id: 1, name: 'Main' }, { id: 2, name: 'Alt' }]));
+    createTrade.mockReturnValueOnce(pendingTradeA.promise);
+    createCorporateAction.mockReturnValueOnce(pendingCorpA.promise);
+
+    render(<PortfolioPage />);
+    await waitForInitialLoad();
+
+    const accountSelect = screen.getAllByRole('combobox')[0];
+    fireEvent.change(accountSelect, { target: { value: '1' } });
+    await waitFor(() => expect(getSnapshot).toHaveBeenLastCalledWith({ accountId: 1, costMethod: 'fifo', includeRealtime: false }));
+
+    const tradeSymbolInput = screen.getByPlaceholderText('股票代码（例如 600519）') as HTMLInputElement;
+    fireEvent.change(tradeSymbolInput, { target: { value: '600519' } });
+    fireEvent.change(screen.getByPlaceholderText('数量（必填）'), { target: { value: '10' } });
+    fireEvent.change(screen.getByPlaceholderText('成交价（必填）'), { target: { value: '150' } });
+    fireEvent.click(screen.getByRole('button', { name: '提交交易' }));
+    await waitFor(() => expect(createTrade).toHaveBeenCalledTimes(1));
+
+    // Switch to account B without editing the form, then resolve account A's trade.
+    fireEvent.change(accountSelect, { target: { value: '2' } });
+    await waitFor(() => expect(getSnapshot).toHaveBeenLastCalledWith({ accountId: 2, costMethod: 'fifo', includeRealtime: false }));
+
+    await act(async () => {
+      pendingTradeA.resolve({ id: 10 });
+      await pendingTradeA.promise;
+    });
+
+    // Switch back to account A: already-submitted draft must be cleared so clicking submit cannot duplicate it.
+    fireEvent.change(accountSelect, { target: { value: '1' } });
+    await waitFor(() => expect(tradeSymbolInput.value).toBe(''));
+    fireEvent.click(screen.getByRole('button', { name: '提交交易' }));
+    expect(createTrade).toHaveBeenCalledTimes(1);
+
+    // Same guarantee for corporate actions.
+    const corpSymbolInput = screen.getByPlaceholderText('股票代码') as HTMLInputElement;
+    fireEvent.change(corpSymbolInput, { target: { value: '600519' } });
+    fireEvent.change(screen.getByPlaceholderText('每股分红'), { target: { value: '1.5' } });
+    fireEvent.click(screen.getByRole('button', { name: '提交企业行为' }));
+    await waitFor(() => expect(createCorporateAction).toHaveBeenCalledTimes(1));
+
+    fireEvent.change(accountSelect, { target: { value: '2' } });
+    await waitFor(() => expect(getSnapshot).toHaveBeenLastCalledWith({ accountId: 2, costMethod: 'fifo', includeRealtime: false }));
+
+    await act(async () => {
+      pendingCorpA.resolve({ id: 20 });
+      await pendingCorpA.promise;
+    });
+
+    fireEvent.change(accountSelect, { target: { value: '1' } });
+    await waitFor(() => expect(corpSymbolInput.value).toBe(''));
+    fireEvent.click(screen.getByRole('button', { name: '提交企业行为' }));
+    expect(createCorporateAction).toHaveBeenCalledTimes(1);
+  });
+
+  it('scopes CSV commit results and dry-run labels per account across concurrent imports (OR-COR-b6e0fe05)', async () => {
+    const pendingCommitA = deferredPromise<{
+      accountId: number;
+      recordCount: number;
+      insertedCount: number;
+      duplicateCount: number;
+      failedCount: number;
+      dryRun: boolean;
+      errors: string[];
+    }>();
+    const pendingCommitB = deferredPromise<{
+      accountId: number;
+      recordCount: number;
+      insertedCount: number;
+      duplicateCount: number;
+      failedCount: number;
+      dryRun: boolean;
+      errors: string[];
+    }>();
+
+    getAccounts.mockResolvedValue(makeAccounts([{ id: 1, name: 'AccA' }, { id: 2, name: 'AccB' }]));
+    commitCsvImport.mockImplementation(async (accountId: number) => (
+      accountId === 1 ? pendingCommitA.promise : pendingCommitB.promise
+    ));
+
+    render(<PortfolioPage />);
+    await waitForInitialLoad();
+
+    const accountSelect = screen.getAllByRole('combobox')[0];
+    fireEvent.change(accountSelect, { target: { value: '1' } });
+    await waitFor(() => expect(getSnapshot).toHaveBeenLastCalledWith({ accountId: 1, costMethod: 'fifo', includeRealtime: false }));
+
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+    expect(fileInput).not.toBeNull();
+    const csvFile = new File(['date,symbol\n2026-06-18,600519'], 'trades.csv', { type: 'text/csv' });
+    fireEvent.change(fileInput, { target: { files: [csvFile] } });
+
+    const dryRunCheckbox = screen.getByLabelText('仅预演（不写入）') as HTMLInputElement;
+    expect(dryRunCheckbox.checked).toBe(true);
+    fireEvent.click(dryRunCheckbox);
+    expect(dryRunCheckbox.checked).toBe(false);
+
+    // Start real CSV import in account A.
+    fireEvent.click(screen.getByRole('button', { name: '提交导入' }));
+    await waitFor(() => expect(commitCsvImport).toHaveBeenCalledWith(1, 'huatai', csvFile, false));
+
+    // Switch to account B and run dry-run import.
+    fireEvent.change(accountSelect, { target: { value: '2' } });
+    fireEvent.click(dryRunCheckbox);
+    expect(dryRunCheckbox.checked).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: '提交导入' }));
+    await waitFor(() => expect(commitCsvImport).toHaveBeenCalledWith(2, 'huatai', csvFile, true));
+
+    // B finishes first.
+    await act(async () => {
+      pendingCommitB.resolve({
+        accountId: 2,
+        recordCount: 5,
+        insertedCount: 5,
+        duplicateCount: 0,
+        failedCount: 0,
+        dryRun: true,
+        errors: [],
+      });
+      await pendingCommitB.promise;
+    });
+
+    expect(await screen.findByText('CSV 预演结果')).toBeInTheDocument();
+    expect(screen.getByText('预演检查：写入 5 条，重复 0 条，失败 0 条。')).toBeInTheDocument();
+
+    // A finishes second with partial failures while B is still active.
+    await act(async () => {
+      pendingCommitA.resolve({
+        accountId: 1,
+        recordCount: 3,
+        insertedCount: 2,
+        duplicateCount: 0,
+        failedCount: 1,
+        dryRun: false,
+        errors: ['row 3 invalid'],
+      });
+      await pendingCommitA.promise;
+    });
+
+    // While viewing B, B's dry-run result remains shown and unchecking dry-run does NOT relabel it as real write.
+    expect(screen.getByText('CSV 预演结果')).toBeInTheDocument();
+    expect(screen.getByText('预演检查：写入 5 条，重复 0 条，失败 0 条。')).toBeInTheDocument();
+    fireEvent.click(dryRunCheckbox);
+    expect(dryRunCheckbox.checked).toBe(false);
+    expect(screen.getByText('CSV 预演结果')).toBeInTheDocument();
+    expect(screen.getByText('预演检查：写入 5 条，重复 0 条，失败 0 条。')).toBeInTheDocument();
+    expect(screen.queryByText(/实际写入：写入 5 条/)).not.toBeInTheDocument();
+
+    // Switch back to account A: A's own real-write partial failure result is preserved accurately.
+    fireEvent.change(accountSelect, { target: { value: '1' } });
+    expect(await screen.findByText('CSV 提交结果')).toBeInTheDocument();
+    expect(screen.getByText('实际写入：写入 2 条，重复 0 条，失败 1 条。')).toBeInTheDocument();
+    expect(screen.queryByText(/写入 5 条/)).not.toBeInTheDocument();
+
+    // Toggling dry-run back on while viewing A must NOT relabel A's real write as dry-run.
+    fireEvent.click(dryRunCheckbox);
+    expect(dryRunCheckbox.checked).toBe(true);
+    expect(screen.getByText('CSV 提交结果')).toBeInTheDocument();
+    expect(screen.getByText('实际写入：写入 2 条，重复 0 条，失败 1 条。')).toBeInTheDocument();
+  });
+
+  it('rejects stale snapshot and risk responses after newer refresh or FX reload failures (OR-COR-1ba30f06)', async () => {
+    const staleSnap1 = deferredPromise<ReturnType<typeof makeSnapshot>>();
+    const staleRisk1 = deferredPromise<ReturnType<typeof makeRisk>>();
+    const staleTradeSnapBeforeFxFail = deferredPromise<ReturnType<typeof makeSnapshot>>();
+    const staleTradeRiskBeforeFxFail = deferredPromise<ReturnType<typeof makeRisk>>();
+    const pendingFxCall1 = deferredPromise<{
+      asOf: string;
+      accountCount: number;
+      pairCount: number;
+      updatedCount: number;
+      staleCount: number;
+      errorCount: number;
+    }>();
+    const pendingFxCall2 = deferredPromise<{
+      asOf: string;
+      accountCount: number;
+      pairCount: number;
+      updatedCount: number;
+      staleCount: number;
+      errorCount: number;
+    }>();
+
+    let acc1SnapCall = 0;
+    let acc1RiskCall = 0;
+    getSnapshot.mockImplementation(async ({ accountId }: { accountId?: number } = {}) => {
+      if (accountId === 1) {
+        acc1SnapCall += 1;
+        if (acc1SnapCall === 1) {
+          return makeSnapshot({
+            accountId: 1,
+            fxStale: false,
+            positions: [makePosition({ symbol: 'INIT_POS', market: 'cn' })],
+          });
+        }
+        if (acc1SnapCall === 2) {
+          return staleSnap1.promise;
+        }
+        if (acc1SnapCall === 3) {
+          throw createApiError(createParsedApiError({ title: '快照失败', message: 'Snapshot 503 after trade' }));
+        }
+        if (acc1SnapCall === 4) {
+          return makeSnapshot({
+            accountId: 1,
+            fxStale: false,
+            positions: [makePosition({ symbol: 'BEFORE_RISK_FAIL', market: 'cn' })],
+          });
+        }
+        if (acc1SnapCall === 5) {
+          return makeSnapshot({
+            accountId: 1,
+            fxStale: false,
+            positions: [makePosition({ symbol: 'AFTER_TRADE_RISK_FAIL', market: 'cn' })],
+          });
+        }
+        if (acc1SnapCall === 6) {
+          return staleTradeSnapBeforeFxFail.promise;
+        }
+        if (acc1SnapCall === 7) {
+          throw createApiError(createParsedApiError({ title: 'FX 快照失败', message: 'FX snapshot 503' }));
+        }
+        return makeSnapshot({
+          accountId: 1,
+          fxStale: false,
+          positions: [makePosition({ symbol: 'FX_RISK_FAIL_POS', market: 'cn' })],
+        });
+      }
+      return makeSnapshot({ accountId: 1, fxStale: false });
+    });
+
+    getRisk.mockImplementation(async ({ accountId }: { accountId?: number } = {}) => {
+      if (accountId === 1) {
+        acc1RiskCall += 1;
+        if (acc1RiskCall === 2) {
+          return staleRisk1.promise;
+        }
+        if (acc1RiskCall === 3) {
+          throw createApiError(createParsedApiError({ title: '风险失败', message: 'Risk 503 after trade' }));
+        }
+        if (acc1RiskCall === 4) {
+          return staleTradeRiskBeforeFxFail.promise;
+        }
+        if (acc1RiskCall === 5) {
+          throw createApiError(createParsedApiError({ title: 'FX 风险失败', message: 'FX risk 503' }));
+        }
+      }
+      return makeRisk({ accountId: accountId ?? null });
+    });
+
+    render(<PortfolioPage />);
+    await waitForInitialLoad();
+
+    const accountSelect = screen.getAllByRole('combobox')[0];
+    fireEvent.change(accountSelect, { target: { value: '1' } });
+    expect(await screen.findByText('INIT_POS')).toBeInTheDocument();
+
+    // Case 1: Normal refresh snapshot #2 fails with 503 while stale snapshot #1 is in flight.
+    fireEvent.click(screen.getByRole('button', { name: '刷新数据' }));
+    await waitFor(() => expect(acc1SnapCall).toBe(2));
+
+    fireEvent.change(screen.getByPlaceholderText('股票代码（例如 600519）'), { target: { value: '600519' } });
+    fireEvent.change(screen.getByPlaceholderText('数量（必填）'), { target: { value: '10' } });
+    fireEvent.change(screen.getByPlaceholderText('成交价（必填）'), { target: { value: '150' } });
+    fireEvent.click(screen.getByRole('button', { name: '提交交易' }));
+
+    expect(await screen.findByText('Snapshot 503 after trade')).toBeInTheDocument();
+    expect(screen.getByText('持仓快照不可用')).toBeInTheDocument();
+
+    await act(async () => {
+      staleSnap1.resolve(makeSnapshot({
+        accountId: 1,
+        fxStale: false,
+        positions: [makePosition({ symbol: 'STALE_PRE_TRADE_HOLDING', market: 'cn' })],
+      }));
+      await staleSnap1.promise;
+    });
+
+    expect(screen.getByText('Snapshot 503 after trade')).toBeInTheDocument();
+    expect(screen.getByText('持仓快照不可用')).toBeInTheDocument();
+    expect(screen.queryByText('STALE_PRE_TRADE_HOLDING')).not.toBeInTheDocument();
+
+    // Case 2: Normal refresh risk #2 fails with 503 while stale risk #1 is in flight.
+    fireEvent.click(screen.getByRole('button', { name: '刷新数据' }));
+    expect(await screen.findByText('BEFORE_RISK_FAIL')).toBeInTheDocument();
+    await waitFor(() => expect(acc1RiskCall).toBe(2));
+
+    fireEvent.change(screen.getByPlaceholderText('股票代码（例如 600519）'), { target: { value: '000001' } });
+    fireEvent.change(screen.getByPlaceholderText('数量（必填）'), { target: { value: '20' } });
+    fireEvent.change(screen.getByPlaceholderText('成交价（必填）'), { target: { value: '12' } });
+    fireEvent.click(screen.getByRole('button', { name: '提交交易' }));
+
+    expect(await screen.findByText('AFTER_TRADE_RISK_FAIL')).toBeInTheDocument();
+    expect(await screen.findByText('Risk 503 after trade')).toBeInTheDocument();
+    expect(screen.getByText('风险模块降级')).toBeInTheDocument();
+
+    await act(async () => {
+      staleRisk1.resolve(makeRisk({
+        accountId: 1,
+        drawdown: { seriesPoints: 5, maxDrawdownPct: 12.34, currentDrawdownPct: 3.21, alert: true, fxStale: false },
+      }));
+      await staleRisk1.promise;
+    });
+
+    expect(screen.getByText('Risk 503 after trade')).toBeInTheDocument();
+    expect(screen.getByText('风险模块降级')).toBeInTheDocument();
+    expect(screen.queryByText(/12\.34%/)).not.toBeInTheDocument();
+
+    // Case 3: FX reload snapshot failure rejects older in-flight trade snapshot.
+    refreshFx.mockImplementationOnce(() => pendingFxCall1.promise);
+    fireEvent.click(screen.getByRole('button', { name: '刷新汇率' }));
+    expect(await screen.findByRole('button', { name: '刷新中...' })).toBeDisabled();
+
+    fireEvent.change(screen.getByPlaceholderText('股票代码（例如 600519）'), { target: { value: '600519' } });
+    fireEvent.change(screen.getByPlaceholderText('数量（必填）'), { target: { value: '5' } });
+    fireEvent.change(screen.getByPlaceholderText('成交价（必填）'), { target: { value: '160' } });
+    fireEvent.click(screen.getByRole('button', { name: '提交交易' }));
+    await waitFor(() => expect(acc1SnapCall).toBe(6));
+
+    await act(async () => {
+      pendingFxCall1.resolve({
+        asOf: '2026-03-19',
+        accountCount: 1,
+        pairCount: 1,
+        updatedCount: 1,
+        staleCount: 0,
+        errorCount: 0,
+      });
+      await pendingFxCall1.promise;
+    });
+
+    expect(await screen.findByText('FX snapshot 503')).toBeInTheDocument();
+    expect(screen.getByText('无法确认持仓数量或估值，请刷新重试。')).toBeInTheDocument();
+
+    await act(async () => {
+      staleTradeSnapBeforeFxFail.resolve(makeSnapshot({
+        accountId: 1,
+        fxStale: false,
+        positions: [makePosition({ symbol: 'STALE_BEFORE_FX_SNAP_FAIL', market: 'cn' })],
+      }));
+      await staleTradeSnapBeforeFxFail.promise;
+    });
+
+    expect(await screen.findByText('持仓快照不可用')).toBeInTheDocument();
+    expect(screen.getByText('FX snapshot 503')).toBeInTheDocument();
+    expect(screen.queryByText('STALE_BEFORE_FX_SNAP_FAIL')).not.toBeInTheDocument();
+
+    // Case 4: FX reload risk failure rejects older in-flight trade risk.
+    await waitFor(() => expect(screen.getByRole('button', { name: '刷新汇率' })).toBeEnabled());
+    refreshFx.mockImplementationOnce(() => pendingFxCall2.promise);
+    fireEvent.click(screen.getByRole('button', { name: '刷新汇率' }));
+    expect(await screen.findByRole('button', { name: '刷新中...' })).toBeDisabled();
+
+    fireEvent.change(screen.getByPlaceholderText('股票代码（例如 600519）'), { target: { value: '000001' } });
+    fireEvent.change(screen.getByPlaceholderText('数量（必填）'), { target: { value: '5' } });
+    fireEvent.change(screen.getByPlaceholderText('成交价（必填）'), { target: { value: '13' } });
+    fireEvent.click(screen.getByRole('button', { name: '提交交易' }));
+    await waitFor(() => expect(acc1RiskCall).toBe(4));
+
+    await act(async () => {
+      pendingFxCall2.resolve({
+        asOf: '2026-03-19',
+        accountCount: 1,
+        pairCount: 1,
+        updatedCount: 1,
+        staleCount: 0,
+        errorCount: 0,
+      });
+      await pendingFxCall2.promise;
+    });
+
+    expect(await screen.findByText('FX risk 503')).toBeInTheDocument();
+    expect(screen.getByText('风险模块降级')).toBeInTheDocument();
+
+    await act(async () => {
+      staleTradeRiskBeforeFxFail.resolve(makeRisk({
+        accountId: 1,
+        drawdown: { seriesPoints: 5, maxDrawdownPct: 23.45, currentDrawdownPct: 4.56, alert: true, fxStale: false },
+      }));
+      await staleTradeRiskBeforeFxFail.promise;
+    });
+
+    expect(screen.getByText('FX risk 503')).toBeInTheDocument();
+    expect(screen.getByText('风险模块降级')).toBeInTheDocument();
+    expect(screen.queryByText(/23\.45%/)).not.toBeInTheDocument();
+  });
+
+  it('shows an explicit events error state instead of empty ledger when snapshot succeeds after events 503 (OR-COR-16d45fb3)', async () => {
+    const pendingSnapshotB = deferredPromise<ReturnType<typeof makeSnapshot>>();
+    let acc2TradeCalls = 0;
+
+    getAccounts.mockResolvedValue(makeAccounts([
+      { id: 1, name: 'AccA' },
+      { id: 2, name: 'AccB' },
+    ]));
+    getSnapshot.mockImplementation(async ({ accountId }: { accountId?: number } = {}) => {
+      if (accountId === 1) {
+        return makeSnapshot({
+          accountId: 1,
+          fxStale: false,
+          positions: [makePosition({ symbol: 'POS_A', market: 'cn' })],
+        });
+      }
+      if (accountId === 2) {
+        return pendingSnapshotB.promise;
+      }
+      return makeSnapshot({ accountId: 1, accountCount: 2, fxStale: false });
+    });
+    listTrades.mockImplementation(async ({ accountId }: { accountId?: number } = {}) => {
+      if (accountId === 1) {
+        return {
+          items: [{
+            id: 11,
+            accountId: 1,
+            symbol: 'TRADE_A',
+            tradeDate: '2026-06-18',
+            side: 'buy',
+            quantity: 10,
+            price: 100,
+            fee: 0,
+            tax: 0,
+            currency: 'CNY',
+            note: null,
+            createdAt: '2026-06-18T00:00:00Z',
+          }],
+          total: 1,
+          page: 1,
+          pageSize: 20,
+        };
+      }
+      if (accountId === 2) {
+        acc2TradeCalls += 1;
+        if (acc2TradeCalls === 1) {
+          throw createApiError(createParsedApiError({ title: '流水接口异常', message: 'Events ledger 503' }));
+        }
+        return {
+          items: [{
+            id: 22,
+            accountId: 2,
+            symbol: 'TRADE_B',
+            tradeDate: '2026-06-18',
+            side: 'buy',
+            quantity: 5,
+            price: 200,
+            fee: 0,
+            tax: 0,
+            currency: 'USD',
+            note: null,
+            createdAt: '2026-06-18T00:00:00Z',
+          }],
+          total: 1,
+          page: 1,
+          pageSize: 20,
+        };
+      }
+      return { items: [], total: 0, page: 1, pageSize: 20 };
+    });
+
+    render(<PortfolioPage />);
+    await waitForInitialLoad();
+
+    const accountSelect = screen.getAllByRole('combobox')[0];
+    fireEvent.change(accountSelect, { target: { value: '1' } });
+    expect(await screen.findByText(/TRADE_A/)).toBeInTheDocument();
+
+    // Switch to account B: events fetch fails with 503 before snapshot resolves.
+    fireEvent.change(accountSelect, { target: { value: '2' } });
+    expect(await screen.findByText('流水加载失败')).toBeInTheDocument();
+    expect(screen.getByText('Events ledger 503')).toBeInTheDocument();
+
+    // Now account B's snapshot succeeds (clearing global error).
+    await act(async () => {
+      pendingSnapshotB.resolve(makeSnapshot({
+        accountId: 2,
+        fxStale: false,
+        positions: [makePosition({ symbol: 'POS_B', market: 'us' })],
+      }));
+      await pendingSnapshotB.promise;
+    });
+
+    expect(await screen.findByText('POS_B')).toBeInTheDocument();
+    expect(screen.getByText('流水加载失败')).toBeInTheDocument();
+    expect(screen.getByText('Events ledger 503')).toBeInTheDocument();
+    expect(screen.queryByText('暂无流水')).not.toBeInTheDocument();
+    expect(screen.queryByText(/TRADE_A/)).not.toBeInTheDocument();
+
+    // Refreshing events clears the error and shows account B's real ledger rows.
+    fireEvent.click(screen.getByRole('button', { name: '刷新流水' }));
+    expect(await screen.findByText(/TRADE_B/)).toBeInTheDocument();
+    expect(screen.queryByText('流水加载失败')).not.toBeInTheDocument();
+    expect(screen.queryByText('暂无流水')).not.toBeInTheDocument();
+  });
 });
