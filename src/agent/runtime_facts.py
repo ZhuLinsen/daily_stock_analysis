@@ -250,10 +250,14 @@ def _is_risk_agent(agent_name: str) -> bool:
 
 
 def _safe_confidence(confidence: Any) -> float:
+    if isinstance(confidence, bool):
+        return 0.0
     try:
         value = float(confidence)
-    except (TypeError, ValueError):
-        value = 0.0
+    except (OverflowError, TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(value):
+        return 0.0
     return round(max(0.0, min(1.0, value)), 2)
 
 

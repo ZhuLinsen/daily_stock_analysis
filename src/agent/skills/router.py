@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 from typing import List, Optional
 
+from src.agent.agents.base_agent import coerce_finite_float
 from src.agent.protocols import AgentContext
 from src.agent.skills.defaults import (
     get_default_router_skill_ids,
@@ -79,10 +80,8 @@ class SkillRouter:
             raw = op.raw_data or {}
 
             ma_alignment = str(raw.get("ma_alignment", "")).lower()
-            try:
-                trend_score = float(raw.get("trend_score", 50))
-            except (TypeError, ValueError):
-                trend_score = 50.0
+            parsed_score = coerce_finite_float(raw.get("trend_score"))
+            trend_score = parsed_score if (parsed_score is not None and 0.0 <= parsed_score <= 100.0) else 50.0
             volume_status = str(raw.get("volume_status", "")).lower()
 
             if ma_alignment == "bullish" and trend_score >= 70:

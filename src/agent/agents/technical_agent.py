@@ -13,7 +13,12 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from src.agent.agents.base_agent import BaseAgent
+from src.agent.agents.base_agent import (
+    BaseAgent,
+    coerce_confidence,
+    coerce_key_levels,
+    coerce_text,
+)
 from src.agent.protocols import AgentContext, AgentOpinion
 from src.agent.runner import try_parse_json
 
@@ -74,7 +79,7 @@ Return **only** a JSON object (no markdown fences):
   "volume_status": "heavy|normal|light",
   "pattern": "<detected pattern or none>"
 }}
-"""
+{self._format_json_output_language_instruction(ctx, enum_fields="signal, ma_alignment, volume_status")}"""
 
     def build_user_message(self, ctx: AgentContext) -> str:
         parts = [f"Perform technical analysis on stock **{ctx.stock_code}**"]
@@ -90,15 +95,23 @@ Return **only** a JSON object (no markdown fences):
             logger.warning("[TechnicalAgent] failed to parse opinion JSON")
             return None
 
-        return AgentOpinion(
+        signal = coerce_text(parsed.get("signal"), default="hold", fallback_on_empty=True)
+        confidence, conf_valid = coerce_confidence(
+            parsed.get("confidence"),
+            default=0.5,
+            present=("confidence" in parsed),
+        )
+        reasoning = coerce_text(parsed.get("reasoning"), default="")
+        key_levels = coerce_key_levels(parsed.get("key_levels"))
+        opinion = AgentOpinion(
             agent_name=self.agent_name,
-            signal=parsed.get("signal", "hold"),
-            confidence=float(parsed.get("confidence", 0.5)),
-            reasoning=parsed.get("reasoning", ""),
-            key_levels={
-                k: float(v) for k, v in parsed.get("key_levels", {}).items()
-                if isinstance(v, (int, float))
-            },
+            signal=signal,
+            confidence=confidence,
+            reasoning=reasoning,
+            key_levels=key_levels,
             raw_data=parsed,
         )
+        if not conf_valid:
+            opinion._confidence_input_valid = False
+        return opinion
 

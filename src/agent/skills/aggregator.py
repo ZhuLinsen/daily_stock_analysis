@@ -10,6 +10,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from src.agent.agents.base_agent import coerce_finite_float
 from src.agent.protocols import AgentContext, AgentOpinion, StrategyConflict, StrategyOpinion
 from src.agent.skills.defaults import (
     SKILL_CONSENSUS_AGENT_NAME,
@@ -54,6 +55,7 @@ class AggregationData:
     final_signal: str = "hold"
     individual_signals: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     total_adjustment: float = 0.0
+    all_confidence_valid: bool = True
 
 
 class SkillAggregator:
@@ -71,7 +73,11 @@ class SkillAggregator:
         if aggregation is None:
             return None
 
-        invalid_count = sum(1 for opinion in aggregation.strategy_opinions if opinion.invalid_signal)
+        invalid_count = sum(
+            1
+            for opinion in aggregation.strategy_opinions
+            if opinion.invalid_signal or not opinion.confidence_input_valid
+        )
         synthesis = StrategySynthesizer().synthesize(
             aggregation.strategy_opinions,
             weighted_score=aggregation.weighted_score,
@@ -113,7 +119,7 @@ class SkillAggregator:
         valid_opinions_with_weights = [
             (op, strategy, weight)
             for op, strategy, weight in zip(skill_opinions, strategy_opinions, weights)
-            if not strategy.invalid_signal
+            if not strategy.invalid_signal and op.confidence_input_valid
         ]
         valid_weight_sum = sum(weight for _, _, weight in valid_opinions_with_weights)
         insufficient_evidence = (
@@ -131,10 +137,12 @@ class SkillAggregator:
         else:
             weighted_score = 3.0
             weighted_confidence = 0.0
+        all_confidence_valid = bool(valid_opinions_with_weights) and all(
+            op.confidence_input_valid for op, _, _ in valid_opinions_with_weights
+        )
         total_adjustment = sum(
-            op.raw_data.get("score_adjustment", 0)
-            for op, strategy, weight in valid_opinions_with_weights
-            if isinstance(op.raw_data.get("score_adjustment"), (int, float))
+            strategy.score_adjustment
+            for _, strategy, _ in valid_opinions_with_weights
         )
 
         if insufficient_evidence:
@@ -168,6 +176,7 @@ class SkillAggregator:
             final_signal=final_signal,
             individual_signals=individual_signals,
             total_adjustment=total_adjustment,
+            all_confidence_valid=all_confidence_valid,
         )
 
     @staticmethod
@@ -184,7 +193,7 @@ class SkillAggregator:
             name = extract_skill_id(opinion.agent_name) or opinion.agent_name
             reasoning_parts.append(f"  - {name}: {opinion.signal} ({opinion.confidence:.0%}) weight={weight:.2f}")
 
-        return AgentOpinion(
+        consensus = AgentOpinion(
             agent_name=SKILL_CONSENSUS_AGENT_NAME,
             signal=aggregation.final_signal,
             confidence=synthesis["confidence"],
@@ -201,6 +210,9 @@ class SkillAggregator:
                 "consensus_level": synthesis["consensus_level"],
             },
         )
+        if not aggregation.all_confidence_valid or aggregation.insufficient_evidence:
+            consensus._confidence_input_valid = False
+        return consensus
 
     def _compute_weight(
         self,
@@ -209,6 +221,8 @@ class SkillAggregator:
         perf_weight: Optional[float] = None,
     ) -> float:
         del min_samples  # Retained for compatibility with existing callers.
+        if not opinion.confidence_input_valid:
+            return 0.0
         base_weight = opinion.confidence
         if (
             isinstance(perf_weight, (int, float))

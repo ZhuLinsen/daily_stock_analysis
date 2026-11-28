@@ -371,10 +371,13 @@ def normalize_signal_attribution_values(signal_attr: Optional[Dict[str, Any]]) -
             - float in [0, 100] if valid
             - None if unparsable / N/A / empty
         """
-        if raw is None:
+        if raw is None or isinstance(raw, bool):
             return None
         if isinstance(raw, (int, float)):
-            val = float(raw)
+            try:
+                val = float(raw)
+            except (OverflowError, TypeError, ValueError):
+                return None
             if not math.isfinite(val):
                 return None
             # Clamp to [0, 100] — values outside this range are invalid
@@ -390,7 +393,7 @@ def normalize_signal_attribution_values(signal_attr: Optional[Dict[str, Any]]) -
                     return None
                 # Clamp to [0, 100]
                 return max(0.0, min(100.0, val))
-            except ValueError:
+            except (OverflowError, ValueError):
                 return None
         return None
 

@@ -14,7 +14,7 @@ import json
 import logging
 from typing import List, Optional
 
-from src.agent.agents.base_agent import BaseAgent
+from src.agent.agents.base_agent import BaseAgent, coerce_confidence, coerce_text
 from src.agent.disagreement import opinion_evidence_id
 from src.agent.protocols import AgentContext, AgentOpinion, StageStatus, normalize_decision_signal
 from src.report_language import normalize_report_language
@@ -60,6 +60,11 @@ Requirements:
         if self.skill_instructions:
             skills = f"\n## Active Trading Skills\n\n{self.skill_instructions}\n"
 
+        conf_cap_label = (
+            "High"
+            if report_language == "en"
+            else ("High/높음" if report_language == "ko" else "High/高")
+        )
         prompt = f"""\
 You are a **Decision Synthesis Agent** that produces the final investment \
 Decision Dashboard.
@@ -118,7 +123,7 @@ keys: ``phase_context``, ``action_window``, ``immediate_action``,
 current action, watch conditions, and next check point. For pre-market,
 non-trading, or unknown phases, do not invent today's intraday movement. If
 quote, daily bars, or technical data is stale, fallback, missing, fetch_failed,
-partial, or estimated, ``confidence_level`` must not be High/高 and the
+partial, or estimated, ``confidence_level`` must not be {conf_cap_label} and the
 limitation must be reflected in ``confidence_reason`` or ``data_limitations``.
 
 The nested ``dashboard`` object should include optional ``signal_attribution`` when
@@ -198,28 +203,65 @@ should sum to 100; all-zero means no effective signal and must not be faked.
 
         invalid_opinions = ctx.meta.get("invalid_opinions") or []
         if invalid_opinions:
-            reason_labels = {
-                "skill_timeout": "执行超时",
-                "skill_error": "执行异常或未产出结构化观点",
-                "missing_signal": "signal 缺失",
-                "unrecognized_signal": "signal 无法识别",
-            }
+            report_language = normalize_report_language(ctx.meta.get("report_language", "zh"))
             reason_counts = {}
             for item in invalid_opinions:
                 if not isinstance(item, dict):
                     continue
                 reason = str(item.get("reason") or "unrecognized_signal")
                 reason_counts[reason] = reason_counts.get(reason, 0) + 1
-            reason_summary = "、".join(
-                f"{reason_labels.get(reason, reason)} {count} 个"
-                for reason, count in reason_counts.items()
-            )
             parts.append("## Invalid Skill Opinions (Diagnostics only — not in evidence chain)")
-            parts.append(
-                f"共 {len(invalid_opinions)} 个 skill 观点未进入证据链"
-                f"（{reason_summary or '原因未分类'}）；"
-                f"仅供你在 data_limitations 中标注，不得作为决策依据。"
-            )
+            if report_language == "en":
+                reason_labels = {
+                    "skill_timeout": "timed out",
+                    "skill_error": "execution error or no structured opinion",
+                    "missing_signal": "missing signal",
+                    "unrecognized_signal": "unrecognized signal",
+                    "invalid_confidence": "invalid confidence",
+                }
+                reason_summary = ", ".join(
+                    f"{count} {reason_labels.get(reason, reason)}"
+                    for reason, count in reason_counts.items()
+                )
+                parts.append(
+                    f"{len(invalid_opinions)} skill opinion(s) were excluded from the evidence chain "
+                    f"({reason_summary or 'unclassified'}); "
+                    "note them in data_limitations only and do not use them as decision evidence."
+                )
+            elif report_language == "ko":
+                reason_labels = {
+                    "skill_timeout": "실행 시간 초과",
+                    "skill_error": "실행 오류 또는 구조화된 의견 미생성",
+                    "missing_signal": "signal 누락",
+                    "unrecognized_signal": "인식할 수 없는 signal",
+                    "invalid_confidence": "유효하지 않은 신뢰도",
+                }
+                reason_summary = ", ".join(
+                    f"{reason_labels.get(reason, reason)} {count}개"
+                    for reason, count in reason_counts.items()
+                )
+                parts.append(
+                    f"총 {len(invalid_opinions)}개의 스킬 의견이 근거 체인에서 제외되었습니다"
+                    f"({reason_summary or '미분류 원인'}); "
+                    "data_limitations에만 참고로 표기하고 의사결정 근거로 사용하지 마세요."
+                )
+            else:
+                reason_labels = {
+                    "skill_timeout": "执行超时",
+                    "skill_error": "执行异常或未产出结构化观点",
+                    "missing_signal": "signal 缺失",
+                    "unrecognized_signal": "signal 无法识别",
+                    "invalid_confidence": "置信度无效",
+                }
+                reason_summary = "、".join(
+                    f"{reason_labels.get(reason, reason)} {count} 个"
+                    for reason, count in reason_counts.items()
+                )
+                parts.append(
+                    f"共 {len(invalid_opinions)} 个 skill 观点未进入证据链"
+                    f"（{reason_summary or '原因未分类'}）；"
+                    f"仅供你在 data_limitations 中标注，不得作为决策依据。"
+                )
             parts.append("")
 
         # Feed risk flags
@@ -274,7 +316,7 @@ should sum to 100; all-zero means no effective signal and must not be faked.
     def post_process(self, ctx: AgentContext, raw_text: str) -> Optional[AgentOpinion]:
         """Store the parsed dashboard in ctx.meta; also return an opinion."""
         if self._is_chat_mode(ctx):
-            text = (raw_text or "").strip()
+            text = raw_text.strip() if isinstance(raw_text, str) else ""
             if not text:
                 return None
 
@@ -296,18 +338,23 @@ should sum to 100; all-zero means no effective signal and must not be faked.
                 dashboard.get("decision_type", "hold")
             )
             ctx.set_data("final_dashboard", dashboard)
-            try:
-                _raw_score = dashboard.get("sentiment_score", 50) or 50
-                _score = float(_raw_score)
-            except (TypeError, ValueError):
-                _score = 50.0
-            return AgentOpinion(
+            raw_score = dashboard.get("sentiment_score")
+            confidence, conf_valid = coerce_confidence(
+                raw_score,
+                default=0.5,
+                scale=100.0,
+                present=("sentiment_score" in dashboard),
+            )
+            opinion = AgentOpinion(
                 agent_name=self.agent_name,
                 signal=dashboard.get("decision_type", "hold"),
-                confidence=min(1.0, _score / 100.0),
-                reasoning=dashboard.get("analysis_summary", ""),
+                confidence=confidence,
+                reasoning=coerce_text(dashboard.get("analysis_summary"), default=""),
                 raw_data=dashboard,
             )
+            if not conf_valid:
+                opinion._confidence_input_valid = False
+            return opinion
         else:
             # Even if JSON parsing fails, store the raw text for downstream use
             ctx.set_data("final_dashboard_raw", raw_text)

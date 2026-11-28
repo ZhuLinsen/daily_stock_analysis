@@ -13,6 +13,8 @@ A股自选股智能分析系统 - 核心分析流水线
 
 import logging
 import inspect
+import math
+import re
 import threading
 import time
 from pathlib import Path
@@ -55,6 +57,7 @@ from src.analysis_context_pack_prompt import format_analysis_context_pack_prompt
 from src.analysis_context_pack_overview import render_analysis_context_pack_overview
 from src.market_phase_summary import MARKET_PHASE_SUMMARY_KEY, render_market_phase_summary
 from src.daily_market_context_guardrail import apply_daily_market_context_guardrail
+from src.agent.agents.base_agent import coerce_finite_float
 from src.agent.final_explanation import (
     PipelineActionAdjustment,
     build_pipeline_final_explanation,
@@ -2570,13 +2573,18 @@ class StockAnalysisPipeline:
                 "sentiment_score",
                 scalar=True,
             )
-            if self._is_agent_field_missing(raw_score, scalar=True):
+            parsed_score = (
+                None
+                if self._is_agent_field_missing(raw_score, scalar=True)
+                else self._parse_sentiment_score(raw_score)
+            )
+            if parsed_score is None:
                 fallback_score = self._trend_score_fallback(trend_result)
                 if fallback_score is not None:
                     result.sentiment_score = fallback_score
                     self._mark_trend_fallback_source(result)
             else:
-                result.sentiment_score = self._safe_int(raw_score, 50)
+                result.sentiment_score = parsed_score
 
             raw_trend = self._agent_dashboard_value(
                 dash,
@@ -2785,11 +2793,23 @@ class StockAnalysisPipeline:
     def _is_agent_placeholder_text(text: str) -> bool:
         if not text:
             return True
-        return text.lower() in {"n/a", "na", "none", "null", "unknown", "tbd"} or text in {
+        return text.lower() in {
+            "n/a",
+            "na",
+            "none",
+            "null",
+            "unknown",
+            "tbd",
+            "data unavailable",
+        } or text in {
             "未知",
             "待补充",
             "数据缺失",
             "无",
+            "미정",
+            "알 수 없음",
+            "데이터 없음",
+            "없음",
         }
 
     @staticmethod
@@ -2804,7 +2824,7 @@ class StockAnalysisPipeline:
             if not allow_dict or not value:
                 return True
             return not StockAnalysisPipeline._extract_advice_text_from_dict(value)
-        if value is None:
+        if value is None or (scalar and isinstance(value, bool)):
             return True
         if expect_text and scalar:
             if not isinstance(value, str):
@@ -2952,7 +2972,7 @@ class StockAnalysisPipeline:
         ):
             current = dashboard.get(key)
             if key == "sentiment_score":
-                if self._is_agent_field_missing(current, scalar=True):
+                if self._is_agent_field_missing(current, scalar=True) or self._parse_sentiment_score(current) is None:
                     dashboard[key] = getattr(result, key)
             elif self._is_agent_field_missing(current, scalar=True, expect_text=True):
                 dashboard[key] = getattr(result, key)
@@ -2994,10 +3014,42 @@ class StockAnalysisPipeline:
                 sniper_points = {}
                 battle["sniper_points"] = sniper_points
             if self._is_agent_field_missing(sniper_points.get("stop_loss"), scalar=True):
-                sniper_points["stop_loss"] = self._stop_loss_fallback_from_trend(
+                fallback_stop_loss = self._stop_loss_fallback_from_trend(
                     trend_result,
                     report_language,
                 )
+                sniper_points["stop_loss"] = fallback_stop_loss
+                if not self._is_agent_field_missing(fallback_stop_loss, scalar=True):
+                    position_strategy = battle.get("position_strategy")
+                    if isinstance(position_strategy, dict):
+                        risk_ctrl = position_strategy.get("risk_control")
+                        if isinstance(risk_ctrl, str):
+                            updated_risk_ctrl = self._replace_placeholder_stop_loss_risk_control(
+                                risk_ctrl,
+                                fallback_stop_loss,
+                            )
+                            if updated_risk_ctrl is not None:
+                                position_strategy["risk_control"] = updated_risk_ctrl
+
+    @staticmethod
+    def _replace_placeholder_stop_loss_risk_control(
+        risk_ctrl: str,
+        stop_loss: Any,
+    ) -> Optional[str]:
+        """Update orchestrator-generated placeholder risk_control text when stop_loss backfills."""
+        stripped = risk_ctrl.strip()
+        prefix_placeholder_pairs = (
+            ("止损参考：", "待补充"),
+            ("止损参考 ", "待补充"),
+            ("Stop-loss reference: ", "TBD"),
+            ("Stop-loss reference ", "TBD"),
+            ("손절 참고: ", "미정"),
+            ("손절 참고 ", "미정"),
+        )
+        for prefix, placeholder in prefix_placeholder_pairs:
+            if stripped == f"{prefix}{placeholder}":
+                return f"{prefix}{stop_loss}"
+        return None
 
     @staticmethod
     def _stop_loss_fallback_from_trend(
@@ -3072,21 +3124,72 @@ class StockAnalysisPipeline:
             return True
         return False
 
+    _SQLITE_INT64_MIN = -(1 << 63)
+    _SQLITE_INT64_MAX = (1 << 63) - 1
+    _SAFE_INT_STR_RE = re.compile(
+        r"^\s*([+-]?\d+(?:\.\d+)?)\s*(?:分|%|点|점|pts?|points?|/100)?\s*$",
+        re.IGNORECASE,
+    )
+
+    @staticmethod
+    def _parse_safe_int(value: Any) -> Optional[int]:
+        """Parse finite int/numeric-with-unit values within SQLite int64 bounds."""
+        if value is None or isinstance(value, bool):
+            return None
+        if isinstance(value, int):
+            return (
+                value
+                if StockAnalysisPipeline._SQLITE_INT64_MIN <= value <= StockAnalysisPipeline._SQLITE_INT64_MAX
+                else None
+            )
+        if isinstance(value, float):
+            if not math.isfinite(value) or abs(value) > 1e19:
+                return None
+            parsed = int(value)
+            return (
+                parsed
+                if StockAnalysisPipeline._SQLITE_INT64_MIN <= parsed <= StockAnalysisPipeline._SQLITE_INT64_MAX
+                else None
+            )
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return None
+            try:
+                num = float(text)
+            except OverflowError:
+                return None
+            except ValueError:
+                match = StockAnalysisPipeline._SAFE_INT_STR_RE.match(text)
+                if not match:
+                    return None
+                try:
+                    num = float(match.group(1))
+                except (OverflowError, ValueError):
+                    return None
+            if not math.isfinite(num) or abs(num) > 1e19:
+                return None
+            parsed = int(num)
+            return (
+                parsed
+                if StockAnalysisPipeline._SQLITE_INT64_MIN <= parsed <= StockAnalysisPipeline._SQLITE_INT64_MAX
+                else None
+            )
+        return None
+
+    @staticmethod
+    def _parse_sentiment_score(value: Any) -> Optional[int]:
+        """Parse a valid report sentiment score within the 0-100 schema range."""
+        parsed = StockAnalysisPipeline._parse_safe_int(value)
+        if parsed is None or not (0 <= parsed <= 100):
+            return None
+        return parsed
+
     @staticmethod
     def _safe_int(value: Any, default: int = 50) -> int:
         """安全地将值转换为整数。"""
-        if value is None:
-            return default
-        if isinstance(value, int):
-            return value
-        if isinstance(value, float):
-            return int(value)
-        if isinstance(value, str):
-            import re
-            match = re.search(r'-?\d+', value)
-            if match:
-                return int(match.group())
-        return default
+        parsed = StockAnalysisPipeline._parse_safe_int(value)
+        return default if parsed is None else parsed
     
     def _describe_volume_ratio(self, volume_ratio: float) -> str:
         """

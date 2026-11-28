@@ -239,14 +239,24 @@ class AgentOpinion:
     def __post_init__(self) -> None:
         """Clamp confidence while retaining whether its input was sample-safe."""
         raw_confidence = self.confidence
-        confidence = float(raw_confidence)
+        if isinstance(raw_confidence, bool):
+            self._confidence_input_valid = False
+            self.confidence = 0.0
+            return
+        try:
+            confidence = float(raw_confidence)
+        except (OverflowError, TypeError, ValueError):
+            self._confidence_input_valid = False
+            self.confidence = 0.0
+            return
+
+        is_finite = math.isfinite(confidence)
         self._confidence_input_valid = (
-            not isinstance(raw_confidence, bool)
-            and isinstance(raw_confidence, (int, float))
-            and math.isfinite(confidence)
+            isinstance(raw_confidence, (int, float))
+            and is_finite
             and 0.0 <= confidence <= 1.0
         )
-        self.confidence = max(0.0, min(1.0, confidence))
+        self.confidence = max(0.0, min(1.0, confidence)) if is_finite else 0.0
 
     @property
     def confidence_input_valid(self) -> bool:
@@ -280,7 +290,29 @@ class StrategyOpinion:
     invalid_signal: bool = False
 
     def __post_init__(self) -> None:
-        self.confidence = max(0.0, min(1.0, float(self.confidence)))
+        raw_confidence = self.confidence
+        if isinstance(raw_confidence, bool):
+            self._confidence_input_valid = False
+            self.confidence = 0.0
+            return
+        try:
+            confidence = float(raw_confidence)
+        except (OverflowError, TypeError, ValueError):
+            self._confidence_input_valid = False
+            self.confidence = 0.0
+            return
+        is_finite = math.isfinite(confidence)
+        self._confidence_input_valid = (
+            isinstance(raw_confidence, (int, float))
+            and is_finite
+            and 0.0 <= confidence <= 1.0
+        )
+        self.confidence = max(0.0, min(1.0, confidence)) if is_finite else 0.0
+
+    @property
+    def confidence_input_valid(self) -> bool:
+        """Whether confidence was originally a finite numeric value in [0, 1]."""
+        return bool(getattr(self, "_confidence_input_valid", False))
 
 
 @dataclass

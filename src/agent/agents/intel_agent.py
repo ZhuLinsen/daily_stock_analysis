@@ -14,10 +14,16 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from src.agent.agents.base_agent import BaseAgent
+from src.agent.agents.base_agent import (
+    BaseAgent,
+    coerce_confidence,
+    coerce_str_list,
+    coerce_text,
+)
 from src.agent.tools.fxmacrodata_tools import fxmacrodata_tool_names
 from src.agent.protocols import AgentContext, AgentOpinion
 from src.agent.runner import try_parse_json
+from src.report_language import normalize_report_language
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +39,13 @@ class IntelAgent(BaseAgent):
     ] + fxmacrodata_tool_names()
 
     def system_prompt(self, ctx: AgentContext) -> str:
-        return """\
+        lang = normalize_report_language(ctx.meta.get("report_language", "zh"))
+        lang_section = self._format_json_output_language_instruction(
+            ctx,
+            enum_fields="signal, sentiment_label, capital_flow_signal, key_news[].impact",
+        )
+        if lang == "zh":
+            body = """\
 You are an **Intelligence & Sentiment Agent** specialising in A-shares, \
 HK, and US equities.
 
@@ -62,7 +74,39 @@ capital inflow/outflow data and include it in your analysis
 - main_net_inflow > 0: bullish signal (主力净流入)
 - main_net_inflow < 0: bearish signal (主力净流出)
 - inflow_5d / inflow_10d: medium-term accumulation or distribution trend
+"""
+        else:
+            body = """\
+You are an **Intelligence & Sentiment Agent** specialising in A-shares, \
+HK, and US equities.
 
+Your task: gather the latest news, announcements, and risk signals for \
+the given stock, then produce a structured JSON opinion.
+
+## Workflow
+1. Search latest stock news (earnings, announcements, insider activity)
+2. Run comprehensive intel search — this covers latest news, company \
+announcements, market analysis, risk checks, and earnings outlook
+3. For A-share stocks, call get_capital_flow to obtain main-force \
+capital inflow/outflow data and include it in your analysis
+4. Classify positive catalysts and risk alerts
+5. Assess overall sentiment
+
+## Risk Detection Priorities
+- Insider / major shareholder sell-downs
+- Earnings warnings or pre-loss announcements
+- Regulatory penalties or investigations
+- Industry-wide policy headwinds
+- Large lock-up expirations
+- PE valuation anomalies
+- Sustained main-force capital outflow
+
+## Capital Flow Interpretation (A-shares only)
+- main_net_inflow > 0: bullish signal (net main-force inflow)
+- main_net_inflow < 0: bearish signal (net main-force outflow)
+- inflow_5d / inflow_10d: medium-term accumulation or distribution trend
+"""
+        return body + """
 ## Output Format
 Return **only** a JSON object:
 {
@@ -77,20 +121,31 @@ Return **only** a JSON object:
     {"title": "...", "impact": "positive|negative|neutral"}
   ]
 }
-"""
+""" + lang_section
 
     def build_user_message(self, ctx: AgentContext) -> str:
+        lang = normalize_report_language(ctx.meta.get("report_language", "zh"))
         parts = [f"Gather intelligence and assess sentiment for stock **{ctx.stock_code}**"]
         if ctx.stock_name:
             parts[0] += f" ({ctx.stock_name})"
-        parts.append(
-            "Steps:\n"
-            "1. Call search_comprehensive_intel to get latest news, company announcements "
-            "(公司公告), risk events, and earnings outlook.\n"
-            "2. Call get_capital_flow to obtain main-force (主力) capital flow data "
-            "(A-share only; skip for HK/US).\n"
-            "3. Output the JSON opinion including capital_flow_signal."
-        )
+        if lang == "zh":
+            parts.append(
+                "Steps:\n"
+                "1. Call search_comprehensive_intel to get latest news, company announcements "
+                "(公司公告), risk events, and earnings outlook.\n"
+                "2. Call get_capital_flow to obtain main-force (主力) capital flow data "
+                "(A-share only; skip for HK/US).\n"
+                "3. Output the JSON opinion including capital_flow_signal."
+            )
+        else:
+            parts.append(
+                "Steps:\n"
+                "1. Call search_comprehensive_intel to get latest news, company announcements, "
+                "risk events, and earnings outlook.\n"
+                "2. Call get_capital_flow to obtain main-force capital flow data "
+                "(A-share only; skip for HK/US).\n"
+                "3. Output the JSON opinion including capital_flow_signal."
+            )
         return "\n".join(parts)
 
     def post_process(self, ctx: AgentContext, raw_text: str) -> Optional[AgentOpinion]:
@@ -104,16 +159,25 @@ Return **only** a JSON object:
         ctx.set_data("intel_opinion", parsed)
 
         # Propagate risk alerts to context
-        for alert in parsed.get("risk_alerts", []):
-            if isinstance(alert, str) and alert:
-                ctx.add_risk_flag(category="intel", description=alert)
+        for alert in coerce_str_list(parsed.get("risk_alerts")):
+            ctx.add_risk_flag(category="intel", description=alert)
 
-        return AgentOpinion(
+        signal = coerce_text(parsed.get("signal"), default="hold", fallback_on_empty=True)
+        confidence, conf_valid = coerce_confidence(
+            parsed.get("confidence"),
+            default=0.5,
+            present=("confidence" in parsed),
+        )
+        reasoning = coerce_text(parsed.get("reasoning"), default="")
+        opinion = AgentOpinion(
             agent_name=self.agent_name,
-            signal=parsed.get("signal", "hold"),
-            confidence=float(parsed.get("confidence", 0.5)),
-            reasoning=parsed.get("reasoning", ""),
+            signal=signal,
+            confidence=confidence,
+            reasoning=reasoning,
             raw_data=parsed,
         )
+        if not conf_valid:
+            opinion._confidence_input_valid = False
+        return opinion
 
 

@@ -14,10 +14,11 @@ import logging
 import math
 from typing import Optional
 
-from src.agent.agents.base_agent import BaseAgent
+from src.agent.agents.base_agent import BaseAgent, coerce_text
 from src.agent.protocols import AgentContext, AgentOpinion
 from src.agent.runner import try_parse_json
 from src.agent.skills.defaults import build_skill_agent_name
+from src.report_language import localize_strategy_skill, normalize_report_language
 
 logger = logging.getLogger(__name__)
 
@@ -54,12 +55,17 @@ class SkillAgent(BaseAgent):
         return None
 
     def system_prompt(self, ctx: AgentContext) -> str:
+        lang = normalize_report_language(ctx.meta.get("report_language", "zh"))
         if self._skill:
             instructions = self._skill.instructions or self._skill.description
-            display = self._skill.display_name
+            display = (
+                self._skill.display_name
+                if lang == "zh"
+                else localize_strategy_skill(self.skill_id, lang)
+            )
         else:
             instructions = f"Evaluate the '{self.skill_id}' skill."
-            display = self.skill_id
+            display = self.skill_id if lang == "zh" else localize_strategy_skill(self.skill_id, lang)
 
         return f"""\
 You are a **Skill Evaluation Agent** applying the **{display}** skill.
@@ -82,7 +88,7 @@ Return **only** a JSON object:
   "score_adjustment": -20 to +20,
   "reasoning": "2-3 sentence skill evaluation"
 }}
-"""
+{self._format_json_output_language_instruction(ctx, enum_fields="skill_id, signal")}"""
 
     def build_user_message(self, ctx: AgentContext) -> str:
         parts = [
@@ -124,7 +130,7 @@ Return **only** a JSON object:
             agent_name=self.agent_name,
             signal=parsed.get("signal"),  # None if missing — no silent default
             confidence=confidence_value,
-            reasoning=parsed.get("reasoning", ""),
+            reasoning=coerce_text(parsed.get("reasoning"), default=""),
             raw_data=parsed,
         )
 

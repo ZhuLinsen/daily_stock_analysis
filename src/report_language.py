@@ -318,6 +318,33 @@ _BIAS_STATUS_TRANSLATIONS = {
     "danger": {"zh": "危险", "en": "Danger", "ko": "위험"},
 }
 
+_VOLUME_STATUS_CANONICAL_MAP = {
+    "放量上涨": "heavy_volume_up",
+    "heavy volume up": "heavy_volume_up",
+    "放量下跌": "heavy_volume_down",
+    "heavy volume down": "heavy_volume_down",
+    "缩量上涨": "shrink_volume_up",
+    "light volume up": "shrink_volume_up",
+    "缩量回调": "shrink_volume_pullback",
+    "light volume pullback": "shrink_volume_pullback",
+    "量能正常": "normal_volume",
+    "normal volume": "normal_volume",
+}
+
+_VOLUME_STATUS_TRANSLATIONS = {
+    "heavy_volume_up": {"zh": "放量上涨", "en": "Heavy Volume Up", "ko": "거래량 증가 상승"},
+    "heavy_volume_down": {"zh": "放量下跌", "en": "Heavy Volume Down", "ko": "거래량 증가 하락"},
+    "shrink_volume_up": {"zh": "缩量上涨", "en": "Light Volume Up", "ko": "거래량 감소 상승"},
+    "shrink_volume_pullback": {"zh": "缩量回调", "en": "Light Volume Pullback", "ko": "거래량 감소 조정"},
+    "normal_volume": {"zh": "量能正常", "en": "Normal Volume", "ko": "거래량 보통"},
+}
+
+_TECH_VOLUME_KO_TRANSLATIONS = {
+    "heavy": "거래량 증가",
+    "normal": "거래량 보통",
+    "light": "거래량 감소",
+}
+
 _PLACEHOLDER_BY_LANGUAGE = {
     "zh": "待补充",
     "en": "TBD",
@@ -354,6 +381,10 @@ _CHIP_PLACEHOLDER_EXACT = {
     "未知",
     "暂无",
     "待补充",
+    "미정",
+    "알 수 없음",
+    "데이터 없음",
+    "없음",
 }
 
 _CHIP_PLACEHOLDER_HINTS = (
@@ -834,6 +865,8 @@ def _strip_decision_negation_connectors(text: str) -> str:
 
 def normalize_report_language(value: Optional[str], default: str = "zh") -> str:
     """Normalize report language to a supported short code."""
+    if not isinstance(value, str):
+        return default
     candidate = (value or default).strip().lower().replace(" ", "_")
     candidate = _REPORT_LANGUAGE_ALIASES.get(candidate, candidate)
     if candidate in SUPPORTED_REPORT_LANGUAGES:
@@ -843,7 +876,9 @@ def normalize_report_language(value: Optional[str], default: str = "zh") -> str:
 
 def is_supported_report_language_value(value: Optional[str]) -> bool:
     """Return whether the raw value is a supported language code or alias."""
-    candidate = (value or "").strip().lower().replace(" ", "_")
+    if not isinstance(value, str):
+        return False
+    candidate = value.strip().lower().replace(" ", "_")
     if not candidate:
         return False
     return candidate in SUPPORTED_REPORT_LANGUAGES or candidate in _REPORT_LANGUAGE_ALIASES
@@ -1241,6 +1276,24 @@ def localize_bias_status(value: Any, language: Optional[str]) -> str:
     )
 
 
+def localize_volume_status(value: Any, language: Optional[str]) -> str:
+    """Translate cached VolumeStatus labels (and technical-agent enums for Korean)."""
+    normalized_language = normalize_report_language(language)
+    raw_text = str(value or "").strip()
+    if not raw_text:
+        return raw_text
+    if normalized_language == "ko":
+        ko_tech = _TECH_VOLUME_KO_TRANSLATIONS.get(raw_text.lower())
+        if ko_tech:
+            return ko_tech
+    return _translate_from_map(
+        value,
+        normalized_language,
+        canonical_map=_VOLUME_STATUS_CANONICAL_MAP,
+        translations=_VOLUME_STATUS_TRANSLATIONS,
+    )
+
+
 def get_bias_status_emoji(value: Any) -> str:
     """Return the stable alert emoji for a localized or canonical bias status."""
     canonical = _canonicalize_lookup_value(value, _BIAS_STATUS_CANONICAL_MAP)
@@ -1359,3 +1412,96 @@ def get_sentiment_label(score: int, language: Optional[str]) -> str:
     if score >= 20:
         return "悲观"
     return "极度悲观"
+
+
+_CHAT_FAILURE_TEMPLATES = {
+    "zh": "[分析失败] {detail}",
+    "en": "[Analysis Failed] {detail}",
+    "ko": "[분석 실패] {detail}",
+}
+
+_CHAT_UNKNOWN_ERROR_BY_LANGUAGE = {
+    "zh": "未知错误",
+    "en": "Unknown error",
+    "ko": "알 수 없는 오류",
+}
+
+
+_KO_CHAT_TIMEOUT_RE = re.compile(
+    r"^Pipeline timed out after ([0-9.]+)s \(limit: ([0-9]+)s\)$"
+)
+_KO_CHAT_BUDGET_SKIP_RE = re.compile(
+    r"^Pipeline skipped before stage '([^']+)' due to insufficient budget \(([0-9.]+)s remaining, minimum ([0-9]+)s required\)$"
+)
+_KO_CHAT_STAGE_FAILED_RE = re.compile(r"^Stage '([^']+)' failed: (.*)$")
+_KO_CHAT_AGENT_TIMEOUT_RE = re.compile(
+    r"^Agent execution timed out after ([0-9.]+) seconds$"
+)
+_KO_CHAT_RUNNER_TIMEOUT_RE = re.compile(
+    r"^Agent timed out after ([0-9.]+)s \(limit: ([0-9.]+)s\)$"
+)
+_KO_CHAT_RUNNER_BUDGET_RE = re.compile(
+    r"^Agent step skipped due to insufficient budget: ([0-9.]+)s remaining, minimum ([0-9.]+)s required$"
+)
+_KO_CHAT_RUNNER_MAX_STEPS_RE = re.compile(
+    r"^Agent exceeded max steps \(([0-9]+)\)\. Try increasing AGENT_MAX_STEPS if analysis tasks are complex\.$"
+)
+
+
+def _localize_ko_chat_failure_leaf(detail: str) -> str:
+    """Translate leaf framework-generated error diagnostics to Korean."""
+    match = _KO_CHAT_TIMEOUT_RE.match(detail)
+    if match:
+        elapsed, limit = match.groups()
+        return f"파이프라인 시간 초과 ({elapsed}초 경과, 제한 {limit}초)"
+
+    match = _KO_CHAT_BUDGET_SKIP_RE.match(detail)
+    if match:
+        stage, rem, min_s = match.groups()
+        return f"남은 시간 부족으로 '{stage}' 단계 전에 건너뛰었습니다 (남은 시간 {rem}초, 최소 {min_s}초 필요)"
+
+    match = _KO_CHAT_AGENT_TIMEOUT_RE.match(detail)
+    if match:
+        elapsed = match.group(1)
+        return f"에이전트 실행 시간 초과 ({elapsed}초 경과)"
+
+    match = _KO_CHAT_RUNNER_TIMEOUT_RE.match(detail)
+    if match:
+        elapsed, limit = match.groups()
+        return f"에이전트 시간 초과 ({elapsed}초 경과, 제한 {limit}초)"
+
+    match = _KO_CHAT_RUNNER_BUDGET_RE.match(detail)
+    if match:
+        rem, min_s = match.groups()
+        return f"남은 시간 부족으로 에이전트 단계를 건너뛰었습니다 (남은 시간 {rem}초, 최소 {min_s}초 필요)"
+
+    match = _KO_CHAT_RUNNER_MAX_STEPS_RE.match(detail)
+    if match:
+        max_steps = match.group(1)
+        return f"에이전트 최대 단계 수({max_steps})를 초과했습니다. 분석 작업이 복잡하면 AGENT_MAX_STEPS를 늘려보세요."
+
+    return detail
+
+
+def _localize_chat_failure_detail(detail: str, language: str) -> str:
+    """Translate framework-generated English error diagnostics for Korean chat persistence."""
+    if language != "ko":
+        return detail
+
+    match = _KO_CHAT_STAGE_FAILED_RE.match(detail)
+    if match:
+        stage, reason = match.groups()
+        localized_reason = _localize_ko_chat_failure_leaf(reason)
+        return f"'{stage}' 단계 실행 실패: {localized_reason}"
+
+    return _localize_ko_chat_failure_leaf(detail)
+
+
+def format_chat_failure_message(error: Any, language: Optional[str]) -> str:
+    """Format a localized chat failure fallback message."""
+    normalized = normalize_report_language(language)
+    if not error:
+        detail = _CHAT_UNKNOWN_ERROR_BY_LANGUAGE[normalized]
+    else:
+        detail = _localize_chat_failure_detail(str(error), normalized)
+    return _CHAT_FAILURE_TEMPLATES[normalized].format(detail=detail)

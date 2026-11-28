@@ -9,6 +9,7 @@ when to compute the summary; DecisionAgent owns how to present it to the LLM.
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Iterable
 from typing import Any, Dict, List
 
@@ -131,10 +132,14 @@ def _is_risk_agent(agent_name: str) -> bool:
 
 
 def _safe_confidence(confidence: Any) -> float:
+    if isinstance(confidence, bool):
+        return 0.0
     try:
         value = float(confidence)
-    except (TypeError, ValueError):
-        value = 0.0
+    except (OverflowError, TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(value):
+        return 0.0
     return round(max(0.0, min(1.0, value)), 2)
 
 
@@ -232,7 +237,9 @@ def should_trigger_evidence_debate(
     directional_opinions = [
         (_effective_signal(op.agent_name, op.signal), op)
         for op in ctx.opinions
-        if op.agent_name != "decision" and not _is_risk_agent(op.agent_name)
+        if op.agent_name != "decision"
+        and not _is_risk_agent(op.agent_name)
+        and not (is_skill_agent_name(op.agent_name) and not op.confidence_input_valid)
     ]
     signals = {signal for signal, _ in directional_opinions}
     if signals & _BULLISH_SIGNALS and signals & _BEARISH_SIGNALS:
