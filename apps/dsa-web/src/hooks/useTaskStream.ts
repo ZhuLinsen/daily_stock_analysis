@@ -83,18 +83,35 @@ type ParsedTaskStreamPayload = {
   flowEvent?: RunFlowEvent;
 };
 
-type TaskStreamSubscriber = {
-  callbacksRef: MutableRefObject<TaskStreamCallbacks>;
-  setIsConnected: (value: boolean) => void;
+type TaskStreamRuntimeOptions = {
   autoReconnect: boolean;
   reconnectDelay: number;
+  enabled: boolean;
+};
+
+type TaskStreamSubscriber = {
+  callbacksRef: MutableRefObject<TaskStreamCallbacks>;
+  optionsRef: MutableRefObject<TaskStreamRuntimeOptions>;
+  setIsConnected: (value: boolean) => void;
 };
 
 let sharedEventSource: EventSource | null = null;
 let sharedReconnectTimeout: ReturnType<typeof setTimeout> | null = null;
+let sharedReconnectKind: 'auto' | 'manual' | null = null;
+let sharedReconnectDeadlineMs: number | null = null;
+let preemptedReconnectDeadlineMs: number | null = null;
+let preemptedReconnectConnected = false;
 let sharedConnected = false;
+let sharedConnectAttemptId = 0;
+let isDispatchingConnectError = false;
 let nextSubscriberId = 1;
 const subscribers = new Map<number, TaskStreamSubscriber>();
+
+const getMonotonicNow = (): number => (
+  typeof performance !== 'undefined' && typeof performance.now === 'function'
+    ? performance.now()
+    : Date.now()
+);
 
 // Convert snake_case payloads into camelCase TaskInfo objects.
 const toTaskInfo = (data: Record<string, unknown>): TaskInfo => {
@@ -129,11 +146,20 @@ const toTaskInfo = (data: Record<string, unknown>): TaskInfo => {
 
 const parseEventData = (eventData: string): ParsedTaskStreamPayload | null => {
   try {
-    const data = JSON.parse(eventData);
-    const task = toTaskInfo(data);
-    const flowEvent = data.flow_event
-      ? toCamelCase<RunFlowEvent>(data.flow_event)
-      : undefined;
+    const parsed: unknown = JSON.parse(eventData);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return null;
+    }
+    const record = parsed as Record<string, unknown>;
+    if (typeof record.task_id !== 'string' || !record.task_id.trim()) {
+      return null;
+    }
+    const task = toTaskInfo(record);
+    const rawFlowEvent = record.flow_event;
+    const flowEvent =
+      rawFlowEvent && typeof rawFlowEvent === 'object' && !Array.isArray(rawFlowEvent)
+        ? toCamelCase<RunFlowEvent>(rawFlowEvent as Record<string, unknown>)
+        : undefined;
     return { task, flowEvent };
   } catch (e) {
     console.error('Failed to parse SSE event data:', e);
@@ -143,11 +169,25 @@ const parseEventData = (eventData: string): ParsedTaskStreamPayload | null => {
 
 const notifyConnectionState = (connected: boolean) => {
   sharedConnected = connected;
-  subscribers.forEach((subscriber) => subscriber.setIsConnected(connected));
+  for (const [id, subscriber] of Array.from(subscribers.entries())) {
+    if (subscribers.get(id) !== subscriber) {
+      continue;
+    }
+    subscriber.setIsConnected(connected);
+  }
 };
 
 const forEachSubscriber = (notify: (callbacks: TaskStreamCallbacks) => void) => {
-  subscribers.forEach((subscriber) => notify(subscriber.callbacksRef.current));
+  for (const [id, subscriber] of Array.from(subscribers.entries())) {
+    if (subscribers.get(id) !== subscriber) {
+      continue;
+    }
+    try {
+      notify(subscriber.callbacksRef.current);
+    } catch (error) {
+      console.error('[useTaskStream] Subscriber callback failed:', error);
+    }
+  }
 };
 
 const clearSharedReconnect = () => {
@@ -155,32 +195,97 @@ const clearSharedReconnect = () => {
     clearTimeout(sharedReconnectTimeout);
     sharedReconnectTimeout = null;
   }
+  sharedReconnectKind = null;
+  sharedReconnectDeadlineMs = null;
+  preemptedReconnectDeadlineMs = null;
+  preemptedReconnectConnected = false;
 };
 
 const closeSharedConnection = () => {
   clearSharedReconnect();
   if (sharedEventSource) {
-    sharedEventSource.close();
+    const current = sharedEventSource;
     sharedEventSource = null;
+    current.onerror = null;
+    current.close();
   }
   notifyConnectionState(false);
 };
 
-const scheduleSharedReconnect = () => {
-  if (sharedReconnectTimeout || subscribers.size === 0) {
-    return;
-  }
+const getActiveReconnectDelay = (): number | null => {
   const reconnectDelays = Array.from(subscribers.values())
-    .filter((subscriber) => subscriber.autoReconnect)
-    .map((subscriber) => subscriber.reconnectDelay);
+    .filter((subscriber) => subscriber.optionsRef.current.autoReconnect)
+    .map((subscriber) => Math.max(0, subscriber.optionsRef.current.reconnectDelay));
   if (reconnectDelays.length === 0) {
+    return null;
+  }
+  return Math.min(...reconnectDelays);
+};
+
+const getDeferredReconnectDelay = (): number => {
+  const activeDelay = getActiveReconnectDelay();
+  if (activeDelay !== null) {
+    return activeDelay;
+  }
+  const fallbackDelays = Array.from(subscribers.values())
+    .map((subscriber) => Math.max(0, subscriber.optionsRef.current.reconnectDelay));
+  return fallbackDelays.length > 0 ? Math.min(...fallbackDelays) : 3000;
+};
+
+const scheduleDeferredReconnect = (delay: number) => {
+  if (sharedEventSource || sharedReconnectTimeout || subscribers.size === 0) {
     return;
   }
-  const reconnectDelay = Math.min(...reconnectDelays);
+  const effectiveDelay = Math.max(0, delay);
+  sharedReconnectKind = 'manual';
+  sharedReconnectDeadlineMs = getMonotonicNow() + effectiveDelay;
+  preemptedReconnectDeadlineMs = null;
+  preemptedReconnectConnected = false;
   sharedReconnectTimeout = setTimeout(() => {
     sharedReconnectTimeout = null;
+    sharedReconnectKind = null;
+    sharedReconnectDeadlineMs = null;
+    if (subscribers.size === 0) {
+      return;
+    }
     connectSharedStream();
-  }, reconnectDelay);
+  }, effectiveDelay);
+};
+
+const scheduleSharedReconnect = (disconnectedAt?: number) => {
+  if (sharedEventSource || sharedReconnectTimeout || subscribers.size === 0) {
+    return;
+  }
+  const reconnectDelay = getActiveReconnectDelay();
+  if (reconnectDelay === null) {
+    preemptedReconnectDeadlineMs = null;
+    preemptedReconnectConnected = false;
+    return;
+  }
+  const now = getMonotonicNow();
+  const errorAt = disconnectedAt ?? now;
+  let effectiveDelay = reconnectDelay;
+  if (preemptedReconnectDeadlineMs !== null) {
+    const remaining = preemptedReconnectDeadlineMs - now;
+    const connectedAfterPreempt = preemptedReconnectConnected;
+    const disconnectedBeforeDeadline = errorAt < preemptedReconnectDeadlineMs;
+    preemptedReconnectDeadlineMs = null;
+    preemptedReconnectConnected = false;
+    if (!connectedAfterPreempt || disconnectedBeforeDeadline) {
+      effectiveDelay = remaining > 0 ? Math.min(reconnectDelay, remaining) : 0;
+    }
+  }
+  sharedReconnectKind = 'auto';
+  sharedReconnectDeadlineMs = now + effectiveDelay;
+  sharedReconnectTimeout = setTimeout(() => {
+    sharedReconnectTimeout = null;
+    sharedReconnectKind = null;
+    sharedReconnectDeadlineMs = null;
+    if (subscribers.size === 0 || getActiveReconnectDelay() === null) {
+      return;
+    }
+    connectSharedStream();
+  }, effectiveDelay);
 };
 
 function connectSharedStream() {
@@ -189,20 +294,46 @@ function connectSharedStream() {
   }
 
   if (typeof window.EventSource !== 'function') {
+    preemptedReconnectDeadlineMs = null;
+    preemptedReconnectConnected = false;
     notifyConnectionState(false);
     return;
   }
 
+  sharedConnectAttemptId += 1;
   const url = analysisApi.getTaskStreamUrl();
-  const eventSource = new window.EventSource(url, { withCredentials: true });
+  let eventSource: EventSource;
+  try {
+    eventSource = new window.EventSource(url, { withCredentials: true });
+  } catch {
+    const errorAt = getMonotonicNow();
+    notifyConnectionState(false);
+    isDispatchingConnectError = true;
+    try {
+      forEachSubscriber((callbacks) => callbacks.onError?.(new Event('error')));
+    } finally {
+      isDispatchingConnectError = false;
+    }
+    scheduleSharedReconnect(errorAt);
+    return;
+  }
   sharedEventSource = eventSource;
 
   eventSource.addEventListener('connected', () => {
+    if (sharedEventSource !== eventSource) {
+      return;
+    }
+    if (preemptedReconnectDeadlineMs !== null) {
+      preemptedReconnectConnected = true;
+    }
     notifyConnectionState(true);
     forEachSubscriber((callbacks) => callbacks.onConnected?.());
   });
 
   eventSource.addEventListener('task_created', (e) => {
+    if (sharedEventSource !== eventSource) {
+      return;
+    }
     const payload = parseEventData((e as MessageEvent<string>).data);
     if (payload) {
       forEachSubscriber((callbacks) => callbacks.onTaskCreated?.(payload.task));
@@ -210,6 +341,9 @@ function connectSharedStream() {
   });
 
   eventSource.addEventListener('task_started', (e) => {
+    if (sharedEventSource !== eventSource) {
+      return;
+    }
     const payload = parseEventData((e as MessageEvent<string>).data);
     if (payload) {
       forEachSubscriber((callbacks) => callbacks.onTaskStarted?.(payload.task));
@@ -217,6 +351,9 @@ function connectSharedStream() {
   });
 
   eventSource.addEventListener('task_progress', (e) => {
+    if (sharedEventSource !== eventSource) {
+      return;
+    }
     const payload = parseEventData((e as MessageEvent<string>).data);
     if (payload) {
       forEachSubscriber((callbacks) => {
@@ -229,6 +366,9 @@ function connectSharedStream() {
   });
 
   eventSource.addEventListener('task_completed', (e) => {
+    if (sharedEventSource !== eventSource) {
+      return;
+    }
     const payload = parseEventData((e as MessageEvent<string>).data);
     if (payload) {
       forEachSubscriber((callbacks) => callbacks.onTaskCompleted?.(payload.task));
@@ -236,6 +376,9 @@ function connectSharedStream() {
   });
 
   eventSource.addEventListener('task_failed', (e) => {
+    if (sharedEventSource !== eventSource) {
+      return;
+    }
     const payload = parseEventData((e as MessageEvent<string>).data);
     if (payload) {
       forEachSubscriber((callbacks) => callbacks.onTaskFailed?.(payload.task));
@@ -243,21 +386,36 @@ function connectSharedStream() {
   });
 
   eventSource.addEventListener('heartbeat', () => {
+    if (sharedEventSource !== eventSource) {
+      return;
+    }
     // Optional place to record the latest heartbeat timestamp.
   });
 
   eventSource.onerror = (error) => {
-    notifyConnectionState(false);
-    forEachSubscriber((callbacks) => callbacks.onError?.(error));
-    if (sharedEventSource === eventSource) {
-      eventSource.close();
-      sharedEventSource = null;
+    if (sharedEventSource !== eventSource) {
+      return;
     }
-    scheduleSharedReconnect();
+    const errorAt = getMonotonicNow();
+    sharedEventSource = null;
+    eventSource.onerror = null;
+    eventSource.close();
+    notifyConnectionState(false);
+    try {
+      forEachSubscriber((callbacks) => callbacks.onError?.(error));
+    } finally {
+      scheduleSharedReconnect(errorAt);
+    }
   };
 }
 
 const reconnectSharedStream = () => {
+  if (isDispatchingConnectError) {
+    // Defer reentrant reconnect from a synchronous EventSource constructor failure
+    // so the stack unwinds, sibling subscribers still receive onError, and retries stay scheduled.
+    scheduleDeferredReconnect(getDeferredReconnectDelay());
+    return;
+  }
   closeSharedConnection();
   connectSharedStream();
 };
@@ -283,6 +441,13 @@ export function useTaskStream(options: UseTaskStreamOptions = {}): UseTaskStream
   const [isConnected, setIsConnected] = useState(false);
   const subscriberIdRef = useRef<number | null>(null);
   const connectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mountedRef = useRef(false);
+  const subscriptionTokenRef = useRef(0);
+  const optionsRef = useRef<TaskStreamRuntimeOptions>({
+    autoReconnect,
+    reconnectDelay,
+    enabled,
+  });
 
   // Store callbacks in a ref to avoid reconnecting on every render.
   const callbacksRef = useRef<TaskStreamCallbacks>({
@@ -295,6 +460,14 @@ export function useTaskStream(options: UseTaskStreamOptions = {}): UseTaskStream
     onConnected,
     onError,
   });
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      subscriptionTokenRef.current += 1;
+    };
+  }, []);
 
   // Keep the latest callbacks available to the active SSE handlers.
   useEffect(() => {
@@ -310,8 +483,36 @@ export function useTaskStream(options: UseTaskStreamOptions = {}): UseTaskStream
     };
   });
 
-  // Disconnect and defer the state update to avoid nested renders.
-  const disconnect = useCallback(() => {
+  // Keep reconnect and enabled flags fresh without tearing down the live stream.
+  useEffect(() => {
+    optionsRef.current = {
+      autoReconnect,
+      reconnectDelay,
+      enabled,
+    };
+    if (!enabled || subscriberIdRef.current === null) {
+      return;
+    }
+    if (
+      !autoReconnect
+      && sharedReconnectTimeout
+      && sharedReconnectKind === 'auto'
+      && getActiveReconnectDelay() === null
+    ) {
+      clearSharedReconnect();
+      return;
+    }
+    if (
+      autoReconnect
+      && !sharedEventSource
+      && !sharedReconnectTimeout
+      && !connectTimerRef.current
+    ) {
+      connectSharedStream();
+    }
+  }, [autoReconnect, enabled, reconnectDelay]);
+
+  const detachSubscriber = useCallback(() => {
     if (connectTimerRef.current) {
       window.clearTimeout(connectTimerRef.current);
       connectTimerRef.current = null;
@@ -323,50 +524,93 @@ export function useTaskStream(options: UseTaskStreamOptions = {}): UseTaskStream
     if (subscribers.size === 0) {
       closeSharedConnection();
     }
-    queueMicrotask(() => setIsConnected(false));
   }, []);
 
-  // Reconnect
+  // Disconnect manually.
+  const disconnect = useCallback(() => {
+    subscriptionTokenRef.current += 1;
+    detachSubscriber();
+    if (mountedRef.current) {
+      setIsConnected(false);
+    }
+  }, [detachSubscriber]);
+
+  // Reconnect manually when enabled.
   const reconnect = useCallback(() => {
+    if (!optionsRef.current.enabled) {
+      return;
+    }
+    if (connectTimerRef.current) {
+      window.clearTimeout(connectTimerRef.current);
+      connectTimerRef.current = null;
+    }
+    subscriptionTokenRef.current += 1;
     if (subscriberIdRef.current === null) {
       const subscriberId = nextSubscriberId++;
       subscriberIdRef.current = subscriberId;
       subscribers.set(subscriberId, {
         callbacksRef,
+        optionsRef,
         setIsConnected,
-        autoReconnect,
-        reconnectDelay,
       });
     }
     reconnectSharedStream();
-  }, [autoReconnect, reconnectDelay]);
+  }, []);
 
   // Connect or disconnect when the hook is enabled or disabled.
   useEffect(() => {
-    if (enabled) {
-      const subscriberId = nextSubscriberId++;
-      subscriberIdRef.current = subscriberId;
-      subscribers.set(subscriberId, {
-        callbacksRef,
-        setIsConnected,
-        autoReconnect,
-        reconnectDelay,
+    if (!enabled) {
+      const token = ++subscriptionTokenRef.current;
+      detachSubscriber();
+      queueMicrotask(() => {
+        if (mountedRef.current && token === subscriptionTokenRef.current) {
+          setIsConnected(false);
+        }
       });
-      setIsConnected(sharedConnected);
-      connectTimerRef.current = window.setTimeout(() => {
-        connectTimerRef.current = null;
-        connectSharedStream();
-      }, 0);
       return () => {
-        disconnect();
+        subscriptionTokenRef.current += 1;
+        detachSubscriber();
       };
     }
 
-    disconnect();
+    const token = ++subscriptionTokenRef.current;
+    const subscriberId = nextSubscriberId++;
+    const connectAttemptAtSubscribe = sharedConnectAttemptId;
+    subscriberIdRef.current = subscriberId;
+    subscribers.set(subscriberId, {
+      callbacksRef,
+      optionsRef,
+      setIsConnected,
+    });
+    queueMicrotask(() => {
+      if (mountedRef.current && token === subscriptionTokenRef.current) {
+        setIsConnected(sharedConnected);
+      }
+    });
+    connectTimerRef.current = window.setTimeout(() => {
+      connectTimerRef.current = null;
+      if (subscriberIdRef.current !== subscriberId) {
+        return;
+      }
+      if (sharedReconnectTimeout) {
+        if (sharedConnectAttemptId !== connectAttemptAtSubscribe) {
+          return;
+        }
+        const previousDeadline = sharedReconnectDeadlineMs;
+        clearSharedReconnect();
+        if (previousDeadline !== null) {
+          preemptedReconnectDeadlineMs = previousDeadline;
+          preemptedReconnectConnected = false;
+        }
+      }
+      connectSharedStream();
+    }, 0);
+
     return () => {
-      disconnect();
+      subscriptionTokenRef.current += 1;
+      detachSubscriber();
     };
-  }, [autoReconnect, disconnect, enabled, reconnectDelay]);
+  }, [detachSubscriber, enabled]);
 
   return {
     isConnected,
