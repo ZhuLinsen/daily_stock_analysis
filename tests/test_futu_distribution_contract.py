@@ -77,10 +77,21 @@ def test_futu_sdk_is_collected_and_probed_in_desktop_backends() -> None:
     assert '"${PYTHON_BIN}" -c "import futu"' in macos_script
     assert 'cmd+=("--collect-all" "futu")' in macos_script
     assert "for module in src.services.screening.pipeline futu py_mini_racer" in macos_script
-    assert "orjson" not in macos_script
+    assert '"--exclude-module" "orjson"' in macos_script
+    assert '"--exclude-module" "litellm"' in macos_script
+    assert '"--exclude-module" "openai"' in macos_script
+    assert 'import orjson' not in macos_script
+    assert '  "orjson"\n' not in macos_script
+    macos_probe_line = next(
+        line for line in macos_script.splitlines() if "for module in src.services.screening.pipeline" in line
+    )
+    assert "orjson" not in macos_probe_line
 
     assert 'Test-PythonCode -Python $pythonBin -Code "import futu"' in windows_script
     assert "'--collect-all', 'futu'" in windows_script
+    assert "'--exclude-module', 'orjson'" in windows_script
+    assert "'--exclude-module', 'litellm'" in windows_script
+    assert "'--exclude-module', 'openai'" in windows_script
     probe = re.search(r"foreach \(\$module in @\(([^)]*)\)\)", windows_script)
     assert probe is not None
     probe_modules = set(re.findall(r"'([^']+)'", probe.group(1)))

@@ -148,7 +148,10 @@ $pyInstallerArgs = @(
   '--collect-all', 'py_mini_racer',
   '--collect-all', 'fin_primitives',
   '--collect-all', 'src.services.screening',
-  '--collect-all', 'futu'
+  '--collect-all', 'futu',
+  '--exclude-module', 'litellm',
+  '--exclude-module', 'openai',
+  '--exclude-module', 'orjson'
 )
 $pyInstallerArgs += $hiddenImportArgs
 $pyInstallerArgs += 'main.py'

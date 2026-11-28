@@ -652,6 +652,42 @@ raise SystemExit(main.main(["--doctor", "--json"]))
                 replicate_report["checks"]["config"]["errors"],
             )
 
+            # P1-5: Direct relay VISION_MODEL=Qwen/Qwen-VL + OPENAI_BASE_URL aligns with Vision runtime -> native, no error!
+            relay_vision_cfg = Config(
+                stock_list=["600519"],
+                litellm_model="openai/gpt-4o-mini",
+                vision_model="Qwen/Qwen-VL",
+                openai_api_keys=["sk-relay-vision-1234"],
+                openai_base_url="https://relay.example/v1",
+                llm_model_list=[
+                    {
+                        "model_name": "openai/gpt-4o-mini",
+                        "litellm_params": {
+                            "model": "openai/gpt-4o-mini",
+                            "api_base": "https://relay.example/v1",
+                            "api_key": "sk-relay-vision-1234",
+                        },
+                    }
+                ],
+                wechat_webhook_url="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=abc",
+                database_path=f"{tmpdir}/doctor.db",
+                log_dir=tmpdir,
+            )
+            with (
+                patch.dict(os.environ, {"LLM_TRANSPORT_MODE": "auto"}, clear=False),
+                patch("src.services.doctor_service.importlib.util.find_spec", return_value=None),
+            ):
+                relay_vision_report = run_doctor_diagnostics(relay_vision_cfg)
+            self.assertEqual(relay_vision_report["status"], "ok")
+            self.assertTrue(relay_vision_report["checks"]["llm"]["ready"])
+            self.assertFalse(
+                any(
+                    "requirements-litellm.txt" in err["message"]
+                    for err in relay_vision_report["checks"]["config"]["errors"]
+                ),
+                relay_vision_report["checks"]["config"]["errors"],
+            )
+
 
 def _stub_notify(serp_secret: str, router_secret: str):
     from src.services.notification_diagnostics import NotificationDiagnosticIssue, NotificationDiagnosticResult

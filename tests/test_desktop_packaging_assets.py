@@ -52,13 +52,38 @@ class DesktopPackagingAssetsTestCase(unittest.TestCase):
         self.assertIn("litellm>=1.80.10", optional_requirements)
         self.assertIn("tiktoken>=0.8.0,<0.12.0", optional_requirements)
         self.assertIn("openai>=1.0.0", optional_requirements)
+        self.assertIn("boto3>=1.34.0", optional_requirements)
         self.assertIn("google-auth>=2.0.0", optional_requirements)
 
         for script_text in (macos_script, windows_script):
-            self.assertNotIn("orjson", script_text)
-            self.assertNotIn("litellm", script_text)
+            self.assertNotIn("--collect-data litellm", script_text)
+            self.assertNotIn("'--collect-data', 'litellm'", script_text)
+            self.assertNotIn("import orjson", script_text)
             self.assertIn("tiktoken", script_text)
             self.assertIn("tiktoken_ext.openai_public", script_text)
+
+        win_hidden = windows_script[
+            windows_script.index("$hiddenImports = @("):windows_script.index("$hiddenImportArgs")
+        ]
+        mac_hidden = macos_script[
+            macos_script.index("hidden_imports=("):macos_script.index("hidden_import_args=()")
+        ]
+        import re
+
+        for hidden_block in (win_hidden, mac_hidden):
+            hidden_tokens = set(re.findall(r"['\"]([^'\"]+)['\"]", hidden_block))
+            for excluded_mod in ("litellm", "openai", "orjson"):
+                self.assertFalse(
+                    any(
+                        tok == excluded_mod or tok.startswith(f"{excluded_mod}.")
+                        for tok in hidden_tokens
+                    ),
+                    f"{excluded_mod} must not appear in PyInstaller hidden imports",
+                )
+
+        for excluded_mod in ("litellm", "openai", "orjson"):
+            self.assertIn(f'"--exclude-module" "{excluded_mod}"', macos_script)
+            self.assertIn(f"'--exclude-module', '{excluded_mod}'", windows_script)
 
         self.assertIn('DSA_PACKAGED_IMPORT_PROBE="${module}"', macos_script)
         self.assertIn("$env:DSA_PACKAGED_IMPORT_PROBE = $module", windows_script)

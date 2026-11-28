@@ -295,22 +295,6 @@ def _resolve_deployment_api_key(deployment: Dict[str, Any]) -> str:
     return str(resolve_env_reference(raw_params.get("api_key")) or "").strip()
 
 
-def _get_api_keys_for_model(model: str, cfg: Config) -> List[str]:
-    """Return available API keys for the given litellm model."""
-    deployment_keys: List[str] = []
-    for deployment in _matching_vision_deployments(model, cfg):
-        key = _resolve_deployment_api_key(deployment)
-        if key and len(key) >= 8 and key not in deployment_keys:
-            deployment_keys.append(key)
-    if deployment_keys:
-        return deployment_keys
-    if model.startswith("gemini/") or model.startswith("vertex_ai/"):
-        return [k for k in cfg.gemini_api_keys if k and len(k) >= 8]
-    if model.startswith("anthropic/"):
-        return [k for k in cfg.anthropic_api_keys if k and len(k) >= 8]
-    return [k for k in cfg.openai_api_keys if k and len(k) >= 8]
-
-
 _VISION_IAM_KEYLESS_PROVIDERS: frozenset[str] = frozenset(
     {
         "bedrock",
@@ -322,6 +306,72 @@ _VISION_IAM_KEYLESS_PROVIDERS: frozenset[str] = frozenset(
         "sagemaker_nova",
     }
 )
+
+_HANDLED_VISION_DEPLOYMENT_KEYS: frozenset[str] = frozenset(
+    {
+        "model",
+        "api_key",
+        "api_base",
+        "base_url",
+        "extra_headers",
+        "api_surface",
+        "wire_protocol",
+        "custom_llm_provider",
+        "dsa_channel_protocol",
+        "messages",
+        "max_tokens",
+        "timeout",
+        "stream",
+    }
+)
+
+
+def _is_direct_gemini_or_anthropic_model(model: str) -> bool:
+    """Return True for prefixed or bare Gemini/Anthropic model identifiers."""
+    lower = (model or "").strip().lower()
+    if not lower:
+        return False
+    if "/" in lower:
+        return lower.split("/", 1)[0].strip() in {"gemini", "anthropic"}
+    return lower.startswith("gemini") or lower.startswith("claude")
+
+
+def _get_api_keys_for_model(model: str, cfg: Config) -> List[str]:
+    """Return available API keys for the given litellm model."""
+    deployment_keys: List[str] = []
+    for deployment in _matching_vision_deployments(model, cfg):
+        key = _resolve_deployment_api_key(deployment)
+        if key and len(key) >= 8 and key not in deployment_keys:
+            deployment_keys.append(key)
+    if deployment_keys:
+        return deployment_keys
+    lower = (model or "").strip().lower()
+    prefix = lower.split("/", 1)[0].strip() if "/" in lower else ""
+    if prefix in _VISION_IAM_KEYLESS_PROVIDERS:
+        return []
+    if prefix == "gemini" or ("/" not in lower and lower.startswith("gemini")):
+        return [k for k in cfg.gemini_api_keys if k and len(k) >= 8]
+    if prefix == "anthropic" or ("/" not in lower and lower.startswith("claude")):
+        return [k for k in cfg.anthropic_api_keys if k and len(k) >= 8]
+    return [k for k in cfg.openai_api_keys if k and len(k) >= 8]
+
+
+def build_direct_vision_litellm_params(model: str, cfg: Config) -> Dict[str, Any]:
+    """Build direct LiteLLM call params for an unmapped vision model (shared with Doctor)."""
+    normalized = str(model or "").strip()
+    params: Dict[str, Any] = {"model": normalized}
+    if not normalized:
+        return params
+    prefix = normalized.split("/", 1)[0].strip().lower() if "/" in normalized else ""
+    if not _is_direct_gemini_or_anthropic_model(normalized) and prefix not in _VISION_IAM_KEYLESS_PROVIDERS:
+        if cfg.openai_base_url:
+            params["api_base"] = cfg.openai_base_url
+        if cfg.openai_base_url and "aihubmix.com" in cfg.openai_base_url:
+            params["extra_headers"] = {"APP-Code": "GPIJ3886"}
+    keys = _get_api_keys_for_model(normalized, cfg)
+    if keys:
+        params["api_key"] = keys[0]
+    return params
 
 
 def _deployment_allows_empty_api_key(deployment: Dict[str, Any]) -> bool:
@@ -466,17 +516,19 @@ def _call_litellm_vision(image_b64: str, mime_type: str, api_key: Optional[str] 
         call_kwargs["dsa_channel_protocol"] = raw_channel_protocol
     if deployment_params.get("extra_headers"):
         call_kwargs["extra_headers"] = dict(deployment_params["extra_headers"])
-    # Add api_base and custom headers for OpenAI-compatible providers
-    if (
-        not deployment_params
-        and not model.startswith("gemini/")
-        and not model.startswith("anthropic/")
-        and model_prefix not in _VISION_IAM_KEYLESS_PROVIDERS
-    ):
-        if cfg.openai_base_url:
-            call_kwargs["api_base"] = cfg.openai_base_url
-        if cfg.openai_base_url and "aihubmix.com" in cfg.openai_base_url:
-            call_kwargs["extra_headers"] = {"APP-Code": "GPIJ3886"}
+    for param_key, param_val in deployment_params.items():
+        key_str = str(param_key)
+        if key_str in _HANDLED_VISION_DEPLOYMENT_KEYS or key_str.startswith("_dsa_"):
+            continue
+        if param_val is not None:
+            call_kwargs.setdefault(key_str, param_val)
+    # Add api_base and custom headers for unmapped OpenAI-compatible vision models
+    if not deployment_params:
+        direct_params = build_direct_vision_litellm_params(model, cfg)
+        if direct_params.get("api_base"):
+            call_kwargs["api_base"] = direct_params["api_base"]
+        if direct_params.get("extra_headers"):
+            call_kwargs["extra_headers"] = dict(direct_params["extra_headers"])
 
     response = dispatch_completion(compat_proxy=litellm, config=cfg, **call_kwargs)
     if response and response.choices and response.choices[0].message.content:

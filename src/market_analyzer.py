@@ -1014,26 +1014,33 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             )
             raise
 
-        failed_all_models = (
-            isinstance(generation_diagnostics, dict)
-            and generation_diagnostics.get("reason") == "all_models_failed"
+        diag_reason = (
+            generation_diagnostics.get("reason")
+            if isinstance(generation_diagnostics, dict)
+            else None
         )
+        failed_all_models = diag_reason == "all_models_failed"
+        missing_optional_litellm = diag_reason == "litellm_optional_dependency_missing"
+        if review:
+            recorded_error_type = None
+            recorded_error_message: Any = None
+        elif missing_optional_litellm:
+            recorded_error_type = "OptionalDependencyMissing"
+            recorded_error_message = generation_diagnostics
+        elif failed_all_models:
+            recorded_error_type = "AllModelsFailed"
+            recorded_error_message = generation_diagnostics
+        else:
+            recorded_error_type = "EmptyResponse"
+            recorded_error_message = "empty market review response"
         record_llm_run(
             success=bool(review),
             provider=provider,
             model=model,
             call_type="market_review",
             duration_ms=int((time.perf_counter() - llm_started_at) * 1000),
-            error_type=None if review else ("AllModelsFailed" if failed_all_models else "EmptyResponse"),
-            error_message=(
-                None
-                if review
-                else (
-                    generation_diagnostics
-                    if failed_all_models
-                    else "empty market review response"
-                )
-            ),
+            error_type=recorded_error_type,
+            error_message=recorded_error_message,
         )
 
         if review:
@@ -1045,10 +1052,17 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             # Inject structured data tables into LLM prose sections
             return self._with_tw_index_coverage(self._inject_data_into_review(review, overview, news), overview)
 
-        logger.warning(
-            "[Market] %s action=generate_review status=fallback_template reason=empty_llm_response",
-            self._log_context(),
-        )
+        if missing_optional_litellm:
+            logger.warning(
+                "[Market] %s action=generate_review status=fallback_template reason=litellm_optional_dependency_missing detail=%s",
+                self._log_context(),
+                generation_diagnostics.get("message") if isinstance(generation_diagnostics, dict) else "",
+            )
+        else:
+            logger.warning(
+                "[Market] %s action=generate_review status=fallback_template reason=empty_llm_response",
+                self._log_context(),
+            )
         return self._with_tw_index_coverage(self._generate_template_review(overview, news), overview)
 
     def _tw_index_coverage_lines(self, overview: MarketOverview) -> List[str]:

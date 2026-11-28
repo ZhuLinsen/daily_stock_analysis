@@ -59,6 +59,7 @@ from src.llm.hermes import (
     route_has_hermes,
     sanitize_hermes_error_text,
 )
+from src.llm.native_resolve import normalize_endpoint_url
 from src.llm.generation_params import apply_litellm_generation_params
 from src.llm.errors import call_litellm_with_param_recovery
 from src.llm.backend_registry import (
@@ -3486,7 +3487,16 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
             deployment = origins.hermes_deployments[0]
             params = dict(deployment.get("litellm_params") or {})
             api_key = str(params.get("api_key") or "").strip()
-            base_url = str(params.get("api_base") or "").strip()
+            has_explicit_base_url = "base_url" in params and params.get("base_url") is not None
+            raw_base_url = str(params.get("base_url")).strip() if has_explicit_base_url else ""
+            raw_api_base = str(params.get("api_base") or "").strip()
+            if (
+                has_explicit_base_url
+                and raw_api_base
+                and normalize_endpoint_url(raw_base_url) != normalize_endpoint_url(raw_api_base)
+            ):
+                raise RuntimeError("Hermes deployment has conflicting api_base and base_url values")
+            base_url = raw_base_url if has_explicit_base_url else raw_api_base
             if is_masked_secret_placeholder(api_key):
                 raise RuntimeError("Hermes API key is a masked placeholder and cannot be used for generation")
             timeout = float(call_kwargs.get("timeout") or 30.0)
@@ -3496,6 +3506,7 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
             hermes_kwargs["stream"] = False
             hermes_kwargs.pop("api_key", None)
             hermes_kwargs.pop("api_base", None)
+            hermes_kwargs.pop("base_url", None)
             for param_key, param_val in params.items():
                 if param_key in {
                     "model",

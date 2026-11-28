@@ -624,7 +624,10 @@ def _call_llm(
             kwargs["num_retries"] = 0
             if max_tokens is not None and int(max_tokens) > 0:
                 kwargs["max_tokens"] = int(max_tokens)
-            if json_mode:
+            if json_mode and not _should_omit_json_object_response_format(
+                candidate_model,
+                call_kwargs=kwargs,
+            ):
                 kwargs["response_format"] = {"type": "json_object"}
             kwargs = _apply_screening_litellm_generation_params(
                 kwargs,
@@ -725,6 +728,80 @@ def _coerce_completion_content(value: object) -> str:
     # Join without adding characters to avoid inserting raw newlines inside
     # JSON strings when providers segment content across blocks.
     return "".join(parts)
+
+
+def _entry_targets_native_anthropic(
+    model_ref: str,
+    *,
+    api_base: str = "",
+    wire_protocol: str = "",
+    channel_protocol: str = "",
+) -> bool:
+    """Return True when a deployment/call targets the native Anthropic Messages protocol."""
+    wp = str(wire_protocol or "").strip().lower()
+    if wp:
+        return wp == "anthropic"
+    wire_lower = str(model_ref or "").strip().lower()
+    if wire_lower.startswith("anthropic/"):
+        return True
+    if "/" in wire_lower:
+        return False
+    cp = str(channel_protocol or "").strip().lower()
+    if cp == "anthropic":
+        return True
+    if cp:
+        return False
+    return wire_lower.startswith("claude") and not str(api_base or "").strip()
+
+
+def _should_omit_json_object_response_format(
+    model: str,
+    *,
+    call_kwargs: dict[str, object] | None = None,
+    model_list: list[dict[str, object]] | None = None,
+) -> bool:
+    """Omit ranker-generated response_format={"type":"json_object"} on native Anthropic routes.
+
+    Anthropic's native Messages API does not accept OpenAI's ``json_object`` mode
+    (and native transport delegates ``json_object`` on Anthropic to optional LiteLLM).
+    The screening prompt already enforces strict JSON output without ``response_format``.
+    """
+    if model_list:
+        target = str(model or "").strip()
+        matched_any = False
+        for entry in model_list:
+            if not isinstance(entry, dict):
+                continue
+            params = entry.get("litellm_params")
+            params_dict = params if isinstance(params, dict) else {}
+            entry_alias = str(entry.get("model_name") or "").strip()
+            entry_model = str(params_dict.get("model") or "").strip()
+            if target and entry_alias != target and entry_model != target:
+                continue
+            matched_any = True
+            info = entry.get("model_info")
+            info_dict = info if isinstance(info, dict) else {}
+            if _entry_targets_native_anthropic(
+                entry_model or entry_alias,
+                api_base=str(params_dict.get("base_url") or params_dict.get("api_base") or ""),
+                wire_protocol=str(params_dict.get("wire_protocol") or ""),
+                channel_protocol=str(
+                    info_dict.get("dsa_channel_protocol")
+                    or params_dict.get("dsa_channel_protocol")
+                    or ""
+                ),
+            ):
+                return True
+        if matched_any:
+            return False
+
+    kwargs = call_kwargs or {}
+    return _entry_targets_native_anthropic(
+        str(kwargs.get("model") or model or ""),
+        api_base=str(kwargs.get("base_url") or kwargs.get("api_base") or ""),
+        wire_protocol=str(kwargs.get("wire_protocol") or ""),
+        channel_protocol=str(kwargs.get("dsa_channel_protocol") or ""),
+    )
 
 
 def _is_json_mode_unsupported(exc: Exception) -> bool:
@@ -1032,7 +1109,11 @@ def _call_litellm_router(
             }
             if max_tokens is not None and int(max_tokens) > 0:
                 kwargs["max_tokens"] = int(max_tokens)
-            if json_mode:
+            if json_mode and not _should_omit_json_object_response_format(
+                model,
+                call_kwargs=kwargs,
+                model_list=model_list,
+            ):
                 kwargs["response_format"] = {"type": "json_object"}
             kwargs = _apply_screening_litellm_generation_params(
                 kwargs,
@@ -1224,6 +1305,8 @@ def _normalize_model_name(model: str, protocol: str) -> str:
         return model
     if protocol == "ollama":
         return f"ollama/{model}"
+    if protocol == "anthropic":
+        return f"anthropic/{model}"
     if protocol == "gemini":
         return f"gemini/{model}"
     if protocol == "deepseek":

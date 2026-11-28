@@ -82,22 +82,31 @@ def is_real_package_installed(name: str) -> bool:
     return False
 
 
+def _is_fake_or_stub_litellm(mod: object) -> bool:
+    """Return True when a loaded sys.modules['litellm'] entry is a test stub or mock, not the real package."""
+    if mod is None:
+        return False
+    if getattr(mod, "__dsa_test_stub__", False) is True:
+        return True
+    return not isinstance(mod, types.ModuleType) or getattr(mod, "__file__", None) is None
+
+
 @contextmanager
 def without_litellm_stub() -> Iterator[None]:
-    """Temporarily remove the litellm test stub and restore prior sys.modules state on exit."""
-    had_stub = bool(getattr(sys.modules.get("litellm"), "__dsa_test_stub__", False))
+    """Temporarily remove any litellm test stub/mock and restore prior sys.modules state on exit."""
     saved = {
         module_name: mod
         for module_name, mod in list(sys.modules.items())
         if module_name == "litellm" or module_name.startswith("litellm.")
     }
-    if had_stub:
-        remove_litellm_stub()
+    if _is_fake_or_stub_litellm(sys.modules.get("litellm")):
+        for module_name in list(sys.modules.keys()):
+            if module_name == "litellm" or module_name.startswith("litellm."):
+                sys.modules.pop(module_name, None)
     try:
         yield
     finally:
-        if had_stub:
-            for module_name in list(sys.modules.keys()):
-                if module_name == "litellm" or module_name.startswith("litellm."):
-                    sys.modules.pop(module_name, None)
-            sys.modules.update(saved)
+        for module_name in list(sys.modules.keys()):
+            if module_name == "litellm" or module_name.startswith("litellm."):
+                sys.modules.pop(module_name, None)
+        sys.modules.update(saved)

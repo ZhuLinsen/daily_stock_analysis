@@ -51,6 +51,8 @@ def test_windows_backend_build_script_collects_builtin_screening_engine() -> Non
     assert "packagedScreeningStrategyCount" in script
     assert "DSA_PACKAGED_IMPORT_PROBE" in main_py
     assert "importlib.import_module(_packaged_import_probe)" in main_py
+    for excluded_mod in ("litellm", "openai", "orjson"):
+        assert f"'--exclude-module', '{excluded_mod}'" in script
 
 
 def test_macos_backend_build_script_collects_builtin_screening_engine() -> None:
@@ -73,6 +75,8 @@ def test_macos_backend_build_script_collects_builtin_screening_engine() -> None:
     assert "packaged_screening_strategy_count" in script
     assert "DSA_PACKAGED_IMPORT_PROBE" in main_py
     assert "importlib.import_module(_packaged_import_probe)" in main_py
+    for excluded_mod in ("litellm", "openai", "orjson"):
+        assert f'"--exclude-module" "{excluded_mod}"' in script
 
 
 @pytest.mark.parametrize("filename", ["build-backend.ps1", "build-backend-macos.sh"])
@@ -489,3 +493,5 @@ def test_macos_pyinstaller_command_preserves_real_bash_argv() -> None:
     assert not any("（" in arg or "）" in arg for arg in argv)
     data_paths = [argv[i + 1] for i, arg in enumerate(argv[:-1]) if arg == "--add-data"]
     assert "src/services/screening/strategies:src/services/screening/strategies" in data_paths
+    excluded_modules = [argv[i + 1] for i, arg in enumerate(argv[:-1]) if arg == "--exclude-module"]
+    assert {"litellm", "openai", "orjson"} <= set(excluded_modules)

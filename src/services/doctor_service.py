@@ -299,36 +299,45 @@ def _find_routes_requiring_litellm(config: Config) -> List[str]:
         if isinstance(resolved, Unsupported) and resolved.reason not in _HARD_CONFIG_ERROR_REASONS:
             _add(alias or str(params.get("model") or resolved.provider or "unknown"))
 
-    direct_candidates: List[str] = []
-    for attr in ("litellm_model", "agent_litellm_model", "vision_model"):
+    direct_candidates: List[tuple[str, bool]] = []
+    for attr in ("litellm_model", "agent_litellm_model"):
         val = str(getattr(config, attr, "") or "").strip()
         if val:
-            direct_candidates.append(val)
+            direct_candidates.append((val, False))
+    for attr in ("vision_model", "openai_vision_model"):
+        vision_val = str(getattr(config, attr, "") or "").strip()
+        if vision_val:
+            direct_candidates.append((vision_val, True))
     for val in getattr(config, "litellm_fallback_models", None) or []:
         cleaned = str(val or "").strip()
         if cleaned:
-            direct_candidates.append(cleaned)
+            direct_candidates.append((cleaned, False))
 
-    for candidate in direct_candidates:
+    for candidate, is_vision in direct_candidates:
         if candidate in covered_aliases:
             continue
         prefix = candidate.split("/", 1)[0].strip().lower() if "/" in candidate else ""
         if prefix in FALLBACK_ONLY_PROVIDERS:
             _add(candidate)
             continue
-        direct_params: Dict[str, Any] = {"model": candidate}
-        try:
-            extra_params = extra_litellm_params(candidate, config)
-            if isinstance(extra_params, dict):
-                direct_params.update(extra_params)
-        except Exception:
-            pass
-        try:
-            keys = get_api_keys_for_model(candidate, config)
-            if keys and not direct_params.get("api_key"):
-                direct_params["api_key"] = keys[0]
-        except Exception:
-            pass
+        if is_vision:
+            from src.services.image_stock_extractor import build_direct_vision_litellm_params
+
+            direct_params = build_direct_vision_litellm_params(candidate, config)
+        else:
+            direct_params = {"model": candidate}
+            try:
+                extra_params = extra_litellm_params(candidate, config)
+                if isinstance(extra_params, dict):
+                    direct_params.update(extra_params)
+            except Exception:
+                pass
+            try:
+                keys = get_api_keys_for_model(candidate, config)
+                if keys and not direct_params.get("api_key"):
+                    direct_params["api_key"] = keys[0]
+            except Exception:
+                pass
         resolved = resolve_deployment(
             {"model_name": candidate, "litellm_params": direct_params},
             deployment_id=f"doctor-direct:{candidate}",

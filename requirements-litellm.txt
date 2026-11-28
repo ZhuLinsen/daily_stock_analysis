@@ -16,4 +16,5 @@ litellm>=1.80.10,!=1.82.7,!=1.82.8,<1.99.0; python_version >= "3.11"   # Optiona
 litellm>=1.80.10,!=1.82.7,!=1.82.8,<1.98.0; python_version < "3.11"    # 1.98 imports typing.NotRequired, which needs Python 3.11
 tiktoken>=0.8.0,<0.12.0     # BPE tokenizer used by LiteLLM (pin <0.12 to avoid plugin registration issues, #537)
 openai>=1.0.0               # OpenAI SDK (used by LiteLLM fallback & legacy LLM_TRANSPORT_MODE=litellm)
+boto3>=1.34.0               # AWS SDK for Bedrock / SageMaker Cloud IAM routes
 google-auth>=2.0.0          # Google ADC authentication for Vertex AI routes
