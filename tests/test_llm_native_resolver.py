@@ -1068,3 +1068,79 @@ def test_round2_p0_1_p0_3c_p1_6b_p1_7b_p2_resolver_and_vision_guards(
     assert normalize_endpoint_url("https://api.openai.com:443/v1/") == normalize_endpoint_url("https://api.openai.com/v1")
     assert normalize_endpoint_url("http://127.0.0.1:80/v1/") == normalize_endpoint_url("http://127.0.0.1/v1")
     assert normalize_endpoint_url("https://api.openai.com:8443/v1/") != normalize_endpoint_url("https://api.openai.com/v1")
+
+
+def test_round3_f1_ark_channel_and_hard_config_errors_in_auto_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Round 3 F1: dsa_channel_protocol='ark' uses verified Ark base; hard config errors raise NativeConfigError in BOTH native and auto modes across populated router, empty router, and direct completion."""
+    # 1. Bare model + dsa_channel_protocol="ark" -> verified Volcengine Ark base (NOT api.openai.com)
+    ark_spec = resolve_deployment("doubao-pro", params={"dsa_channel_protocol": "ark", "api_key": "sk-ark-1"})
+    assert isinstance(ark_spec, DeploymentSpec)
+    assert ark_spec.provider == "ark"
+    assert ark_spec.endpoint_url == "https://ark.cn-beijing.volces.com/api/v3/chat/completions"
+
+    class _FailIfFallbackCalled:
+        def create_router(self, *_a: Any, **_kw: Any) -> Any:
+            raise AssertionError("Hard config error must NEVER delegate to fallback transport in auto mode")
+
+        def completion(self, *_a: Any, **_kw: Any) -> Any:
+            raise AssertionError("Hard config error must NEVER delegate to fallback transport in auto mode")
+
+    fb = _FailIfFallbackCalled()
+
+    # 2. Populated alias group where entry 0 is delegatable (bedrock) and entry 1 has a hard config error (store="maybe")
+    # MUST scan ALL entries and raise NativeConfigError even in auto mode!
+    with pytest.raises(NativeConfigError) as exc_order:
+        NativeUnifiedRouter(
+            model_list=[
+                {"model_name": "mixed-alias", "litellm_params": {"model": "bedrock/anthropic.claude-3-5-sonnet"}},
+                {
+                    "model_name": "mixed-alias",
+                    "litellm_params": {
+                        "model": "openai/gpt-4o",
+                        "api_base": "https://relay.example/v1",
+                        "api_key": "sk-1",
+                        "store": "maybe",
+                    },
+                },
+            ],
+            fallback_transport=fb,
+            http_transport=_fail_if_called_transport(),
+        )
+    assert exc_order.value.error_code == "invalid_deployment_param"
+
+    # 3. Every hard config error reason fails closed in auto mode across populated router, empty router, AND direct completion!
+    monkeypatch.delenv("UNSET_HARD_CFG_BASE_XYZ", raising=False)
+    hard_cases = [
+        ("invalid_deployment_param", "openai/gpt-4o", {"api_base": "https://relay.example/v1", "store": "not-a-bool"}),
+        ("unsupported_channel_protocol", "bare-model", {"dsa_channel_protocol": "replicate", "wire_protocol": "openai_chat"}),
+        ("unresolved_endpoint_env", "openai/gpt-4o", {"api_base": "os.environ/UNSET_HARD_CFG_BASE_XYZ"}),
+        ("conflicting_api_base", "openai/gpt-4o", {"api_base": "https://a.example/v1", "base_url": "https://b.example/v1"}),
+        ("endpoint_surface_mismatch", "anthropic/claude-sonnet-4-6", {"wire_protocol": "gemini"}),
+    ]
+    empty_auto_router = NativeUnifiedRouter(
+        model_list=[],
+        fallback_transport=fb,
+        http_transport=_fail_if_called_transport(),
+    )
+    direct_auto_transport = NativeUnifiedTransport(
+        fallback_transport=fb,
+        http_transport=_fail_if_called_transport(),
+    )
+    for expected_reason, model, params in hard_cases:
+        with pytest.raises(NativeConfigError) as exc_pop:
+            NativeUnifiedRouter(
+                model_list=[{"model_name": model, "litellm_params": {"model": model, **params}}],
+                fallback_transport=fb,
+                http_transport=_fail_if_called_transport(),
+            )
+        assert exc_pop.value.error_code == expected_reason
+
+        with pytest.raises(NativeConfigError) as exc_empty:
+            empty_auto_router.completion(model=model, messages=[{"role": "user", "content": "hi"}], **params)
+        assert exc_empty.value.error_code == expected_reason
+
+        with pytest.raises(NativeConfigError) as exc_direct:
+            direct_auto_transport.completion(model=model, messages=[{"role": "user", "content": "hi"}], **params)
+        assert exc_direct.value.error_code == expected_reason

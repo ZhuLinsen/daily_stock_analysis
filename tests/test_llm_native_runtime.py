@@ -1698,7 +1698,12 @@ def test_round2_p1_1_p1_2_stream_close_retry_race_and_close_aware_base_transport
     res_ns = r_non_stream.completion(model="openai/gpt-4o", messages=[{"role": "user", "content": "hi"}])
     assert res_ns.choices[0].message.content == "retry-ok"
     assert t_non_stream.calls == 2
-    assert t_non_stream.close_count == 1
+    # F4: Per-call wrapper uses _NonClosingTransport so router-shared BaseTransport stays open for call 2!
+    assert t_non_stream.close_count == 0
+    res_ns2 = r_non_stream.completion(model="openai/gpt-4o", messages=[{"role": "user", "content": "hi2"}])
+    assert res_ns2.choices[0].message.content == "retry-ok"
+    assert t_non_stream.calls == 3
+    assert t_non_stream.close_count == 0
 
     t_stream = _CloseAwareTransport(stream_mode=True)
     r_stream = NativeUnifiedRouter(
@@ -1710,7 +1715,11 @@ def test_round2_p1_1_p1_2_stream_close_retry_race_and_close_aware_base_transport
     st = r_stream.completion(model="openai/gpt-4o", messages=[{"role": "user", "content": "hi"}], stream=True)
     assert "".join(c.choices[0].delta.content or "" for c in st) == "retry-stream-ok"
     assert t_stream.calls == 2
-    assert t_stream.close_count == 1
+    assert t_stream.close_count == 0
+    st2 = r_stream.completion(model="openai/gpt-4o", messages=[{"role": "user", "content": "hi2"}], stream=True)
+    assert "".join(c.choices[0].delta.content or "" for c in st2) == "retry-stream-ok"
+    assert t_stream.calls == 3
+    assert t_stream.close_count == 0
 
 
 def test_round2_p1_3_p1_4_p1_7c_bom_json_waf_403_exact_64k_text_plain_and_pct_secret() -> None:
@@ -1921,8 +1930,8 @@ def test_round2_p1_6a_p1_7a_p1_8_p1_10_p2_recovery_ranker_proxy_and_system_confi
     assert "max_completion_tokens" in yaml_bodies[0]
     assert yaml_bodies[1]["max_tokens"] == 256 and "max_completion_tokens" not in yaml_bodies[1]
 
-    # 4. P1-8: Tuple and httpx.Timeout preserve one monotonic deadline inside call_litellm_with_param_recovery
-    for raw_t, initial_budget in (((0.5, 1.0), 1.0), (httpx.Timeout(1.0), 1.0)):
+    # 4. P1-8 & F9: Tuple and httpx.Timeout preserve per-phase bounds (e.g. connect=0.2 is NEVER lengthened) while shrinking read under one monotonic deadline!
+    for raw_t, initial_read in (((0.2, 1.0), 1.0), (httpx.Timeout(connect=0.2, read=1.0, write=0.3, pool=0.4), 1.0)):
         seen_t: List[Any] = []
 
         def _slow_rec(kw: Dict[str, Any]) -> str:
@@ -1940,7 +1949,16 @@ def test_round2_p1_6a_p1_7a_p1_8_p1_10_p2_recovery_ranker_proxy_and_system_confi
         ) == "ok"
         assert len(seen_t) == 2
         assert seen_t[0] == raw_t
-        assert isinstance(seen_t[1], float) and seen_t[1] < initial_budget - 0.03
+        if isinstance(raw_t, tuple):
+            assert isinstance(seen_t[1], tuple)
+            assert seen_t[1][0] == pytest.approx(0.2)
+            assert seen_t[1][1] < initial_read - 0.03
+        else:
+            assert isinstance(seen_t[1], httpx.Timeout)
+            assert seen_t[1].connect == pytest.approx(0.2)
+            assert seen_t[1].write == pytest.approx(0.3)
+            assert seen_t[1].pool == pytest.approx(0.4)
+            assert seen_t[1].read is not None and seen_t[1].read < initial_read - 0.03
 
     # 5. P1-10: Ranker JSON-mode fallback retry suppresses inherited deployment YAML response_format!
     ranker_yaml = tmp_path / "ranker_rf.yaml"
@@ -2049,6 +2067,189 @@ def test_round2_p1_6a_p1_7a_p1_8_p1_10_p2_recovery_ranker_proxy_and_system_confi
             assert audit_ctx["transport"] == CLAUDE_CODE_CLI_BACKEND_ID
     finally:
         Config.reset_instance()
+
+
+def test_round3_f2_f3_f4_f5_f6_final_runtime_convergence() -> None:
+    """Round 3 F2, F3, F4, F5, F6: originless client guard under header restriction, redirect Location query/fragment strip, close-during-backoff guard, extra_body _dsa_* strip, multi-chunk text/plain preamble."""
+    from src.llm.transport import _strip_internal_litellm_kwargs
+
+    # 1. F2: Originless caller_http MUST NOT be picked when restrict_caller_headers=True (caller origin A vs deployment origin B)
+    dep_b_hits: List[str] = []
+    originless_client = httpx.Client(
+        headers={"Authorization": "Bearer sk-originless-client-default-secret"},
+        transport=httpx.MockTransport(
+            lambda _r: (_ for _ in ()).throw(AssertionError("Originless caller_http must NOT be used across origins!"))
+        ),
+    )
+    dep_b_client = httpx.Client(
+        base_url="https://origin-b.example/v1",
+        transport=httpx.MockTransport(
+            lambda r: (
+                dep_b_hits.append(str(r.url)),
+                httpx.Response(200, json={"id": "ok", "model": "gpt-4o", "choices": [{"index": 0, "message": {"role": "assistant", "content": "safe-b"}, "finish_reason": "stop"}]}),
+            )[1]
+        ),
+    )
+    try:
+        r_f2 = NativeUnifiedRouter(
+            model_list=[
+                {
+                    "model_name": "openai/gpt-4o",
+                    "litellm_params": {"model": "openai/gpt-4o", "api_base": "https://origin-b.example/v1", "api_key": "sk-b", "client": dep_b_client},
+                }
+            ]
+        )
+        res_f2 = r_f2.completion(
+            model="openai/gpt-4o",
+            messages=[{"role": "user", "content": "hi"}],
+            api_base="https://origin-a.example/v1",
+            client=originless_client,
+        )
+        assert res_f2.choices[0].message.content == "safe-b"
+        assert len(dep_b_hits) == 1
+    finally:
+        originless_client.close()
+        dep_b_client.close()
+
+    # 2. F3: HTTP 302 Location query/fragment stripped & redacted in unexpected_redirect errors (non-stream & stream)
+    redir_secret_sig = "sig_top_secret_987654"
+    redir_secret_tok = "tok_top_secret_123456"
+    tr_redir = NativeUnifiedTransport(
+        http_transport=httpx.MockTransport(
+            lambda _r: httpx.Response(
+                302,
+                headers={"Location": f"https://evil.example/cb?sig={redir_secret_sig}&access_token={redir_secret_tok}#frag_secret"},
+            )
+        )
+    )
+    for is_stream in (False, True):
+        with pytest.raises(NativeBadRequestError) as exc_r:
+            tr_redir.completion(
+                model="openai/gpt-4o",
+                api_base="https://relay.example/v1",
+                api_key="sk-1",
+                messages=[{"role": "user", "content": "hi"}],
+                stream=is_stream,
+            )
+        assert exc_r.value.error_code == "unexpected_redirect"
+        assert redir_secret_sig not in str(exc_r.value)
+        assert redir_secret_tok not in str(exc_r.value)
+        assert "frag_secret" not in str(exc_r.value)
+        assert "https://evil.example/cb" in str(exc_r.value)
+
+    # 3. F4: Closing stream DURING pre-chunk retry backoff prevents opening attempt 2!
+    backoff_entered = threading.Event()
+    allow_backoff_exit = threading.Event()
+    http_attempts = [0]
+
+    class _PreChunkDropStream(httpx.SyncByteStream):
+        def __iter__(self):
+            raise httpx.ReadError("drop before first chunk")
+            yield b""  # pragma: no cover
+
+    def _backoff_handler(_r: httpx.Request) -> httpx.Response:
+        http_attempts[0] += 1
+        return httpx.Response(200, headers={"Content-Type": "text/event-stream"}, stream=_PreChunkDropStream())
+
+    def _blocking_sleep(_sec: float) -> None:
+        backoff_entered.set()
+        allow_backoff_exit.wait(timeout=5.0)
+
+    r_backoff = NativeUnifiedRouter(
+        model_list=[
+            {"model_name": "openai/gpt-4o", "litellm_params": {"model": "openai/gpt-4o", "api_base": "https://relay.example/v1", "api_key": "sk-1"}}
+        ],
+        http_transport=httpx.MockTransport(_backoff_handler),
+        num_retries=2,
+        sleep_fn=_blocking_sleep,
+    )
+    st_bo = r_backoff.completion(model="openai/gpt-4o", messages=[{"role": "user", "content": "hi"}], stream=True)
+    t_bo = threading.Thread(target=lambda: list(st_bo))
+    t_bo.start()
+    assert backoff_entered.wait(timeout=5.0)
+    st_bo.close()
+    allow_backoff_exit.set()
+    t_bo.join(timeout=5.0)
+    assert http_attempts[0] == 1
+
+    # 4. F5: _strip_internal_litellm_kwargs strips _dsa_* inside extra_body too
+    stripped = _strip_internal_litellm_kwargs(
+        {
+            "model": "openai/gpt-4o",
+            "_dsa_force_max_tokens": True,
+            "extra_body": {"_dsa_leaked": 1, "dsa_channel_protocol": "openai", "reasoning": {"effort": "low"}},
+        }
+    )
+    assert "_dsa_force_max_tokens" not in stripped
+    assert stripped["extra_body"] == {"reasoning": {"effort": "low"}}
+
+    # 5. F6: Multi-chunk text/plain stream preamble (whitespace-first JSON, split <ht + ml>, and normal text/plain SSE)
+    class _ChunksStream(httpx.SyncByteStream):
+        def __init__(self, chunks: List[bytes]) -> None:
+            self._chunks = chunks
+
+        def __iter__(self):
+            yield from self._chunks
+
+    tr_ws_json = NativeUnifiedTransport(
+        http_transport=httpx.MockTransport(
+            lambda _r: httpx.Response(
+                200,
+                headers={"Content-Type": "text/plain"},
+                stream=_ChunksStream([b"   \r\n", b'{"error":{"code":429,"message":"ws json rate limit","type":"rate_limit_error"}}']),
+            )
+        )
+    )
+    with pytest.raises(NativeRateLimitError):
+        tr_ws_json.completion(
+            model="openai/gpt-4o",
+            api_base="https://relay.example/v1",
+            api_key="sk-1",
+            messages=[{"role": "user", "content": "hi"}],
+            stream=True,
+        )
+
+    tr_split_html = NativeUnifiedTransport(
+        http_transport=httpx.MockTransport(
+            lambda _r: httpx.Response(
+                200,
+                headers={"Content-Type": "text/plain"},
+                stream=_ChunksStream([b"  \n<ht", b"ml><body><h1>Bad Gateway</h1></body></html>"]),
+            )
+        )
+    )
+    with pytest.raises(NativeBadRequestError) as exc_html:
+        tr_split_html.completion(
+            model="openai/gpt-4o",
+            api_base="https://relay.example/v1",
+            api_key="sk-1",
+            messages=[{"role": "user", "content": "hi"}],
+            stream=True,
+        )
+    assert exc_html.value.error_code == "non_json_html"
+
+    tr_plain_sse = NativeUnifiedTransport(
+        http_transport=httpx.MockTransport(
+            lambda _r: httpx.Response(
+                200,
+                headers={"Content-Type": "text/plain"},
+                stream=_ChunksStream(
+                    [
+                        b'data: {"id":"s1","model":"gpt-4o","choices":[{"index":0,"delta":{"content":"plain-sse-ok"},"finish_reason":"stop"}]}\n\n',
+                        b"data: [DONE]\n\n",
+                    ]
+                ),
+            )
+        )
+    )
+    plain_st = tr_plain_sse.completion(
+        model="openai/gpt-4o",
+        api_base="https://relay.example/v1",
+        api_key="sk-1",
+        messages=[{"role": "user", "content": "hi"}],
+        stream=True,
+    )
+    assert "".join(c.choices[0].delta.content or "" for c in plain_st) == "plain-sse-ok"
 
 
 # ============================================================

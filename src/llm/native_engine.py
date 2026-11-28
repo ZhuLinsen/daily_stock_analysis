@@ -32,6 +32,7 @@ import os
 import threading
 import time
 from typing import Any, Callable, Dict, Iterable, Iterator, List, Mapping, Optional, Tuple
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
@@ -486,6 +487,36 @@ def _should_restrict_cross_origin_headers(
     return False
 
 
+class _NonClosingTransport(httpx.BaseTransport):
+    """Proxy wrapping a caller/router-owned BaseTransport so per-call Client.close() never closes it (F4)."""
+
+    def __init__(self, inner: httpx.BaseTransport) -> None:
+        self._inner = inner
+
+    def handle_request(self, request: httpx.Request) -> httpx.Response:
+        return self._inner.handle_request(request)
+
+    def close(self) -> None:
+        return None
+
+
+def _sanitize_redirect_location(raw_location: str, secrets: Iterable[str]) -> str:
+    """Strip query/fragment and redact any remaining secrets from HTTP 3xx Location headers (F3)."""
+    loc = str(raw_location or "").strip()
+    if not loc:
+        return ""
+    loc_secrets = list(secrets) + collect_secret_values(url=loc)
+    try:
+        parts = urlsplit(loc)
+        netloc = parts.netloc
+        if "@" in netloc:
+            netloc = netloc.split("@", 1)[1]
+        stripped = urlunsplit((parts.scheme, netloc, parts.path, "", ""))
+    except Exception:
+        stripped = loc.split("?", 1)[0].split("#", 1)[0]
+    return sanitize_error_message(stripped, loc_secrets)
+
+
 def _acquire_attempt_client(
     entry: DeploymentSpec,
     *,
@@ -494,8 +525,9 @@ def _acquire_attempt_client(
     caller_client_origin: Optional[Tuple[str, str, int]],
     deployment_clients: Optional[Mapping[str, httpx.Client]],
     multi_origin_pool: bool,
+    restrict_caller_headers: bool = False,
 ) -> Tuple[httpx.Client, Optional[_PooledClientEntry]]:
-    """Select the attempt-scoped HTTPX client respecting origin boundaries (P0-3c, P1-2, P1-4, P1-5)."""
+    """Select the attempt-scoped HTTPX client respecting origin boundaries (P0-3c, F2, P1-2, P1-4, P1-5)."""
     if shared_transport_client is not None:
         return shared_transport_client, None
 
@@ -506,7 +538,7 @@ def _acquire_attempt_client(
         if caller_client_origin is not None:
             if entry_origin is not None and entry_origin == caller_client_origin:
                 return http_client, None
-        elif not multi_origin_pool and dep_client is None:
+        elif not multi_origin_pool and dep_client is None and not restrict_caller_headers:
             return http_client, None
 
     if dep_client is not None:
@@ -569,9 +601,10 @@ def execute_pooled_completion(
         external_deadline=kwargs.get("_dsa_deadline_monotonic"),
     )
 
-    # P1-2: Keep injected BaseTransport wrapper client alive across attempts; close once in finally.
+    # P1-2 & F4: Keep injected BaseTransport wrapper client alive across attempts AND
+    # wrap with _NonClosingTransport so completing call 1 never closes a router-shared transport.
     shared_transport_client: Optional[httpx.Client] = (
-        httpx.Client(transport=http_transport, follow_redirects=False)
+        httpx.Client(transport=_NonClosingTransport(http_transport), follow_redirects=False)
         if http_transport is not None
         else None
     )
@@ -644,6 +677,7 @@ def execute_pooled_completion(
                 caller_client_origin=caller_client_origin,
                 deployment_clients=deployment_clients,
                 multi_origin_pool=multi_origin_pool,
+                restrict_caller_headers=restrict_cross_origin,
             )
 
             try:
@@ -661,7 +695,7 @@ def execute_pooled_completion(
                     content_type = resp_headers.get("content-type", "")
 
                     if 300 <= status_code < 400:
-                        location = sanitize_error_message(resp_headers.get("location", ""), secrets)
+                        location = _sanitize_redirect_location(resp_headers.get("location", ""), secrets)
                         raise NativeBadRequestError(
                             f"HTTP {status_code} redirect refused (follow_redirects=False)"
                             + (f" -> {location}" if location else ""),
@@ -936,6 +970,11 @@ class NativeStreamWrapper:
                 self._shared_transport_client = None
         _close_stream_resources(ctx, lease, shared)
 
+    def is_closed(self) -> bool:
+        """Return True once ``close()`` has been called (F4)."""
+        with self._lock:
+            return self._closed
+
     def close(self) -> None:
         """Close the active HTTP stream, pooled lease, and owned transport client immediately."""
         with self._lock:
@@ -1072,6 +1111,8 @@ class NativeStreamWrapper:
 
                     next_conn, retry_err = self._on_pre_chunk_retry(wrapped, cur_entry.deployment_id)
                     if next_conn is None:
+                        if self.is_closed():
+                            return
                         if retry_err is not None and retry_err is not wrapped:
                             raise retry_err
                         raise wrapped from exc
@@ -1133,6 +1174,7 @@ def _open_stream_attempt(
         caller_client_origin=caller_client_origin,
         deployment_clients=deployment_clients,
         multi_origin_pool=multi_origin_pool,
+        restrict_caller_headers=bool(kwargs.get("_dsa_skip_sensitive_caller_headers")),
     )
 
     def _release_resources(ctx_obj: Any = None) -> None:
@@ -1221,7 +1263,7 @@ def _open_stream_attempt(
 
     # Fail fast on HTTP 3xx redirects (follow_redirects=False) instead of parsing redirect as SSE.
     if 300 <= resp.status_code < 400:
-        location = sanitize_error_message(resp.headers.get("location", ""), secrets)
+        location = _sanitize_redirect_location(resp.headers.get("location", ""), secrets)
         status_code = resp.status_code
         _release_resources(ctx)
         raise NativeBadRequestError(
@@ -1353,19 +1395,39 @@ def _open_stream_attempt(
             _release_resources(ctx)
         return _handle_json_stream_body(json_text, content_type)
 
-    # P1-4b: For non-SSE Content-Type (e.g. text/plain or omitted), peek first non-empty chunk
-    # so mislabeled HTTP 200 JSON errors or HTML pages are classified cleanly instead of failing as SSE.
+    # P1-4b & F6: For non-SSE Content-Type (e.g. text/plain or omitted), accumulate leading
+    # chunks until non-whitespace preamble bytes identify JSON/HTML vs SSE (handling
+    # whitespace-first JSON and split `<ht`+`ml>` tags without delaying real SSE streams).
     byte_iter: Iterator[bytes] = resp.iter_bytes()
     if not _is_sse_content_type(content_type):
-        first_chunk: Optional[bytes] = None
+        buffered_chunks: List[bytes] = []
+        raw_lead = bytearray()
         try:
             for candidate_chunk in byte_iter:
                 if cancel_check is not None:
                     cancel_check()
                 _remaining_before_deadline(deadline, clock=clock, provider=entry.provider, secrets=secrets)
-                if candidate_chunk:
-                    first_chunk = candidate_chunk
+                if not candidate_chunk:
+                    continue
+                buffered_chunks.append(candidate_chunk)
+                raw_lead.extend(candidate_chunk)
+                stripped_lead = bytes(raw_lead).lstrip(b"\xef\xbb\xbf \t\r\n")
+                if not stripped_lead:
+                    # Guard against infinite whitespace-only streams.
+                    if len(raw_lead) >= 4096:
+                        break
+                    continue
+                if stripped_lead.startswith(b"{"):
                     break
+                if stripped_lead.startswith(b"<"):
+                    if len(stripped_lead) >= 64 or looks_like_html(
+                        stripped_lead[:512].decode("utf-8-sig", errors="replace"),
+                        ignore_content_type=True,
+                    ):
+                        break
+                    continue
+                # Not JSON or HTML (e.g. SSE `data:` / `event:` / `:comment`): stop immediately!
+                break
         except httpx.TimeoutException as exc:
             _release_resources(ctx)
             sanitized = sanitize_error_message(exc, secrets)
@@ -1382,8 +1444,9 @@ def _open_stream_attempt(
             _release_resources(ctx)
             raise
 
-        if first_chunk is not None:
-            stripped_lead = first_chunk.lstrip(b"\xef\xbb\xbf \t\r\n")
+        if buffered_chunks:
+            combined_lead = b"".join(buffered_chunks)
+            stripped_lead = combined_lead.lstrip(b"\xef\xbb\xbf \t\r\n")
             if stripped_lead.startswith(b"{"):
                 try:
                     raw_json = _read_bytes_bounded(
@@ -1396,7 +1459,7 @@ def _open_stream_attempt(
                         secrets=secrets,
                         max_bytes=_MAX_ERROR_BODY_BYTES,
                         raise_on_limit=False,
-                        initial_chunk=first_chunk,
+                        initial_chunk=combined_lead,
                     )
                     json_text = raw_json.decode("utf-8-sig", errors="replace")
                 except httpx.TimeoutException as exc:
@@ -1413,7 +1476,7 @@ def _open_stream_attempt(
                     _release_resources(ctx)
                 return _handle_json_stream_body(json_text, content_type or "text/plain")
 
-            preview_text = first_chunk[:512].decode("utf-8-sig", errors="replace")
+            preview_text = combined_lead[:512].decode("utf-8-sig", errors="replace")
             if looks_like_html(preview_text, ignore_content_type=True):
                 try:
                     raw_html = _read_bytes_bounded(
@@ -1426,7 +1489,7 @@ def _open_stream_attempt(
                         secrets=secrets,
                         max_bytes=_MAX_ERROR_BODY_BYTES,
                         raise_on_limit=False,
-                        initial_chunk=first_chunk,
+                        initial_chunk=combined_lead,
                     )
                     html_body = raw_html.decode("utf-8-sig", errors="replace")
                 except httpx.TimeoutException as exc:
@@ -1450,7 +1513,7 @@ def _open_stream_attempt(
                     ignore_content_type=True,
                 )
 
-            byte_iter = itertools.chain([first_chunk], byte_iter)
+            byte_iter = itertools.chain(buffered_chunks, byte_iter)
 
     return (ctx, resp, byte_iter, pooled_lease, secrets), None
 
@@ -1503,12 +1566,14 @@ def stream_pooled_completion(
         external_deadline=kwargs.get("_dsa_deadline_monotonic"),
     )
 
-    # P1-2: Share one wrapper client across retries for injected BaseTransport.
+    # P1-2 & F4: Share one wrapper client across retries AND wrap with _NonClosingTransport
+    # so closing a stream never closes a router-shared BaseTransport needed by later calls.
     shared_transport_client: Optional[httpx.Client] = (
-        httpx.Client(transport=http_transport, follow_redirects=False)
+        httpx.Client(transport=_NonClosingTransport(http_transport), follow_redirects=False)
         if http_transport is not None
         else None
     )
+    is_wrapper_closed: List[Callable[[], bool]] = [lambda: False]
 
     def _open_next(
         prior_error: Optional[Exception] = None,
@@ -1516,6 +1581,8 @@ def stream_pooled_completion(
         nonlocal attempts_used
         last_err = prior_error
         while attempts_used < max_attempts:
+            if is_wrapper_closed[0]():
+                return None, last_err
             if cancel_check is not None:
                 cancel_check()
 
@@ -1545,6 +1612,9 @@ def stream_pooled_completion(
                     backoff = min(backoff, max(0.0, remaining))
                 if backoff > 0:
                     effective_sleep(backoff)
+                    # F4: Re-check wrapper closure after backoff BEFORE opening a fresh HTTP attempt!
+                    if is_wrapper_closed[0]():
+                        return None, last_err
                     if cancel_check is not None:
                         cancel_check()
                     remaining = _remaining_before_deadline(
@@ -1553,6 +1623,9 @@ def stream_pooled_completion(
                         provider=entry.provider,
                         secrets=secrets,
                     )
+
+            if is_wrapper_closed[0]():
+                return None, last_err
 
             attempts_used += 1
             tried_ids.append(entry.deployment_id)
@@ -1626,7 +1699,7 @@ def stream_pooled_completion(
             bad_auth_ids.add(failed_deployment_id)
         return _open_next(prior_error=exc)
 
-    return NativeStreamWrapper(
+    wrapper = NativeStreamWrapper(
         entry=entry0,
         ctx=ctx0,
         resp=resp0,
@@ -1642,3 +1715,5 @@ def stream_pooled_completion(
         cancel_check=cancel_check,
         on_pre_chunk_retry=_retry_pre_chunk,
     )
+    is_wrapper_closed[0] = wrapper.is_closed
+    return wrapper

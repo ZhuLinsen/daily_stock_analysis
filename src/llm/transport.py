@@ -394,13 +394,33 @@ def _tag_response_transport_engine(response: Any, engine: str) -> Any:
 
 
 def _strip_internal_litellm_kwargs(kwargs: Mapping[str, Any]) -> Dict[str, Any]:
-    """Strip native-only transport metadata keys before calling LiteLLM SDK."""
+    """Strip native-only transport metadata keys before calling LiteLLM SDK (including extra_body, F5)."""
     cleaned: Dict[str, Any] = {}
     for key, value in kwargs.items():
         if key in {"wire_protocol", "dsa_channel_protocol"} or str(key).startswith("_dsa_"):
             continue
+        if key == "extra_body" and isinstance(value, Mapping):
+            filtered_extra = {
+                ek: ev
+                for ek, ev in value.items()
+                if ek not in {"wire_protocol", "dsa_channel_protocol"} and not str(ek).startswith("_dsa_")
+            }
+            if filtered_extra or not value:
+                cleaned[key] = filtered_extra
+            continue
         cleaned[key] = value
     return cleaned
+
+
+_HARD_CONFIG_ERROR_REASONS = frozenset(
+    {
+        "invalid_deployment_param",
+        "unsupported_channel_protocol",
+        "unresolved_endpoint_env",
+        "conflicting_api_base",
+        "endpoint_surface_mismatch",
+    }
+)
 
 
 def _is_synthetic_zero_cost_spec(spec: Any) -> bool:
@@ -413,24 +433,26 @@ def _sync_shared_pricing_to_transport(
     transport: Optional[LLMTransport],
     entries: Optional[Mapping[str, Any]] = None,
 ) -> None:
-    """Mirror dynamically registered model costs into a fallback transport without clobbering SDK costs (P1-14)."""
+    """Mirror dynamically registered model costs into a fallback transport without clobbering SDK costs (P1-14, F5)."""
     if transport is None:
         return
     try:
         _MATERIALIZED_FALLBACK_TRANSPORTS.add(transport)
     except TypeError:
         pass
-    if entries is None:
-        with _SHARED_MODEL_COSTS_LOCK:
-            snapshot = dict(_SHARED_MODEL_COSTS)
-    else:
-        snapshot = dict(entries)
-    if not snapshot:
-        return
     try:
-        # P1-6c: Serialize check-then-write against fallback cost map without holding _SHARED_MODEL_COSTS_LOCK.
+        # F5: Acquire _PRICING_SYNC_LOCK BEFORE snapshotting _SHARED_MODEL_COSTS so an older
+        # snapshot can never revert a newer concurrent price update (strict lock order: sync -> costs).
         with _PRICING_SYNC_LOCK:
-            if not transport.can_register_model():
+            with _SHARED_MODEL_COSTS_LOCK:
+                if entries is None:
+                    snapshot = dict(_SHARED_MODEL_COSTS)
+                else:
+                    snapshot = {
+                        k: _SHARED_MODEL_COSTS.get(k, v)
+                        for k, v in entries.items()
+                    }
+            if not snapshot or not transport.can_register_model():
                 return
             existing_costs = transport.get_model_cost()
             filtered: Dict[str, Any] = {}
@@ -758,7 +780,11 @@ class NativeUnifiedRouter:
 
             for alias, indexed_entries in grouped.items():
                 resolved_group: List[DeploymentSpec] = []
-                unsupported_item: Optional[Unsupported] = None
+                group_clients: Dict[str, Any] = {}
+                first_unsupported: Optional[Unsupported] = None
+                hard_config_error: Optional[Unsupported] = None
+                # F1: Scan ALL entries in the alias group so hard config errors never hide
+                # behind an earlier delegatable Unsupported entry.
                 for idx, entry_dict in indexed_entries:
                     res = resolve_deployment(
                         entry_dict,
@@ -766,8 +792,11 @@ class NativeUnifiedRouter:
                         alias=alias,
                     )
                     if isinstance(res, Unsupported):
-                        unsupported_item = res
-                        break
+                        if first_unsupported is None:
+                            first_unsupported = res
+                        if res.reason in _HARD_CONFIG_ERROR_REASONS and hard_config_error is None:
+                            hard_config_error = res
+                        continue
                     resolved_group.append(res)
                     raw_params = entry_dict.get("litellm_params")
                     if isinstance(raw_params, Mapping):
@@ -777,24 +806,29 @@ class NativeUnifiedRouter:
                             dep_origin = url_origin(dep_client_base) if dep_client_base else None
                             res_origin = url_origin(res.api_base)
                             if dep_origin is None or (res_origin is not None and dep_origin == res_origin):
-                                self._deployment_clients[res.deployment_id] = dep_http
+                                group_clients[res.deployment_id] = dep_http
 
-                if unsupported_item is not None:
-                    # P1-5: Invalid deployment config syntax (e.g. store="maybe") fails closed in BOTH modes.
-                    if (
-                        self._fallback_transport is not None
-                        and unsupported_item.reason != "invalid_deployment_param"
-                    ):
+                if hard_config_error is not None:
+                    # F1 & P1-5: Hard deployment config errors fail closed in BOTH native and auto modes.
+                    raise NativeConfigError(
+                        f"Alias '{alias}' cannot run in native transport: {hard_config_error.detail}",
+                        status_code=400,
+                        provider=hard_config_error.provider,
+                        error_code=hard_config_error.reason,
+                    )
+                if first_unsupported is not None:
+                    if self._fallback_transport is not None:
                         self._fallback_entries_by_alias[alias] = [e for _, e in indexed_entries]
                     else:
                         raise NativeConfigError(
-                            f"Alias '{alias}' cannot run in native transport: {unsupported_item.detail}",
+                            f"Alias '{alias}' cannot run in native transport: {first_unsupported.detail}",
                             status_code=400,
-                            provider=unsupported_item.provider,
-                            error_code=unsupported_item.reason,
+                            provider=first_unsupported.provider,
+                            error_code=first_unsupported.reason,
                         )
                 else:
                     native_specs.extend(resolved_group)
+                    self._deployment_clients.update(group_clients)
 
             self._pool = DeploymentPool(
                 native_specs,
@@ -903,7 +937,10 @@ class NativeUnifiedRouter:
                 params=req_kwargs,
             )
             if isinstance(resolved, Unsupported):
-                if self._fallback_transport is not None:
+                if (
+                    self._fallback_transport is not None
+                    and resolved.reason not in _HARD_CONFIG_ERROR_REASONS
+                ):
                     _sync_shared_pricing_to_transport(self._fallback_transport)
                     return _tag_response_transport_engine(
                         self._fallback_transport.completion(
@@ -998,7 +1035,10 @@ class NativeUnifiedTransport:
         resolved = resolve_deployment(model, deployment_id=f"direct:{model}", alias=model, params=kwargs)
 
         if isinstance(resolved, Unsupported):
-            if self._fallback_transport is not None and resolved.reason != "invalid_deployment_param":
+            if (
+                self._fallback_transport is not None
+                and resolved.reason not in _HARD_CONFIG_ERROR_REASONS
+            ):
                 _sync_shared_pricing_to_transport(self._fallback_transport)
                 return _tag_response_transport_engine(
                     self._fallback_transport.completion(**kwargs),

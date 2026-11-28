@@ -1358,3 +1358,98 @@ def test_round2_p1_9_p1_11_p2_gemini_sse_order_quoted_jsonpath_sparse_array_and_
             messages=[{"role": "user", "content": [{"fileData": {"fileUri": good_uri}}]}],
         )
         assert ok_payload["contents"][0]["parts"][0]["fileData"]["fileUri"] == good_uri
+
+
+def test_round3_f7_f8_responses_sse_dedup_gemini_leading_text_and_jsonpath_escapes() -> None:
+    """Round 3 F7 & F8: Responses SSE deduplicates upgraded reasoning IDs & preserves store=True reasoning; Gemini SSE preserves leading unsigned text in provider_blocks; JSONPath decodes escapes and rejects malformed ones."""
+    # 1. F7 Responses SSE: output_item.done has r1 without ciphertext, r2 with ciphertext,
+    # then response.completed has [r1(ENC_1), r2(ENC_2)] -> MUST emit [r1(ENC_1), r2(ENC_2)] once with ZERO duplicates!
+    resp_spec = DeploymentSpec(alias="m", wire_model="gpt-5", protocol="openai_responses", provider="openai")
+    sse_dedup = (
+        b'data: {"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"r1","summary":[{"type":"summary_text","text":"s1"}]}}\n\n'
+        b'data: {"type":"response.output_item.done","output_index":1,"item":{"type":"reasoning","id":"r2","summary":[{"type":"summary_text","text":"s2"}],"encrypted_content":"ENC_2"}}\n\n'
+        b'data: {"type":"response.output_text.delta","delta":"done"}\n\n'
+        b'data: {"type":"response.completed","response":{"id":"resp_dedup","model":"gpt-5","status":"completed","output":[{"type":"reasoning","id":"r1","summary":[{"type":"summary_text","text":"s1"}],"encrypted_content":"ENC_1"},{"type":"reasoning","id":"r2","summary":[{"type":"summary_text","text":"s2"}],"encrypted_content":"ENC_2"}]}}\n\n'
+    )
+    dedup_chunks = list(iter_openai_stream_chunks(resp_spec, [sse_dedup]))
+    dedup_blocks = [b for ch in dedup_chunks for b in (ch.choices[0].delta.provider_blocks or [])]
+    assert [(b["id"], b.get("encrypted_content")) for b in dedup_blocks] == [("r1", "ENC_1"), ("r2", "ENC_2")]
+
+    # F7 Responses store=True non-stream preserves reasoning items even without encrypted_content
+    parsed_store_true = parse_responses_api_response(
+        {
+            "id": "resp_st",
+            "model": "gpt-5",
+            "status": "completed",
+            "output": [
+                {"type": "reasoning", "id": "rs_st1", "summary": [{"type": "summary_text", "text": "think"}]},
+                {"type": "function_call", "call_id": "call_st1", "name": "f", "arguments": "{}"},
+            ],
+        }
+    )
+    assert parsed_store_true.choices[0].message.provider_blocks is not None
+    assert [b["type"] for b in parsed_store_true.choices[0].message.provider_blocks] == ["reasoning", "function_call"]
+
+    # 2. F7 Gemini SSE: leading unsigned "lead" text in frame 1 + tool_call & signed "tail" in frame 2
+    # MUST preserve "lead" in ordered provider_blocks so turn-2 replay does not drop it!
+    sse_gem_lead = (
+        b'data: {"candidates":[{"index":0,"content":{"parts":[{"text":"lead"}]}}]}\n\n'
+        b'data: {"candidates":[{"index":0,"content":{"parts":[{"functionCall":{"id":"fc_l","name":"lookup","args":{"c":"1"}}},{"text":"tail","thoughtSignature":"SIG_TAIL"}]},"finishReason":"STOP"}]}\n\n'
+    )
+    lead_chunks = list(iter_gemini_stream_chunks([sse_gem_lead]))
+    assert lead_chunks[0].choices[0].delta.content == "lead"
+    assert lead_chunks[0].choices[0].delta.provider_blocks is None
+    all_gem_blocks = [b for ch in lead_chunks for b in (ch.choices[0].delta.provider_blocks or [])]
+    assert len(all_gem_blocks) == 3
+    assert all_gem_blocks[0] == {"text": "lead"}
+    assert all_gem_blocks[1]["functionCall"]["id"] == "fc_l"
+    assert all_gem_blocks[2] == {"text": "tail", "thoughtSignature": "SIG_TAIL"}
+
+    replayed_gem = build_gemini_payload(
+        wire_model="gemini-2.5-pro",
+        messages=[
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "leadtail", "provider_blocks": all_gem_blocks},
+        ],
+    )
+    assert replayed_gem["contents"][1]["parts"][0] == {"text": "lead"}
+    assert replayed_gem["contents"][1]["parts"][1]["functionCall"]["id"] == "fc_l"
+    assert replayed_gem["contents"][1]["parts"][2] == {"text": "tail", "thoughtSignature": "SIG_TAIL"}
+
+    # 3. F8 Gemini JSONPath escape decoding (\u002e, surrogate pairs, standard escapes) & malformed escape rejection
+    sse_escapes = (
+        b'data: {"candidates":[{"index":0,"content":{"parts":[{"functionCall":{"id":"fc_esc","name":"scan","partialArgs":[{"jsonPath":"$[\'target\\\\u002esymbol\']","stringValue":"600519"},{"jsonPath":"$[\\"line\\\\nbreak\\"]","stringValue":"ok"},{"jsonPath":"$[\'\\\\uD83D\\\\uDE00\']","stringValue":"smile"}],"willContinue":false}}]},"finishReason":"STOP"}]}\n\n'
+    )
+    esc_chunks = list(iter_gemini_stream_chunks([sse_escapes]))
+    esc_tcs = [tc for ch in esc_chunks for tc in (ch.choices[0].delta.tool_calls or [])]
+    assert json.loads(esc_tcs[0].function.arguments) == {
+        "target.symbol": "600519",
+        "line\nbreak": "ok",
+        "😀": "smile",
+    }
+
+    for bad_esc_path in (r"$['bad\q']", r"$['\u123']", r"$['\uD800']", r"$['\uDC00']"):
+        bad_payload = json.dumps(
+            {
+                "candidates": [
+                    {
+                        "index": 0,
+                        "content": {
+                            "parts": [
+                                {
+                                    "functionCall": {
+                                        "id": "fc_be",
+                                        "name": "f",
+                                        "partialArgs": [{"jsonPath": bad_esc_path, "stringValue": "x"}],
+                                        "willContinue": False,
+                                    }
+                                }
+                            ]
+                        },
+                        "finishReason": "STOP",
+                    }
+                ]
+            }
+        )
+        with pytest.raises(NativeBadRequestError):
+            list(iter_gemini_stream_chunks([f"data: {bad_payload}\n\n".encode("utf-8")]))

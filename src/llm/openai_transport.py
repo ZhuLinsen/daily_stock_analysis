@@ -1069,8 +1069,8 @@ def parse_responses_api_response(
     else:
         finish_reason = "stop"
 
-    has_encrypted_reasoning = any(
-        blk.get("type") == "reasoning" and blk.get("encrypted_content") is not None
+    has_reasoning = any(
+        blk.get("type") == "reasoning"
         for blk in provider_blocks
     )
     message = NativeMessage(
@@ -1078,7 +1078,7 @@ def parse_responses_api_response(
         content="".join(text_parts) if text_parts else None,
         tool_calls=tool_calls or None,
         reasoning_content="\n".join(reasoning_parts) if reasoning_parts else None,
-        provider_blocks=provider_blocks if has_encrypted_reasoning else None,
+        provider_blocks=provider_blocks if has_reasoning else None,
     )
 
     return NativeCompletionResponse(
@@ -1101,7 +1101,8 @@ def _iter_responses_stream_chunks(
 ) -> Iterator[NativeStreamChunk]:
     """Stream Responses API SSE frames as Chat Completions-compatible :class:`NativeStreamChunk`."""
     tool_index_by_key: Dict[str, int] = {}
-    emitted_reasoning_has_cipher: Dict[str, bool] = {}
+    emitted_reasoning_ids: set[str] = set()
+    pending_reasoning_blocks: Dict[str, Dict[str, Any]] = {}
     saw_tool_calls = False
     saw_terminal = False
     response_id = f"resp-{uuid.uuid4().hex[:12]}"
@@ -1118,22 +1119,24 @@ def _iter_responses_stream_chunks(
         return block
 
     def _collect_unemitted_reasoning(resp_mapping: Optional[Mapping[str, Any]]) -> List[Dict[str, Any]]:
-        if not isinstance(resp_mapping, Mapping):
-            return []
+        # F7: Emit canonical reasoning items in wire order without duplicating IDs whose
+        # ciphertext arrived on response.completed instead of response.output_item.done.
         missing: List[Dict[str, Any]] = []
-        for out_idx, out_item in enumerate(resp_mapping.get("output") or []):
-            if not isinstance(out_item, Mapping) or out_item.get("type") != "reasoning":
-                continue
-            rkey = str(out_item.get("id") or f"idx:{out_idx}")
-            has_cipher = out_item.get("encrypted_content") is not None
-            # P1-9: Never discard encrypted_content from response.completed if an earlier
-            # output_item.done claimed the same ID without ciphertext!
-            if rkey in emitted_reasoning_has_cipher and (
-                emitted_reasoning_has_cipher[rkey] or not has_cipher
-            ):
-                continue
-            emitted_reasoning_has_cipher[rkey] = has_cipher
-            missing.append(_build_reasoning_block(out_item))
+        if isinstance(resp_mapping, Mapping):
+            for out_idx, out_item in enumerate(resp_mapping.get("output") or []):
+                if not isinstance(out_item, Mapping) or out_item.get("type") != "reasoning":
+                    continue
+                rkey = str(out_item.get("id") or f"idx:{out_idx}")
+                if rkey in emitted_reasoning_ids:
+                    continue
+                emitted_reasoning_ids.add(rkey)
+                pending_reasoning_blocks.pop(rkey, None)
+                missing.append(_build_reasoning_block(out_item))
+        for rkey, pending_block in list(pending_reasoning_blocks.items()):
+            if rkey not in emitted_reasoning_ids:
+                emitted_reasoning_ids.add(rkey)
+                missing.append(pending_block)
+        pending_reasoning_blocks.clear()
         return missing
 
     for event_name, data in iter_sse_json_events(
@@ -1217,21 +1220,27 @@ def _iter_responses_stream_chunks(
                     ],
                 )
         elif etype == "response.output_item.done":
-            # P1-15 & P1-9: Preserve encrypted reasoning items in order; allow completion upgrade if ciphertext arrives later.
+            # F7 & P1-15: Emit reasoning immediately only when encrypted_content is already present
+            # and no earlier reasoning item is buffered awaiting completion ciphertext; otherwise defer
+            # to response.completed/incomplete so wire order is preserved with zero duplicate IDs.
             item = data.get("item")
             if isinstance(item, Mapping) and item.get("type") == "reasoning":
-                rkey = str(item.get("id") or f"idx:{data.get('output_index', len(emitted_reasoning_has_cipher))}")
+                rkey = str(
+                    item.get("id")
+                    or f"idx:{data.get('output_index', len(emitted_reasoning_ids) + len(pending_reasoning_blocks))}"
+                )
+                rblock = _build_reasoning_block(item)
                 has_cipher = item.get("encrypted_content") is not None
-                if rkey not in emitted_reasoning_has_cipher or (
-                    has_cipher and not emitted_reasoning_has_cipher[rkey]
-                ):
-                    emitted_reasoning_has_cipher[rkey] = has_cipher
-                    rblock = _build_reasoning_block(item)
-                    yield NativeStreamChunk(
-                        id=response_id,
-                        model=model_name,
-                        choices=[NativeChoice(index=0, delta=NativeMessage(provider_blocks=[rblock]))],
-                    )
+                if rkey not in emitted_reasoning_ids:
+                    if has_cipher and not pending_reasoning_blocks:
+                        emitted_reasoning_ids.add(rkey)
+                        yield NativeStreamChunk(
+                            id=response_id,
+                            model=model_name,
+                            choices=[NativeChoice(index=0, delta=NativeMessage(provider_blocks=[rblock]))],
+                        )
+                    else:
+                        pending_reasoning_blocks[rkey] = rblock
         elif etype == "response.function_call_arguments.delta":
             item_key = str(data.get("item_id") or data.get("output_index", 0))
             tc_index = tool_index_by_key.setdefault(item_key, len(tool_index_by_key))

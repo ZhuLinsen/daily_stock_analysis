@@ -193,6 +193,42 @@ def _extract_recovery_timeout_seconds(raw_timeout: Any) -> Optional[float]:
     return max(nums) if nums else None
 
 
+def _clamp_recovery_timeout(raw_timeout: Any, remaining: float) -> Any:
+    """Clamp float, tuple/list, or httpx.Timeout per-phase without lengthening any phase (F9)."""
+    if raw_timeout is None or raw_timeout == "":
+        return remaining
+    if isinstance(raw_timeout, (int, float)) and not isinstance(raw_timeout, bool):
+        val = float(raw_timeout)
+        return min(val, remaining) if math.isfinite(val) and val > 0 else remaining
+    if isinstance(raw_timeout, tuple):
+        return tuple(
+            min(float(v), remaining)
+            if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(float(v)) and float(v) > 0
+            else (remaining if v is None else v)
+            for v in raw_timeout
+        )
+    if isinstance(raw_timeout, list):
+        return [
+            min(float(v), remaining)
+            if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(float(v)) and float(v) > 0
+            else (remaining if v is None else v)
+            for v in raw_timeout
+        ]
+    if all(hasattr(raw_timeout, attr) for attr in ("connect", "read", "write", "pool")):
+        clamped_phases: Dict[str, Any] = {}
+        for attr in ("connect", "read", "write", "pool"):
+            phase_val = getattr(raw_timeout, attr, None)
+            if isinstance(phase_val, (int, float)) and not isinstance(phase_val, bool) and math.isfinite(float(phase_val)) and float(phase_val) > 0:
+                clamped_phases[attr] = min(float(phase_val), remaining)
+            else:
+                clamped_phases[attr] = remaining
+        try:
+            return type(raw_timeout)(**clamped_phases)
+        except Exception:
+            return remaining
+    return remaining
+
+
 def _without_native_internal_keys(kwargs: Dict[str, Any]) -> Dict[str, Any]:
     return {k: v for k, v in kwargs.items() if not str(k).startswith("_dsa_")}
 
@@ -248,12 +284,10 @@ def call_litellm_with_param_recovery(
         if effective_remaining is None:
             return call(kwargs)
 
-        kw_timeout = _extract_recovery_timeout_seconds(kwargs.get("timeout"))
-        if kw_timeout is not None:
-            effective_remaining = min(effective_remaining, kw_timeout)
+        clamped_timeout = _clamp_recovery_timeout(kwargs.get("timeout"), effective_remaining)
         # Keep the Router's same-model deployment retries. The stock executor
         # enforces the batch deadline even if the SDK is still retrying.
-        response = call({**kwargs, "timeout": effective_remaining})
+        response = call({**kwargs, "timeout": clamped_timeout})
         raise_if_stock_cancelled()
         return response
 

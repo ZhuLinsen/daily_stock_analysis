@@ -1091,7 +1091,7 @@ def resolve_deployment(
             effective_provider = "openai"
         else:
             effective_provider = model_prefix
-    elif eff_channel_protocol in all_native_wire_providers:
+    elif eff_channel_protocol in (all_native_wire_providers | {"ark"}):
         effective_provider = eff_channel_protocol
     elif protocol == "anthropic":
         effective_provider = "anthropic"

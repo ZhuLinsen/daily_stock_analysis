@@ -825,12 +825,88 @@ def _parse_json_path_tokens(path: str) -> List[Any]:
                 idx += 1
                 chars: List[str] = []
                 closed = False
+                _simple_escapes = {
+                    "b": "\b",
+                    "f": "\f",
+                    "n": "\n",
+                    "r": "\r",
+                    "t": "\t",
+                    "/": "/",
+                    "\\": "\\",
+                }
                 while idx < n:
                     cur_ch = raw[idx]
-                    if cur_ch == "\\" and idx + 1 < n:
-                        chars.append(raw[idx + 1])
-                        idx += 2
-                        continue
+                    if cur_ch == "\\":
+                        if idx + 1 >= n:
+                            raise NativeBadRequestError(
+                                f"Unterminated escape in Gemini partialArgs jsonPath: {path!r}",
+                                status_code=400,
+                                provider="gemini",
+                                error_code="invalid_partial_args_path",
+                            )
+                        esc = raw[idx + 1]
+                        if esc == quote_ch:
+                            chars.append(quote_ch)
+                            idx += 2
+                            continue
+                        if esc in _simple_escapes:
+                            chars.append(_simple_escapes[esc])
+                            idx += 2
+                            continue
+                        if esc == "u":
+                            hex4 = raw[idx + 2 : idx + 6]
+                            if len(hex4) < 4 or not all(c in "0123456789abcdefABCDEF" for c in hex4):
+                                raise NativeBadRequestError(
+                                    f"Malformed \\u escape in Gemini partialArgs jsonPath: {path!r}",
+                                    status_code=400,
+                                    provider="gemini",
+                                    error_code="invalid_partial_args_path",
+                                )
+                            code_unit = int(hex4, 16)
+                            idx += 6
+                            if 0xD800 <= code_unit <= 0xDBFF:
+                                if raw[idx : idx + 2] != "\\u":
+                                    raise NativeBadRequestError(
+                                        f"Unpaired high surrogate in Gemini partialArgs jsonPath: {path!r}",
+                                        status_code=400,
+                                        provider="gemini",
+                                        error_code="invalid_partial_args_path",
+                                    )
+                                low_hex = raw[idx + 2 : idx + 6]
+                                if len(low_hex) < 4 or not all(c in "0123456789abcdefABCDEF" for c in low_hex):
+                                    raise NativeBadRequestError(
+                                        f"Malformed surrogate pair in Gemini partialArgs jsonPath: {path!r}",
+                                        status_code=400,
+                                        provider="gemini",
+                                        error_code="invalid_partial_args_path",
+                                    )
+                                low_unit = int(low_hex, 16)
+                                if not (0xDC00 <= low_unit <= 0xDFFF):
+                                    raise NativeBadRequestError(
+                                        f"Invalid low surrogate in Gemini partialArgs jsonPath: {path!r}",
+                                        status_code=400,
+                                        provider="gemini",
+                                        error_code="invalid_partial_args_path",
+                                    )
+                                idx += 6
+                                combined = 0x10000 + ((code_unit - 0xD800) << 10) + (low_unit - 0xDC00)
+                                chars.append(chr(combined))
+                            elif 0xDC00 <= code_unit <= 0xDFFF:
+                                raise NativeBadRequestError(
+                                    f"Unpaired low surrogate in Gemini partialArgs jsonPath: {path!r}",
+                                    status_code=400,
+                                    provider="gemini",
+                                    error_code="invalid_partial_args_path",
+                                )
+                            else:
+                                chars.append(chr(code_unit))
+                            continue
+                        raise NativeBadRequestError(
+                            f"Invalid escape sequence '\\{esc}' in Gemini partialArgs jsonPath: {path!r}",
+                            status_code=400,
+                            provider="gemini",
+                            error_code="invalid_partial_args_path",
+                        )
                     if cur_ch == quote_ch:
                         idx += 1
                         closed = True
@@ -1175,6 +1251,8 @@ def iter_gemini_stream_chunks(
     tool_count_by_cand: Dict[int, int] = {}
     saw_tools_by_cand: Dict[int, bool] = {}
     active_partial_fc_by_cand: Dict[int, Dict[str, Any]] = {}
+    buffered_unsigned_parts_by_cand: Dict[int, List[Dict[str, Any]]] = {}
+    emitted_ordered_by_cand: Dict[int, bool] = {}
     seen_candidates: Set[int] = set()
     finished_candidates: Set[int] = set()
     response_id = f"gemini-{uuid.uuid4().hex[:12]}"
@@ -1223,19 +1301,30 @@ def iter_gemini_stream_chunks(
                 norm_finish,
                 has_tool_calls=saw_tools_by_cand.get(cand_idx, False),
             )
-            # P1-9: Preserve ordered provider_blocks per candidate in SSE even when an
-            # unsigned functionCall frame precedes a signed text frame.
-            emit_ordered_parts = bool(ordered_parts) and (
-                preserve_parts or bool(tool_calls) or saw_tools_by_cand.get(cand_idx, False)
-            )
-            if not (text_parts or reasoning_parts or tool_calls or emit_ordered_parts or finish_reason):
+            # P1-9 & F7: Preserve ordered provider_blocks per candidate in SSE, including
+            # leading unsigned text emitted in earlier frames before a tool call or signed part.
+            emitted_blocks: Optional[List[Dict[str, Any]]] = None
+            if ordered_parts:
+                should_emit_ordered = (
+                    preserve_parts
+                    or bool(tool_calls)
+                    or saw_tools_by_cand.get(cand_idx, False)
+                    or emitted_ordered_by_cand.get(cand_idx, False)
+                )
+                if should_emit_ordered:
+                    prior_unsigned = buffered_unsigned_parts_by_cand.pop(cand_idx, [])
+                    emitted_blocks = prior_unsigned + ordered_parts
+                    emitted_ordered_by_cand[cand_idx] = True
+                else:
+                    buffered_unsigned_parts_by_cand.setdefault(cand_idx, []).extend(ordered_parts)
+            if not (text_parts or reasoning_parts or tool_calls or emitted_blocks or finish_reason):
                 continue
             delta = NativeMessage(
                 role="assistant",
                 content="".join(text_parts) if text_parts else None,
                 tool_calls=tool_calls or None,
                 reasoning_content="\n".join(reasoning_parts) if reasoning_parts else None,
-                provider_blocks=ordered_parts if emit_ordered_parts else None,
+                provider_blocks=emitted_blocks,
             )
             choices.append(
                 NativeChoice(
