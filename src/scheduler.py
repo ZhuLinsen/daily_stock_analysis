@@ -14,8 +14,12 @@
 """
 
 import logging
+import math
+import os
 import re
+import select
 import signal
+import socket
 import threading
 import time
 from datetime import datetime
@@ -48,6 +52,211 @@ def normalize_schedule_times(
     return sorted(valid)
 
 
+class _WakeupChannel:
+    """Async-signal-safe wakeup pipe/socketpair for waiting without lock reentrancy."""
+
+    def __init__(self) -> None:
+        self._signaled = False
+        self._closed = False
+        self._mode = "poll"
+        self._r_fd: Optional[int] = None
+        self._w_fd: Optional[int] = None
+        self._r_sock: Optional[socket.socket] = None
+        self._w_sock: Optional[socket.socket] = None
+
+        if os.name != "nt" and hasattr(os, "pipe"):
+            try:
+                self._r_fd, self._w_fd = os.pipe()
+                os.set_blocking(self._r_fd, False)
+                os.set_blocking(self._w_fd, False)
+                self._mode = "pipe"
+                return
+            except OSError:
+                self._close_pipe_fds()
+
+        if hasattr(socket, "socketpair"):
+            try:
+                self._r_sock, self._w_sock = socket.socketpair()
+                self._r_sock.setblocking(False)
+                self._w_sock.setblocking(False)
+                self._mode = "socketpair"
+            except OSError:
+                self._close_sockets()
+
+    def _close_pipe_fds(self) -> None:
+        r_fd, self._r_fd = self._r_fd, None
+        w_fd, self._w_fd = self._w_fd, None
+        for fd in (r_fd, w_fd):
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+
+    def _close_sockets(self) -> None:
+        r_sock, self._r_sock = self._r_sock, None
+        w_sock, self._w_sock = self._w_sock, None
+        for sock in (r_sock, w_sock):
+            if sock is not None:
+                try:
+                    sock.close()
+                except OSError:
+                    pass
+
+    def notify(self) -> None:
+        """Wake any sleeper without acquiring locks (safe inside signal handlers)."""
+        self._signaled = True
+        if self._closed:
+            return
+        if self._mode == "pipe":
+            w_fd = self._w_fd
+            if w_fd is not None:
+                try:
+                    os.write(w_fd, b"\x01")
+                except (BlockingIOError, InterruptedError, OSError):
+                    pass
+        elif self._mode == "socketpair":
+            w_sock = self._w_sock
+            if w_sock is not None:
+                try:
+                    w_sock.send(b"\x01")
+                except (BlockingIOError, InterruptedError, OSError):
+                    pass
+
+    @staticmethod
+    def _drain_pipe(r_fd: int) -> None:
+        try:
+            os.read(r_fd, 64)
+        except (BlockingIOError, InterruptedError, OSError):
+            pass
+
+    @staticmethod
+    def _drain_socket(r_sock: socket.socket) -> None:
+        try:
+            r_sock.recv(64)
+        except (BlockingIOError, InterruptedError, OSError):
+            pass
+
+    @staticmethod
+    def _is_closed_target(target: Union[int, socket.socket]) -> bool:
+        if isinstance(target, int):
+            return target < 0
+        try:
+            return target.fileno() < 0
+        except OSError:
+            return True
+
+    def _wait_readable_once(
+        self,
+        target: Union[int, socket.socket],
+        wait_slice: float,
+        drain: Callable[[], None],
+    ) -> bool:
+        """Wait for descriptor readability without select()'s 1024 FD cap on POSIX.
+
+        Returns False only when the descriptor is closed/invalid so wait() can
+        abort when closed or fall back to bounded sleep instead of spinning.
+        """
+        if os.name != "nt" and hasattr(select, "poll"):
+            poller = select.poll()
+            try:
+                poller.register(target, select.POLLIN)
+            except ValueError:
+                return False
+            timeout_ms = max(1, int(math.ceil(wait_slice * 1000)))
+            events = poller.poll(timeout_ms)
+            poll_abort_mask = select.POLLERR | select.POLLNVAL | getattr(select, "POLLHUP", 0)
+            for _, event in events:
+                if event & select.POLLIN:
+                    drain()
+                if event & poll_abort_mask:
+                    return False
+            return True
+
+        try:
+            readable, _, _ = select.select([target], [], [], wait_slice)
+        except ValueError:
+            if self._closed or self._is_closed_target(target):
+                return False
+            # Fallback when select() cannot handle FDs >= FD_SETSIZE on platforms without poll().
+            time.sleep(min(0.1, wait_slice))
+            return True
+        if readable:
+            drain()
+        return True
+
+    def wait(self, timeout: float = 30.0) -> bool:
+        """Block until signaled or timeout expires."""
+        if self._signaled:
+            return True
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        while not self._signaled:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or self._closed:
+                return self._signaled
+            if self._mode == "pipe":
+                r_fd = self._r_fd
+                if r_fd is None:
+                    return self._signaled
+                try:
+                    ok = self._wait_readable_once(
+                        r_fd,
+                        remaining,
+                        lambda: self._drain_pipe(r_fd),
+                    )
+                except InterruptedError:
+                    continue
+                except OSError:
+                    ok = False
+                if not ok:
+                    if self._closed or self._signaled:
+                        return self._signaled
+                    time.sleep(min(0.1, remaining))
+            elif self._mode == "socketpair":
+                r_sock = self._r_sock
+                if r_sock is None:
+                    return self._signaled
+                # On Windows, console Ctrl+C runs Python handlers only between C waits,
+                # so bound socketpair waits to 0.25s while stop() still wakes immediately.
+                wait_slice = min(0.25, remaining) if os.name == "nt" else remaining
+                try:
+                    ok = self._wait_readable_once(
+                        r_sock,
+                        wait_slice,
+                        lambda: self._drain_socket(r_sock),
+                    )
+                except InterruptedError:
+                    continue
+                except OSError:
+                    ok = False
+                if not ok:
+                    if self._closed or self._signaled:
+                        return self._signaled
+                    time.sleep(min(0.1, wait_slice))
+            else:
+                time.sleep(min(0.1, remaining))
+        return self._signaled
+
+    def close(self) -> None:
+        """Release wakeup descriptors."""
+        self._closed = True
+        self._close_pipe_fds()
+        self._close_sockets()
+
+    def fileno(self) -> Optional[int]:
+        """Return writable descriptor usable with signal.set_wakeup_fd(), if any."""
+        if self._closed:
+            return None
+        if self._mode == "pipe":
+            return self._w_fd
+        if self._mode == "socketpair" and self._w_sock is not None:
+            try:
+                return self._w_sock.fileno()
+            except OSError:
+                return None
+        return None
+
+
 class GracefulShutdown:
     """
     优雅退出处理器
@@ -55,30 +264,87 @@ class GracefulShutdown:
     捕获 SIGTERM/SIGINT 信号，确保任务完成后再退出
     """
 
-    def __init__(self, register_signals: bool = True):
+    def __init__(
+        self,
+        register_signals: bool = True,
+        on_shutdown: Optional[Callable[[], None]] = None,
+        wakeup_fd: Optional[int] = None,
+    ):
         self.shutdown_requested = False
-        self._lock = threading.Lock()
+        self.shutdown_signal: Optional[int] = None
+        self._on_shutdown = on_shutdown
+        self._register_signals = bool(register_signals)
+        self._installed_wakeup_fd: Optional[int] = None
         if not register_signals:
             return
 
         # 注册信号处理器
         signal.signal(signal.SIGINT, self._signal_handler)
         signal.signal(signal.SIGTERM, self._signal_handler)
+        if wakeup_fd is not None:
+            self.install_wakeup_fd(wakeup_fd)
+
+    def install_wakeup_fd(self, wakeup_fd: Optional[int]) -> bool:
+        """Install wakeup FD on the main thread when signals are registered."""
+        if not self._register_signals or wakeup_fd is None:
+            return self._installed_wakeup_fd is not None
+        if self._installed_wakeup_fd is not None:
+            return True
+        if threading.current_thread() is not threading.main_thread() or not hasattr(signal, "set_wakeup_fd"):
+            return False
+        try:
+            prev_fd = signal.set_wakeup_fd(wakeup_fd, warn_on_full_buffer=False)
+            if prev_fd != -1:
+                # Preserve an existing caller/event-loop wakeup FD (e.g. uvicorn/asyncio).
+                signal.set_wakeup_fd(prev_fd, warn_on_full_buffer=False)
+                return False
+            self._installed_wakeup_fd = wakeup_fd
+            return True
+        except (OSError, ValueError):
+            return False
 
     def _signal_handler(self, signum, frame):
-        """信号处理函数"""
-        with self._lock:
-            if not self.shutdown_requested:
-                logger.info(
-                    f"Received exit signal ({signum}); waiting for current task to finish..."
-                )
-                self.shutdown_requested = True
+        """信号处理函数（保持无锁且 async-signal-safe，避免与主线程 wait 自锁）"""
+        if not self.shutdown_requested:
+            self.shutdown_signal = signum
+            self.shutdown_requested = True
+            callback = self._on_shutdown
+            if callback is not None:
+                try:
+                    callback()
+                except Exception:  # pragma: no cover - defensive guard inside signal handler
+                    pass
+
+    def uninstall_wakeup_fd(self) -> bool:
+        """Restore signal wakeup FD if this handler installed it.
+
+        Returns True when no wakeup FD remains installed by this handler;
+        returns False when called off the main thread so callers defer closing
+        the wakeup descriptor while ``signal.set_wakeup_fd`` still targets it.
+        """
+        fd = self._installed_wakeup_fd
+        if fd is None:
+            return True
+        if threading.current_thread() is not threading.main_thread() or not hasattr(signal, "set_wakeup_fd"):
+            return False
+        self._installed_wakeup_fd = None
+        try:
+            current = signal.set_wakeup_fd(-1)
+            if current not in (-1, fd):
+                signal.set_wakeup_fd(current, warn_on_full_buffer=False)
+        except (OSError, ValueError):
+            pass
+        return True
+
+    def clear_callback(self) -> bool:
+        """Detach wakeup callback and restore wakeup FD once scheduler loop tears down."""
+        self._on_shutdown = None
+        return self.uninstall_wakeup_fd()
 
     @property
     def should_shutdown(self) -> bool:
         """检查是否应该退出"""
-        with self._lock:
-            return self.shutdown_requested
+        return self.shutdown_requested
 
 
 class Scheduler:
@@ -108,7 +374,7 @@ class Scheduler:
         """
         try:
             import schedule
-            self.schedule = schedule
+            self.schedule = schedule.Scheduler() if hasattr(schedule, "Scheduler") else schedule
         except ImportError:
             logger.error("schedule library is not installed; please run: pip install schedule")
             raise ImportError("请安装 schedule 库: pip install schedule")
@@ -121,7 +387,11 @@ class Scheduler:
         )
         self._schedule_time_provider = schedule_time_provider
         self._schedule_times_provider = schedule_times_provider
-        self.shutdown_handler = GracefulShutdown(register_signals=register_signals)
+        self._wakeup = _WakeupChannel()
+        self.shutdown_handler = GracefulShutdown(
+            register_signals=register_signals,
+            on_shutdown=self._wakeup.notify,
+        )
         self._task_callback: Optional[Callable] = None
         self._pass_scheduled_for = pass_scheduled_for
         self._daily_job: Optional[Any] = None
@@ -178,49 +448,6 @@ class Scheduler:
         # schedule updates next_run after the callback, so preserve the original
         # due date/time through delayed polling and asynchronous dispatch.
         return job.do(lambda: self._safe_run_task(scheduled_for=job.next_run))
-
-    def _configure_daily_task(self, schedule_time: str) -> bool:
-        """(Re)register the daily job at the requested time."""
-        candidate = (schedule_time or "").strip()
-        if not self._is_valid_schedule_time(candidate):
-            logger.warning(
-                "Invalid schedule time %r detected; keeping current time %s",
-                schedule_time,
-                self.schedule_time,
-            )
-            return False
-
-        previous_time = self.schedule_time
-        self._cancel_daily_job()
-        self._daily_job = self._register_daily_job(candidate)
-        self.schedule_time = candidate
-
-        if previous_time == candidate:
-            logger.info("Daily scheduled task configured at: %s", self.schedule_time)
-        else:
-            logger.info(
-                "Detected SCHEDULE_TIME change; updated daily task from %s to %s",
-                previous_time,
-                self.schedule_time,
-            )
-        return True
-
-    def _refresh_daily_schedule_if_needed(self) -> None:
-        """Reload daily schedule time from the latest runtime config if needed."""
-        if self._task_callback is None or self._schedule_time_provider is None:
-            return
-
-        try:
-            latest_schedule_time = (self._schedule_time_provider() or "").strip()
-        except Exception as exc:  # pragma: no cover - defensive branch
-            logger.warning("Failed to read latest SCHEDULE_TIME; keeping %s: %s", self.schedule_time, exc)
-            return
-
-        if not latest_schedule_time or latest_schedule_time == self.schedule_time:
-            return
-
-        if self._configure_daily_task(latest_schedule_time):
-            logger.info("Updated next run time: %s", self._get_next_run_time())
 
     def _configure_daily_tasks(self, schedule_times: Union[Sequence[str], str]) -> bool:
         """(Re)register daily jobs at the requested times."""
@@ -279,7 +506,27 @@ class Scheduler:
             )
             return
 
-        latest = normalize_schedule_times(latest_schedule_times, fallback_time=self.schedule_time)
+        if latest_schedule_times is None:
+            return
+        if isinstance(latest_schedule_times, str):
+            raw_items = [item.strip() for item in latest_schedule_times.split(",")]
+        else:
+            raw_items = [str(item).strip() for item in latest_schedule_times]
+
+        non_empty = [item for item in raw_items if item]
+        if not non_empty:
+            return
+
+        invalid_items = [item for item in non_empty if not self._is_valid_schedule_time(item)]
+        if invalid_items:
+            logger.warning(
+                "Invalid schedule time values %r; keeping current times %s",
+                invalid_items,
+                ",".join(self.schedule_times),
+            )
+            return
+
+        latest = sorted(set(non_empty))
         if latest == self.schedule_times:
             return
 
@@ -402,6 +649,10 @@ class Scheduler:
             self._run_background_tasks()
             return True
 
+    def _wait_for_stop(self, timeout: float = 30.0) -> bool:
+        """Wait for stop/shutdown wakeup without holding thread locks."""
+        return self._wakeup.wait(timeout)
+
     def run(self):
         """
         运行调度器主循环
@@ -413,36 +664,65 @@ class Scheduler:
                 logger.info("Scheduler already stopped; ignoring late start request")
                 return
             self._running = True
+            self.shutdown_handler.install_wakeup_fd(self._wakeup.fileno())
         logger.info("Scheduler starting...")
         logger.info(f"Next run time: {self._get_next_run_time()}")
 
-        while self._running and not self.shutdown_handler.should_shutdown:
-            self._refresh_daily_schedule_if_needed()
-            self.schedule.run_pending()
-            if not self._dispatch_background_tasks_if_running():
-                break
-            time.sleep(30)  # 每30秒检查一次
+        try:
+            while self._running and not self.shutdown_handler.should_shutdown:
+                self._refresh_daily_schedule_if_needed()
+                self.schedule.run_pending()
+                if not self._dispatch_background_tasks_if_running():
+                    break
+                if self._wait_for_stop(timeout=30):
+                    break
 
-            # 每小时打印一次心跳
-            if datetime.now().minute == 0 and datetime.now().second < 30:
-                logger.info(f"Scheduler running... next run: {self._get_next_run_time()}")
+                # 每小时打印一次心跳
+                if datetime.now().minute == 0 and datetime.now().second < 30:
+                    logger.info(f"Scheduler running... next run: {self._get_next_run_time()}")
+        finally:
+            with self._lifecycle_lock:
+                self._running = False
+                if self.shutdown_handler.clear_callback():
+                    self._wakeup.close()
+
+        if self.shutdown_handler.should_shutdown and self.shutdown_handler.shutdown_signal is not None:
+            logger.info(
+                "Received exit signal (%s); stopping scheduler...",
+                self.shutdown_handler.shutdown_signal,
+            )
 
         logger.info("Scheduler stopped")
 
     def _get_next_run_time(self) -> str:
-        """获取下次执行时间"""
+        """Return formatted next scheduled run time."""
         jobs = self.schedule.get_jobs()
-        if jobs:
-            next_run = min(job.next_run for job in jobs)
-            return next_run.strftime('%Y-%m-%d %H:%M:%S')
-        return "未设置"
+        next_runs = [job.next_run for job in jobs if getattr(job, "next_run", None) is not None]
+        if next_runs:
+            return min(next_runs).strftime('%Y-%m-%d %H:%M:%S')
+        return "not set"
 
     def stop(self):
         """停止调度器"""
         with self._lifecycle_lock:
             self._stop_requested = True
             self._running = False
+            self._wakeup.notify()
         self._cancel_daily_job()
+
+    def close(self) -> None:
+        """Stop scheduler and release wakeup descriptors."""
+        self.stop()
+        with self._lifecycle_lock:
+            if self.shutdown_handler.clear_callback():
+                self._wakeup.close()
+
+    def __del__(self) -> None:
+        handler = getattr(self, "shutdown_handler", None)
+        wakeup_uninstalled = True if handler is None else handler.clear_callback()
+        wakeup = getattr(self, "_wakeup", None)
+        if wakeup is not None and wakeup_uninstalled:
+            wakeup.close()
 
 
 def run_with_schedule(
@@ -479,15 +759,20 @@ def run_with_schedule(
     if pass_scheduled_for:
         scheduler_kwargs["pass_scheduled_for"] = True
     scheduler = Scheduler(**scheduler_kwargs)
-    for entry in background_tasks or []:
-        scheduler.add_background_task(
-            task=entry["task"],
-            interval_seconds=entry["interval_seconds"],
-            run_immediately=entry.get("run_immediately", False),
-            name=entry.get("name"),
-        )
-    scheduler.set_daily_task(task, run_immediately=run_immediately)
-    scheduler.run()
+    try:
+        for entry in background_tasks or []:
+            scheduler.add_background_task(
+                task=entry["task"],
+                interval_seconds=entry["interval_seconds"],
+                run_immediately=entry.get("run_immediately", False),
+                name=entry.get("name"),
+            )
+        scheduler.set_daily_task(task, run_immediately=run_immediately)
+        scheduler.run()
+    finally:
+        close_fn = getattr(scheduler, "close", None)
+        if callable(close_fn):
+            close_fn()
 
 
 if __name__ == "__main__":

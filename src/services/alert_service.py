@@ -201,6 +201,7 @@ class AlertService:
                 "triggered_count": 0,
                 "degraded_count": 0,
                 "skipped_count": 0,
+                "failed_count": 0,
                 "target_results": [],
             }
 
@@ -294,17 +295,21 @@ class AlertService:
     @staticmethod
     def _dry_run_response_for_single(payload: RuntimeAlertPayload, result: Dict[str, Any], *, target_scope: str) -> Dict[str, Any]:
         target_result = result_to_target_result(payload, result)
+        status = result.get("status") or "evaluation_error"
+        record_status = result.get("record_status")
+        is_failed = record_status == "failed" or status == "evaluation_error"
         response = {
             "rule_id": result.get("rule_id") or 0,
             "target_scope": target_scope,
-            "status": result.get("status") or "evaluation_error",
+            "status": status,
             "triggered": bool(result.get("triggered")),
             "observed_value": result.get("observed_value"),
             "message": result.get("message") or result.get("reason") or "",
             "evaluated_count": 1,
             "triggered_count": 1 if result.get("triggered") else 0,
-            "degraded_count": 1 if result.get("record_status") == "degraded" else 0,
-            "skipped_count": 1 if result.get("record_status") == "skipped" else 0,
+            "degraded_count": 1 if record_status == "degraded" else 0,
+            "skipped_count": 1 if record_status == "skipped" else 0,
+            "failed_count": 1 if is_failed else 0,
             "target_results": [target_result],
         }
         return response
