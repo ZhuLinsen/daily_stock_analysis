@@ -174,7 +174,7 @@ def test_us_realtime_priority_skips_longbridge_during_request_cooldown() -> None
     priorities = {item["scenario"]: item for item in overview["priorities"]}
     us_quality = _dataset(overview, "quote.realtime")["coverage"]["markets"]["us"]
 
-    assert priorities["us.realtime"]["providers"] == ["yfinance", "longbridge"]
+    assert priorities["us.realtime"]["providers"] == ["yfinance"]  # 未配置 Longbridge 时不再声称它是次选
     assert us_quality["status"] == "ok"
     assert us_quality["source"] == "yfinance"
     assert us_quality["fallback_from"] == []
@@ -253,7 +253,7 @@ def test_realtime_dataset_quality_is_market_aware() -> None:
     quote_quality = _dataset(overview, "quote.realtime")
     priorities = {item["scenario"]: item for item in overview["priorities"]}
 
-    assert priorities["us.realtime"]["providers"] == ["yfinance", "longbridge"]
+    assert priorities["us.realtime"]["providers"] == ["yfinance"]  # 未配置 Longbridge 时不再声称它是次选
     assert quote_quality["status"] == "partial"
     assert quote_quality["coverage"]["markets"]["cn"]["status"] == "ok"
     assert quote_quality["coverage"]["markets"]["cn"]["source"] == "efinance"
@@ -525,6 +525,57 @@ def test_daily_dataset_quality_prefers_longbridge_for_us_when_available() -> Non
     assert daily_quality["coverage"]["markets"]["us"]["status"] == "ok"
     assert daily_quality["coverage"]["markets"]["us"]["source"] == "longbridge"
     assert "us:finnhub" not in daily_quality["fallback_from"]
+
+
+def test_us_daily_priority_includes_futu_when_opend_configured() -> None:
+    """Futu must be reported as a usable US daily source once OpenD is configured."""
+    service = DataCapabilityService(
+        config=_config(futu_opend_host="127.0.0.1"),
+        fetcher_manager=_FetcherManager([
+            _Fetcher("FutuFetcher", 2, available=True),
+            _Fetcher("YfinanceFetcher", 4, available=True),
+        ]),
+    )
+
+    overview = service.get_overview()
+    us_quality = _dataset(overview, "kline.daily")["coverage"]["markets"]["us"]
+
+    assert us_quality["status"] == "ok"
+    assert us_quality["source"] == "futu"
+
+
+def test_us_realtime_priority_reflects_raised_futu_priority() -> None:
+    """数据中心必须复现运行时按 priority 排序，而不是固定 futu 首位。"""
+    service = DataCapabilityService(
+        config=_config(futu_opend_host="127.0.0.1"),
+        fetcher_manager=_FetcherManager([
+            _Fetcher("FutuFetcher", 99, available=True),
+            _Fetcher("YfinanceFetcher", 4, available=True),
+        ]),
+    )
+
+    overview = service.get_overview()
+    priorities = {item["scenario"]: item for item in overview["priorities"]}
+    us_daily = _dataset(overview, "kline.daily")["coverage"]["markets"]["us"]
+
+    assert priorities["us.realtime"]["providers"] == ["yfinance", "futu"]
+    assert us_daily["source"] == "yfinance"
+
+
+def test_us_realtime_priority_without_longbridge_lists_yfinance_next() -> None:
+    """The capability view must not claim Longbridge as the next source when unconfigured."""
+    service = DataCapabilityService(
+        config=_config(futu_opend_host="127.0.0.1"),
+        fetcher_manager=_FetcherManager([
+            _Fetcher("FutuFetcher", 2, available=True),
+            _Fetcher("YfinanceFetcher", 4, available=True),
+        ]),
+    )
+
+    overview = service.get_overview()
+    priorities = {item["scenario"]: item for item in overview["priorities"]}
+
+    assert priorities["us.realtime"]["providers"] == ["futu", "yfinance"]
 
 
 def test_us_daily_priority_omits_unregistered_configured_sources() -> None:

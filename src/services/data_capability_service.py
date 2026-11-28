@@ -140,8 +140,8 @@ _PROVIDER_DEFINITIONS: Sequence[_ProviderDefinition] = (
         label="Futu OpenD",
         fetcher_name="FutuFetcher",
         dataset_markets={
-            "quote.realtime": ("hk",),
-            "kline.daily": ("hk",),
+            "quote.realtime": ("hk", "cn", "us"),
+            "kline.daily": ("hk", "cn", "us"),
             "financial.snapshot": ("hk",),
         },
     ),
@@ -207,6 +207,7 @@ _CN_REALTIME_SOURCES = {
     "tushare",
     "tickplus",
     "tickflow",
+    "futu",
 }
 
 _SCREENING_SOURCES = {"tushare", "sina", "efinance", "akshare_em", "em_datacenter"}
@@ -441,7 +442,7 @@ class DataCapabilityService:
                 "us.realtime",
                 self._us_realtime_priority(fetchers),
                 "DataFetcherManager US realtime route",
-                known_sources={"longbridge", "yfinance"},
+                known_sources={"futu", "longbridge", "yfinance"},
             ),
             self._priority_view(
                 "daily.generic",
@@ -496,15 +497,61 @@ class DataCapabilityService:
             logger.debug("Failed to resolve screening snapshot priority: %s", exc)
             return _split_priority("sina,efinance,akshare_em,em_datacenter")
 
+    @staticmethod
+    def _us_provider_priorities(fetchers: Sequence[Any]) -> Dict[str, int]:
+        """Provider -> current numeric priority, mirroring ``fetcher.priority``."""
+        priorities: Dict[str, int] = {}
+        for fetcher in fetchers:
+            provider = _FETCHER_TO_PROVIDER.get(str(getattr(fetcher, "name", "")))
+            priority = getattr(fetcher, "priority", None)
+            if provider is None or not isinstance(priority, int):
+                continue
+            priorities[provider] = priority
+        return priorities
+
+    @staticmethod
+    def _order_us_providers_by_priority(
+        providers: Sequence[str],
+        priorities: Dict[str, int],
+        *,
+        pin_first: bool,
+    ) -> List[str]:
+        """Stable sort by numeric priority, optionally keeping providers[0] pinned.
+
+        This mirrors ``DataFetcherManager._order_us_sources_by_priority`` so the
+        capability view reproduces the runtime chain instead of a fixed list.
+        """
+        if not providers:
+            return []
+        if pin_first:
+            head, rest = providers[0], list(providers[1:])
+            return [head] + sorted(rest, key=lambda provider: priorities.get(provider, 10 ** 9))
+        return sorted(providers, key=lambda provider: priorities.get(provider, 10 ** 9))
+
     def _us_realtime_priority(self, fetchers: Sequence[Any]) -> List[str]:
-        fetcher_map = {str(getattr(fetcher, "name", "")): fetcher for fetcher in fetchers}
-        longbridge = fetcher_map.get("LongbridgeFetcher")
-        if longbridge is not None and self._fetcher_available_for_capability(
-            longbridge,
-            capability="realtime_quote",
-        ):
-            return ["longbridge", "yfinance"]
-        return ["yfinance", "longbridge"]
+        available = {
+            provider
+            for fetcher in fetchers
+            if (provider := _FETCHER_TO_PROVIDER.get(str(getattr(fetcher, "name", ""))))
+            in {"futu", "longbridge", "yfinance"}
+            and self._fetcher_available_for_capability(fetcher, capability="realtime_quote")
+        }
+        if not available:
+            return []
+        priorities = self._us_provider_priorities(fetchers)
+        # Mirror the runtime chain: Longbridge keeps its pinned slot when it is
+        # used as the preferred source; otherwise every member (Futu included,
+        # only when OpenD is configured) follows its current priority, so a
+        # raised FUTU_PRIORITY is reflected in the capability view too.
+        if "longbridge" in available:
+            candidates = ["longbridge"] + [
+                provider for provider in ("futu", "yfinance") if provider in available
+            ]
+            return self._order_us_providers_by_priority(candidates, priorities, pin_first=True)
+        candidates = [
+            provider for provider in ("futu", "yfinance", "longbridge") if provider in available
+        ]
+        return self._order_us_providers_by_priority(candidates, priorities, pin_first=False)
 
     @staticmethod
     def _priority_view(
@@ -849,15 +896,27 @@ class DataCapabilityService:
             provider
             for fetcher in fetchers
             if (provider := _FETCHER_TO_PROVIDER.get(str(getattr(fetcher, "name", ""))))
-            in {"longbridge", "finnhub", "alphavantage", "yfinance"}
+            in {"futu", "longbridge", "finnhub", "alphavantage", "yfinance"}
             and self._fetcher_available_for_capability(fetcher, capability="daily_data")
         }
-        preferred = (
-            ["longbridge", "finnhub", "alphavantage", "yfinance"]
-            if "longbridge" in available
-            else ["finnhub", "alphavantage", "yfinance", "longbridge"]
-        )
-        return [provider for provider in preferred if provider in available]
+        if not available:
+            return []
+        priorities = self._us_provider_priorities(fetchers)
+        if "longbridge" in available:
+            # Longbridge keeps the pinned primary slot it owns in the runtime
+            # chain; the rest (Futu included) follows each fetcher's priority.
+            candidates = ["longbridge"] + [
+                provider
+                for provider in ("futu", "finnhub", "alphavantage", "yfinance")
+                if provider in available
+            ]
+            return self._order_us_providers_by_priority(candidates, priorities, pin_first=True)
+        candidates = [
+            provider
+            for provider in ("futu", "finnhub", "alphavantage", "yfinance", "longbridge")
+            if provider in available
+        ]
+        return self._order_us_providers_by_priority(candidates, priorities, pin_first=False)
 
     @staticmethod
     def _fetcher_available_for_capability(fetcher: Any, *, capability: str) -> bool:
