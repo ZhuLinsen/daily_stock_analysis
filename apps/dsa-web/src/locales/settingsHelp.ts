@@ -800,6 +800,33 @@ const settingsHelpZhCN: SettingsHelpMap = {
       'SCHEDULE_RUN_IMMEDIATELY 仍是启动期行为；保存后不会立即触发一次分析。',
     ],
   },
+  'settings.system.DSA_RUNTIME_SCHEDULER_TIMEOUT_SECONDS': {
+    title: '定时分析硬超时（秒）',
+    summary: 'Web/API 定时分析的最长运行时间；超时后终止独立分析进程。',
+    usage: '默认 2700 秒，最小 60 秒。超时会终止独立分析进程；调度器繁忙时新触发会被跳过而非排队，修改后下一次分析会使用新值，无需重建 daily jobs。',
+    valueNotes: [
+      '该值是整轮 Web/API 定时分析的硬上限，不是单股分析超时。',
+      '调度器繁忙时本次触发会被直接跳过（不会排队等待），并记为 busy skip。',
+    ],
+    impact: ['影响单次定时分析可运行时长；调度器繁忙时新触发会被跳过，不会排队。'],
+    notes: ['设为过小的值可能导致正常分析被提前终止。'],
+  },
+  'settings.system.DSA_TIMEOUT_PARTIAL_NOTIFY': {
+    title: '超时部分完成通知',
+    summary: 'Web/API 定时分析硬超时后，仅在已有落库结果且开关允许推送时尝试发送「部分完成」通知。',
+    usage: '硬超时后先收集已落库个股分析；仅在存在已落库结果且 DSA_TIMEOUT_PARTIAL_NOTIFY 允许推送时才尝试发送「部分完成」通知。开关设为 false 时仍写入结构化 last_error，但不推送任何部分完成通知。',
+    valueNotes: [
+      '通知只在超时后收集一次已落库记录，按本轮开始时间下界与股票清单筛选；不按本轮标识或超时时刻限定，其他请求在超时后写入的同股票结果也可能被计入。',
+      '本次未收集到的股票不会出现在该通知中，也不会在后续补发。',
+      '通知渠道异常只记录 warning（Partial timeout notification failed）并跳过推送，不会占用 status().running。',
+      '扫库或 src.storage 导入失败时同样 fail-open：API 上可能仍是 timed out after Ns，或被 enrich 成 completed=0。',
+    ],
+    impact: ['影响硬超时后的通知量与用户感知；只有查到可用结果且渠道未抑制时才会尝试投递，开启开关不保证每次超时都收到推送。'],
+    notes: [
+      '请关注通知量；如不需要推送可设为 false。',
+      '该开关不改变硬超时终止独立分析进程的机制，也不阻塞后续定时任务。',
+    ],
+  },
   'settings.system.RUN_IMMEDIATELY': {
     title: '启动后立即运行',
     summary: '控制非定时模式启动时是否立即执行一次分析。',
@@ -2097,6 +2124,33 @@ const settingsHelpEnUS: SettingsHelpMap = {
     notes: [
       'Check the runtime timezone, especially in containers and servers.',
       'SCHEDULE_RUN_IMMEDIATELY remains a startup-time setting; saving it does not trigger an immediate analysis run.',
+    ],
+  },
+  'settings.system.DSA_RUNTIME_SCHEDULER_TIMEOUT_SECONDS': {
+    title: 'Runtime Scheduler Timeout',
+    summary: 'Hard timeout in seconds for each Web/API scheduled analysis; the isolated analysis process is terminated on timeout, minimum 60 seconds.',
+    usage: 'Default 2700 seconds, minimum 60. The isolated analysis process is terminated on timeout; if the scheduler is busy, a new trigger is skipped instead of queued; the next analysis picks up the new value without rebuilding daily jobs.',
+    valueNotes: [
+      'This is the hard limit for a whole Web/API scheduled analysis, not the per-stock analysis timeout.',
+      'When the scheduler is busy, the trigger is skipped instead of queued and recorded as a busy skip.',
+    ],
+    impact: ['Affects how long one scheduled analysis can run; a trigger arriving while the scheduler is busy is skipped, not queued.'],
+    notes: ['Too small a value can terminate a healthy analysis early.'],
+  },
+  'settings.system.DSA_TIMEOUT_PARTIAL_NOTIFY': {
+    title: 'Timeout Partial Notification',
+    summary: 'After a Web/API scheduled analysis hard timeout, attempt a partial notification only when saved results exist and DSA_TIMEOUT_PARTIAL_NOTIFY allows pushing.',
+    usage: 'After a hard timeout, the scheduler collects analyses already saved to history and attempts a partial notification only when saved results exist and DSA_TIMEOUT_PARTIAL_NOTIFY allows pushing. When false, structured last_error is still recorded but no push is sent.',
+    valueNotes: [
+      'The notification uses a single post-timeout collection filtered by this run\'s start time and expected stock list, with no run identifier or upper time bound; results for the same stock written by another request after the timeout may also be counted.',
+      'Stocks not collected in that pass are not included in the notification and are not backfilled.',
+      'Notification-channel failures are logged as a warning (Partial timeout notification failed) and skipped; they never keep status().running true.',
+      'Storage import or collect failures also fail open: status().last_error may stay at the baseline timed out after Ns string or be enriched to completed=0.',
+    ],
+    impact: ['Affects notification volume after a hard timeout; delivery is attempted only when usable results are found and channel routing does not suppress it, so enabling the switch does not guarantee a push on every timeout.'],
+    notes: [
+      'Watch notification volume; set this to false to disable pushes.',
+      'This switch does not change hard-timeout process termination or block later scheduled runs.',
     ],
   },
   'settings.system.RUN_IMMEDIATELY': {
