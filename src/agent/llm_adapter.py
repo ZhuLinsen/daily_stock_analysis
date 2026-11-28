@@ -232,11 +232,15 @@ def _object_to_dict(value: Any) -> Dict[str, Any]:
         "thinking",
         "signature",
         "data",
+        "thought",
         "thoughtSignature",
         "thought_signature",
+        "functionCall",
         "encrypted_content",
         "summary",
         "id",
+        "name",
+        "input",
     ):
         if hasattr(value, key):
             result[key] = getattr(value, key)
@@ -911,7 +915,7 @@ class LLMToolAdapter:
         if use_channel_router and self._router and model in _router_model_names:
             # Channel / YAML path: Router manages all models in its model_list
             response = call_litellm_with_param_recovery(
-                lambda kwargs: dispatch_completion(router=self._router, **kwargs),
+                lambda kwargs: dispatch_completion(router=self._router, config=self._config, **kwargs),
                 model=model,
                 call_kwargs=call_kwargs,
                 model_list=recovery_model_list,
@@ -920,7 +924,7 @@ class LLMToolAdapter:
         elif self._router and model == agent_primary_model and not use_channel_router:
             # Legacy path: Router for primary model multi-key
             response = call_litellm_with_param_recovery(
-                lambda kwargs: dispatch_completion(router=self._router, **kwargs),
+                lambda kwargs: dispatch_completion(router=self._router, config=self._config, **kwargs),
                 model=model,
                 call_kwargs=call_kwargs,
                 model_list=recovery_model_list,

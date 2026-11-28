@@ -32,21 +32,28 @@ class SSEStreamState:
     event_count: int = 0
 
 
+DEFAULT_MAX_SSE_LINE_CHARS = 10 * 1024 * 1024
+DEFAULT_MAX_SSE_EVENT_CHARS = 20 * 1024 * 1024
+
+
 def iter_sse_lines(
     byte_chunks: Iterable[bytes],
     *,
     cancel_check: Optional[Callable[[], None]] = None,
+    max_line_chars: int = DEFAULT_MAX_SSE_LINE_CHARS,
 ) -> Iterator[str]:
     """Decode UTF-8 chunks incrementally, strip leading BOM, and emit complete CR/LF/CRLF lines.
 
     Raises :class:`NativeIncompleteStreamError` if EOF occurs mid-line without a
     terminating CR or LF, preventing silently truncated payloads from being
-    treated as successful completions.
+    treated as successful completions. Enforces ``max_line_chars`` to guard
+    against unbounded memory growth on pathological streams.
     """
     decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
     buf = ""
     skip_next_lf = False
     bom_checked = False
+    line_limit = max(1024, int(max_line_chars))
 
     def _strip_leading_bom() -> None:
         nonlocal buf, bom_checked
@@ -69,10 +76,20 @@ def iter_sse_lines(
             cr_idx = buf.find("\r")
             lf_idx = buf.find("\n")
             if cr_idx == -1 and lf_idx == -1:
+                if len(buf) > line_limit:
+                    raise NativeAPIError(
+                        f"SSE line exceeded maximum buffer size ({line_limit} chars)",
+                        error_code="sse_frame_too_large",
+                    )
                 break
 
             if cr_idx != -1 and (lf_idx == -1 or cr_idx < lf_idx):
                 line = buf[:cr_idx]
+                if len(line) > line_limit:
+                    raise NativeAPIError(
+                        f"SSE line exceeded maximum buffer size ({line_limit} chars)",
+                        error_code="sse_frame_too_large",
+                    )
                 rest = buf[cr_idx + 1 :]
                 if rest.startswith("\n"):
                     buf = rest[1:]
@@ -86,6 +103,11 @@ def iter_sse_lines(
                 yield line
             else:
                 line = buf[:lf_idx]
+                if len(line) > line_limit:
+                    raise NativeAPIError(
+                        f"SSE line exceeded maximum buffer size ({line_limit} chars)",
+                        error_code="sse_frame_too_large",
+                    )
                 buf = buf[lf_idx + 1 :]
                 yield line
 
@@ -117,20 +139,25 @@ def iter_sse_events(
     byte_chunks: Iterable[bytes],
     *,
     cancel_check: Optional[Callable[[], None]] = None,
+    max_line_chars: int = DEFAULT_MAX_SSE_LINE_CHARS,
+    max_event_chars: int = DEFAULT_MAX_SSE_EVENT_CHARS,
 ) -> Iterator[SSEEvent]:
     """Parse an SSE byte stream into blank-line-delimited :class:`SSEEvent` frames.
 
     Does NOT flush an unterminated event frame at EOF: reaching EOF with pending
     ``data``/``event`` lines raises :class:`NativeIncompleteStreamError`.
+    Preserves empty ``data:`` frames per WHATWG SSE framing rules.
     """
     event_name = "message"
     data_lines: list[str] = []
+    event_chars = 0
     has_pending_fields = False
     last_event_id: Optional[str] = None
     retry_ms: Optional[int] = None
+    event_limit = max(1024, int(max_event_chars))
 
     def _flush_event() -> Optional[SSEEvent]:
-        nonlocal event_name, data_lines, has_pending_fields
+        nonlocal event_name, data_lines, event_chars, has_pending_fields
         if not data_lines and not has_pending_fields:
             return None
         ev: Optional[SSEEvent] = None
@@ -143,13 +170,18 @@ def iter_sse_events(
             )
         event_name = "message"
         data_lines = []
+        event_chars = 0
         has_pending_fields = False
         return ev
 
-    for line in iter_sse_lines(byte_chunks, cancel_check=cancel_check):
+    for line in iter_sse_lines(
+        byte_chunks,
+        cancel_check=cancel_check,
+        max_line_chars=max_line_chars,
+    ):
         if line == "":
             ev = _flush_event()
-            if ev is not None and ev.data != "":
+            if ev is not None:
                 yield ev
             continue
 
@@ -165,6 +197,12 @@ def iter_sse_events(
             field, value = line, ""
 
         if field == "data":
+            event_chars += len(value) + (1 if data_lines else 0)
+            if event_chars > event_limit:
+                raise NativeAPIError(
+                    f"SSE event exceeded maximum buffer size ({event_limit} chars)",
+                    error_code="sse_frame_too_large",
+                )
             data_lines.append(value)
             has_pending_fields = True
         elif field == "event":

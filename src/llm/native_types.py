@@ -13,7 +13,8 @@ from dataclasses import dataclass, field
 import json
 import re
 import time
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Tuple
+from urllib.parse import parse_qsl, urlsplit
 
 import httpx
 
@@ -137,11 +138,49 @@ class Unsupported:
 # ============================================================
 
 
+_SENSITIVE_HEADER_NAME_TOKENS = (
+    "auth",
+    "key",
+    "token",
+    "secret",
+    "cookie",
+    "pass",
+    "cred",
+    "jwt",
+    "session",
+)
+
+_SENSITIVE_QUERY_PARAM_NAMES = frozenset(
+    {
+        "key",
+        "api_key",
+        "apikey",
+        "token",
+        "access_token",
+        "auth",
+        "secret",
+        "password",
+        "sig",
+        "signature",
+        "x-goog-api-key",
+    }
+)
+
+
+def is_sensitive_header_name(name: str) -> bool:
+    """Return True when ``name`` looks like a credential/auth/private session header."""
+    lower_name = str(name or "").strip().lower()
+    if not lower_name:
+        return False
+    return any(tok in lower_name for tok in _SENSITIVE_HEADER_NAME_TOKENS)
+
+
 def collect_secret_values(
     *values: Any,
     headers: Optional[Mapping[str, Any]] = None,
+    url: Optional[str] = None,
 ) -> List[str]:
-    """Collect non-empty credential strings for redaction from keys and auth headers."""
+    """Collect non-empty credential strings for redaction from keys, auth headers, and URL query params."""
     collected: List[str] = []
     seen: set[str] = set()
 
@@ -165,34 +204,53 @@ def collect_secret_values(
         _add(value)
 
     if isinstance(headers, Mapping):
-        secret_name_tokens = (
-            "auth",
-            "key",
-            "token",
-            "secret",
-            "cookie",
-            "pass",
-            "cred",
-            "jwt",
-            "session",
-        )
         for header_name, header_val in headers.items():
-            lower_name = str(header_name or "").strip().lower()
-            if any(tok in lower_name for tok in secret_name_tokens):
+            if is_sensitive_header_name(str(header_name or "")):
                 _add(header_val)
+
+    if url:
+        try:
+            raw_query = urlsplit(str(url)).query
+        except ValueError:
+            raw_query = ""
+        if raw_query:
+            for qk, qv in parse_qsl(raw_query, keep_blank_values=True):
+                qk_l = str(qk or "").strip().lower()
+                if qk_l in _SENSITIVE_QUERY_PARAM_NAMES or any(
+                    tok in qk_l for tok in ("key", "token", "secret", "auth", "pass")
+                ):
+                    _add(qv)
+            # Also collect raw un-decoded query tokens in case percent-encoded forms appear in messages.
+            for part in raw_query.split("&"):
+                if "=" not in part:
+                    continue
+                raw_k, raw_v = part.split("=", 1)
+                rk_l = raw_k.strip().lower()
+                if rk_l in _SENSITIVE_QUERY_PARAM_NAMES or any(
+                    tok in rk_l for tok in ("key", "token", "secret", "auth", "pass")
+                ):
+                    _add(raw_v)
 
     return sorted(collected, key=len, reverse=True)
 
 
 def looks_like_html(text: str, content_type: Optional[str] = None) -> bool:
-    """Return True when ``content_type`` or ``text`` looks like an HTML document."""
+    """Return True when ``content_type`` declares HTML or non-JSON ``text`` starts with HTML markup."""
     ct = str(content_type or "").lower()
     if "text/html" in ct or "application/xhtml" in ct:
         return True
-    sample = str(text or "").lstrip()[:512].lower()
+    if "application/json" in ct or "text/json" in ct or "+json" in ct:
+        return False
+    sample = str(text or "").lstrip("\ufeff").lstrip()[:512].lower()
     if not sample:
         return False
-    return any(marker in sample for marker in _HTML_MARKERS)
+    if sample.startswith(("{", "[")):
+        return False
+    if sample.startswith(("<!doctype html", "<html", "<head", "<body", "<title")):
+        return True
+    if sample.startswith("<!--") and ("<html" in sample or "<!doctype html" in sample):
+        return True
+    return False
 
 
 def truncate_html_body(text: str, *, max_len: int = MAX_HTML_ERROR_BODY_CHARS) -> str:
@@ -892,15 +950,56 @@ def set_header_case_insensitive(headers: Dict[str, str], name: str, value: str) 
     headers[name] = value
 
 
-def merge_header_overrides(headers: Dict[str, str], source: Mapping[str, Any]) -> None:
-    """Merge ``extra_headers``/``headers``/``default_headers`` dictionaries case-insensitively."""
+def parse_strict_bool(
+    value: Any,
+    *,
+    field_name: str = "value",
+    provider: str = "openai",
+) -> bool:
+    """Strictly parse a boolean or boolean string, rejecting ambiguous values like ``'maybe'``."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str):
+        cleaned = value.strip().lower()
+        if cleaned in {"true", "1", "yes", "on"}:
+            return True
+        if cleaned in {"false", "0", "no", "off"}:
+            return False
+    raise NativeBadRequestError(
+        f"Invalid boolean value for '{field_name}': {value!r}",
+        status_code=400,
+        provider=provider,
+        error_code="invalid_boolean",
+    )
+
+
+def merge_header_overrides(
+    headers: Dict[str, str],
+    source: Mapping[str, Any],
+    *,
+    resolve_env_fn: Optional[Callable[[Any], Any]] = None,
+    skip_sensitive: bool = False,
+) -> None:
+    """Merge ``extra_headers``/``headers``/``default_headers`` case-insensitively.
+
+    When ``resolve_env_fn`` is provided, ``os.environ/VAR`` header values are
+    expanded before merging. When ``skip_sensitive=True``, credential/auth
+    headers are omitted to prevent cross-origin credential leakage.
+    """
     for hdr_key in ("extra_headers", "headers", "default_headers"):
         raw = source.get(hdr_key)
         if isinstance(raw, Mapping):
             for k, v in raw.items():
                 key_text = str(k).strip()
-                if key_text and v is not None:
-                    set_header_case_insensitive(headers, key_text, str(v))
+                if not key_text or v is None:
+                    continue
+                if skip_sensitive and is_sensitive_header_name(key_text):
+                    continue
+                resolved_val = resolve_env_fn(v) if resolve_env_fn is not None else v
+                if resolved_val is not None:
+                    set_header_case_insensitive(headers, key_text, str(resolved_val))
 
 
 def extract_client_overrides(

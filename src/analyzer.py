@@ -4112,11 +4112,16 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                     effective_audit_context["provider"] = (
                         usage.get("provider") or usage_provider
                     )
-                    effective_audit_context["transport"] = (
-                        effective_audit_context.get("transport")
-                        or transport_engine
-                        or get_transport_engine_label(config=config)
-                    )
+                    seeded_transport = str(effective_audit_context.get("transport") or "").strip()
+                    if seeded_transport and seeded_transport not in {"litellm", "native"}:
+                        effective_audit_context["transport"] = seeded_transport
+                    else:
+                        effective_audit_context["transport"] = (
+                            transport_engine
+                            or get_transport_engine_label(config=config)
+                            or seeded_transport
+                            or "litellm"
+                        )
                     return filter_prompt_cache_telemetry(
                         attach_legacy_message_stability_audit(
                             usage,
@@ -4554,6 +4559,33 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
 
         # 如果模型不可用，返回默认结果
         if not self.is_available():
+            transport_cfg_err = getattr(self, "_transport_config_error", None)
+            if transport_cfg_err is not None:
+                err_detail = str(transport_cfg_err)
+                return AnalysisResult(
+                    code=code,
+                    name=name,
+                    sentiment_score=50,
+                    trend_prediction=localize_trend_prediction('震荡', report_language),
+                    operation_advice=localize_operation_advice('持有', report_language),
+                    confidence_level=localize_confidence_level('低', report_language),
+                    analysis_summary=_localized_text(
+                        report_language,
+                        en=f'AI analysis is unavailable due to native transport configuration error: {err_detail}',
+                        zh=f'AI 分析不可用（原生传输配置错误：{err_detail}）',
+                        ko=f'네이티브 전송 설정 오류로 AI 분석을 사용할 수 없습니다: {err_detail}',
+                    ),
+                    risk_warning=_localized_text(
+                        report_language,
+                        en='Check LLM_TRANSPORT_MODE, model provider prefix, and channel base URL configuration.',
+                        zh='请检查 LLM_TRANSPORT_MODE、模型提供商前缀及渠道 Base URL 配置。',
+                        ko='LLM_TRANSPORT_MODE, 모델 제공자 접두사 및 채널 Base URL 설정을 확인하세요.',
+                    ),
+                    success=False,
+                    error_message=err_detail,
+                    model_used=None,
+                    report_language=report_language,
+                )
             return AnalysisResult(
                 code=code,
                 name=name,

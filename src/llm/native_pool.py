@@ -110,11 +110,25 @@ class DeploymentPool:
         with self._lock:
             return any(d.alias == target for d in self._deployments)
 
+    def peek_candidates(
+        self,
+        model_name: Optional[str] = None,
+        *,
+        exclude_ids: Optional[Iterable[str]] = None,
+    ) -> List[DeploymentSpec]:
+        """Return ordered candidate deployments WITHOUT advancing round-robin cursors."""
+        return self.select_candidates(
+            model_name,
+            exclude_ids=exclude_ids,
+            advance_cursor=False,
+        )
+
     def select_candidates(
         self,
         model_name: Optional[str] = None,
         *,
         exclude_ids: Optional[Iterable[str]] = None,
+        advance_cursor: bool = True,
     ) -> List[DeploymentSpec]:
         """Return candidate deployments for exact ``model_name`` alias.
 
@@ -122,7 +136,8 @@ class DeploymentPool:
         - P1: Returns ONLY healthy deployments when at least one healthy deployment
           exists; falls back to cooling deployments (sorted by soonest expiry) ONLY
           when every matching deployment is cooling.
-        - P2: Rotates equal-priority tiers via per-(alias, priority) round-robin cursor.
+        - P2: Rotates equal-priority tiers via per-(alias, priority) round-robin cursor
+          when ``advance_cursor=True``.
         """
         excluded = set(exclude_ids or ())
         with self._lock:
@@ -156,7 +171,8 @@ class DeploymentPool:
                     cursor_key = (target, priority)
                     cursor = self._tier_cursors.get(cursor_key, 0) % len(bucket)
                     ordered_healthy.extend(bucket[cursor:] + bucket[:cursor])
-                    self._tier_cursors[cursor_key] = (cursor + 1) % len(bucket)
+                    if advance_cursor:
+                        self._tier_cursors[cursor_key] = (cursor + 1) % len(bucket)
                 return ordered_healthy
 
             # All matching deployments are cooling: return soonest-expiring first.

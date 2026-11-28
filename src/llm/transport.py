@@ -20,6 +20,7 @@ import os
 import sys
 import threading
 import time
+import weakref
 from typing import (
     Any,
     Callable,
@@ -48,6 +49,7 @@ from src.llm.native_resolve import (
     resolve_deployment,
     resolve_env_reference,
     resolve_headers_env,
+    url_origin,
 )
 from src.llm.native_types import (
     DeploymentSpec,
@@ -181,8 +183,11 @@ def _validate_prebuilt_router_api_surface(router: Any, model: Any, api_surface: 
             continue
         params = entry.get("litellm_params")
         wire = str(params.get("model") or "").strip() if isinstance(params, Mapping) else ""
-        alias = str(entry.get("model_name") or "").strip()
-        if not target or target in {alias, wire}:
+        # P1-2: Match reachable deployments by exact alias (model_name, falling back to wire
+        # only when model_name is empty) so an unrelated Chat alias sharing the wire name
+        # does not reject a valid Responses alias.
+        alias = str(entry.get("model_name") or "").strip() or wire
+        if not target or target == alias:
             matching_entries.append(entry)
     if not matching_entries:
         return
@@ -372,17 +377,70 @@ def _build_synthetic_exception(name: str) -> type[BaseException]:
     return _FallbackLiteLLMError
 
 
-def _sync_shared_pricing_to_transport(transport: Optional[LLMTransport]) -> None:
-    """Mirror any dynamically registered custom model costs into a lazy fallback transport."""
+_MATERIALIZED_FALLBACK_TRANSPORTS: "weakref.WeakSet[Any]" = weakref.WeakSet()
+
+
+def _tag_response_transport_engine(response: Any, engine: str) -> Any:
+    """Tag confirmed transport engine (``native`` or ``litellm``) onto response/stream (P1-13)."""
+    if response is None or engine not in {"native", "litellm"}:
+        return response
+    hidden = getattr(response, "_hidden_params", None)
+    if isinstance(hidden, dict):
+        hidden["transport_engine"] = engine
+        return response
+    try:
+        setattr(response, "transport_engine", engine)
+    except Exception:
+        pass
+    return response
+
+
+def _strip_internal_litellm_kwargs(kwargs: Mapping[str, Any]) -> Dict[str, Any]:
+    """Strip native-only transport metadata keys before calling LiteLLM SDK."""
+    cleaned: Dict[str, Any] = {}
+    for key, value in kwargs.items():
+        if key in {"wire_protocol", "dsa_channel_protocol"} or str(key).startswith("_dsa_"):
+            continue
+        cleaned[key] = value
+    return cleaned
+
+
+def _is_synthetic_zero_cost_spec(spec: Any) -> bool:
+    if not isinstance(spec, Mapping):
+        return False
+    return spec.get("input_cost_per_token") == 0.0 and spec.get("output_cost_per_token") == 0.0
+
+
+def _sync_shared_pricing_to_transport(
+    transport: Optional[LLMTransport],
+    entries: Optional[Mapping[str, Any]] = None,
+) -> None:
+    """Mirror dynamically registered model costs into a fallback transport without clobbering SDK costs (P1-14)."""
     if transport is None:
         return
-    with _SHARED_MODEL_COSTS_LOCK:
-        snapshot = dict(_SHARED_MODEL_COSTS)
+    try:
+        _MATERIALIZED_FALLBACK_TRANSPORTS.add(transport)
+    except TypeError:
+        pass
+    if entries is None:
+        with _SHARED_MODEL_COSTS_LOCK:
+            snapshot = dict(_SHARED_MODEL_COSTS)
+    else:
+        snapshot = dict(entries)
     if not snapshot:
         return
     try:
-        if transport.can_register_model():
-            transport.register_model(snapshot)
+        if not transport.can_register_model():
+            return
+        existing_costs = transport.get_model_cost()
+        filtered: Dict[str, Any] = {}
+        for model_name, spec in snapshot.items():
+            # P1-14: Never overwrite an existing built-in LiteLLM cost with synthetic 0.0 fallback defaults.
+            if model_name in existing_costs and _is_synthetic_zero_cost_spec(spec):
+                continue
+            filtered[model_name] = spec
+        if filtered:
+            transport.register_model(filtered)
     except Exception as exc:
         logger.debug("Skipping shared model cost sync to fallback transport: %s", exc)
 
@@ -401,12 +459,14 @@ class LiteLLMTransport:
         return module
 
     def completion(self, **kwargs: Any) -> Any:
-        payload = dict(kwargs)
+        payload = _strip_internal_litellm_kwargs(kwargs)
         api_surface = payload.pop("api_surface", None)
-        payload.pop("wire_protocol", None)
         if api_surface and "model" in payload:
             payload["model"] = _encode_litellm_responses_wire_model(payload["model"], api_surface)
-        return self._load_litellm().completion(**payload)
+        return _tag_response_transport_engine(
+            self._load_litellm().completion(**payload),
+            "litellm",
+        )
 
     def create_router(self, model_list: List[Dict[str, Any]], **kwargs: Any) -> Any:
         module = self._load_litellm()
@@ -496,22 +556,9 @@ class LiteLLMTransport:
             return estimate_tokens_fallback(normalized_text)
 
     def get_model_providers(self) -> frozenset[str]:
-        providers: set[str] = set()
-        if "litellm" not in sys.modules:
-            os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
-        try:
-            utils_mod = importlib.import_module("litellm.types.utils")
-            llm_providers = getattr(utils_mod, "LlmProviders", ())
-            providers.update(
-                str(provider.value).strip().lower()
-                for provider in llm_providers
-                if str(getattr(provider, "value", "")).strip()
-            )
-        except (ImportError, AttributeError, TypeError):
-            logger.debug("LiteLLM provider metadata unavailable; returning empty provider set")
-        if "litellm" in sys.modules:
-            _apply_disable_streaming_logging(sys.modules.get("litellm"))
-        return frozenset(providers)
+        # R9 / P2: Transport-mode-independent canonical LiteLLM provider registry
+        # matching litellm.types.utils.LlmProviders without importing litellm.
+        return CANONICAL_LITELLM_PROVIDERS
 
     def disable_streaming_logging(self) -> None:
         _apply_disable_streaming_logging(sys.modules.get("litellm"))
@@ -801,22 +848,34 @@ class NativeUnifiedRouter:
         req_kwargs = dict(kwargs)
         raw_retries = req_kwargs.pop("num_retries", self._num_retries)
         effective_retries = max(0, int(raw_retries if raw_retries is not None else self._num_retries))
-        _, _, caller_http = extract_client_overrides(req_kwargs)
+        _, caller_client_base, caller_http = extract_client_overrides(req_kwargs)
+        caller_client_origin = url_origin(caller_client_base) if caller_client_base else None
+        raw_caller_base = (
+            resolve_env_reference(req_kwargs.get("base_url"))
+            or resolve_env_reference(req_kwargs.get("api_base"))
+            or caller_client_base
+        )
+        caller_header_origin = url_origin(str(raw_caller_base)) if raw_caller_base else None
         target_alias = str(model or "").strip()
 
         if self._populated:
             if self._pool.has_alias(target_alias):
-                candidates = self._pool.select_candidates(target_alias)
+                # P1-3: Peek without advancing round-robin cursor; engine advances once on attempt 0.
+                candidates = self._pool.peek_candidates(target_alias)
                 using_pool = True
             elif target_alias in self._fallback_entries_by_alias:
+                _sync_shared_pricing_to_transport(self._fallback_transport)
                 fallback_router = self._get_or_create_fallback_router()
-                return dispatch_completion(
-                    router=fallback_router,
-                    model=target_alias,
-                    messages=messages,
-                    stream=stream,
-                    num_retries=effective_retries,
-                    **req_kwargs,
+                return _tag_response_transport_engine(
+                    dispatch_completion(
+                        router=fallback_router,
+                        model=target_alias,
+                        messages=messages,
+                        stream=stream,
+                        num_retries=effective_retries,
+                        **req_kwargs,
+                    ),
+                    "litellm",
                 )
             else:
                 # R6: Never silently create an ephemeral entry on a populated router miss.
@@ -836,12 +895,15 @@ class NativeUnifiedRouter:
             if isinstance(resolved, Unsupported):
                 if self._fallback_transport is not None:
                     _sync_shared_pricing_to_transport(self._fallback_transport)
-                    return self._fallback_transport.completion(
-                        model=target_alias,
-                        messages=messages,
-                        stream=stream,
-                        num_retries=effective_retries,
-                        **req_kwargs,
+                    return _tag_response_transport_engine(
+                        self._fallback_transport.completion(
+                            model=target_alias,
+                            messages=messages,
+                            stream=stream,
+                            num_retries=effective_retries,
+                            **req_kwargs,
+                        ),
+                        "litellm",
                     )
                 raise NativeConfigError(
                     resolved.detail,
@@ -851,11 +913,6 @@ class NativeUnifiedRouter:
                 )
             candidates = [resolved]
             using_pool = False
-
-        # Honor caller client (Hermes no-proxy) or per-deployment custom httpx client (P6).
-        effective_client = caller_http
-        if effective_client is None and len(candidates) == 1:
-            effective_client = self._deployment_clients.get(candidates[0].deployment_id)
 
         if stream:
             return stream_pooled_completion(
@@ -867,7 +924,10 @@ class NativeUnifiedRouter:
                 prepare_request_fn=self._prepare_request,
                 iter_stream_fn=_iter_protocol_stream_chunks,
                 http_transport=self._http_transport,
-                http_client=effective_client,
+                http_client=caller_http,
+                deployment_clients=self._deployment_clients,
+                caller_client_origin=caller_client_origin,
+                caller_header_origin=caller_header_origin,
                 request_model=target_alias,
                 num_retries=effective_retries,
                 default_timeout=self._timeout,
@@ -886,7 +946,10 @@ class NativeUnifiedRouter:
             prepare_request_fn=self._prepare_request,
             parse_response_fn=_parse_protocol_response,
             http_transport=self._http_transport,
-            http_client=effective_client,
+            http_client=caller_http,
+            deployment_clients=self._deployment_clients,
+            caller_client_origin=caller_client_origin,
+            caller_header_origin=caller_header_origin,
             request_model=target_alias,
             num_retries=effective_retries,
             default_timeout=self._timeout,
@@ -927,7 +990,10 @@ class NativeUnifiedTransport:
         if isinstance(resolved, Unsupported):
             if self._fallback_transport is not None:
                 _sync_shared_pricing_to_transport(self._fallback_transport)
-                return self._fallback_transport.completion(**kwargs)
+                return _tag_response_transport_engine(
+                    self._fallback_transport.completion(**kwargs),
+                    "litellm",
+                )
             raise NativeConfigError(
                 resolved.detail,
                 status_code=400,
@@ -941,7 +1007,14 @@ class NativeUnifiedTransport:
         messages = call_kwargs.pop("messages", [])
         stream = bool(call_kwargs.pop("stream", False))
         call_kwargs.pop("model", None)
-        _, _, caller_http = extract_client_overrides(call_kwargs)
+        _, caller_client_base, caller_http = extract_client_overrides(call_kwargs)
+        caller_client_origin = url_origin(caller_client_base) if caller_client_base else None
+        raw_caller_base = (
+            resolve_env_reference(call_kwargs.get("base_url"))
+            or resolve_env_reference(call_kwargs.get("api_base"))
+            or caller_client_base
+        )
+        caller_header_origin = url_origin(str(raw_caller_base)) if raw_caller_base else None
 
         def _prepare(
             entry: DeploymentSpec,
@@ -968,6 +1041,8 @@ class NativeUnifiedTransport:
                 iter_stream_fn=_iter_protocol_stream_chunks,
                 http_transport=self._http_transport,
                 http_client=caller_http,
+                caller_client_origin=caller_client_origin,
+                caller_header_origin=caller_header_origin,
                 request_model=model,
                 num_retries=effective_retries,
                 default_timeout=self._default_timeout,
@@ -987,6 +1062,8 @@ class NativeUnifiedTransport:
             parse_response_fn=_parse_protocol_response,
             http_transport=self._http_transport,
             http_client=caller_http,
+            caller_client_origin=caller_client_origin,
+            caller_header_origin=caller_header_origin,
             request_model=model,
             num_retries=effective_retries,
             default_timeout=self._default_timeout,
@@ -1020,8 +1097,14 @@ class NativeUnifiedTransport:
 
     def register_model(self, model_cost: Mapping[str, Any]) -> None:
         if isinstance(model_cost, Mapping):
+            new_entries = dict(model_cost)
             with _SHARED_MODEL_COSTS_LOCK:
-                _SHARED_MODEL_COSTS.update(dict(model_cost))
+                _SHARED_MODEL_COSTS.update(new_entries)
+            # P1-14: Propagate later registrations to any already-materialized fallback transports.
+            for fb in list(_MATERIALIZED_FALLBACK_TRANSPORTS):
+                _sync_shared_pricing_to_transport(fb, new_entries)
+            if self._fallback_transport is not None and "litellm" in sys.modules:
+                _sync_shared_pricing_to_transport(self._fallback_transport, new_entries)
 
     def get_model_cost(self) -> Dict[str, Any]:
         with _SHARED_MODEL_COSTS_LOCK:
@@ -1146,6 +1229,7 @@ def reset_transport_cache() -> None:
     """Close pooled HTTPX clients and clear cached transports, provider, and pricing caches."""
     close_pooled_clients()
     _CACHED_TRANSPORTS.clear()
+    _MATERIALIZED_FALLBACK_TRANSPORTS.clear()
     with _SHARED_MODEL_COSTS_LOCK:
         _SHARED_MODEL_COSTS.clear()
     config_mod = sys.modules.get("src.config")
@@ -1225,18 +1309,15 @@ def dispatch_completion(
 ) -> Any:
     """Dispatch a completion call through a router, active transport, or legacy mock."""
     if router is not None:
-        if (
-            ("api_surface" in kwargs or "wire_protocol" in kwargs)
-            and not getattr(router, "_dsa_accepts_transport_metadata", False)
-        ):
-            _validate_prebuilt_router_api_surface(
-                router,
-                kwargs.get("model"),
-                kwargs.get("api_surface"),
-            )
-            router_kwargs = dict(kwargs)
+        if not getattr(router, "_dsa_accepts_transport_metadata", False):
+            if "api_surface" in kwargs or "wire_protocol" in kwargs:
+                _validate_prebuilt_router_api_surface(
+                    router,
+                    kwargs.get("model"),
+                    kwargs.get("api_surface"),
+                )
+            router_kwargs = _strip_internal_litellm_kwargs(kwargs)
             router_kwargs.pop("api_surface", None)
-            router_kwargs.pop("wire_protocol", None)
             return router.completion(**router_kwargs)
         return router.completion(**kwargs)
     if transport is not None:

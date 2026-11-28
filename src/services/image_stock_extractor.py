@@ -434,6 +434,16 @@ def _call_litellm_vision(image_b64: str, mime_type: str, api_key: Optional[str] 
         call_kwargs["api_base"] = deployment_api_base
     if resolved_api_surface:
         call_kwargs["api_surface"] = resolved_api_surface
+    # P1-12: Preserve deployment routing metadata when building direct Vision kwargs.
+    raw_wire_protocol = str(deployment_params.get("wire_protocol") or "").strip()
+    if raw_wire_protocol:
+        call_kwargs["wire_protocol"] = raw_wire_protocol
+    raw_custom_provider = str(deployment_params.get("custom_llm_provider") or "").strip()
+    if raw_custom_provider:
+        call_kwargs["custom_llm_provider"] = raw_custom_provider
+    raw_channel_protocol = str(deployment_info.get("dsa_channel_protocol") or "").strip()
+    if raw_channel_protocol:
+        call_kwargs["dsa_channel_protocol"] = raw_channel_protocol
     if deployment_params.get("extra_headers"):
         call_kwargs["extra_headers"] = dict(deployment_params["extra_headers"])
     # Add api_base and custom headers for OpenAI-compatible providers

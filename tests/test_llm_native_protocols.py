@@ -732,3 +732,385 @@ def test_sse_fuzz_truncated_eof_missing_terminal_and_in_band_errors_raise() -> N
     with pytest.raises(NativeRateLimitError) as e_gem:
         list(iter_gemini_stream_chunks([f'data: {{"error":{{"code":429,"message":"quota {secret}"}}}}\n\n'.encode()], secrets=[secret]))
     assert secret not in str(e_gem.value)
+
+
+def test_p0_3_and_p1_15_openai_store_precedence_trace_sanitizer_and_responses_stream_reasoning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P0-3: caller store=False wins over deployment_extra_body; P1-15: Responses stream preserves encrypted reasoning."""
+    from src.llm.native_types import NativeBadRequestError
+    from src.llm.openai_transport import (
+        build_chat_completions_payload,
+        build_responses_api_payload,
+        prepare_openai_request,
+    )
+
+    # P0-3 Chat: explicit caller store=False stays authoritative over deployment_extra_body["store"]=True
+    chat_body = build_chat_completions_payload(
+        wire_model="gpt-4o",
+        messages=[
+            {
+                "role": "assistant",
+                "content": "hello",
+                "_trace_provider": "openai",
+                "_trace_model": "gpt-4o",
+            },
+            {"role": "user", "content": "next"},
+        ],
+        deployment_extra_body={"store": True},
+        store=False,
+    )
+    assert chat_body["store"] is False
+    # P2: _trace_provider and _trace_model are stripped from wire messages
+    assert "_trace_provider" not in chat_body["messages"][0]
+    assert "_trace_model" not in chat_body["messages"][0]
+
+    # P0-3 Responses: string "false" -> False + encrypted reasoning preserved; invalid string raises
+    resp_body = build_responses_api_payload(
+        wire_model="gpt-5",
+        messages=[{"role": "user", "content": "hi"}],
+        deployment_extra_body={"store": True},
+        store="false",
+        parallel_tool_calls=False,
+    )
+    assert resp_body["store"] is False
+    assert "reasoning.encrypted_content" in resp_body["include"]
+    assert resp_body["parallel_tool_calls"] is False
+
+    with pytest.raises(NativeBadRequestError):
+        build_responses_api_payload(
+            wire_model="gpt-5",
+            messages=[{"role": "user", "content": "hi"}],
+            store="definitely-not-a-bool",
+        )
+
+    # P2: direct-call extra_headers resolves os.environ/VAR instead of overwriting with raw ref
+    monkeypatch.setenv("DSA_CUSTOM_HDR_VAL", "resolved-token-42")
+    spec = DeploymentSpec(
+        alias="openai/gpt-4o",
+        wire_model="gpt-4o",
+        protocol="openai_chat",
+        provider="openai",
+        api_base="https://relay.example/v1",
+        api_key="sk-1234",
+        endpoint_url="https://relay.example/v1/chat/completions",
+        extra_headers={"X-Custom": "resolved-token-42"},
+    )
+    _url, hdrs, _payload, _timeout = prepare_openai_request(
+        spec,
+        [{"role": "user", "content": "hi"}],
+        False,
+        {"extra_headers": {"X-Custom": "os.environ/DSA_CUSTOM_HDR_VAL"}},
+    )
+    assert hdrs["X-Custom"] == "resolved-token-42"
+
+    # P1-15 + P2: Responses streaming preserves encrypted reasoning items once in order & returns immediately on completed
+    resp_spec = DeploymentSpec(alias="m", wire_model="gpt-5", protocol="openai_responses", provider="openai")
+    sse_payload = (
+        b'data: {"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"step1"}],"encrypted_content":"ENC_BLOB_1"}}\n\n'
+        b'data: {"type":"response.output_text.delta","delta":"done"}\n\n'
+        b'data: {"type":"response.completed","response":{"id":"r1","model":"gpt-5","status":"completed","output":[{"type":"reasoning","id":"rs_1","encrypted_content":"ENC_BLOB_1"},{"type":"reasoning","id":"rs_2","encrypted_content":"ENC_BLOB_2"}],"usage":{"input_tokens":5,"output_tokens":2}}}\n\n'
+        b'data: {"type":"response.output_text.delta","delta":"TRAILING_AFTER_COMPLETED"}\n\n'
+    )
+    chunks = list(iter_openai_stream_chunks(resp_spec, [sse_payload]))
+    collected_blocks = [
+        blk
+        for ch in chunks
+        for blk in (ch.choices[0].delta.provider_blocks or [])
+    ]
+    assert [b["id"] for b in collected_blocks] == ["rs_1", "rs_2"]
+    assert [b["encrypted_content"] for b in collected_blocks] == ["ENC_BLOB_1", "ENC_BLOB_2"]
+    assert "".join(c.choices[0].delta.content or "" for c in chunks) == "done"
+
+
+def test_p1_16_and_p1_17_anthropic_interleaved_replay_response_format_and_thinking_guards() -> None:
+    """P1-16: [thinking, tool_use, text] & [tool_use, text] keep wire order; P1-17: response_format handled; P2 guards."""
+    from src.agent.llm_adapter import LLMToolAdapter
+    from src.config import Config
+    from src.llm.anthropic_transport import build_anthropic_payload, parse_anthropic_response
+    from src.llm.native_types import NativeBadRequestError
+
+    adapter = LLMToolAdapter(Config())
+
+    # 1. [thinking, tool_use, text] replays in exact order through LLMToolAdapter
+    raw_interleaved = {
+        "id": "msg_order_1",
+        "role": "assistant",
+        "model": "claude-sonnet-4-6",
+        "content": [
+            {"type": "thinking", "thinking": "plan", "signature": "sig_plan"},
+            {"type": "tool_use", "id": "toolu_mid", "name": "lookup", "input": {"code": "600519"}},
+            {"type": "text", "text": "After tool call."},
+        ],
+        "stop_reason": "tool_use",
+        "usage": {"input_tokens": 10, "output_tokens": 5},
+    }
+    parsed1 = parse_anthropic_response(raw_interleaved)
+    llm_resp1 = adapter._parse_litellm_response(parsed1, "anthropic/claude-sonnet-4-6")
+    history = [
+        {"role": "user", "content": "analyze"},
+        {
+            "role": "assistant",
+            "content": llm_resp1.content,
+            "provider_blocks": llm_resp1.provider_blocks,
+            "tool_calls": [
+                {"id": tc.id, "name": tc.name, "arguments": tc.arguments}
+                for tc in llm_resp1.tool_calls
+            ],
+        },
+        {"role": "tool", "tool_call_id": "toolu_mid", "content": '{"ok": true}'},
+    ]
+    openai_msgs = adapter._convert_messages(history)
+    replayed = build_anthropic_payload(wire_model="claude-sonnet-4-6", messages=openai_msgs)
+    assistant_blocks = replayed["messages"][1]["content"]
+    assert [b["type"] for b in assistant_blocks] == ["thinking", "tool_use", "text"]
+    assert assistant_blocks[1]["id"] == "toolu_mid"
+
+    # 2. [tool_use, text] WITHOUT thinking also preserves exact order
+    raw_no_think = {
+        "id": "msg_order_2",
+        "role": "assistant",
+        "model": "claude-sonnet-4-6",
+        "content": [
+            {"type": "tool_use", "id": "toolu_first", "name": "lookup", "input": {"code": "000001"}},
+            {"type": "text", "text": "Tail text"},
+        ],
+        "stop_reason": "tool_use",
+        "usage": {"input_tokens": 5, "output_tokens": 3},
+    }
+    parsed2 = parse_anthropic_response(raw_no_think)
+    assert [b["type"] for b in (parsed2.choices[0].message.provider_blocks or [])] == ["tool_use", "text"]
+    replayed2 = build_anthropic_payload(
+        wire_model="claude-sonnet-4-6",
+        messages=[
+            {"role": "user", "content": "hi"},
+            {
+                "role": "assistant",
+                "content": "Tail text",
+                "provider_blocks": parsed2.choices[0].message.provider_blocks,
+                "tool_calls": [
+                    {"id": "toolu_first", "type": "function", "function": {"name": "lookup", "arguments": '{"code":"000001"}'}}
+                ],
+            },
+        ],
+    )
+    assert [b["type"] for b in replayed2["messages"][1]["content"]] == ["tool_use", "text"]
+
+    # 3. P1-17: response_format json_schema translates to output_config; json_object raises typed error
+    schema_payload = build_anthropic_payload(
+        wire_model="claude-sonnet-4-6",
+        messages=[{"role": "user", "content": "hi"}],
+        response_format={
+            "type": "json_schema",
+            "json_schema": {
+                "name": "out",
+                "schema": {"type": "object", "properties": {"score": {"type": "number"}}},
+            },
+        },
+        tools=[{"type": "function", "function": {"name": "f", "description": "d", "parameters": {"type": "object"}}}],
+        parallel_tool_calls=False,
+    )
+    assert schema_payload["output_config"]["format"]["type"] == "json_schema"
+    assert schema_payload["output_config"]["format"]["schema"]["properties"]["score"]["type"] == "number"
+    assert schema_payload["tool_choice"] == {"type": "auto", "disable_parallel_tool_use": True}
+
+    with pytest.raises(NativeBadRequestError, match="response_format"):
+        build_anthropic_payload(
+            wire_model="claude-sonnet-4-6",
+            messages=[{"role": "user", "content": "hi"}],
+            response_format={"type": "json_object"},
+        )
+
+    # 4. P2: Post-merge extra_body.temperature != 1.0 and thinking+forced-tool raise NativeBadRequestError
+    with pytest.raises(NativeBadRequestError, match="temperature=1.0"):
+        build_anthropic_payload(
+            wire_model="claude-sonnet-4-6",
+            messages=[{"role": "user", "content": "hi"}],
+            reasoning_effort="low",
+            extra_body={"temperature": 0.3},
+        )
+    with pytest.raises(NativeBadRequestError, match="forced tool_choice"):
+        build_anthropic_payload(
+            wire_model="claude-sonnet-4-6",
+            messages=[{"role": "user", "content": "hi"}],
+            reasoning_effort="low",
+            tools=[{"type": "function", "function": {"name": "f", "description": "d", "parameters": {"type": "object"}}}],
+            tool_choice="required",
+        )
+
+    # 5. P2: Anthropic stream stops immediately on message_stop
+    anth_sse = (
+        b'data: {"type":"message_start","message":{"id":"m1","model":"claude-sonnet-4-6","usage":{"input_tokens":1}}}\n\n'
+        b'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"OK"}}\n\n'
+        b'data: {"type":"message_stop"}\n\n'
+        b'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"TRAILING"}}\n\n'
+    )
+    assert "".join(c.choices[0].delta.content or "" for c in iter_anthropic_stream_chunks([anth_sse])) == "OK"
+
+
+def test_p1_18_to_p1_21_gemini_parts_replay_schema_properties_finish_and_partial_args() -> None:
+    """P1-18..P1-21 + P2: Gemini thought/sig parts order, properties.title/default, multi-cand EOF, partialArgs."""
+    from src.agent.llm_adapter import LLMToolAdapter
+    from src.config import Config
+    from src.llm.gemini_transport import (
+        _clean_gemini_schema,
+        build_gemini_payload,
+        parse_gemini_response,
+        parse_gemini_usage,
+    )
+    from src.llm.native_types import NativeBadRequestError
+
+    adapter = LLMToolAdapter(Config())
+
+    # P1-18: thought: true + thoughtSignature + signature-only + [functionCall, signed_text] exact order
+    raw_gem = {
+        "responseId": "gem_order",
+        "modelVersion": "gemini-2.5-pro",
+        "candidates": [
+            {
+                "index": 0,
+                "content": {
+                    "role": "model",
+                    "parts": [
+                        {"text": "hidden thought", "thought": True, "thoughtSignature": "SIG_THOUGHT"},
+                        {"thoughtSignature": "SIG_ONLY"},
+                        {"functionCall": {"id": "fc_1", "name": "quote", "args": {"code": "600519"}}, "thoughtSignature": "SIG_FC"},
+                        {"text": "Visible tail", "thoughtSignature": "SIG_TEXT"},
+                    ],
+                },
+                "finishReason": "STOP",
+            }
+        ],
+        "usageMetadata": {
+            "promptTokenCount": 20,
+            "candidatesTokenCount": 10,
+            "thoughtsTokenCount": 7,
+            "toolUsePromptTokenCount": 5,
+        },
+    }
+    parsed = parse_gemini_response(raw_gem)
+    # P2: completion_tokens includes thoughtsTokenCount; total includes toolUsePromptTokenCount
+    assert parsed.usage.completion_tokens == 17
+    assert parsed.usage.total_tokens == 42
+
+    llm_resp = adapter._parse_litellm_response(parsed, "gemini/gemini-2.5-pro")
+    assert llm_resp.content == "Visible tail"
+    history = [
+        {"role": "user", "content": "check"},
+        {
+            "role": "assistant",
+            "content": llm_resp.content,
+            "provider_blocks": llm_resp.provider_blocks,
+            "tool_calls": [
+                {
+                    "id": tc.id,
+                    "name": tc.name,
+                    "arguments": tc.arguments,
+                    "thought_signature": tc.thought_signature,
+                    "provider_specific_fields": tc.provider_specific_fields,
+                }
+                for tc in llm_resp.tool_calls
+            ],
+        },
+        {"role": "tool", "tool_call_id": "fc_1", "name": "quote", "content": '{"p":1500}'},
+    ]
+    replayed = build_gemini_payload(
+        wire_model="gemini-2.5-pro",
+        messages=adapter._convert_messages(history),
+        reasoning_effort="none",  # P2: Gemini 2.5 Pro must NOT emit thinkingBudget=0
+    )
+    assert "thinkingConfig" not in replayed.get("generationConfig", {})
+    replayed_parts = replayed["contents"][1]["parts"]
+    assert len(replayed_parts) == 4
+    assert replayed_parts[0] == {"thought": True, "text": "hidden thought", "thoughtSignature": "SIG_THOUGHT"}
+    assert replayed_parts[1] == {"thoughtSignature": "SIG_ONLY"}
+    assert replayed_parts[2]["functionCall"]["id"] == "fc_1"
+    assert replayed_parts[2]["thoughtSignature"] == "SIG_FC"
+    assert replayed_parts[3] == {"text": "Visible tail", "thoughtSignature": "SIG_TEXT"}
+
+    # P1-19: _clean_gemini_schema MUST preserve user properties named 'title', 'default', 'strict'
+    schema = {
+        "type": "object",
+        "title": "OuterSchemaTitleToStrip",
+        "additionalProperties": False,
+        "properties": {
+            "title": {"type": "string", "title": "InnerTitleToStrip"},
+            "default": {"type": "string", "default": "fallback"},
+            "strict": {"type": "boolean"},
+        },
+        "required": ["title", "default", "strict"],
+    }
+    cleaned = _clean_gemini_schema(schema)
+    assert "title" not in cleaned
+    assert "additionalProperties" not in cleaned
+    assert set(cleaned["properties"].keys()) == {"title", "default", "strict"}
+    assert "title" not in cleaned["properties"]["title"]
+    assert "default" not in cleaned["properties"]["default"]
+    assert cleaned["required"] == ["title", "default", "strict"]
+
+    # P2: fileData with arbitrary HTTP URL raises NativeBadRequestError
+    with pytest.raises(NativeBadRequestError):
+        build_gemini_payload(
+            wire_model="gemini-2.5-flash",
+            messages=[{"role": "user", "content": [{"fileData": {"fileUri": "https://evil.example/img.png"}}]}],
+        )
+
+    # P2: MALFORMED_FUNCTION_CALL surfaces distinctly (not disguised as "stop")
+    malformed_resp = parse_gemini_response(
+        {"candidates": [{"index": 0, "content": {"parts": []}, "finishReason": "MALFORMED_FUNCTION_CALL"}]}
+    )
+    assert malformed_resp.choices[0].finish_reason == "malformed_function_call"
+
+    # P1-20: No premature finish_reason="tool_calls" before provider finishReason; per-candidate EOF check
+    stream_mid_tool = (
+        b'data: {"candidates":[{"index":0,"content":{"parts":[{"functionCall":{"id":"fc1","name":"f","args":{"x":1}}}]}}]}\n\n'
+        b'data: {"candidates":[{"index":0,"content":{"parts":[]},"finishReason":"STOP"}]}\n\n'
+    )
+    chunks_mid = list(iter_gemini_stream_chunks([stream_mid_tool]))
+    assert chunks_mid[0].choices[0].finish_reason is None
+    assert chunks_mid[-1].choices[0].finish_reason == "tool_calls"
+
+    multi_cand_truncated = (
+        b'data: {"candidates":[{"index":0,"content":{"parts":[{"text":"a"}]},"finishReason":"STOP"},{"index":1,"content":{"parts":[{"text":"b"}]}}]}\n\n'
+    )
+    with pytest.raises(NativeIncompleteStreamError):
+        list(iter_gemini_stream_chunks([multi_cand_truncated]))
+
+    # P1-21: Streamed partialArgs / willContinue assemble into ONE single complete tool call
+    partial_sse = (
+        b'data: {"candidates":[{"index":0,"content":{"parts":[{"functionCall":{"id":"fc_p1","name":"get_quote","partialArgs":[{"jsonPath":"$.code","stringValue":"600"}],"willContinue":true},"thoughtSignature":"SIG_P"}]}}]}\n\n'
+        b'data: {"candidates":[{"index":0,"content":{"parts":[{"functionCall":{"partialArgs":[{"jsonPath":"$.code","stringValue":"519"},{"jsonPath":"$.days","numberValue":5}],"willContinue":false}}]},"finishReason":"STOP"}]}\n\n'
+    )
+    partial_chunks = list(iter_gemini_stream_chunks([partial_sse]))
+    emitted_tcs = [
+        tc
+        for ch in partial_chunks
+        for tc in (ch.choices[0].delta.tool_calls or [])
+    ]
+    assert len(emitted_tcs) == 1
+    assert emitted_tcs[0].id == "fc_p1"
+    assert emitted_tcs[0].function.name == "get_quote"
+    assert json.loads(emitted_tcs[0].function.arguments) == {"code": "600519", "days": 5}
+    assert emitted_tcs[0].thought_signature == "SIG_P"
+
+
+def test_p2_sse_empty_data_preserved_and_buffer_caps_enforced() -> None:
+    """P2: iter_sse_events preserves empty data: frames while bounding pathological line/event buffers."""
+    from src.llm.sse import iter_sse_json_events
+
+    events = list(iter_sse_events([b"data:\n\ndata: {\"ok\": 1}\n\n"]))
+    assert len(events) == 2
+    assert events[0].data == ""
+    assert events[1].data == '{"ok": 1}'
+
+    json_events = list(iter_sse_json_events([b"data:\n\ndata: {\"ok\": 1}\n\n"]))
+    assert len(json_events) == 1
+    assert json_events[0][1] == {"ok": 1}
+
+    with pytest.raises(NativeAPIError) as exc_line:
+        list(iter_sse_events([b"data: " + b"a" * 2048 + b"\n\n"], max_line_chars=1024))
+    assert exc_line.value.error_code == "sse_frame_too_large"
+
+    with pytest.raises(NativeAPIError) as exc_ev:
+        list(iter_sse_events([b"data: " + b"a" * 700 + b"\ndata: " + b"b" * 700 + b"\n\n"], max_event_chars=1024))
+    assert exc_ev.value.error_code == "sse_frame_too_large"

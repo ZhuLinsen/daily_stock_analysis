@@ -4840,6 +4840,22 @@ class SystemConfigService:
                 "LLM request was rejected by quota or rate limiting",
                 "rate_limit",
             )
+        if exc_name == "nativeconfigerror" or getattr(exc, "error_code", None) in {
+            "fallback_only_provider",
+            "missing_api_base",
+            "unknown_provider_without_api_base",
+            "unsupported_wire_protocol",
+            "unsupported_custom_provider",
+            "endpoint_surface_mismatch",
+            "unresolved_endpoint_env",
+            "conflicting_api_base",
+        }:
+            return _LLMDiagnostic(
+                "config_error",
+                False,
+                str(exc) or "LLM native transport configuration error",
+                str(getattr(exc, "error_code", None) or "native_config_error"),
+            )
         if getattr(exc, "is_waf_blocked", False) or (
             getattr(exc, "error_code", None) == "provider_blocked"
         ):

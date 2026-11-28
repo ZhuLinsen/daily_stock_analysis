@@ -26,6 +26,7 @@ from src.llm.native_types import (
     extract_client_overrides,
     has_header_case_insensitive,
     merge_header_overrides,
+    parse_strict_bool,
 )
 
 # ============================================================
@@ -108,75 +109,137 @@ NATIVE_GEMINI_WIRE_PROVIDERS: frozenset[str] = frozenset({"gemini"})
 # independent; NEVER includes org prefixes qwen/glm/zhipu/ark/siliconflow/google/claude).
 CANONICAL_LITELLM_PROVIDERS: frozenset[str] = frozenset(
     {
+        "a2a",
+        "a2a_agent",
         "ai21",
         "ai21_chat",
         "aiml",
+        "aiohttp_openai",
         "amazon_nova",
         "anthropic",
         "anthropic_text",
+        "apertis",
+        "assemblyai",
+        "auto_router",
+        "aws_polly",
         "azure",
         "azure_ai",
         "azure_text",
         "baseten",
         "bedrock",
         "bedrock_mantle",
+        "black_forest_labs",
+        "bytez",
         "cerebras",
+        "charity_engine",
+        "chatgpt",
+        "chutes",
+        "clarifai",
         "cloudflare",
         "codestral",
         "cohere",
         "cohere_chat",
         "cometapi",
+        "compactifai",
+        "cursor",
         "custom",
         "custom_openai",
         "dashscope",
         "databricks",
+        "datarobot",
+        "deepgram",
         "deepinfra",
         "deepseek",
+        "docker_model_runner",
+        "dotprompt",
+        "elevenlabs",
+        "empower",
+        "fal_ai",
         "featherless_ai",
         "fireworks_ai",
         "friendliai",
+        "galadriel",
         "gemini",
+        "gigachat",
         "github",
         "github_copilot",
+        "gradient_ai",
         "groq",
+        "helicone",
+        "heroku",
         "hosted_vllm",
         "huggingface",
+        "humanloop",
         "hyperbolic",
+        "infinity",
         "jina_ai",
         "lambda_ai",
+        "langfuse",
+        "langgraph",
+        "lemonade",
+        "litellm_agent",
         "litellm_proxy",
+        "llamafile",
         "lm_studio",
+        "manus",
+        "maritalk",
         "meta_llama",
+        "milvus",
         "minimax",
         "mistral",
         "moonshot",
+        "morph",
+        "nano-gpt",
         "nebius",
         "nlp_cloud",
         "novita",
+        "nscale",
         "nvidia_nim",
+        "nvidia_riva",
+        "oci",
         "ollama",
         "ollama_chat",
+        "oobabooga",
         "openai",
         "openai_like",
         "openrouter",
         "ovhcloud",
         "perplexity",
+        "petals",
+        "pg_vector",
         "poe",
         "predibase",
+        "publicai",
+        "ragflow",
+        "recraft",
+        "reducto",
         "replicate",
+        "runwayml",
+        "s3_vectors",
         "sagemaker",
         "sagemaker_chat",
         "sagemaker_nova",
         "sambanova",
+        "sap",
         "scaleway",
         "snowflake",
+        "stability",
+        "synthetic",
+        "text-completion-codestral",
+        "text-completion-openai",
         "together_ai",
+        "topaz",
+        "triton",
+        "v0",
         "vercel_ai_gateway",
         "vertex_ai",
         "vertex_ai_beta",
         "vllm",
         "volcengine",
+        "voyage",
+        "wandb",
         "watsonx",
+        "watsonx_text",
         "xai",
         "xiaomi_mimo",
         "xinference",
@@ -499,9 +562,8 @@ def resolve_gemini_endpoint_url(
         path = f"{path}{method}"
 
     if stream:
-        has_alt = any(k.lower() == "alt" for k, _ in query_pairs)
-        if not has_alt:
-            query_pairs.append(("alt", "sse"))
+        query_pairs = [(k, v) for k, v in query_pairs if k.lower() != "alt"]
+        query_pairs.append(("alt", "sse"))
     else:
         query_pairs = [(k, v) for k, v in query_pairs if not (k.lower() == "alt" and v.lower() == "sse")]
 
@@ -587,7 +649,12 @@ def _detect_protocol_from_api_base(api_base: str) -> Optional[str]:
 
 
 def _resolve_provider_env_base(provider: str) -> str:
-    for env_key in PROVIDER_ENV_BASES.get(provider, ()):
+    env_names = list(PROVIDER_ENV_BASES.get(provider, ()))
+    if provider and re.fullmatch(r"[a-z0-9_]+", provider):
+        generic_env = f"{provider.upper()}_API_BASE"
+        if generic_env not in env_names:
+            env_names.append(generic_env)
+    for env_key in env_names:
         val = os.getenv(env_key, "").strip()
         if val:
             return val
@@ -817,7 +884,11 @@ def resolve_deployment(
     eff_channel_protocol = str(
         channel_protocol
         if channel_protocol is not None
-        else (raw_info.get("dsa_channel_protocol") or "")
+        else (
+            raw_info.get("dsa_channel_protocol")
+            or resolve_env_reference(raw_params.get("dsa_channel_protocol"))
+            or ""
+        )
     ).strip().lower()
     raw_wire_protocol = str(resolve_env_reference(raw_params.get("wire_protocol")) or "").strip()
     raw_surface = str(
@@ -828,6 +899,9 @@ def resolve_deployment(
     eff_surface = _normalize_api_surface(raw_surface)
 
     model_prefix = raw_model.split("/", 1)[0].strip().lower() if "/" in raw_model else ""
+    all_native_wire_providers = (
+        NATIVE_OPENAI_WIRE_PROVIDERS | NATIVE_ANTHROPIC_WIRE_PROVIDERS | NATIVE_GEMINI_WIRE_PROVIDERS
+    )
 
     # ------------------------------------------------------------
     # R1 Step 1: Cloud-IAM fallback providers FIRST (before wire_protocol!)
@@ -851,6 +925,35 @@ def resolve_deployment(
             explicit_base_path = (urlsplit(explicit_api_base).path or "").rstrip("/").lower()
         except ValueError:
             explicit_base_path = ""
+
+    # Enforce provider/prefix identity independently of api_surface so unknown
+    # non-OpenAI providers (e.g. replicate/internal-model + api_surface=chat_completions
+    # without api_base) NEVER route to api.openai.com (P0-1).
+    if eff_custom_provider and eff_custom_provider not in (all_native_wire_providers | {"ark"}):
+        if not raw_wire_protocol:
+            return Unsupported(
+                reason="unsupported_custom_provider",
+                provider=eff_custom_provider,
+                detail=f"Unsupported custom_llm_provider '{eff_custom_provider}'",
+                model=raw_model,
+            )
+
+    if (
+        "/" in raw_model
+        and enc_surface is None
+        and not eff_custom_provider
+        and not explicit_api_base
+        and model_prefix not in all_native_wire_providers
+    ):
+        return Unsupported(
+            reason="unknown_provider_without_api_base",
+            provider=model_prefix or "unknown",
+            detail=(
+                f"Model '{raw_model}' has non-canonical prefix '{model_prefix}' "
+                "and no api_base is configured"
+            ),
+            model=raw_model,
+        )
 
     protocol: Optional[str] = None
 
@@ -951,16 +1054,12 @@ def resolve_deployment(
         effective_provider = eff_custom_provider
     elif enc_provider:
         effective_provider = enc_provider
-    elif model_prefix in (
-        NATIVE_OPENAI_WIRE_PROVIDERS | NATIVE_ANTHROPIC_WIRE_PROVIDERS | NATIVE_GEMINI_WIRE_PROVIDERS
-    ):
+    elif model_prefix in all_native_wire_providers:
         if eff_channel_protocol == "openai" and protocol in {"openai_chat", "openai_responses"} and explicit_api_base:
             effective_provider = "openai"
         else:
             effective_provider = model_prefix
-    elif eff_channel_protocol in (
-        NATIVE_OPENAI_WIRE_PROVIDERS | NATIVE_ANTHROPIC_WIRE_PROVIDERS | NATIVE_GEMINI_WIRE_PROVIDERS
-    ):
+    elif eff_channel_protocol in all_native_wire_providers:
         effective_provider = eff_channel_protocol
     elif protocol == "anthropic":
         effective_provider = "anthropic"
@@ -968,6 +1067,8 @@ def resolve_deployment(
         effective_provider = "gemini"
     elif "/" not in raw_model and raw_model.lower().startswith("deepseek"):
         effective_provider = "deepseek"
+    elif explicit_api_base:
+        effective_provider = "openai"
     else:
         effective_provider = "openai"
 
@@ -998,6 +1099,19 @@ def resolve_deployment(
             detail=(
                 f"Provider '{effective_provider}' requires an explicit api_base "
                 "(no verified default base URL)"
+            ),
+            model=raw_model,
+        )
+
+    # Guard against mismatched default official host for an explicit surface override
+    # (e.g. model=anthropic/claude-sonnet-4 + api_surface=chat_completions without api_base).
+    if base_source == "default" and protocol in {"openai_chat", "openai_responses"} and effective_provider in {"anthropic", "gemini"}:
+        return Unsupported(
+            reason="endpoint_surface_mismatch",
+            provider=effective_provider,
+            detail=(
+                f"Official '{effective_provider}' default endpoint does not serve '{protocol}' "
+                "without an explicit OpenAI-compatible api_base"
             ),
             model=raw_model,
         )
@@ -1049,26 +1163,29 @@ def resolve_deployment(
     explicit_empty_key = raw_api_key_present and not resolved_explicit_key
 
     allow_keyless = effective_provider in {"ollama", "ollama_chat"} or is_localhost_url(resolved_base)
+    target_origin = url_origin(resolved_base)
+    client_origin = url_origin(client_base_url) if client_base_url else None
 
     effective_api_key = ""
     if resolved_explicit_key:
         effective_api_key = resolved_explicit_key
-    elif client_api_key:
+    elif client_api_key and (client_origin is None or (target_origin is not None and client_origin == target_origin)):
+        # P0-2a: client_api_key is strictly bound to client.base_url's origin.
         effective_api_key = client_api_key
     elif not explicit_empty_key and raw_api_key_unresolved is None:
-        # Origin-bound env key fallback: only read PROVIDER_ENV_KEYS when the
-        # target endpoint origin matches the provider's env base or verified default base.
-        target_origin = url_origin(resolved_base)
+        # P0-2b: Origin-bound env key fallback. When env_base is configured, the provider
+        # env key belongs ONLY to env_base's origin (never also to official default origin).
         allowed_origins = set()
         if env_base:
             env_orig = url_origin(env_base)
             if env_orig is not None:
                 allowed_origins.add(env_orig)
-        default_base = VERIFIED_DEFAULT_PROVIDER_BASES.get(effective_provider)
-        if default_base:
-            def_orig = url_origin(default_base)
-            if def_orig is not None:
-                allowed_origins.add(def_orig)
+        else:
+            default_base = VERIFIED_DEFAULT_PROVIDER_BASES.get(effective_provider)
+            if default_base:
+                def_orig = url_origin(default_base)
+                if def_orig is not None:
+                    allowed_origins.add(def_orig)
         if base_source in {"env", "default"} or (target_origin is not None and target_origin in allowed_origins):
             effective_api_key = _resolve_provider_env_key(effective_provider)
 
@@ -1087,8 +1204,15 @@ def resolve_deployment(
     # R8: Carry YAML/deployment allowlisted generation defaults into request_defaults.
     request_defaults: Dict[str, Any] = {}
     for k, v in raw_params.items():
-        if str(k).strip().lower() in ALLOWED_REQUEST_DEFAULT_KEYS and v is not None:
+        k_lower = str(k).strip().lower()
+        if k_lower in ALLOWED_REQUEST_DEFAULT_KEYS and v is not None:
             resolved_v = resolve_env_reference(v) if isinstance(v, str) else copy.deepcopy(v)
+            if k_lower in {"store", "parallel_tool_calls"}:
+                resolved_v = parse_strict_bool(
+                    resolved_v,
+                    field_name=str(k),
+                    provider=effective_provider,
+                )
             request_defaults[k] = resolved_v
 
     # P2: Default priority is 0 unless model_info.priority / order explicitly specified.

@@ -3197,17 +3197,14 @@ class _ScreeningHeaderTransportProxy:
 
 @contextmanager
 def _screening_litellm_headers(config: Config) -> Iterator[None]:
-    from src.llm.transport import get_transport, use_transport
+    from src.llm.transport import get_transport_for_config, use_transport
 
     header_routes = _build_screening_litellm_header_routes(config)
-    active = get_transport()
+    active = get_transport_for_config(config)
     base_transport = active._delegate if isinstance(active, _ScreeningHeaderTransportProxy) else active
     if not header_routes:
-        if isinstance(active, _ScreeningHeaderTransportProxy):
-            with use_transport(base_transport):
-                yield
-            return
-        yield
+        with use_transport(base_transport):
+            yield
         return
 
     proxy = _ScreeningHeaderTransportProxy(base_transport, header_routes)

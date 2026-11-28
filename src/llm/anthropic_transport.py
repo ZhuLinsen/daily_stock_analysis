@@ -16,10 +16,11 @@ import time
 from typing import Any, Callable, Dict, Iterable, Iterator, List, Mapping, Optional
 import uuid
 
-from src.llm.native_resolve import resolve_anthropic_endpoint_url
+from src.llm.native_resolve import resolve_anthropic_endpoint_url, resolve_env_reference
 from src.llm.native_types import (
     DeploymentSpec,
     NativeAPIError,
+    NativeBadRequestError,
     NativeChoice,
     NativeCompletionResponse,
     NativeFunctionCall,
@@ -34,6 +35,7 @@ from src.llm.native_types import (
     has_header_case_insensitive,
     merge_header_overrides,
     parse_data_url,
+    parse_strict_bool,
 )
 from src.llm.sse import iter_sse_json_events
 
@@ -66,6 +68,7 @@ _FILTERED_KWARGS = frozenset(
         "client",
         "api_surface",
         "wire_protocol",
+        "dsa_channel_protocol",
         "api_key",
         "api_base",
         "base_url",
@@ -79,6 +82,10 @@ _FILTERED_KWARGS = frozenset(
         "metadata",
         "caching",
         "drop_params",
+        "_dsa_deadline_monotonic",
+        "_dsa_skip_sensitive_caller_headers",
+        "_dsa_force_max_tokens",
+        "_dsa_disable_stream_options",
     }
 )
 
@@ -509,13 +516,89 @@ def build_anthropic_payload(
         converted_choice = _convert_anthropic_tool_choice(kwargs.get("tool_choice"))
         if converted_choice is not None:
             body["tool_choice"] = converted_choice
+        if kwargs.get("parallel_tool_calls") is not None:
+            raw_ptc = kwargs["parallel_tool_calls"]
+            if isinstance(raw_ptc, str):
+                raw_ptc = resolve_env_reference(raw_ptc)
+            allow_parallel = parse_strict_bool(
+                raw_ptc,
+                field_name="parallel_tool_calls",
+                provider="anthropic",
+            )
+            if allow_parallel is False:
+                if "tool_choice" not in body:
+                    body["tool_choice"] = {"type": "auto", "disable_parallel_tool_use": True}
+                elif isinstance(body["tool_choice"], dict) and body["tool_choice"].get("type") != "none":
+                    body["tool_choice"]["disable_parallel_tool_use"] = True
+
+    # P1-17: Translate supported structured-output format or fail explicitly instead of
+    # silently dropping response_format and returning unconstrained prose.
+    resp_fmt = kwargs.get("response_format")
+    if isinstance(resp_fmt, Mapping):
+        rtype = str(resp_fmt.get("type") or "").strip().lower()
+        if rtype == "json_schema":
+            json_schema = resp_fmt.get("json_schema")
+            schema_obj = json_schema.get("schema") if isinstance(json_schema, Mapping) else None
+            if not isinstance(schema_obj, Mapping):
+                raise NativeBadRequestError(
+                    "Anthropic response_format type='json_schema' requires a json_schema.schema object",
+                    status_code=400,
+                    provider="anthropic",
+                    error_code="invalid_response_format",
+                )
+            if "output_config" not in merged_extra:
+                body["output_config"] = {
+                    "format": {
+                        "type": "json_schema",
+                        "schema": copy.deepcopy(dict(schema_obj)),
+                    }
+                }
+        elif rtype and rtype != "text":
+            raise NativeBadRequestError(
+                f"Anthropic Messages API does not support response_format type={rtype!r}; "
+                "use response_format type='json_schema' with an explicit JSON schema",
+                status_code=400,
+                provider="anthropic",
+                error_code="unsupported_response_format",
+            )
 
     if isinstance(thinking_cfg, Mapping):
         body["thinking"] = dict(thinking_cfg)
 
     for key, value in merged_extra.items():
         if value is not None and key not in {"thinking", "reasoning_effort"}:
-            body[key] = value
+            body[key] = copy.deepcopy(value)
+
+    # P2: Post-merge validation for Anthropic extended-thinking constraints
+    # (temperature != 1.0 or forced tool_choice 'any'/'tool' from extra_body or kwargs).
+    if thinking_enabled:
+        if "temperature" in body and body["temperature"] is not None:
+            try:
+                merged_temp = float(body["temperature"])
+            except (TypeError, ValueError) as exc:
+                raise NativeBadRequestError(
+                    f"Invalid temperature for Anthropic extended thinking: {body['temperature']!r}",
+                    status_code=400,
+                    provider="anthropic",
+                    error_code="invalid_thinking_params",
+                ) from exc
+            if merged_temp != 1.0:
+                raise NativeBadRequestError(
+                    "Anthropic extended thinking requires temperature=1.0 (or omitted)",
+                    status_code=400,
+                    provider="anthropic",
+                    error_code="invalid_thinking_params",
+                )
+        final_choice = body.get("tool_choice")
+        if isinstance(final_choice, Mapping):
+            choice_type = str(final_choice.get("type") or "").strip().lower()
+            if choice_type in {"any", "tool"}:
+                raise NativeBadRequestError(
+                    f"Anthropic extended thinking cannot be combined with forced tool_choice type={choice_type!r}",
+                    status_code=400,
+                    provider="anthropic",
+                    error_code="invalid_thinking_params",
+                )
 
     return body
 
@@ -562,14 +645,28 @@ def parse_anthropic_response(
             ordered_blocks.append(copy.deepcopy(dict(block)))
         elif btype == "tool_use":
             idx = len(tool_calls)
+            tc_id = str(block.get("id") or f"toolu_{idx}")
+            fn_name = str(block.get("name") or "")
             raw_input = block.get("input")
+            input_dict = extract_tool_arguments_dict(raw_input)
             args_str = raw_input if isinstance(raw_input, str) else json.dumps(raw_input or {}, ensure_ascii=False)
+            # P1-16: Retain tool_use in exact wire order inside ordered_blocks so
+            # [thinking, tool_use, text] or [tool_use, text] replays verbatim.
+            tool_block: Dict[str, Any] = {
+                "type": "tool_use",
+                "id": tc_id,
+                "name": fn_name,
+                "input": input_dict,
+            }
+            if isinstance(block.get("cache_control"), Mapping):
+                tool_block["cache_control"] = dict(block["cache_control"])
+            ordered_blocks.append(tool_block)
             tool_calls.append(
                 NativeToolCall(
-                    id=str(block.get("id") or f"toolu_{idx}"),
+                    id=tc_id,
                     index=idx,
                     function=NativeFunctionCall(
-                        name=str(block.get("name") or ""),
+                        name=fn_name,
                         arguments=args_str,
                     ),
                 )
@@ -579,12 +676,14 @@ def parse_anthropic_response(
         payload.get("stop_reason"),
         has_tool_calls=bool(tool_calls),
     )
+    has_interleaved_tool_and_text = bool(tool_calls) and bool(text_parts)
+    preserve_ordered_blocks = has_thinking or has_interleaved_tool_and_text
     message = NativeMessage(
         role=str(payload.get("role") or "assistant"),
         content="".join(text_parts) if text_parts else None,
         tool_calls=tool_calls or None,
         reasoning_content="\n".join(reasoning_parts) if reasoning_parts else None,
-        provider_blocks=ordered_blocks if has_thinking else None,
+        provider_blocks=ordered_blocks if preserve_ordered_blocks else None,
         thinking_blocks=None,
     )
     return NativeCompletionResponse(
@@ -789,7 +888,7 @@ def iter_anthropic_stream_chunks(
                     ],
                     usage=parse_anthropic_usage(raw_usage_state) if raw_usage_state else None,
                 )
-            continue
+            return
 
     if not saw_message_stop:
         raise NativeIncompleteStreamError(
@@ -814,10 +913,16 @@ def prepare_anthropic_request(
         "Content-Type": "application/json",
         "anthropic-version": ANTHROPIC_DEFAULT_VERSION,
     }
+    skip_sensitive = bool(kwargs.get("_dsa_skip_sensitive_caller_headers"))
     merge_header_overrides(headers, {"extra_headers": entry.extra_headers})
-    merge_header_overrides(headers, kwargs)
+    merge_header_overrides(
+        headers,
+        kwargs,
+        resolve_env_fn=resolve_env_reference,
+        skip_sensitive=skip_sensitive,
+    )
 
-    api_key = entry.api_key or kwargs.get("api_key")
+    api_key = entry.api_key or (None if skip_sensitive else kwargs.get("api_key"))
     if (
         api_key
         and not has_header_case_insensitive(headers, "x-api-key")

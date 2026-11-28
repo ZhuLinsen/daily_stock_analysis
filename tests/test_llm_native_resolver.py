@@ -669,3 +669,303 @@ def test_codex_edge_cases_vision_url_conflict_semicolon_params_and_ranker_yaml_e
             json_mode=True,
             timeout_sec=10.0,
         )
+
+
+def test_p0_1_explicit_api_surface_never_routes_unknown_provider_to_openai(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P0-1: Explicit api_surface/wire_protocol must never send unknown non-OpenAI prefixes to api.openai.com."""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-should-not-leak-1234")
+    for raw_kwargs in (
+        {"api_surface": "chat_completions"},
+        {"api_surface": "responses"},
+        {"wire_protocol": "openai_chat"},
+    ):
+        res = resolve_deployment("replicate/internal-model", **raw_kwargs)
+        assert isinstance(res, Unsupported), f"Expected Unsupported for {raw_kwargs}, got {res}"
+        assert res.reason == "unknown_provider_without_api_base"
+        assert res.provider == "replicate"
+
+    # Known provider without verified default base + explicit api_surface must also fail closed.
+    vllm_res = resolve_deployment("hosted_vllm/llama3", api_surface="chat_completions")
+    assert isinstance(vllm_res, Unsupported)
+    assert vllm_res.reason == "missing_api_base"
+    assert vllm_res.provider == "hosted_vllm"
+
+    # Anthropic/Gemini official default endpoints must not be targeted with OpenAI Chat via api_surface.
+    anth_mismatch = resolve_deployment("anthropic/claude-sonnet-4-6", api_surface="chat_completions")
+    assert isinstance(anth_mismatch, Unsupported)
+    assert anth_mismatch.reason == "endpoint_surface_mismatch"
+
+    # Strict native transport must raise NativeConfigError with ZERO HTTP calls.
+    transport = NativeUnifiedTransport(http_transport=_fail_if_called_transport())
+    with pytest.raises(NativeConfigError):
+        transport.completion(
+            model="replicate/internal-model",
+            api_surface="chat_completions",
+            messages=[{"role": "user", "content": "hi"}],
+        )
+
+
+def test_p0_2_origin_bound_client_key_and_env_key_isolation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P0-2a/b: client_api_key binds to client.base_url origin; env key binds ONLY to env_base when env_base is set."""
+    from types import SimpleNamespace
+
+    # P0-2a: client bound to origin A; explicit api_base overrides to origin B -> must NOT copy origin A's key.
+    origin_a_client = SimpleNamespace(
+        api_key="sk-origin-a-secret-9999",
+        base_url="https://origin-a.example/v1",
+        _client=None,
+    )
+    res_cross = resolve_deployment(
+        "openai/gpt-4o",
+        api_base="https://origin-b.example/v1",
+        client=origin_a_client,
+    )
+    assert isinstance(res_cross, DeploymentSpec)
+    assert res_cross.api_key == ""
+
+    # Same origin: client_api_key IS used.
+    res_same = resolve_deployment(
+        "openai/gpt-4o",
+        api_base="https://origin-a.example/v1",
+        client=origin_a_client,
+    )
+    assert isinstance(res_same, DeploymentSpec)
+    assert res_same.api_key == "sk-origin-a-secret-9999"
+
+    # P0-2b: When OPENAI_API_BASE is set to a proxy, OPENAI_API_KEY belongs ONLY to that proxy origin
+    # and must NOT leak to an explicit https://api.openai.com/v1 call.
+    monkeypatch.setenv("OPENAI_API_BASE", "https://proxy.corp.example/v1")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-corp-proxy-key-8888")
+    res_official = resolve_deployment("openai/gpt-4o", api_base="https://api.openai.com/v1")
+    assert isinstance(res_official, DeploymentSpec)
+    assert res_official.api_key == ""
+
+    res_proxy = resolve_deployment("openai/gpt-4o", api_base="https://proxy.corp.example/v1")
+    assert isinstance(res_proxy, DeploymentSpec)
+    assert res_proxy.api_key == "sk-corp-proxy-key-8888"
+
+
+def test_p0_3_strict_bool_store_env_expansion_and_invalid_rejection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P0-3: store: os.environ/STORE='false' parses to False; invalid bool strings fail closed."""
+    from src.llm.native_types import NativeBadRequestError
+
+    monkeypatch.setenv("DSA_STORE_FLAG_TEST", "false")
+    res_false = resolve_deployment(
+        {
+            "model_name": "openai/responses/gpt-5",
+            "litellm_params": {
+                "model": "openai/responses/gpt-5",
+                "api_base": "https://relay.example/v1",
+                "api_key": "sk-1234",
+                "store": "os.environ/DSA_STORE_FLAG_TEST",
+            },
+        }
+    )
+    assert isinstance(res_false, DeploymentSpec)
+    assert res_false.request_defaults["store"] is False
+
+    monkeypatch.setenv("DSA_STORE_FLAG_TEST", "maybe-store")
+    with pytest.raises(NativeBadRequestError):
+        resolve_deployment(
+            {
+                "model_name": "openai/responses/gpt-5",
+                "litellm_params": {
+                    "model": "openai/responses/gpt-5",
+                    "api_base": "https://relay.example/v1",
+                    "api_key": "sk-1234",
+                    "store": "os.environ/DSA_STORE_FLAG_TEST",
+                },
+            }
+        )
+
+
+def test_p1_1_p1_2_p1_11_default_litellm_and_strict_screening_regressions(
+    tmp_path: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P1-1: unused YAML alias unset env doesn't break screening; P1-2: exact alias Responses check; P1-11: propagate native errors."""
+    from types import SimpleNamespace
+    from src.llm.transport import _validate_prebuilt_router_api_surface, use_transport
+
+    # P1-1: Unused alias has unset env var, requested alias is valid -> must NOT raise!
+    monkeypatch.delenv("UNUSED_ALIAS_BASE_XYZ", raising=False)
+    yaml_file = tmp_path / "litellm_unused.yaml"
+    yaml_file.write_text(
+        json.dumps(
+            {
+                "model_list": [
+                    {
+                        "model_name": "openai/unused-alias",
+                        "litellm_params": {
+                            "model": "openai/unused-alias",
+                            "api_base": "os.environ/UNUSED_ALIAS_BASE_XYZ",
+                            "api_key": "sk-unused",
+                        },
+                    },
+                    {
+                        "model_name": "openai/active-rank",
+                        "litellm_params": {
+                            "model": "openai/active-rank",
+                            "api_base": "https://active.example/v1",
+                            "api_key": "sk-active",
+                        },
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class _DummyRouter:
+        def __init__(self, model_list, **_kw):
+            self.model_list = model_list
+
+        def completion(self, **_kw):
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content='{"ranked": []}'))]
+            )
+
+    out = ranker._call_litellm_router(
+        litellm=SimpleNamespace(Router=_DummyRouter),
+        config_path=str(yaml_file),
+        model_chain=["openai/active-rank"],
+        messages=[{"role": "user", "content": "rank"}],
+        temperature=0.1,
+        json_mode=False,
+        timeout_sec=10.0,
+    )
+    assert out == '{"ranked": []}'
+
+    # P1-2: Unrelated Chat alias sharing wire name must NOT reject a valid Responses alias.
+    prebuilt = SimpleNamespace(
+        model_list=[
+            {"model_name": "gpt-5-resp", "litellm_params": {"model": "openai/responses/gpt-5"}},
+            {"model_name": "other-chat", "litellm_params": {"model": "gpt-5-resp"}},
+        ]
+    )
+    _validate_prebuilt_router_api_surface(prebuilt, "gpt-5-resp", "responses")
+
+    # P1-11: Strict native mode screening propagates NativeConfigError & unknown_router_alias (no silent fallback).
+    bad_yaml = tmp_path / "strict_native.yaml"
+    bad_yaml.write_text(
+        json.dumps(
+            {
+                "model_list": [
+                    {
+                        "model_name": "bedrock/claude-3-5",
+                        "litellm_params": {"model": "bedrock/claude-3-5", "api_key": "sk-1"},
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    strict_transport = NativeUnifiedTransport(fallback_transport=None, http_transport=_fail_if_called_transport())
+    with use_transport(strict_transport):
+        with pytest.raises(NativeConfigError):
+            ranker._call_litellm_router(
+                config_path=str(bad_yaml),
+                model_chain=["bedrock/claude-3-5"],
+                messages=[{"role": "user", "content": "rank"}],
+                temperature=0.1,
+                json_mode=False,
+                timeout_sec=10.0,
+            )
+
+    miss_yaml = tmp_path / "strict_miss.yaml"
+    miss_yaml.write_text(
+        json.dumps(
+            {
+                "model_list": [
+                    {
+                        "model_name": "openai/registered-only",
+                        "litellm_params": {
+                            "model": "openai/registered-only",
+                            "api_base": "https://relay.example/v1",
+                            "api_key": "sk-1",
+                        },
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    from src.llm.native_types import NativeBadRequestError
+    with use_transport(strict_transport):
+        with pytest.raises(NativeBadRequestError) as exc_miss:
+            ranker._call_litellm_router(
+                config_path=str(miss_yaml),
+                model_chain=["openai/not-in-router"],
+                messages=[{"role": "user", "content": "rank"}],
+                temperature=0.1,
+                json_mode=False,
+                timeout_sec=10.0,
+            )
+        assert exc_miss.value.error_code == "unknown_router_alias"
+
+
+def test_p1_12_vision_metadata_and_p2_gemini_alt_override_generic_env_base_and_providers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P1-12: Vision preserves wire_protocol/custom_llm_provider/dsa_channel_protocol; P2: alt=json->sse & unified providers."""
+    from types import SimpleNamespace
+    from src.llm.transport import LiteLLMTransport, use_transport
+
+    # 1. Gemini ?alt=json overrides cleanly to alt=sse on stream=True
+    gem_stream_url = resolve_gemini_endpoint_url(
+        "https://proxy.example/v1beta?alt=json&key=abc",
+        "gemini-2.5-flash",
+        stream=True,
+    )
+    assert "alt=sse" in gem_stream_url
+    assert "alt=json" not in gem_stream_url
+    assert "key=abc" in gem_stream_url
+
+    # 2. Generic <PROVIDER>_API_BASE fallback (e.g. NOVITA_API_BASE)
+    monkeypatch.setenv("NOVITA_API_BASE", "https://api.novita.ai/v3/openai")
+    novita_spec = resolve_deployment("novita/qwen-3", api_key="sk-novita")
+    assert isinstance(novita_spec, DeploymentSpec)
+    assert novita_spec.endpoint_url == "https://api.novita.ai/v3/openai/chat/completions"
+
+    # 3. Unified get_model_providers() across LiteLLMTransport and NativeUnifiedTransport
+    assert LiteLLMTransport().get_model_providers() == NativeUnifiedTransport().get_model_providers()
+
+    # 4. Vision forwards wire_protocol, custom_llm_provider, dsa_channel_protocol
+    captured: Dict[str, Any] = {}
+
+    class _CaptureTransport:
+        def completion(self, **kw: Any) -> Any:
+            captured.update(kw)
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content='[{"code":"600519"}]'))]
+            )
+
+    cfg = Config(
+        vision_model="openai/relay-vision",
+        llm_model_list=[
+            {
+                "model_name": "openai/relay-vision",
+                "litellm_params": {
+                    "model": "openai/relay-vision",
+                    "api_base": "https://relay.example/v1",
+                    "api_key": "sk-vis-1234",
+                    "wire_protocol": "openai_chat",
+                    "custom_llm_provider": "openai",
+                },
+                "model_info": {"dsa_channel_protocol": "openai"},
+            }
+        ],
+    )
+    monkeypatch.setattr(image_stock_extractor, "get_config", lambda: cfg)
+    with use_transport(_CaptureTransport()):
+        out = image_stock_extractor._call_litellm_vision("aGVsbG8=", "image/png")
+    assert "600519" in out
+    assert captured["wire_protocol"] == "openai_chat"
+    assert captured["custom_llm_provider"] == "openai"
+    assert captured["dsa_channel_protocol"] == "openai"

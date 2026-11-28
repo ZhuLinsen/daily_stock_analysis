@@ -18,12 +18,14 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import logging
+import re
 import time
 from typing import Any, Callable, Dict, Iterable, Iterator, List, Mapping, Optional, Set, Tuple
 from urllib.parse import parse_qsl, urlsplit
 import uuid
 
-from src.llm.native_resolve import resolve_gemini_endpoint_url
+from src.llm.native_resolve import resolve_env_reference, resolve_gemini_endpoint_url
 from src.llm.native_types import (
     DeploymentSpec,
     NativeBadRequestError,
@@ -44,6 +46,8 @@ from src.llm.native_types import (
     parse_data_url,
 )
 from src.llm.sse import iter_sse_json_events
+
+logger = logging.getLogger(__name__)
 
 _GEMINI_ALLOWED_EXTRA_BODY_KEYS: frozenset[str] = frozenset(
     {
@@ -83,7 +87,7 @@ _FINISH_REASON_MAP = {
     "BLOCKLIST": "content_filter",
     "PROHIBITED_CONTENT": "content_filter",
     "SPII": "content_filter",
-    "MALFORMED_FUNCTION_CALL": "stop",
+    "MALFORMED_FUNCTION_CALL": "malformed_function_call",
 }
 
 _GEMINI_REASONING_EFFORT_BUDGETS: Dict[str, int] = {
@@ -105,6 +109,7 @@ _FILTERED_KWARGS = frozenset(
         "client",
         "api_surface",
         "wire_protocol",
+        "dsa_channel_protocol",
         "api_key",
         "api_base",
         "base_url",
@@ -118,6 +123,10 @@ _FILTERED_KWARGS = frozenset(
         "metadata",
         "caching",
         "drop_params",
+        "_dsa_deadline_monotonic",
+        "_dsa_skip_sensitive_caller_headers",
+        "_dsa_force_max_tokens",
+        "_dsa_disable_stream_options",
     }
 )
 
@@ -208,6 +217,14 @@ def _clean_gemini_schema(
     for key, value in node.items():
         if key in _GEMINI_UNSUPPORTED_SCHEMA_KEYS or key == "$ref":
             continue
+        if key == "properties" and isinstance(value, Mapping):
+            # P1-19: Preserve EVERY user property name verbatim (e.g. 'title', 'default', 'strict')
+            # and recurse only on each property's schema value.
+            cleaned["properties"] = {
+                prop_name: _clean_gemini_schema(prop_schema, root=root, seen_refs=seen_refs)
+                for prop_name, prop_schema in value.items()
+            }
+            continue
         if key == "type" and isinstance(value, list):
             non_null_types = [str(t) for t in value if str(t).lower() != "null"]
             if len(non_null_types) < len(value):
@@ -238,8 +255,9 @@ def _map_gemini_finish_reason(
     *,
     has_tool_calls: bool = False,
 ) -> Optional[str]:
-    if finish_reason is None:
-        return "tool_calls" if has_tool_calls else None
+    # P1-20: Emit finish_reason ONLY when the provider actually supplied a terminal finishReason.
+    if finish_reason is None or not str(finish_reason).strip():
+        return None
     key = str(finish_reason).strip().upper()
     if key == "STOP" and has_tool_calls:
         return "tool_calls"
@@ -280,10 +298,21 @@ def parse_gemini_usage(raw_usage: Any) -> Optional[NativeUsage]:
     total_tokens = raw_usage.get("totalTokenCount")
     cached_tokens = raw_usage.get("cachedContentTokenCount")
     thoughts_tokens = raw_usage.get("thoughtsTokenCount")
+    tool_use_prompt_tokens = raw_usage.get("toolUsePromptTokenCount")
 
-    if total_tokens is None and prompt_tokens is not None and candidates_tokens is not None:
-        total_tokens = int(prompt_tokens) + int(candidates_tokens) + (
-            int(thoughts_tokens) if thoughts_tokens is not None else 0
+    # P2: Include thoughtsTokenCount in completion_tokens and toolUsePromptTokenCount in fallback total.
+    completion_tokens: Optional[int] = None
+    if candidates_tokens is not None or thoughts_tokens is not None:
+        completion_tokens = (
+            (int(candidates_tokens) if candidates_tokens is not None else 0)
+            + (int(thoughts_tokens) if thoughts_tokens is not None else 0)
+        )
+
+    if total_tokens is None and prompt_tokens is not None and completion_tokens is not None:
+        total_tokens = (
+            int(prompt_tokens)
+            + (int(tool_use_prompt_tokens) if tool_use_prompt_tokens is not None else 0)
+            + completion_tokens
         )
 
     prompt_details: Optional[Dict[str, Any]] = None
@@ -297,10 +326,12 @@ def parse_gemini_usage(raw_usage: Any) -> Optional[NativeUsage]:
     extra: Dict[str, Any] = {}
     if cached_tokens is not None:
         extra["cached_content_token_count"] = int(cached_tokens)
+    if tool_use_prompt_tokens is not None:
+        extra["tool_use_prompt_token_count"] = int(tool_use_prompt_tokens)
 
     return NativeUsage(
         prompt_tokens=int(prompt_tokens) if prompt_tokens is not None else None,
-        completion_tokens=int(candidates_tokens) if candidates_tokens is not None else None,
+        completion_tokens=completion_tokens,
         total_tokens=int(total_tokens) if total_tokens is not None else None,
         prompt_tokens_details=prompt_details,
         completion_tokens_details=completion_details,
@@ -323,6 +354,23 @@ def _convert_part_to_gemini(part: Any) -> Optional[Dict[str, Any]]:
     if not isinstance(part, Mapping):
         return None
 
+    sig = part.get("thoughtSignature") or part.get("thought_signature")
+    sig_str = str(sig) if sig else None
+
+    # P1-18: Pass native Gemini functionCall parts through in exact wire order.
+    raw_fc = part.get("functionCall")
+    if isinstance(raw_fc, Mapping):
+        fc_out: Dict[str, Any] = {
+            "name": str(raw_fc.get("name") or ""),
+            "args": extract_tool_arguments_dict(raw_fc.get("args")),
+        }
+        if raw_fc.get("id"):
+            fc_out["id"] = str(raw_fc["id"])
+        out_fc: Dict[str, Any] = {"functionCall": fc_out}
+        if sig_str:
+            out_fc["thoughtSignature"] = sig_str
+        return out_fc
+
     # Pass native Gemini inlineData / inline_data parts through directly.
     raw_inline = part.get("inlineData") or part.get("inline_data")
     if isinstance(raw_inline, Mapping):
@@ -330,24 +378,51 @@ def _convert_part_to_gemini(part: Any) -> Optional[Dict[str, Any]]:
         b64_data = str(raw_inline.get("data") or "").strip()
         if mime_type and b64_data:
             out_part: Dict[str, Any] = {"inlineData": {"mimeType": mime_type, "data": b64_data}}
-            sig = part.get("thoughtSignature") or part.get("thought_signature")
-            if sig:
-                out_part["thoughtSignature"] = str(sig)
+            if sig_str:
+                out_part["thoughtSignature"] = sig_str
             return out_part
         return None
 
-    if isinstance(part.get("fileData"), Mapping):
-        return copy.deepcopy(dict(part))
+    raw_file_data = part.get("fileData") or part.get("file_data")
+    if isinstance(raw_file_data, Mapping):
+        file_uri = str(raw_file_data.get("fileUri") or raw_file_data.get("file_uri") or "").strip()
+        if not file_uri or not _is_gemini_file_uri(file_uri):
+            raise NativeBadRequestError(
+                "Gemini REST API fileData.fileUri only accepts gs:// or Gemini Files API URIs; "
+                "pass base64 data URLs or inlineData instead",
+                status_code=400,
+                provider="gemini",
+            )
+        fd_out: Dict[str, Any] = {"fileUri": file_uri}
+        mime_val = raw_file_data.get("mimeType") or raw_file_data.get("mime_type")
+        if mime_val:
+            fd_out["mimeType"] = str(mime_val)
+        out_fd: Dict[str, Any] = {"fileData": fd_out}
+        if sig_str:
+            out_fd["thoughtSignature"] = sig_str
+        return out_fd
+
+    # P1-18: Preserve thought: True text parts with their thoughtSignature.
+    if part.get("thought") is True:
+        out_thought: Dict[str, Any] = {"thought": True}
+        if part.get("text") is not None:
+            out_thought["text"] = str(part["text"])
+        if sig_str:
+            out_thought["thoughtSignature"] = sig_str
+        return out_thought
+
+    # P1-18: Preserve signature-only parts carrying thoughtSignature without text/functionCall.
+    if sig_str and "text" not in part and not part.get("type"):
+        return {"thoughtSignature": sig_str}
 
     ptype = str(part.get("type") or ("text" if "text" in part else "")).strip().lower()
     if ptype in {"text", "input_text", "output_text"}:
         text_val = str(part.get("text") or "")
-        if not text_val and not (part.get("thoughtSignature") or part.get("thought_signature")):
+        if not text_val and not sig_str:
             return None
-        out_part = {"text": text_val}
-        sig = part.get("thoughtSignature") or part.get("thought_signature")
-        if sig:
-            out_part["thoughtSignature"] = str(sig)
+        out_part = {"text": text_val} if text_val or "text" in part else {}
+        if sig_str:
+            out_part["thoughtSignature"] = sig_str
         return out_part
 
     if ptype == "image_url":
@@ -459,7 +534,7 @@ def build_gemini_payload(
     **kwargs: Any,
 ) -> Dict[str, Any]:
     """Translate OpenAI Chat-style messages/tools/params into a Gemini REST JSON body."""
-    del wire_model, stream  # Gemini encodes model + stream inside endpoint URL.
+    del stream  # Gemini encodes stream mode inside endpoint URL.
     system_parts: List[Dict[str, Any]] = []
     contents: List[Dict[str, Any]] = []
     tool_name_by_id = _collect_tool_names_by_id(messages)
@@ -523,8 +598,22 @@ def build_gemini_payload(
             elif isinstance(raw_content, str) and raw_content:
                 model_parts.append({"text": raw_content})
 
+            # P1-18: Avoid duplicating or reordering functionCalls already preserved in exact
+            # wire order inside provider_blocks.
+            existing_fc_ids = {
+                str(p["functionCall"].get("id") or "")
+                for p in model_parts
+                if isinstance(p.get("functionCall"), Mapping) and p["functionCall"].get("id")
+            }
+            existing_fc_count = sum(1 for p in model_parts if isinstance(p.get("functionCall"), Mapping))
+
             for tc in msg.get("tool_calls") or []:
                 if not isinstance(tc, Mapping):
+                    continue
+                tc_id = str(tc.get("id") or "").strip()
+                if tc_id and tc_id in existing_fc_ids:
+                    continue
+                if not tc_id and existing_fc_count > 0:
                     continue
                 fn = tc.get("function") or {}
                 fn_name = str(fn.get("name") or "") if isinstance(fn, Mapping) else ""
@@ -533,9 +622,9 @@ def build_gemini_payload(
                     "name": fn_name,
                     "args": extract_tool_arguments_dict(raw_args),
                 }
-                tc_id = str(tc.get("id") or "").strip()
                 if tc_id:
                     fc_obj["id"] = tc_id
+                    existing_fc_ids.add(tc_id)
                 fc_part: Dict[str, Any] = {"functionCall": fc_obj}
                 psf = tc.get("provider_specific_fields")
                 sig = (
@@ -611,7 +700,16 @@ def build_gemini_payload(
     elif "thinkingConfig" not in gen_cfg and kwargs.get("reasoning_effort") is not None:
         effort = str(kwargs["reasoning_effort"]).strip().lower()
         if effort in _GEMINI_REASONING_EFFORT_BUDGETS:
-            gen_cfg["thinkingConfig"] = {"thinkingBudget": _GEMINI_REASONING_EFFORT_BUDGETS[effort]}
+            budget = _GEMINI_REASONING_EFFORT_BUDGETS[effort]
+            # P2: Gemini 2.5 Pro cannot disable thinking (thinkingBudget=0 returns HTTP 400).
+            if budget == 0 and "gemini-2.5-pro" in str(wire_model or "").lower():
+                logger.warning(
+                    "[Gemini] Model %s does not support disabling thinking (reasoning_effort=%r); omitting thinkingBudget=0",
+                    wire_model,
+                    effort,
+                )
+            else:
+                gen_cfg["thinkingConfig"] = {"thinkingBudget": budget}
 
     gemini_tools = _convert_gemini_tools(kwargs.get("tools"))
     if gemini_tools:
@@ -646,56 +744,203 @@ def _deterministic_gemini_call_id(cand_idx: int, tc_idx: int, fn_name: str, args
     return f"call_{safe_name}_{tc_idx}_{digest}"
 
 
+_JSON_PATH_TOKEN_RE = re.compile(r"\.([^.\[\]]+)|\[(\d+)\]")
+
+
+def _parse_json_path_tokens(path: str) -> List[Any]:
+    raw = str(path or "").strip()
+    if raw.startswith("$"):
+        raw = raw[1:]
+    if not raw:
+        return []
+    tokens: List[Any] = []
+    for match in _JSON_PATH_TOKEN_RE.finditer(raw):
+        key_tok, idx_tok = match.group(1), match.group(2)
+        if key_tok is not None:
+            tokens.append(key_tok)
+        elif idx_tok is not None:
+            tokens.append(int(idx_tok))
+    if not tokens and raw.lstrip("."):
+        tokens.append(raw.lstrip("."))
+    return tokens
+
+
+def _apply_gemini_partial_args(target_args: Dict[str, Any], partial_args: Iterable[Any]) -> None:
+    """Apply Gemini streaming ``partialArgs`` updates onto ``target_args`` in place (P1-21)."""
+    for item in partial_args:
+        if not isinstance(item, Mapping):
+            continue
+        tokens = _parse_json_path_tokens(str(item.get("jsonPath") or ""))
+        if not tokens:
+            continue
+
+        if "stringValue" in item:
+            val: Any = str(item["stringValue"])
+            is_string = True
+        elif "numberValue" in item:
+            num = item["numberValue"]
+            val = int(num) if isinstance(num, float) and num.is_integer() else num
+            is_string = False
+        elif "boolValue" in item:
+            val = bool(item["boolValue"])
+            is_string = False
+        elif "nullValue" in item:
+            val = None
+            is_string = False
+        else:
+            continue
+
+        cur: Any = target_args
+        for idx, tok in enumerate(tokens[:-1]):
+            nxt = tokens[idx + 1]
+            if isinstance(tok, str):
+                if tok not in cur or not isinstance(cur[tok], (dict, list)):
+                    cur[tok] = [] if isinstance(nxt, int) else {}
+                cur = cur[tok]
+            elif isinstance(tok, int) and isinstance(cur, list):
+                while len(cur) <= tok:
+                    cur.append([] if isinstance(nxt, int) else {})
+                cur = cur[tok]
+
+        last = tokens[-1]
+        if isinstance(last, str) and isinstance(cur, dict):
+            if is_string and isinstance(cur.get(last), str):
+                cur[last] += val
+            else:
+                cur[last] = val
+        elif isinstance(last, int) and isinstance(cur, list):
+            while len(cur) <= last:
+                cur.append(None)
+            if is_string and isinstance(cur[last], str):
+                cur[last] += val
+            else:
+                cur[last] = val
+
+
 def _extract_gemini_parts(
     parts: Iterable[Any],
     *,
     cand_idx: int = 0,
     tool_index_start: int = 0,
+    active_partial_fc: Optional[Dict[int, Dict[str, Any]]] = None,
 ) -> Tuple[List[str], List[str], List[NativeToolCall], List[Dict[str, Any]], bool]:
+    """Extract text, reasoning, tool calls, and ordered original model parts for replay (P1-18, P1-21)."""
     text_parts: List[str] = []
     reasoning_parts: List[str] = []
     tool_calls: List[NativeToolCall] = []
-    provider_blocks: List[Dict[str, Any]] = []
-    has_text_thought_signature = False
+    ordered_parts: List[Dict[str, Any]] = []
+    preserve_ordered_parts = False
+
+    def _emit_function_call(
+        *,
+        fn_name: str,
+        args_dict: Dict[str, Any],
+        raw_id: str,
+        sig_str: Optional[str],
+    ) -> None:
+        tc_idx = tool_index_start + len(tool_calls)
+        args_str = json.dumps(args_dict or {}, ensure_ascii=False, sort_keys=True)
+        call_id = raw_id or _deterministic_gemini_call_id(cand_idx, tc_idx, fn_name, args_str)
+        psf = {"thought_signature": sig_str} if sig_str else {}
+        tool_calls.append(
+            NativeToolCall(
+                id=call_id,
+                index=tc_idx,
+                function=NativeFunctionCall(
+                    name=fn_name,
+                    arguments=args_str,
+                ),
+                thought_signature=sig_str,
+                provider_specific_fields=psf,
+            )
+        )
+        fc_part: Dict[str, Any] = {
+            "functionCall": {
+                "name": fn_name,
+                "args": copy.deepcopy(args_dict or {}),
+                "id": call_id,
+            }
+        }
+        if sig_str:
+            fc_part["thoughtSignature"] = sig_str
+        ordered_parts.append(fc_part)
 
     for part in parts:
         if not isinstance(part, Mapping):
             continue
         sig = part.get("thoughtSignature") or part.get("thought_signature")
         sig_str = str(sig) if sig else None
+        if sig_str:
+            preserve_ordered_parts = True
 
         if "text" in part and part.get("text") is not None:
             text_val = str(part["text"])
             if part.get("thought") is True:
                 reasoning_parts.append(text_val)
+                thought_part: Dict[str, Any] = {"text": text_val, "thought": True}
+                if sig_str:
+                    thought_part["thoughtSignature"] = sig_str
+                    preserve_ordered_parts = True
+                ordered_parts.append(thought_part)
             else:
                 text_parts.append(text_val)
-                text_block: Dict[str, Any] = {"type": "text", "text": text_val}
+                text_block: Dict[str, Any] = {"text": text_val}
                 if sig_str:
                     text_block["thoughtSignature"] = sig_str
-                    has_text_thought_signature = True
-                provider_blocks.append(text_block)
+                ordered_parts.append(text_block)
         elif isinstance(part.get("functionCall"), Mapping):
             fc = part["functionCall"]
-            tc_idx = tool_index_start + len(tool_calls)
-            fn_name = str(fc.get("name") or "")
-            args_str = json.dumps(fc.get("args") or {}, ensure_ascii=False, sort_keys=True)
-            raw_id = str(fc.get("id") or "").strip()
-            call_id = raw_id or _deterministic_gemini_call_id(cand_idx, tc_idx, fn_name, args_str)
-            psf = {"thought_signature": sig_str} if sig_str else {}
-            tool_calls.append(
-                NativeToolCall(
-                    id=call_id,
-                    index=tc_idx,
-                    function=NativeFunctionCall(
-                        name=fn_name,
-                        arguments=args_str,
-                    ),
-                    thought_signature=sig_str,
-                    provider_specific_fields=psf,
+            is_partial_frame = (
+                active_partial_fc is not None
+                and (
+                    bool(fc.get("willContinue"))
+                    or "partialArgs" in fc
+                    or cand_idx in active_partial_fc
                 )
             )
-    return text_parts, reasoning_parts, tool_calls, provider_blocks, has_text_thought_signature
+            if is_partial_frame and active_partial_fc is not None:
+                state = active_partial_fc.setdefault(
+                    cand_idx,
+                    {"name": "", "id": "", "args": {}, "sig": None},
+                )
+                if fc.get("name"):
+                    state["name"] = str(fc["name"])
+                if fc.get("id"):
+                    state["id"] = str(fc["id"])
+                if sig_str and not state.get("sig"):
+                    state["sig"] = sig_str
+                if isinstance(fc.get("args"), Mapping):
+                    state["args"].update(copy.deepcopy(dict(fc["args"])))
+                if isinstance(fc.get("partialArgs"), list):
+                    _apply_gemini_partial_args(state["args"], fc["partialArgs"])
+                if fc.get("willContinue"):
+                    continue
+                completed = active_partial_fc.pop(cand_idx)
+                _emit_function_call(
+                    fn_name=completed["name"],
+                    args_dict=completed["args"],
+                    raw_id=completed["id"],
+                    sig_str=completed.get("sig") or sig_str,
+                )
+            else:
+                fn_name = str(fc.get("name") or "")
+                raw_args = fc.get("args")
+                args_dict = copy.deepcopy(dict(raw_args)) if isinstance(raw_args, Mapping) else {}
+                raw_id = str(fc.get("id") or "").strip()
+                _emit_function_call(
+                    fn_name=fn_name,
+                    args_dict=args_dict,
+                    raw_id=raw_id,
+                    sig_str=sig_str,
+                )
+        elif sig_str:
+            # P1-18: Preserve signature-only parts verbatim for replay.
+            ordered_parts.append({"thoughtSignature": sig_str})
+
+    if tool_calls and (text_parts or reasoning_parts):
+        preserve_ordered_parts = True
+
+    return text_parts, reasoning_parts, tool_calls, ordered_parts, preserve_ordered_parts
 
 
 def parse_gemini_response(
@@ -716,7 +961,7 @@ def parse_gemini_response(
         cand_idx = int(cand.get("index", idx))
         content_obj = cand.get("content") if isinstance(cand.get("content"), Mapping) else {}
         parts = content_obj.get("parts") or []
-        text_parts, reasoning_parts, tool_calls, provider_blocks, has_text_sig = _extract_gemini_parts(
+        text_parts, reasoning_parts, tool_calls, ordered_parts, preserve_parts = _extract_gemini_parts(
             parts,
             cand_idx=cand_idx,
         )
@@ -724,6 +969,10 @@ def parse_gemini_response(
             cand.get("finishReason"),
             has_tool_calls=bool(tool_calls),
         )
+        if finish_reason is None and tool_calls:
+            finish_reason = "tool_calls"
+        elif finish_reason is None:
+            finish_reason = "stop"
         choices.append(
             NativeChoice(
                 index=cand_idx,
@@ -732,7 +981,7 @@ def parse_gemini_response(
                     content="".join(text_parts) if text_parts else None,
                     tool_calls=tool_calls or None,
                     reasoning_content="\n".join(reasoning_parts) if reasoning_parts else None,
-                    provider_blocks=provider_blocks if has_text_sig else None,
+                    provider_blocks=ordered_parts if preserve_parts else None,
                 ),
                 finish_reason=finish_reason,
             )
@@ -762,7 +1011,9 @@ def iter_gemini_stream_chunks(
     """Stream Gemini ``streamGenerateContent?alt=sse`` frames as :class:`NativeStreamChunk`."""
     tool_count_by_cand: Dict[int, int] = {}
     saw_tools_by_cand: Dict[int, bool] = {}
-    saw_finish_reason = False
+    active_partial_fc_by_cand: Dict[int, Dict[str, Any]] = {}
+    seen_candidates: Set[int] = set()
+    finished_candidates: Set[int] = set()
     response_id = f"gemini-{uuid.uuid4().hex[:12]}"
     model_name = default_model
 
@@ -786,13 +1037,15 @@ def iter_gemini_stream_chunks(
             if not isinstance(cand, Mapping):
                 continue
             cand_idx = int(cand.get("index", idx))
+            seen_candidates.add(cand_idx)
             content_obj = cand.get("content") if isinstance(cand.get("content"), Mapping) else {}
             parts = content_obj.get("parts") or []
             start_idx = tool_count_by_cand.get(cand_idx, 0)
-            text_parts, reasoning_parts, tool_calls, provider_blocks, has_text_sig = _extract_gemini_parts(
+            text_parts, reasoning_parts, tool_calls, ordered_parts, preserve_parts = _extract_gemini_parts(
                 parts,
                 cand_idx=cand_idx,
                 tool_index_start=start_idx,
+                active_partial_fc=active_partial_fc_by_cand,
             )
             if tool_calls:
                 tool_count_by_cand[cand_idx] = start_idx + len(tool_calls)
@@ -800,17 +1053,19 @@ def iter_gemini_stream_chunks(
 
             raw_finish = cand.get("finishReason")
             if raw_finish:
-                saw_finish_reason = True
+                finished_candidates.add(cand_idx)
             finish_reason = _map_gemini_finish_reason(
                 raw_finish,
                 has_tool_calls=saw_tools_by_cand.get(cand_idx, False),
             )
+            if not (text_parts or reasoning_parts or tool_calls or (preserve_parts and ordered_parts) or finish_reason):
+                continue
             delta = NativeMessage(
                 role="assistant",
                 content="".join(text_parts) if text_parts else None,
                 tool_calls=tool_calls or None,
                 reasoning_content="\n".join(reasoning_parts) if reasoning_parts else None,
-                provider_blocks=provider_blocks if has_text_sig else None,
+                provider_blocks=ordered_parts if preserve_parts else None,
             )
             choices.append(
                 NativeChoice(
@@ -830,9 +1085,18 @@ def iter_gemini_stream_chunks(
                 usage=usage,
             )
 
-    if not saw_finish_reason:
+    if active_partial_fc_by_cand:
         raise NativeIncompleteStreamError(
-            "Gemini SSE stream ended without a terminal finishReason",
+            "Gemini SSE stream ended with an unfinished streamed functionCall (willContinue=true)",
+            provider=provider,
+            secrets=secrets,
+            error_code="incomplete_stream",
+        )
+
+    if not finished_candidates or not seen_candidates.issubset(finished_candidates):
+        missing = sorted(seen_candidates - finished_candidates)
+        raise NativeIncompleteStreamError(
+            f"Gemini SSE stream ended without a terminal finishReason for candidate(s): {missing or [0]}",
             provider=provider,
             secrets=secrets,
             error_code="incomplete_stream",
@@ -850,11 +1114,17 @@ def prepare_gemini_request(
     """Build Gemini REST URL, ``x-goog-api-key`` headers, JSON body, and timeout."""
     url = resolve_gemini_endpoint_url(entry.api_base, entry.wire_model, stream=stream)
     headers: Dict[str, str] = {"Content-Type": "application/json"}
+    skip_sensitive = bool(kwargs.get("_dsa_skip_sensitive_caller_headers"))
     merge_header_overrides(headers, {"extra_headers": entry.extra_headers})
-    merge_header_overrides(headers, kwargs)
+    merge_header_overrides(
+        headers,
+        kwargs,
+        resolve_env_fn=resolve_env_reference,
+        skip_sensitive=skip_sensitive,
+    )
 
     query_keys = {k.lower() for k, _ in parse_qsl(urlsplit(url).query, keep_blank_values=True)}
-    api_key = entry.api_key or kwargs.get("api_key")
+    api_key = entry.api_key or (None if skip_sensitive else kwargs.get("api_key"))
     if (
         api_key
         and "key" not in query_keys

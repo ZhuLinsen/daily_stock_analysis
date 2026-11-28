@@ -16,6 +16,7 @@ import uuid
 
 from src.llm.native_resolve import (
     is_official_openai_url,
+    resolve_env_reference,
     resolve_openai_endpoint_url,
 )
 from src.llm.native_types import (
@@ -33,6 +34,7 @@ from src.llm.native_types import (
     check_in_band_json_error,
     has_header_case_insensitive,
     merge_header_overrides,
+    parse_strict_bool,
 )
 from src.llm.sse import SSEStreamState, iter_sse_json_events
 
@@ -70,6 +72,7 @@ _FILTERED_REQUEST_KWARGS = frozenset(
         "custom_llm_provider",
         "wire_protocol",
         "api_surface",
+        "dsa_channel_protocol",
         "timeout",
         "num_retries",
         "fallbacks",
@@ -77,6 +80,8 @@ _FILTERED_REQUEST_KWARGS = frozenset(
         "caching",
         "drop_params",
         "client",
+        "_dsa_deadline_monotonic",
+        "_dsa_skip_sensitive_caller_headers",
     }
 )
 
@@ -87,6 +92,8 @@ _INTERNAL_MESSAGE_KEYS = frozenset(
         "provider_blocks",
         "trace_provider",
         "trace_model",
+        "_trace_provider",
+        "_trace_model",
         "_dsa_trace_provider",
         "_dsa_trace_model",
     }
@@ -223,7 +230,7 @@ def _sanitize_chat_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, An
         cleaned: Dict[str, Any] = {}
         for k, v in msg.items():
             key_str = str(k)
-            if key_str in _INTERNAL_MESSAGE_KEYS or key_str.startswith("_dsa_"):
+            if key_str in _INTERNAL_MESSAGE_KEYS or key_str.startswith(("_dsa_", "_trace_")):
                 continue
             if key_str == "tool_calls" and isinstance(v, list):
                 cleaned_tcs: List[Dict[str, Any]] = []
@@ -233,13 +240,18 @@ def _sanitize_chat_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, An
                     tc_out: Dict[str, Any] = {}
                     for tk, tv in tc.items():
                         tk_str = str(tk)
-                        if tk_str in _INTERNAL_MESSAGE_KEYS or tk_str == "thought_signature" or tk_str.startswith("_dsa_"):
+                        if (
+                            tk_str in _INTERNAL_MESSAGE_KEYS
+                            or tk_str == "thought_signature"
+                            or tk_str.startswith(("_dsa_", "_trace_"))
+                        ):
                             continue
                         if tk_str == "function" and isinstance(tv, Mapping):
                             tc_out["function"] = {
                                 fk: fv
                                 for fk, fv in tv.items()
-                                if str(fk) not in _INTERNAL_MESSAGE_KEYS and not str(fk).startswith("_dsa_")
+                                if str(fk) not in _INTERNAL_MESSAGE_KEYS
+                                and not str(fk).startswith(("_dsa_", "_trace_"))
                             }
                         else:
                             tc_out[tk_str] = copy.deepcopy(tv)
@@ -271,39 +283,65 @@ def build_chat_completions_payload(
     **kwargs: Any,
 ) -> Dict[str, Any]:
     """Assemble an OpenAI Chat Completions JSON request body."""
+    force_max_tokens = bool(kwargs.get("_dsa_force_max_tokens"))
+    disable_stream_options = bool(kwargs.get("_dsa_disable_stream_options"))
+
     body: Dict[str, Any] = {
         "model": wire_model,
         "messages": _sanitize_chat_messages(messages),
         "stream": bool(stream),
     }
 
-    if stream:
+    # Apply deployment extra_body first so explicit caller kwargs (such as store=False)
+    # remain authoritative over deployment defaults (P0-3).
+    if isinstance(deployment_extra_body, Mapping):
+        for key, value in deployment_extra_body.items():
+            if value is not None:
+                body[key] = copy.deepcopy(value)
+
+    if stream and not disable_stream_options:
         caller_stream_opts = kwargs.get("stream_options")
         if isinstance(caller_stream_opts, Mapping):
             body["stream_options"] = dict(caller_stream_opts)
-        elif caller_stream_opts is None and is_official_openai_url(endpoint_url):
+        elif (
+            caller_stream_opts is None
+            and "stream_options" not in body
+            and is_official_openai_url(endpoint_url)
+        ):
             body["stream_options"] = {"include_usage": True}
 
     for key in _CHAT_COMPLETIONS_OPTIONAL_KEYS:
         if key in kwargs and kwargs[key] is not None:
             body[key] = kwargs[key]
 
-    # Map max_tokens -> max_completion_tokens for o1/o3/o4/gpt-5+ families.
-    if (
+    # Apply caller extra_body on top, while preserving an explicit top-level caller store=False
+    # unless caller's own extra_body explicitly overrides it.
+    if isinstance(kwargs.get("extra_body"), Mapping):
+        for key, value in kwargs["extra_body"].items():
+            if value is not None:
+                body[key] = copy.deepcopy(value)
+
+    if disable_stream_options:
+        body.pop("stream_options", None)
+
+    for bool_key in ("store", "parallel_tool_calls"):
+        if bool_key in body and body[bool_key] is not None:
+            raw_b = resolve_env_reference(body[bool_key]) if isinstance(body[bool_key], str) else body[bool_key]
+            body[bool_key] = parse_strict_bool(raw_b, field_name=bool_key, provider="openai")
+
+    # Map max_tokens -> max_completion_tokens for o1/o3/o4/gpt-5+ families unless
+    # one-shot 400 recovery forced max_tokens (P1-10).
+    if force_max_tokens:
+        if "max_completion_tokens" in body and "max_tokens" not in body:
+            body["max_tokens"] = body.pop("max_completion_tokens")
+        else:
+            body.pop("max_completion_tokens", None)
+    elif (
         "max_tokens" in body
         and "max_completion_tokens" not in body
         and _uses_max_completion_tokens(wire_model)
     ):
         body["max_completion_tokens"] = body.pop("max_tokens")
-
-    merged_extra: Dict[str, Any] = {}
-    if isinstance(deployment_extra_body, Mapping):
-        merged_extra.update(deployment_extra_body)
-    if isinstance(kwargs.get("extra_body"), Mapping):
-        merged_extra.update(kwargs["extra_body"])
-    for key, value in merged_extra.items():
-        if value is not None:
-            body[key] = value
 
     return body
 
@@ -705,19 +743,27 @@ def build_responses_api_payload(
             }
         )
 
+    caller_extra = kwargs.get("extra_body") if isinstance(kwargs.get("extra_body"), Mapping) else {}
     merged_extra: Dict[str, Any] = {}
     if isinstance(deployment_extra_body, Mapping):
         merged_extra.update(deployment_extra_body)
-    if isinstance(kwargs.get("extra_body"), Mapping):
-        merged_extra.update(kwargs["extra_body"])
+    if caller_extra:
+        merged_extra.update(caller_extra)
 
-    # Responses invariant: default store=False unless explicitly set via top-level kwarg or extra_body.
+    # Responses invariant (P0-3): default store=False; parse bool strings strictly so
+    # "false" NEVER coerces to True, and keep explicit caller store authoritative over
+    # deployment_extra_body.
     if kwargs.get("store") is not None:
-        store_value = bool(kwargs["store"])
-    elif "store" in merged_extra and merged_extra["store"] is not None:
-        store_value = bool(merged_extra["store"])
+        raw_store = kwargs["store"]
+    elif "store" in caller_extra and caller_extra["store"] is not None:
+        raw_store = caller_extra["store"]
+    elif isinstance(deployment_extra_body, Mapping) and deployment_extra_body.get("store") is not None:
+        raw_store = deployment_extra_body["store"]
     else:
-        store_value = False
+        raw_store = False
+    if isinstance(raw_store, str):
+        raw_store = resolve_env_reference(raw_store)
+    store_value = parse_strict_bool(raw_store, field_name="store", provider="openai")
 
     body: Dict[str, Any] = {
         "model": wire_model,
@@ -733,6 +779,13 @@ def build_responses_api_payload(
         body["tools"] = responses_tools
     if kwargs.get("tool_choice") is not None:
         body["tool_choice"] = _convert_tool_choice_for_responses(kwargs["tool_choice"])
+    if kwargs.get("parallel_tool_calls") is not None:
+        raw_ptc = kwargs["parallel_tool_calls"]
+        if isinstance(raw_ptc, str):
+            raw_ptc = resolve_env_reference(raw_ptc)
+        body["parallel_tool_calls"] = parse_strict_bool(
+            raw_ptc, field_name="parallel_tool_calls", provider="openai"
+        )
     if kwargs.get("temperature") is not None:
         body["temperature"] = kwargs["temperature"]
     if kwargs.get("top_p") is not None:
@@ -886,10 +939,35 @@ def _iter_responses_stream_chunks(
 ) -> Iterator[NativeStreamChunk]:
     """Stream Responses API SSE frames as Chat Completions-compatible :class:`NativeStreamChunk`."""
     tool_index_by_key: Dict[str, int] = {}
+    emitted_reasoning_keys: set[str] = set()
     saw_tool_calls = False
     saw_terminal = False
     response_id = f"resp-{uuid.uuid4().hex[:12]}"
     model_name = default_model
+
+    def _build_reasoning_block(item: Mapping[str, Any]) -> Dict[str, Any]:
+        block: Dict[str, Any] = {"type": "reasoning"}
+        if item.get("id"):
+            block["id"] = item["id"]
+        if isinstance(item.get("summary"), list):
+            block["summary"] = copy.deepcopy(item["summary"])
+        if item.get("encrypted_content") is not None:
+            block["encrypted_content"] = item["encrypted_content"]
+        return block
+
+    def _collect_unemitted_reasoning(resp_mapping: Optional[Mapping[str, Any]]) -> List[Dict[str, Any]]:
+        if not isinstance(resp_mapping, Mapping):
+            return []
+        missing: List[Dict[str, Any]] = []
+        for out_idx, out_item in enumerate(resp_mapping.get("output") or []):
+            if not isinstance(out_item, Mapping) or out_item.get("type") != "reasoning":
+                continue
+            rkey = str(out_item.get("id") or f"idx:{out_idx}")
+            if rkey in emitted_reasoning_keys:
+                continue
+            emitted_reasoning_keys.add(rkey)
+            missing.append(_build_reasoning_block(out_item))
+        return missing
 
     for event_name, data in iter_sse_json_events(
         byte_chunks,
@@ -971,6 +1049,19 @@ def _iter_responses_stream_chunks(
                         )
                     ],
                 )
+        elif etype == "response.output_item.done":
+            # P1-15: Preserve encrypted reasoning items in order for stateless turn-2 replay.
+            item = data.get("item")
+            if isinstance(item, Mapping) and item.get("type") == "reasoning":
+                rkey = str(item.get("id") or f"idx:{data.get('output_index', len(emitted_reasoning_keys))}")
+                if rkey not in emitted_reasoning_keys:
+                    emitted_reasoning_keys.add(rkey)
+                    rblock = _build_reasoning_block(item)
+                    yield NativeStreamChunk(
+                        id=response_id,
+                        model=model_name,
+                        choices=[NativeChoice(index=0, delta=NativeMessage(provider_blocks=[rblock]))],
+                    )
         elif etype == "response.function_call_arguments.delta":
             item_key = str(data.get("item_id") or data.get("output_index", 0))
             tc_index = tool_index_by_key.setdefault(item_key, len(tool_index_by_key))
@@ -996,15 +1087,24 @@ def _iter_responses_stream_chunks(
                 )
         elif etype == "response.incomplete":
             saw_terminal = True
+            missing_reasoning = _collect_unemitted_reasoning(resp_obj)
             usage = _normalize_usage((resp_obj or {}).get("usage") or data.get("usage"))
             yield NativeStreamChunk(
                 id=response_id,
                 model=model_name,
-                choices=[NativeChoice(index=0, delta=NativeMessage(), finish_reason="length")],
+                choices=[
+                    NativeChoice(
+                        index=0,
+                        delta=NativeMessage(provider_blocks=missing_reasoning or None),
+                        finish_reason="length",
+                    )
+                ],
                 usage=usage,
             )
+            return
         elif etype == "response.completed":
             saw_terminal = True
+            missing_reasoning = _collect_unemitted_reasoning(resp_obj)
             usage = _normalize_usage((resp_obj or {}).get("usage") or data.get("usage"))
             resp_status = str((resp_obj or {}).get("status") or "").lower()
             if resp_status == "incomplete":
@@ -1016,9 +1116,16 @@ def _iter_responses_stream_chunks(
             yield NativeStreamChunk(
                 id=response_id,
                 model=model_name,
-                choices=[NativeChoice(index=0, delta=NativeMessage(), finish_reason=finish_reason)],
+                choices=[
+                    NativeChoice(
+                        index=0,
+                        delta=NativeMessage(provider_blocks=missing_reasoning or None),
+                        finish_reason=finish_reason,
+                    )
+                ],
                 usage=usage,
             )
+            return
 
     if not saw_terminal:
         raise NativeIncompleteStreamError(
@@ -1049,10 +1156,16 @@ def prepare_openai_request(
         provider=entry.provider or "openai",
     )
     headers: Dict[str, str] = {"Content-Type": "application/json"}
+    skip_sensitive = bool(kwargs.get("_dsa_skip_sensitive_caller_headers"))
     merge_header_overrides(headers, {"extra_headers": entry.extra_headers})
-    merge_header_overrides(headers, kwargs)
+    merge_header_overrides(
+        headers,
+        kwargs,
+        resolve_env_fn=resolve_env_reference,
+        skip_sensitive=skip_sensitive,
+    )
 
-    api_key = entry.api_key or kwargs.get("api_key")
+    api_key = entry.api_key or (None if skip_sensitive else kwargs.get("api_key"))
     if api_key and not has_header_case_insensitive(headers, "authorization"):
         headers["Authorization"] = f"Bearer {api_key}"
 

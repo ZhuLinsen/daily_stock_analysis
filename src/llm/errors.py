@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import math
 import re
+import time
 from typing import Any, Callable, Dict, List, Optional
 
 from src.core.stock_execution_context import get_current_stock_cancellation, raise_if_stock_cancelled
@@ -175,27 +177,50 @@ def call_litellm_with_param_recovery(
     logger: Optional[Any] = None,
     log_label: str = "[LiteLLM]",
 ) -> Any:
-    """Call LiteLLM once, then retry once for explicit generation-parameter errors."""
-    def invoke(kwargs: Dict[str, Any]) -> Any:
+    """Call LiteLLM once, then retry once for explicit generation-parameter errors.
+
+    Enforces a single monotonic deadline across the initial attempt and any
+    one-shot parameter-recovery retry (P1-6), even when no stock cancellation
+    token is active.
+    """
+    raw_timeout = call_kwargs.get("timeout")
+    call_deadline: Optional[float] = None
+    if isinstance(raw_timeout, (int, float)) and math.isfinite(float(raw_timeout)) and float(raw_timeout) > 0:
+        call_deadline = time.monotonic() + float(raw_timeout)
+
+    def invoke(kwargs: Dict[str, Any], *, is_retry: bool = False) -> Any:
         raise_if_stock_cancelled()
         token = get_current_stock_cancellation()
-        remaining = token.remaining_seconds() if token is not None else None
-        if remaining is None:
-            return call(kwargs)
-        if remaining <= 0:
+        stock_remaining = token.remaining_seconds() if token is not None else None
+        if stock_remaining is not None and stock_remaining <= 0:
             raise_if_stock_cancelled()
+
+        effective_remaining: Optional[float] = stock_remaining
+        if call_deadline is not None and (is_retry or stock_remaining is not None):
+            deadline_remaining = call_deadline - time.monotonic()
+            if deadline_remaining <= 0:
+                raise TimeoutError("LLM request timed out before parameter-recovery retry")
+            effective_remaining = (
+                deadline_remaining
+                if effective_remaining is None
+                else min(effective_remaining, deadline_remaining)
+            )
+
+        if effective_remaining is None:
+            return call(kwargs)
+
         timeout = kwargs.get("timeout")
-        if isinstance(timeout, (int, float)) and timeout > 0:
-            remaining = min(remaining, timeout)
+        if isinstance(timeout, (int, float)) and math.isfinite(float(timeout)) and float(timeout) > 0:
+            effective_remaining = min(effective_remaining, float(timeout))
         # Keep the Router's same-model deployment retries. The stock executor
         # enforces the batch deadline even if the SDK is still retrying.
-        response = call({**kwargs, "timeout": remaining})
+        response = call({**kwargs, "timeout": effective_remaining})
         raise_if_stock_cancelled()
         return response
 
     effective_kwargs = dict(call_kwargs)
     try:
-        return invoke(effective_kwargs)
+        return invoke(effective_kwargs, is_retry=False)
     except Exception as exc:
         recovery = classify_litellm_generation_param_error(exc)
         if recovery is None:
@@ -210,7 +235,7 @@ def call_litellm_with_param_recovery(
                 model,
                 recovery.reason,
             )
-        response = invoke(retry_kwargs)
+        response = invoke(retry_kwargs, is_retry=True)
         if cache_recovery:
             remember_litellm_generation_param_recovery(
                 model,
